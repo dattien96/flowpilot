@@ -3006,6 +3006,14 @@ func (s *InteractiveService) recordDriftTelemetry(rs *interactiveRun, turnID str
 	event.RunID = rs.id
 	event.StepID = tr.StepID
 
+	// CP-62 P-1 T-3: read the debate flag BEFORE taking st.mu — the lock
+	// order is s.mu → st.mu everywhere (stashVibeFlowForDebate holds s.mu
+	// and then takes the drift state), so taking st.mu first here and s.mu
+	// inside it would risk a lock-order inversion (review-pass finding).
+	s.mu.Lock()
+	inVibeDebate := rs.workingMode == workingmode.Vibe && workingmode.BareFlowID(rs.chatFlowRef) == vibeOwnerDebateFlowID
+	s.mu.Unlock()
+
 	st.mu.Lock()
 	if n := len(st.history); n > 0 && st.history[n-1].TurnID == summary.TurnID {
 		// Gate re-evaluation of the same completed turn (resume-after-restart
@@ -3018,14 +3026,10 @@ func (s *InteractiveService) recordDriftTelemetry(rs *interactiveRun, turnID str
 		}
 	}
 	// Ladder actions are stashed for the NEXT prompt assembly
-	// (applyBudgetPackerIfEnabled consumes them one-shot). CP-62 P-1 T-3:
-	// while the run is inside a vibe owner-debate flow the correction ladder
-	// must NOT shrink the debate context — the debate itself is the
-	// correction; actions stay recorded on the event + persisted JSONL but
-	// are not stashed for prompt assembly.
-	s.mu.Lock()
-	inVibeDebate := rs.workingMode == workingmode.Vibe && workingmode.BareFlowID(rs.chatFlowRef) == vibeOwnerDebateFlowID
-	s.mu.Unlock()
+	// (applyBudgetPackerIfEnabled consumes them one-shot). While the run is
+	// inside a vibe owner-debate flow the correction ladder must NOT shrink
+	// the debate context — the debate itself is the correction; actions stay
+	// recorded on the event + persisted JSONL but are not stashed.
 	st.lastScore = event.DriftScore
 	switch event.CorrectionAction {
 	case driftdetect.ActionInjectSystemNote:

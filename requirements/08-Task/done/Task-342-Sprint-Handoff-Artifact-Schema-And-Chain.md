@@ -6,12 +6,12 @@
 - Title: `Artifact Sprint-Handoff có Schema và Chuỗi Tiếp nhận giữa các Sprint`
 - Feature Keys: `zcode-parity, sprint-handoff`
 - Phase: `task`
-- Status: `todo`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `Operator`
 - Created: `2026-09-12`
 - Last Updated: `2026-09-12`
-- Parent Documents: [CP-62: Nâng cấp Harness học từ ZCode](../../07-Coding-Plan/todo/CP-62-Zcode-Harness-Parity.md), [SD-23: Generic Artifact Framework](../../06-System-Tech-Design/SD-23-Generic-Artifact-Framework.md), [CP-49: Reverse-Documentation](../../07-Coding-Plan/done/CP-49-Reverse-Documentation-And-Doc-Ingestion.md)
+- Parent Documents: [CP-62: Nâng cấp Harness học từ ZCode](../../07-Coding-Plan/done/CP-62-Zcode-Harness-Parity.md), [SD-23: Generic Artifact Framework](../../06-System-Tech-Design/SD-23-Generic-Artifact-Framework.md), [CP-49: Reverse-Documentation](../../07-Coding-Plan/done/CP-49-Reverse-Documentation-And-Doc-Ingestion.md)
 - Child Documents: `None`
 - Related Documents: [Task-341: Context Profile](./Task-341-Per-Node-Context-Profile-And-Catalog-Tier.md), [Task-323: Vibe Sprint V2](../../08-Task/done/Task-323-Vibe-Sprint-V2-Parity.md), [safe-fix-contract](../../../.agents/skills/safe-fix-contract/SKILL.md)
 - Replaces: `None`
@@ -21,7 +21,7 @@
 
 ### Summary
 
-- Hiện thực hóa Slice `P-6` của [CP-62](../../07-Coding-Plan/todo/CP-62-Zcode-Harness-Parity.md): Tạo artifact có cấu trúc **`sprint_handoff.v1`** được ghi tự động bởi node `audit` (hub-inline, không phải coder) ở cuối mỗi lượt chạy `vibe-sprint`.
+- Hiện thực hóa Slice `P-6` của [CP-62](../../07-Coding-Plan/done/CP-62-Zcode-Harness-Parity.md): Tạo artifact có cấu trúc **`sprint_handoff.v1`** được ghi tự động bởi node `audit` (hub-inline, không phải coder) ở cuối mỗi lượt chạy `vibe-sprint`.
 - Thiết lập chuỗi tiếp nhận (Chaining): Sprint kế tiếp tự động nạp `sprint_handoff.v1` từ sprint trước như một Context Source có độ ưu tiên cao trong Budget Packer, giúp các node `tdd` và `coder` nắm bắt chính xác *lý do (why)* và *các quyết định kỹ thuật* mà không làm tam sao thất bản.
 - Áp dụng nguyên tắc **Hard Ceiling Rule (CP-49)**: Trường `why` và `decisions` chỉ được trích xuất từ các dữ kiện có thật (verdict rows từ P-2, kết quả tranh luận owner), tuyệt đối cấm mô hình tự bịa đặt.
 
@@ -77,7 +77,7 @@ Lưu vết và chuyển giao liền mạch ngữ cảnh kỹ thuật, lý do đ�
 
 ## 2. Parent Links
 
-- Coding Plan: [CP-62 Slice P-6](../../07-Coding-Plan/todo/CP-62-Zcode-Harness-Parity.md)
+- Coding Plan: [CP-62 Slice P-6](../../07-Coding-Plan/done/CP-62-Zcode-Harness-Parity.md)
 - System Tech Design: [SD-23: Generic Artifact Framework](../../06-System-Tech-Design/SD-23-Generic-Artifact-Framework.md)
 - Coding Plan: [CP-49: Reverse-Documentation](../../07-Coding-Plan/done/CP-49-Reverse-Documentation-And-Doc-Ingestion.md)
 

@@ -6,12 +6,12 @@
 - Title: `Context Profile theo Node và Phân tầng Catalog trên Budget Packer`
 - Feature Keys: `zcode-parity, context-profile`
 - Phase: `task`
-- Status: `todo`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `Operator`
 - Created: `2026-09-12`
 - Last Updated: `2026-09-12`
-- Parent Documents: [CP-62: Nâng cấp Harness học từ ZCode](../../07-Coding-Plan/todo/CP-62-Zcode-Harness-Parity.md), [CP-23: Auto-Learn-To-Skill](../../07-Coding-Plan/done/CP-23-Auto-Learn-To-Skill.md), [SD-10: Memory and Prompt Architecture](../../06-System-Tech-Design/SD-10-Memory-And-Prompt-Architecture.md)
+- Parent Documents: [CP-62: Nâng cấp Harness học từ ZCode](../../07-Coding-Plan/done/CP-62-Zcode-Harness-Parity.md), [CP-23: Auto-Learn-To-Skill](../../07-Coding-Plan/done/CP-23-Auto-Learn-To-Skill.md), [SD-10: Memory and Prompt Architecture](../../06-System-Tech-Design/SD-10-Memory-And-Prompt-Architecture.md)
 - Child Documents: `None`
 - Related Documents: [Task-334: Budget Packer](../../08-Task/done/Task-334-Context-Resolver-And-Budget-Packer.md), [Task-342: Sprint Handoff Schema](./Task-342-Sprint-Handoff-Artifact-Schema-And-Chain.md), [Task-343: Conventions Source](./Task-343-Conventions-Context-Source-Repo-As-Config.md), [safe-fix-contract](../../../.agents/skills/safe-fix-contract/SKILL.md)
 - Replaces: `None`
@@ -21,7 +21,7 @@
 
 ### Summary
 
-- Hiện thực hóa Slice `P-5` của [CP-62](../../07-Coding-Plan/todo/CP-62-Zcode-Harness-Parity.md): Thay thế cơ chế dùng chung một gói ngữ cảnh `main_context` duy nhất cho mọi node bằng **Context Profile riêng theo từng node (Per-Node Context Profile)**, đặt **LÊN TRÊN** Budget Packer (CP-23).
+- Hiện thực hóa Slice `P-5` của [CP-62](../../07-Coding-Plan/done/CP-62-Zcode-Harness-Parity.md): Thay thế cơ chế dùng chung một gói ngữ cảnh `main_context` duy nhất cho mọi node bằng **Context Profile riêng theo từng node (Per-Node Context Profile)**, đặt **LÊN TRÊN** Budget Packer (CP-23).
 - Áp dụng đồng thời cho **cả hai gia đình flow** (`task-harness`, `bug-plan-harness`, `cp-harness` và `vibe-sprint`) theo quyết định `Q-2`, không phân kỳ.
 - Bổ sung tầng danh mục **Catalog Tier**: Mọi kỹ năng và tài liệu chỉ xuất hiện 1 dòng mô tả tóm tắt trong pack; nội dung chi tiết/thẻ tóm tắt chỉ được nạp khi có trigger kích hoạt theo ngữ cảnh thực tế (tiết kiệm token tối đa).
 - Tích hợp ghi vết phân bổ token theo từng profile vào `prompt_context_audit`.
@@ -69,7 +69,7 @@ Tối ưu hóa mạnh mẽ dung lượng token nạp vào prompt cho từng tác
 
 ## 2. Parent Links
 
-- Coding Plan: [CP-62 Slice P-5](../../07-Coding-Plan/todo/CP-62-Zcode-Harness-Parity.md)
+- Coding Plan: [CP-62 Slice P-5](../../07-Coding-Plan/done/CP-62-Zcode-Harness-Parity.md)
 - Coding Plan: [CP-23: Budget Packer](../../07-Coding-Plan/done/CP-23-Auto-Learn-To-Skill.md)
 - System Tech Design: [SD-10: Memory and Prompt Architecture](../../06-System-Tech-Design/SD-10-Memory-And-Prompt-Architecture.md)
 

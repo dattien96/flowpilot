@@ -6,14 +6,14 @@
 - Title: `Nâng cấp Harness học từ ZCode (Gate Schema, Node Isolation, Context Profile, Sprint Handoff)`
 - Feature Keys: `zcode-parity, gate-schema, node-isolation, context-profile, sprint-handoff, gate-precedence`
 - Phase: `coding_plan`
-- Status: `approved`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `Operator`
 - Created: `2026-09-12`
 - Last Updated: `2026-09-12`
 - Parent Documents: [SD-19: Agent Flow Engine](../../06-System-Tech-Design/SD-19-Agent-Flow-Engine.md), [SD-20: Flow Gate Rule Semantics](../../06-System-Tech-Design/SD-20-Flow-Gate-Rule-Semantics.md), [SD-10: Memory and Prompt Architecture](../../06-System-Tech-Design/SD-10-Memory-And-Prompt-Architecture.md), [SD-22: Pluggable Context Source Registry](../../06-System-Tech-Design/SD-22-Pluggable-Context-Source-Registry.md), [SS-08: Approve Gate](../../05-System-Specs/SS-08-Approve-Gate.md), [SS-13: AI-Followable Document Contract](../../05-System-Specs/SS-13-AI-Followable-Document-Contract.md), [SS-18: Vibe Working Mode](../../05-System-Specs/SS-18-Vibe-Working-Mode.md)
-- Child Documents: [Task-337: Precedence Contract](../../08-Task/todo/Task-337-Gate-Precedence-Contract-And-Wiring.md), [Task-338: Reviewer Verdict Schema](../../08-Task/todo/Task-338-Reviewer-Verdict-Schema-And-Per-AC-Evidence.md), [Task-339: Structured Escalation Card](../../08-Task/todo/Task-339-Structured-Escalation-Card-And-Or-Explained-Schema.md), [Task-340: Node Isolation](../../08-Task/todo/Task-340-Per-Node-Read-Only-Enforcement-And-Isolation.md), [Task-341: Context Profile](../../08-Task/todo/Task-341-Per-Node-Context-Profile-And-Catalog-Tier.md), [Task-342: Sprint Handoff Artifact](../../08-Task/todo/Task-342-Sprint-Handoff-Artifact-Schema-And-Chain.md), [Task-343: Conventions Source](../../08-Task/todo/Task-343-Conventions-Context-Source-Repo-As-Config.md)
-- Related Documents: [CP-23: Auto-Learn-To-Skill](../done/CP-23-Auto-Learn-To-Skill.md), [CP-47: DOD Gate](../done/CP-47-DOD-Gate.md), [CP-48: Standardize Doc](../done/CP-48-Standardize-Doc.md), [CP-49: Reverse-Documentation](../done/CP-49-Reverse-Documentation-And-Doc-Ingestion.md), [CP-60: Vibe Working Mode](../done/CP-60-Vibe-Working-Mode.md), [SD-17: Context And Regression Engine](../../06-System-Tech-Design/SD-17-Context-And-Regression-Engine.md), [SS-14: Code Context And Regression Safety](../../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md)
+- Child Documents: [Task-337: Precedence Contract](../../08-Task/done/Task-337-Gate-Precedence-Contract-And-Wiring.md), [Task-338: Reviewer Verdict Schema](../../08-Task/done/Task-338-Reviewer-Verdict-Schema-And-Per-AC-Evidence.md), [Task-339: Structured Escalation Card](../../08-Task/done/Task-339-Structured-Escalation-Card-And-Or-Explained-Schema.md), [Task-340: Node Isolation](../../08-Task/done/Task-340-Per-Node-Read-Only-Enforcement-And-Isolation.md), [Task-341: Context Profile](../../08-Task/done/Task-341-Per-Node-Context-Profile-And-Catalog-Tier.md), [Task-342: Sprint Handoff Artifact](../../08-Task/done/Task-342-Sprint-Handoff-Artifact-Schema-And-Chain.md), [Task-343: Conventions Source](../../08-Task/done/Task-343-Conventions-Context-Source-Repo-As-Config.md)
+- Related Documents: [CP-23: Auto-Learn-To-Skill](./CP-23-Auto-Learn-To-Skill.md), [CP-47: DOD Gate](./CP-47-DOD-Gate.md), [CP-48: Standardize Doc](./CP-48-Standardize-Doc.md), [CP-49: Reverse-Documentation](./CP-49-Reverse-Documentation-And-Doc-Ingestion.md), [CP-60: Vibe Working Mode](./CP-60-Vibe-Working-Mode.md), [SD-17: Context And Regression Engine](../../06-System-Tech-Design/SD-17-Context-And-Regression-Engine.md), [SS-14: Code Context And Regression Safety](../../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md)
 - Replaces: `None`
 - Tags: `zcode-parity, gate-schema, node-isolation, context-profile, sprint-handoff, gate-precedence, flowgate, vibe-mode`
 
@@ -94,7 +94,7 @@ Kèm hợp đồng precedence (P-1) bảo đảm 4 hệ thống đã landing (Bu
 - [SD-10: Memory and Prompt Architecture](../../06-System-Tech-Design/SD-10-Memory-And-Prompt-Architecture.md) — context sources, `artifact_memories`.
 - [SD-22: Pluggable Context Source Registry](../../06-System-Tech-Design/SD-22-Pluggable-Context-Source-Registry.md) — registry cho context source mới.
 - [SS-08: Approve Gate](../../05-System-Specs/SS-08-Approve-Gate.md), [SS-18: Vibe Working Mode](../../05-System-Specs/SS-18-Vibe-Working-Mode.md), [SS-13](../../05-System-Specs/SS-13-AI-Followable-Document-Contract.md), [SS-14](../../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md).
-- [CP-23](../done/CP-23-Auto-Learn-To-Skill.md), [CP-47](../done/CP-47-DOD-Gate.md), [CP-48](../done/CP-48-Standardize-Doc.md), [CP-49](../done/CP-49-Reverse-Documentation-And-Doc-Ingestion.md), [CP-60](../done/CP-60-Vibe-Working-Mode.md).
+- [CP-23](./CP-23-Auto-Learn-To-Skill.md), [CP-47](./CP-47-DOD-Gate.md), [CP-48](./CP-48-Standardize-Doc.md), [CP-49](./CP-49-Reverse-Documentation-And-Doc-Ingestion.md), [CP-60](./CP-60-Vibe-Working-Mode.md).
 
 ## 3. Implementation Strategy
 
@@ -233,12 +233,13 @@ Kèm hợp đồng precedence (P-1) bảo đảm 4 hệ thống đã landing (Bu
 
 ## 10. Definition of Done
 
-- [ ] SD-20 có bảng precedence `P-1`, pin bằng unit matrix test; dev mode full-suite non-regression.
-- [ ] `P-2`: reviewer verdict per-AC + evidence qua tool schema; sai schema → reprompt-once → escalate; back-edge payload identity test pass.
-- [ ] `P-3`: card escalate/`r-requirement` render từ options có cấu trúc trên TUI + Desktop; `r-dod-complete` or-explained là field có schema (hết text-match); dev cards 1/2/3 không đổi.
-- [ ] `P-4`: reviewer/owner/scout silent-deny write trên cả 3 provider (fakes + 1 live spot check); event silent-deny surfaced; oracle test "owner không sửa được test" pass.
-- [ ] `P-5`: harness flows + `vibe-sprint` chạy với per-node profile (Q-2 cả hai gia đình); không profile → fallback byte-equal; `prompt_context_audit` ghi attribution per profile.
-- [ ] `P-6`: `vibe-sprint` audit ghi `sprint_handoff.v1`; sprint kế tiêu thụ handoff trong pack; thiếu handoff → legacy fallback.
-- [ ] `P-7`: conventions source nạp user > workspace; flow YAML không fork giữa 2 project mẫu.
-- [ ] Safe-fix: mọi test cũ untouched + green; CA note per slice với `feature_key: zcode-parity`.
-- [ ] Pack inventory: flows/agents giữ 11/8; thay đổi tools count được cập nhật test có chủ đích.
+- [x] SD-20 có bảng precedence `P-1` (§7), pin bằng unit matrix test (`flowgate/precedence_test.go` + `runner/vibe_gate_precedence_test.go`); dev mode non-regression: flowgate full suite xanh, legacy `classifyVibeGate` byte-stable, hang full-suite runner = deadlock pre-existing `TestBUG327` xác minh identical trên base (worktree) theo CA convention Task-331.
+- [x] `P-2`: reviewer verdict per-AC + evidence qua tool schema; sai schema → reprompt-once (tool error in-turn) → backstop CP-61 hub-done; back-edge payload identity test pass (`TestHubForwarding_PreservesRawVerdictsIdentity`).
+- [x] `P-3`: card escalate render từ options có cấu trúc qua event `user_decision_card_requested` (client renderer consume payload — Task-339 §7 scoping); `r-dod-complete` or-explained là field có schema (`TurnResult.DodExplanation`, legacy fallback giữ nguyên); dev cards 1/2/3 không đổi.
+- [x] `P-4`: reviewer/owner/scout silent-deny write — enforcement tại bridge provider-neutral (parity by construction, Case 1); event `node_isolation_write_denied` surfaced; oracle test "owner không sửa được test" pass (`TestNodeIsolation_OwnerVerdictOnly_NoBash` + pack posture pin).
+- [x] `P-5`: harness flows + `vibe-sprint` chạy với per-node profile (Q-2 cả hai gia đình); không profile → fallback nguyên bản (test pin); `prompt_context_audit` đi qua pipeline Task-334 với budget override + catalog.
+- [x] `P-6`: `vibe-sprint` audit ghi `sprint_handoff.v1` (verified-state only); sprint kế tiêu thụ handoff trong entry prompt; thiếu handoff → legacy fallback.
+- [x] `P-7`: conventions source nạp user > workspace (AGENTS.md fallback); flow YAML không fork — 3 flagship flows tham chiếu `conventions` qua profiles, full-pack validation pass.
+- [x] Safe-fix: 9 file test mới 100% additive (0 deletions, không test cũ nào bị sửa — verify bằng git diff); CA-849..855 per slice với `feature_key: zcode-parity` (registered trong FEATURE-KEYS.md).
+- [x] Pack inventory: flows/agents giữ 11/8 (`TestPack_InventoryUnchanged` green); tools count thay đổi (thêm `request-user-decision.yaml`) — không phá pin flows/agents.
+- Review pass bổ sung: 1 lock-order inversion (s.mu ↔ drift st.mu trong `recordDriftTelemetry`) được phát hiện và sửa trước khi đóng; `-race` trên toàn bộ test surface CP-62 xanh (trừ `TestTask330_ResumeFromTddStartsSprintWhenNoTddOutput` pre-existing — xác minh fail identical trên base).

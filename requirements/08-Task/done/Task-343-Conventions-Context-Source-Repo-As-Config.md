@@ -6,12 +6,12 @@
 - Title: `Context Source Conventions (Repo-as-Config) qua SD-22 Registry`
 - Feature Keys: `zcode-parity`
 - Phase: `task`
-- Status: `todo`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `Operator`
 - Created: `2026-09-12`
 - Last Updated: `2026-09-12`
-- Parent Documents: [CP-62: Nâng cấp Harness học từ ZCode](../../07-Coding-Plan/todo/CP-62-Zcode-Harness-Parity.md), [SD-22: Pluggable Context Source Registry](../../06-System-Tech-Design/SD-22-Pluggable-Context-Source-Registry.md), [CP-23: Auto-Learn-To-Skill](../../07-Coding-Plan/done/CP-23-Auto-Learn-To-Skill.md)
+- Parent Documents: [CP-62: Nâng cấp Harness học từ ZCode](../../07-Coding-Plan/done/CP-62-Zcode-Harness-Parity.md), [SD-22: Pluggable Context Source Registry](../../06-System-Tech-Design/SD-22-Pluggable-Context-Source-Registry.md), [CP-23: Auto-Learn-To-Skill](../../07-Coding-Plan/done/CP-23-Auto-Learn-To-Skill.md)
 - Child Documents: `None`
 - Related Documents: [Task-341: Context Profile](./Task-341-Per-Node-Context-Profile-And-Catalog-Tier.md), [safe-fix-contract](../../../.agents/skills/safe-fix-contract/SKILL.md)
 - Replaces: `None`
@@ -21,7 +21,7 @@
 
 ### Summary
 
-- Hiện thực hóa Slice `P-7` của [CP-62](../../07-Coding-Plan/todo/CP-62-Zcode-Harness-Parity.md): Triển khai context source tĩnh **`conventions`** thông qua hạ tầng Pluggable Context Source Registry (SD-22) tích hợp trực tiếp trong `apps/local-runner/internal/runner/`, áp dụng triết lý *Repo-as-Config*.
+- Hiện thực hóa Slice `P-7` của [CP-62](../../07-Coding-Plan/done/CP-62-Zcode-Harness-Parity.md): Triển khai context source tĩnh **`conventions`** thông qua hạ tầng Pluggable Context Source Registry (SD-22) tích hợp trực tiếp trong `apps/local-runner/internal/runner/`, áp dụng triết lý *Repo-as-Config*.
 - Nạp quy ước dự án từ các file cấu hình chuẩn (`.flowpilot/conventions.md`, fallback sang `AGENTS.md`) theo mô hình phân tầng ưu tiên: **User-Level Conventions > Workspace-Level Conventions**.
 - Tích hợp trực tiếp vào Budget Packer dưới dạng mục Contract Section cố định (độ ưu tiên tương đương Tier-1 CP-23, không bao giờ bị cắt tỉa khi vượt ngân sách).
 - Giữ nguyên vẹn các file Flow YAML giữa các dự án khác nhau: không cần fork flow YAML hay nhét thủ công conventions vào System Specs.
@@ -67,7 +67,7 @@ Cung cấp quy ước phát triển và tiêu chuẩn lập trình của dự á
 
 ## 2. Parent Links
 
-- Coding Plan: [CP-62 Slice P-7](../../07-Coding-Plan/todo/CP-62-Zcode-Harness-Parity.md)
+- Coding Plan: [CP-62 Slice P-7](../../07-Coding-Plan/done/CP-62-Zcode-Harness-Parity.md)
 - System Tech Design: [SD-22: Pluggable Context Source Registry](../../06-System-Tech-Design/SD-22-Pluggable-Context-Source-Registry.md)
 - Coding Plan: [CP-23: Budget Packer](../../07-Coding-Plan/done/CP-23-Auto-Learn-To-Skill.md)
 

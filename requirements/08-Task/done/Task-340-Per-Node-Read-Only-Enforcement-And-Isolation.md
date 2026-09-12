@@ -6,12 +6,12 @@
 - Title: `Thực thi Cô lập Node Đọc-Chỉ (Silent-Deny và Posture Mapping)`
 - Feature Keys: `zcode-parity, node-isolation`
 - Phase: `task`
-- Status: `todo`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `Operator`
 - Created: `2026-09-12`
 - Last Updated: `2026-09-12`
-- Parent Documents: [CP-62: Nâng cấp Harness học từ ZCode](../../07-Coding-Plan/todo/CP-62-Zcode-Harness-Parity.md), [SD-19: Agent Flow Engine](../../06-System-Tech-Design/SD-19-Agent-Flow-Engine.md), [SS-14: Code Context And Regression Safety](../../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md)
+- Parent Documents: [CP-62: Nâng cấp Harness học từ ZCode](../../07-Coding-Plan/done/CP-62-Zcode-Harness-Parity.md), [SD-19: Agent Flow Engine](../../06-System-Tech-Design/SD-19-Agent-Flow-Engine.md), [SS-14: Code Context And Regression Safety](../../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md)
 - Child Documents: `None`
 - Related Documents: [BUG-344: Scan Read-Only Policy Rejects Compound Read-Only Bash](../../09-BugFix/done/BUG-344-Scan-ReadOnly-Policy-Rejects-Compound-ReadOnly-Bash.md), [Task-338: Reviewer Verdict Schema](./Task-338-Reviewer-Verdict-Schema-And-Per-AC-Evidence.md), [safe-fix-contract](../../../.agents/skills/safe-fix-contract/SKILL.md)
 - Replaces: `None`
@@ -21,7 +21,7 @@
 
 ### Summary
 
-- Hiện thực hóa Slice `P-4` của [CP-62](../../07-Coding-Plan/todo/CP-62-Zcode-Harness-Parity.md): Chuyển đổi cơ chế cô lập node từ "lời dặn trong prompt" thành **sự cưỡng chế của runner (enforcement)**.
+- Hiện thực hóa Slice `P-4` của [CP-62](../../07-Coding-Plan/done/CP-62-Zcode-Harness-Parity.md): Chuyển đổi cơ chế cô lập node từ "lời dặn trong prompt" thành **sự cưỡng chế của runner (enforcement)**.
 - Mở rộng động cơ `chat_posture_policy.go` (vốn đã có cơ chế `silent-deny` và phân loại lệnh an toàn từ BUG-344 nhưng trước đây bị loại trừ khỏi workflow runs) để áp dụng cho từng Flow Node.
 - Phân loại tư thế (Posture Mapping):
   - `reviewer`, `plan_reviewer`, `scout`: Đặt tư thế `read_only`. Được phép dùng `Read, Grep, Glob` và **`Bash` có phân loại per-command** (tái sử dụng trực tiếp hàm `isReadOnlyCommand` từ `chat_posture_policy.go` để auto-approve `git diff`, `git log`, `ls`, `rg` — lưu ý `go vet`/`go build` là GHI theo phân loại BUG-344 do viết build cache; silent-deny mọi lệnh ghi/nguy hiểm).
@@ -67,7 +67,7 @@ Triệt tiêu hoàn toàn rủi ro reviewer hoặc owner vô tình hoặc cố �
 
 ## 2. Parent Links
 
-- Coding Plan: [CP-62 Slice P-4](../../07-Coding-Plan/todo/CP-62-Zcode-Harness-Parity.md)
+- Coding Plan: [CP-62 Slice P-4](../../07-Coding-Plan/done/CP-62-Zcode-Harness-Parity.md)
 - System Tech Design: [SD-19: Agent Flow Engine](../../06-System-Tech-Design/SD-19-Agent-Flow-Engine.md)
 - System Specs: [SS-14: Code Context And Regression Safety](../../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md)
 

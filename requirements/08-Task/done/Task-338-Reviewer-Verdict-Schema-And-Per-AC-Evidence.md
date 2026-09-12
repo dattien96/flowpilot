@@ -6,12 +6,12 @@
 - Title: `Reviewer Verdict có Schema và Bằng chứng per-AC`
 - Feature Keys: `zcode-parity, gate-schema`
 - Phase: `task`
-- Status: `todo`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `Operator`
 - Created: `2026-09-12`
 - Last Updated: `2026-09-12`
-- Parent Documents: [CP-62: Nâng cấp Harness học từ ZCode](../../07-Coding-Plan/todo/CP-62-Zcode-Harness-Parity.md), [SD-19: Agent Flow Engine](../../06-System-Tech-Design/SD-19-Agent-Flow-Engine.md)
+- Parent Documents: [CP-62: Nâng cấp Harness học từ ZCode](../../07-Coding-Plan/done/CP-62-Zcode-Harness-Parity.md), [SD-19: Agent Flow Engine](../../06-System-Tech-Design/SD-19-Agent-Flow-Engine.md)
 - Child Documents: `None`
 - Related Documents: [Task-337: Precedence Contract](./Task-337-Gate-Precedence-Contract-And-Wiring.md), [Task-339: Structured Escalation Card](./Task-339-Structured-Escalation-Card-And-Or-Explained-Schema.md), [safe-fix-contract](../../../.agents/skills/safe-fix-contract/SKILL.md)
 - Replaces: `None`
@@ -21,7 +21,7 @@
 
 ### Summary
 
-- Hiện thực hóa Slice `P-2` của [CP-62](../../07-Coding-Plan/todo/CP-62-Zcode-Harness-Parity.md): Chuyển đổi toàn bộ kết quả đánh giá của reviewer từ văn xuôi (prose) sang cấu trúc có schema per-AC kèm bằng chứng file:line (`path, line, excerpt`).
+- Hiện thực hóa Slice `P-2` của [CP-62](../../07-Coding-Plan/done/CP-62-Zcode-Harness-Parity.md): Chuyển đổi toàn bộ kết quả đánh giá của reviewer từ văn xuôi (prose) sang cấu trúc có schema per-AC kèm bằng chứng file:line (`path, line, excerpt`).
 - Áp dụng triệt để mô hình **Schema-First 4 tầng**: T0 deterministic code $\rightarrow$ T1 transport tool-call schema $\rightarrow$ T2 runner validation + đúng 1 reprompt kèm lỗi cụ thể $\rightarrow$ T3 fail-closed escalate.
 - Khóa chặt tính toàn vẹn của Hub: Hub (`plan_synthesis`, `synthesis`) nhận và chuyển tiếp mảng raw verdict rows nguyên văn sang node đích qua back-edge, tuyệt đối không diễn giải lại (no paraphrase).
 
@@ -73,7 +73,7 @@ Chuyển đổi phán quyết của reviewer từ văn bản mô tả tự do th
 
 ## 2. Parent Links
 
-- Coding Plan: [CP-62 Slice P-2](../../07-Coding-Plan/todo/CP-62-Zcode-Harness-Parity.md)
+- Coding Plan: [CP-62 Slice P-2](../../07-Coding-Plan/done/CP-62-Zcode-Harness-Parity.md)
 - System Tech Design: [SD-19: Agent Flow Engine](../../06-System-Tech-Design/SD-19-Agent-Flow-Engine.md)
 - System Specs: [SS-14: Code Context And Regression Safety](../../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md)
 

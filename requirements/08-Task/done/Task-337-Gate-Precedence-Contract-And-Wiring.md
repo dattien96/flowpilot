@@ -6,12 +6,12 @@
 - Title: `Hợp đồng Precedence giữa các hệ thống Gate và Kết nối Runner`
 - Feature Keys: `zcode-parity, gate-precedence`
 - Phase: `task`
-- Status: `todo`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `Operator`
 - Created: `2026-09-12`
 - Last Updated: `2026-09-12`
-- Parent Documents: [CP-62: Nâng cấp Harness học từ ZCode](../../07-Coding-Plan/todo/CP-62-Zcode-Harness-Parity.md), [SD-20: Flow Gate Rule Semantics](../../06-System-Tech-Design/SD-20-Flow-Gate-Rule-Semantics.md), [SS-18: Vibe Working Mode](../../05-System-Specs/SS-18-Vibe-Working-Mode.md)
+- Parent Documents: [CP-62: Nâng cấp Harness học từ ZCode](../../07-Coding-Plan/done/CP-62-Zcode-Harness-Parity.md), [SD-20: Flow Gate Rule Semantics](../../06-System-Tech-Design/SD-20-Flow-Gate-Rule-Semantics.md), [SS-18: Vibe Working Mode](../../05-System-Specs/SS-18-Vibe-Working-Mode.md)
 - Child Documents: `None`
 - Related Documents: [SD-19: Agent Flow Engine](../../06-System-Tech-Design/SD-19-Agent-Flow-Engine.md), [Task-335: Drift Detector](../../08-Task/done/Task-335-Drift-Wrong-Way-Detector-And-Correction-Ladder.md), [Task-331: r-dod-complete](../../08-Task/done/Task-331-DOD-Complete-Gate-And-Runner-Wiring.md), [safe-fix-contract](../../../.agents/skills/safe-fix-contract/SKILL.md)
 - Replaces: `None`
@@ -21,7 +21,7 @@
 
 ### Summary
 
-- Hiện thực hóa Slice `P-1` của [CP-62](../../07-Coding-Plan/todo/CP-62-Zcode-Harness-Parity.md): thiết lập bảng thứ bậc ưu tiên (Precedence Table) rõ ràng giữa 4 hệ thống kiểm soát: (1) Budget Packer, (2) Drift Ladder, (3) Vibe Owner-Debate, và (4) Các Gate Rule (`r-dod`, `r-requirement`, `r-scope`).
+- Hiện thực hóa Slice `P-1` của [CP-62](../../07-Coding-Plan/done/CP-62-Zcode-Harness-Parity.md): thiết lập bảng thứ bậc ưu tiên (Precedence Table) rõ ràng giữa 4 hệ thống kiểm soát: (1) Budget Packer, (2) Drift Ladder, (3) Vibe Owner-Debate, và (4) Các Gate Rule (`r-dod`, `r-requirement`, `r-scope`).
 - Xử lý xung đột trọng yếu: Điểm drift $\ge 80$ trong Vibe Mode phải được định tuyến qua `classifyVibeGate` (đưa vào Owner Debate nếu không phải vi phạm yêu cầu) thay vì bắn Dev Card thô; Drift không được thu hẹp context khi đang trong lượt tranh luận Owner; `r-dod-complete` đánh giá trước `r-requirement`.
 - Đảm bảo tính nguyên vẹn (invariance) của Dev Mode: Dev mode giữ nguyên 100% hành vi cũ (`AC-8`).
 
@@ -65,7 +65,7 @@ Xác lập hợp đồng ưu tiên xác định (deterministic precedence contra
 
 ## 2. Parent Links
 
-- Coding Plan: [CP-62 Slice P-1](../../07-Coding-Plan/todo/CP-62-Zcode-Harness-Parity.md)
+- Coding Plan: [CP-62 Slice P-1](../../07-Coding-Plan/done/CP-62-Zcode-Harness-Parity.md)
 - System Tech Design: [SD-20: Flow Gate Rule Semantics](../../06-System-Tech-Design/SD-20-Flow-Gate-Rule-Semantics.md)
 - System Specs: [SS-18: Vibe Working Mode](../../05-System-Specs/SS-18-Vibe-Working-Mode.md)
 

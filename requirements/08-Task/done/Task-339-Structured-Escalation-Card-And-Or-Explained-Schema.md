@@ -6,12 +6,12 @@
 - Title: `Thẻ Escalation có Cấu trúc và Or-Explained có Schema`
 - Feature Keys: `zcode-parity, gate-schema`
 - Phase: `task`
-- Status: `todo`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `Operator`
 - Created: `2026-09-12`
 - Last Updated: `2026-09-12`
-- Parent Documents: [CP-62: Nâng cấp Harness học từ ZCode](../../07-Coding-Plan/todo/CP-62-Zcode-Harness-Parity.md), [SD-20: Flow Gate Rule Semantics](../../06-System-Tech-Design/SD-20-Flow-Gate-Rule-Semantics.md), [CP-47: Cổng kiểm duyệt Definition-of-Done (r-dod)](../../07-Coding-Plan/done/CP-47-DOD-Gate.md)
+- Parent Documents: [CP-62: Nâng cấp Harness học từ ZCode](../../07-Coding-Plan/done/CP-62-Zcode-Harness-Parity.md), [SD-20: Flow Gate Rule Semantics](../../06-System-Tech-Design/SD-20-Flow-Gate-Rule-Semantics.md), [CP-47: Cổng kiểm duyệt Definition-of-Done (r-dod)](../../07-Coding-Plan/done/CP-47-DOD-Gate.md)
 - Child Documents: `None`
 - Related Documents: [Task-338: Reviewer Verdict Schema](./Task-338-Reviewer-Verdict-Schema-And-Per-AC-Evidence.md), [Task-331: r-dod-complete Wiring](../done/Task-331-DOD-Complete-Gate-And-Runner-Wiring.md), [safe-fix-contract](../../../.agents/skills/safe-fix-contract/SKILL.md)
 - Replaces: `None`
@@ -21,7 +21,7 @@
 
 ### Summary
 
-- Hiện thực hóa Slice `P-3` của [CP-62](../../07-Coding-Plan/todo/CP-62-Zcode-Harness-Parity.md): Chuẩn hóa các tương tác dừng chờ người dùng (escalation, ask_user, thẻ vi phạm `r-requirement`) thành cấu trúc thẻ có schema rõ ràng với các lựa chọn (`options`), hệ quả (`consequence`), và bằng chứng (`evidence`).
+- Hiện thực hóa Slice `P-3` của [CP-62](../../07-Coding-Plan/done/CP-62-Zcode-Harness-Parity.md): Chuẩn hóa các tương tác dừng chờ người dùng (escalation, ask_user, thẻ vi phạm `r-requirement`) thành cấu trúc thẻ có schema rõ ràng với các lựa chọn (`options`), hệ quả (`consequence`), và bằng chứng (`evidence`).
 - Thay thế hoàn toàn cơ chế đối soát văn bản (text-match) của ngoại lệ `or-explained` trong cổng `r-dod-complete` bằng trường dữ liệu có schema `{explanation, referencing_ac}` trong struct `TurnResult`.
 - Áp dụng chiến lược **Bọc-quanh (Wrap-around)** theo quyết định `Q-1`: Ưu tiên render thẻ từ cấu trúc options; nếu model không gọi tool hoặc payload sai thì dùng thẻ prose cũ làm kênh dự phòng (fallback), đảm bảo không bao giờ mất thông báo tới người dùng.
 
@@ -74,7 +74,7 @@ Chuyển đổi các thông báo dừng chờ người dùng từ các đoạn v
 
 ## 2. Parent Links
 
-- Coding Plan: [CP-62 Slice P-3](../../07-Coding-Plan/todo/CP-62-Zcode-Harness-Parity.md)
+- Coding Plan: [CP-62 Slice P-3](../../07-Coding-Plan/done/CP-62-Zcode-Harness-Parity.md)
 - System Tech Design: [SD-20: Flow Gate Rule Semantics](../../06-System-Tech-Design/SD-20-Flow-Gate-Rule-Semantics.md)
 - Coding Plan: [CP-47: DOD Gate](../../07-Coding-Plan/done/CP-47-DOD-Gate.md)
 
