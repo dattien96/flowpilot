@@ -1317,33 +1317,38 @@ func (r *Runner) ExecutePrompt(ctx context.Context, request PromptExecutionReque
 	return result, nil
 }
 
+// injectSkillContent is the one-shot prompt-execution sibling of
+// injectSelectedSkills (Task-347, CP-62 P-5 catalog tier): skills enter the
+// prompt as name + description + path pointers, never as full file bodies.
+// The provider harness triggers an installed skill natively, and an agent
+// with read tools loads the body on demand from the pointer path — the
+// injected token count stays independent of skill file size, matching the
+// chat path's Task-260 pointer-only precedent.
 func (r *Runner) injectSkillContent(workspace string, prompt string, skillIds []string) string {
 	if len(skillIds) == 0 {
 		return prompt
 	}
-
 	skills, err := r.ListSkills()
-	if err != nil || len(skills) == 0 {
-		return prompt
-	}
-
-	var injected []string
-	injected = append(injected, prompt)
-	injected = append(injected, "\n\n## Included Skills\n\nThe following skills are provided as reference to help you complete your task:\n")
-
-	for _, reqSkill := range skillIds {
-		for _, skill := range skills {
-			if skill.ID == reqSkill {
-				contentBytes, err := os.ReadFile(skill.FilePath)
-				if err == nil {
-					injected = append(injected, fmt.Sprintf("\n### Skill: %s\n```markdown\n%s\n```\n", skill.Name, string(contentBytes)))
+	selections := make([]SkillSelection, 0, len(skillIds))
+	for _, id := range skillIds {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		sel := SkillSelection{Name: id, Source: "builtin"}
+		if err == nil {
+			for _, sk := range skills {
+				if sk.ID == id {
+					// Hand the resolver the discovered path + friendly name;
+					// unresolvable ids fall through to workspace discovery.
+					sel.Name, sel.Path = sk.Name, sk.FilePath
+					break
 				}
-				break
 			}
 		}
+		selections = append(selections, sel)
 	}
-
-	return strings.Join(injected, "")
+	return r.injectSelectedSkills(workspace, prompt, selections)
 }
 
 func (r *Runner) injectFeatureHistory(workspace string, prompt string) string {
