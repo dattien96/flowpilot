@@ -9,7 +9,7 @@
 - Owner: `FlowPilot`
 - Reviewers: `Operator`
 - Created: `2026-09-12`
-- Last Updated: `2026-09-12`
+- Last Updated: `2026-09-13` (bổ sung hard-ceiling kiểm chứng trên sprint handoff — Task-346)
 - Parent Documents: [CP-49: Reverse-Documentation](./CP-49-Reverse-Documentation-And-Doc-Ingestion.md)
 - Child Documents: `None`
 - Related Documents: [Task-333: Standardize Command & SS-Lock](../../08-Task/done/Task-333-Standardize-Command-And-Reverse-Doc-With-SS-Lock.md), [CP-48: Standardize Doc](./CP-48-Standardize-Doc.md), [CP-60: Vibe Mode](./CP-60-Vibe-Working-Mode.md), [safe-fix-contract](../../../.agents/skills/safe-fix-contract/SKILL.md)
@@ -59,6 +59,9 @@ Thư mục làm việc: `apps/local-runner`.
 ```bash
 # Kiểm tra bộ máy quét tài liệu kết hợp và cổng khóa ss-lock
 go test ./internal/docscan/ ./internal/runner/ -count=1 -run 'TestScanDocument_|TestAutoFixDocument_|TestVibeSession_ReconstructAwaitingLock' -v
+
+# Task-346 (CA-860): hard-ceiling áp xuống runtime — sprint handoff chỉ ghi verified state
+go test ./internal/runner/ -count=1 -race -run 'TestHandoffEnrichment_' -v
 ```
 
 | Step | Nhóm kiểm thử | Kịch bản kiểm tra | Pass khi | Tick |
@@ -68,6 +71,9 @@ go test ./internal/docscan/ ./internal/runner/ -count=1 -run 'TestScanDocument_|
 | 2.3 | SS-Lock | `TestVibeSession_ReconstructAwaitingLock` | Phiên dừng chờ tại chốt khóa SS, bảo toàn trạng thái | [x] PASS 0.00s |
 | 2.4 | Commit Gate | `TestCA793_CommitRequiresExistingFile` | Không commit khi file tài liệu chưa tồn tại thực trên đĩa | [x] PASS 0.00s |
 | 2.5 | Demotion | `TestCA793_DeleteCPDemotesToSS` | Xóa CP tự động lùi về trạng thái khóa SS | [x] PASS 0.00s |
+| 2.6 | Handoff (Task-346) | `TestHandoffEnrichment_CardWithChoice` | Choice chỉ được ghi khi khớp option id/label — không đoán từ prose | [ ] |
+| 2.7 | Handoff (Task-346) | `TestHandoffEnrichment_CardWithoutChoiceFallsBackToRecommended` | Trả lời prose → không bịa choice, chỉ fallback "recommended:" | [ ] |
+| 2.8 | Handoff (Task-346) | `TestHandoffEnrichment_TamperedTestsRecorded` + `TestHandoffEnrichment_NoSourcesOmitsFields` | weakened_tests chỉ từ oracle guard; không có nguồn → field omitted | [ ] |
 
 ---
 
@@ -101,6 +107,15 @@ go test ./internal/docscan/ ./internal/runner/ -count=1 -run 'TestScanDocument_|
    - Người dùng điền thêm 2 tiêu chí nghiệm thu vào SS và bấm **Confirm / Lock**.
    - Phiên chạy tiếp tục, chuyển giao tài liệu cho bộ máy CP-48 để căn chỉnh định dạng hoàn hảo.
 
+### Kịch bản 2: Hard-ceiling kiểm chứng trên sprint handoff (Task-346)
+
+1. Sau Kịch bản `/standardize`, chạy thêm một sprint Vibe có diễn ra decision card (agent hỏi user) và/hoặc một test cũ bị oracle guard bắt đụng.
+2. Mở `requirements/.flowpilot/vibe/handoffs/handoff-sprint-1.yaml` và kiểm chứng hard-ceiling (CP-49 áp xuống runtime):
+   - Entry `decisions` từ card chỉ chứa question thật + lựa chọn thật (khớp option id/label qua kênh continue). Trả lời bằng văn xuôi → **không** bịa choice, chỉ fallback "recommended: <id>".
+   - `weakened_tests` chỉ liệt kê path mà oracle guard thực sự bắt (kèm justification) — không tự phát minh.
+   - Không có nguồn nào → field omitted; runner (không phải AI) là người lắp ráp file — đúng nguyên tắc "AI/User sinh quyết định qua tool call, runner chỉ tổng hợp".
+3. Sprint kế tiếp đọc handoff → hiểu why và không sửa ngược code/test của sprint trước.
+
 ---
 
 ## 5. Log Grep (Bằng chứng Kiểm toán)
@@ -121,3 +136,4 @@ docscan_autofix_applied
 - [ ] Bản thảo SS không bịa đặt nghiệp vụ và dừng lại chuẩn xác tại cổng `ss_lock`.
 - [ ] Không có CP/Task nào được sinh ra trước khi người dùng xác nhận khóa SS.
 - [ ] Bộ tài liệu kết quả vượt qua kiểm định định dạng của CP-48.
+- [ ] Kịch bản 2: Sprint handoff chỉ ghi verified state (hard-ceiling) — choice/tamper đều có nguồn thật, không bịa.

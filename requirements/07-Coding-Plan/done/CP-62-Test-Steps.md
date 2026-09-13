@@ -9,10 +9,10 @@
 - Owner: `FlowPilot`
 - Reviewers: `Operator`
 - Created: `2026-09-12`
-- Last Updated: `2026-09-12`
+- Last Updated: `2026-09-13` (bổ sung 5 scenario cho Task-344..348 — nhóm follow-up CP-62)
 - Parent Documents: [CP-62](./CP-62-Zcode-Harness-Parity.md)
 - Child Documents: `None`
-- Related Documents: [Task-337](../../08-Task/done/Task-337-Gate-Precedence-Contract-And-Wiring.md), [Task-338](../../08-Task/done/Task-338-Reviewer-Verdict-Schema-And-Per-AC-Evidence.md), [Task-339](../../08-Task/done/Task-339-Structured-Escalation-Card-And-Or-Explained-Schema.md), [Task-340](../../08-Task/done/Task-340-Per-Node-Read-Only-Enforcement-And-Isolation.md), [Task-341](../../08-Task/done/Task-341-Per-Node-Context-Profile-And-Catalog-Tier.md), [Task-342](../../08-Task/done/Task-342-Sprint-Handoff-Artifact-Schema-And-Chain.md), [Task-343](../../08-Task/done/Task-343-Conventions-Context-Source-Repo-As-Config.md), [CP-61-Test-Steps](../done/CP-61-Test-Steps.md), [safe-fix-contract](../../../.agents/skills/safe-fix-contract/SKILL.md)
+- Related Documents: [Task-337](../../08-Task/done/Task-337-Gate-Precedence-Contract-And-Wiring.md), [Task-338](../../08-Task/done/Task-338-Reviewer-Verdict-Schema-And-Per-AC-Evidence.md), [Task-339](../../08-Task/done/Task-339-Structured-Escalation-Card-And-Or-Explained-Schema.md), [Task-340](../../08-Task/done/Task-340-Per-Node-Read-Only-Enforcement-And-Isolation.md), [Task-341](../../08-Task/done/Task-341-Per-Node-Context-Profile-And-Catalog-Tier.md), [Task-342](../../08-Task/done/Task-342-Sprint-Handoff-Artifact-Schema-And-Chain.md), [Task-343](../../08-Task/done/Task-343-Conventions-Context-Source-Repo-As-Config.md), [Task-344](../../08-Task/done/Task-344-Reviewer-AC-Coverage-Wiring.md), [Task-345](../../08-Task/done/Task-345-Decision-Card-Desktop-TUI.md), [Task-346](../../08-Task/done/Task-346-Sprint-Handoff-Enrichment.md), [Task-347](../../08-Task/done/Task-347-Skill-Catalog-Tier-Body-On-Trigger.md), [Task-348](../../08-Task/done/Task-348-Drift-Pause-Dev-Ask-User-Wiring.md), [CP-61-Test-Steps](../done/CP-61-Test-Steps.md), [safe-fix-contract](../../../.agents/skills/safe-fix-contract/SKILL.md)
 - Replaces: `None`
 - Tags: `zcode-parity, gate-schema, node-isolation, context-profile, sprint-handoff, test-steps, verification, cp-62`
 - Feature Keys: `zcode-parity`
@@ -74,6 +74,10 @@ go test ./internal/flowgate/ ./internal/runner/ -count=1 -timeout 180s -run 'Tes
 
 # 2. Chạy regression suite cũ (bắt buộc xanh 100% và untouched)
 go test ./internal/flowgate/ ./internal/runner/ ./internal/promptpacker/ -count=1 -timeout 180s -run 'TestCP61HubDone|TestCP53ReviewDoneVerdict|TestRDod|TestBudgetPacker' -v
+
+# 3. Follow-up Task-344..348 (CA-856..860) — chạy kèm -race
+go test ./internal/runner/ -count=1 -race -timeout 180s -run 'TestReviewACCoverage_|TestInjectSkillContent_|TestDriftPause_|TestHandoffEnrichment_' -v
+go test ./internal/tui/app/ -count=1 -timeout 120s -run 'TestDecisionCard_' -v
 ```
 
 | Step | Kiểm tra | Pass khi | Tick |
@@ -86,6 +90,11 @@ go test ./internal/flowgate/ ./internal/runner/ ./internal/promptpacker/ -count=
 | 2.6 | Sprint Handoff (`P-6`) | `TestSprintHandoff_*` green; audit node ghi đúng YAML, sprint sau nạp ưu tiên cao | [ ] |
 | 2.7 | Conventions Source (`P-7`) | `TestConventionsSource_*` green; user > workspace > AGENTS.md, Tier-1 mandatory | [ ] |
 | 2.8 | Old Regression Untouched | `TestCP61HubDone`, `TestCP53ReviewDoneVerdict`, `TestRDod*` xanh 100% | [ ] |
+| 2.9 | AC Coverage (`Task-344`) | `TestReviewACCoverage_*` green; thiếu AC bị chặn kèm tên AC; owner verdict_only không bao giờ bị enforce | [ ] |
+| 2.10 | Skill Catalog (`Task-347`) | `TestInjectSkillContent_*` green; prompt chứa pointer name+description+path, KHÔNG chứa body | [ ] |
+| 2.11 | Drift Pause (`Task-348`) | `TestDriftPause_*` green; dev park + event, vibe không hỏi, idempotent, flow child park parent | [ ] |
+| 2.12 | Handoff Enrichment (`Task-346`) | `TestHandoffEnrichment_*` green; card choice + weakened_tests vào handoff; rỗng → field omitted | [ ] |
+| 2.13 | Decision Card TUI (`Task-345`) | `TestDecisionCard_*` green; event arm card, số → option id qua feedback, prose fallback | [ ] |
 
 ---
 
@@ -135,6 +144,43 @@ go test ./internal/flowgate/ ./internal/runner/ ./internal/promptpacker/ -count=
 3. **Quan sát Gate**:
    - Gate `r-dod-complete` nhận diện cấu trúc giải trình và cho phép chuyển sang `warn`, không bị chặn (block) oan như regex cũ.
 
+### Kịch bản M-4: AC Coverage trên đường nộp review (Task-344)
+
+1. Chạy lại flow `task-harness` như M-1, nhưng can thiệp để reviewer nộp thiếu AC (vd chỉ nộp verdict cho `AC-1`, `AC-2` khi task có `AC-3`).
+2. **Quan sát**:
+   - Tool call bị từ chối ngay tại bridge với lỗi nêu đích danh: `submit_review_outcome: missing verdicts for required ACs: AC-3 — ...`.
+   - Reviewer tự nộp lại đủ trong cùng lượt chạy; nếu vẫn thiếu đến hub-done → CP-61 refuse `done` (fail-closed backstop).
+3. Kiểm tra hướng ngược: task doc **sai chuẩn / không có AC-n nào** (CP-48 Kịch bản 1 tạo file malformed) → coverage tự bỏ qua, flow không bị chặn oan (fault-tolerant).
+
+### Kịch bản M-5: Decision Card UI trên Desktop + TUI (Task-345)
+
+1. Khi agent gọi `request_user_decision` (hoặc escalation thật xảy ra trong M-3):
+   - **Desktop app**: thẻ hiện options dạng nút bấm, `consequence` dưới mỗi label, `recommended` viền nổi bật, `evidence` là các dòng `file:line`. Bấm 1 nút → option id được gửi như prompt tiếp theo, thẻ chuyển trạng thái answered.
+   - **TUI**: thẻ in danh sách đánh số (`1. Stateless JWT [recommended] — ...`). Gõ số/tên option → option id gửi đi. Gõ text khác → gửi nguyên văn (Q-1 prose fallback), thẻ tự disarm.
+2. Composer chat vẫn dùng được song song (không bị khóa vô hạn).
+
+### Kịch bản M-6: Sprint Handoff enrichment (Task-346)
+
+1. Trong M-2, sau khi có decision card (M-5) và/hoặc một test cũ bị đụng trong sprint:
+2. Mở `requirements/.flowpilot/vibe/handoffs/handoff-sprint-1.yaml`:
+   - Có entry `decisions` từ card: `what` = "user chose <option_id> — <question>", `why` = label + consequence của lựa chọn, `alternatives` = các option còn lại. Trả lời bằng prose → `why` rơi về "recommended: <id>" (không đoán).
+   - Có `weakened_tests` kèm `justification` từ oracle guard nếu sprint đó đụng test cũ.
+   - Không có nguồn nào → các field omitted (file giống hệt Task-342 nguyên bản).
+
+### Kịch bản M-7: Skill Catalog pointer-only (Task-347)
+
+1. Chạy một one-shot prompt execution có khai báo skill (SkillIds).
+2. **Quan sát prompt đã compose (log `[prompt]` / `prompt_context_audit`)**:
+   - Có block `## Selected Skills` với mỗi skill 1 dòng `- /<name> → <path>` + `> <description>`.
+   - **Không** có body skill (kiểm bằng 1 marker text nằm trong body SKILL.md — marker không được xuất hiện trong prompt).
+3. Chat path (Task-260) không đổi: vẫn pointer-only như cũ.
+
+### Kịch bản M-8: Drift Pause dev-mode (Task-348) — chi tiết tại [CP-23-Test-Steps §4 Kịch bản 2](./CP-23-Test-Steps.md)
+
+1. Dev mode, ép drift ≥80 (3+ vòng lỗi như CP-23 Kịch bản 2).
+2. **Quan sát**: run chuyển `blocked` với BlockReason `drift` + GateReason mang score/signals/step; event `drift_pause_required` phát đúng 1 lần; trả lời qua kênh continue → chạy tiếp.
+3. Vibe mode lặp lại: **không bao giờ** hỏi user (owner debate sở hữu).
+
 ---
 
 ## 5. Log Grep (Bằng chứng Kiểm toán)
@@ -147,6 +193,9 @@ flow_control_verdict_schema_validated
 user_decision_card_requested
 prompt_context_audit
 sprint_handoff_emitted
+drift_pause_required
+[drift-pause]
+submit_review_outcome: missing verdicts for required ACs
 ```
 
 ---
@@ -157,4 +206,9 @@ sprint_handoff_emitted
 - [ ] M-1: Reviewer trả verdict per-AC có file:line; lệnh ghi của reviewer bị chặn (silent-deny).
 - [ ] M-2: File `handoff-sprint-1.yaml` được tạo và Sprint 2 tiêu thụ thành công.
 - [ ] M-3: Giải trình `dod_explanation` có schema được thông qua mà không cần so khớp chuỗi regex.
+- [ ] M-4: Reviewer nộp thiếu AC bị chặn kèm tên AC; task doc sai chuẩn thì coverage tự bỏ qua.
+- [ ] M-5: Decision card hiển thị trên Desktop + TUI; chọn option gửi option_id; prose fallback hoạt động.
+- [ ] M-6: Handoff chứa card choice + weakened_tests; không có nguồn thì field omitted.
+- [ ] M-7: One-shot prompt chỉ chứa pointer skill (name + description + path), không chứa body.
+- [ ] M-8: Dev drift ≥80 park run + hỏi user; vibe không bao giờ hỏi.
 - [ ] Toàn bộ test cũ trong repo nguyên vẹn, không có bất kỳ dòng test assertion cũ nào bị chỉnh sửa.

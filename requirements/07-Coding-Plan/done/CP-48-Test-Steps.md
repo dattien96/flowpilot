@@ -9,7 +9,7 @@
 - Owner: `FlowPilot`
 - Reviewers: `Operator`
 - Created: `2026-09-12`
-- Last Updated: `2026-09-12`
+- Last Updated: `2026-09-13` (bổ sung scenario regression + liên kết task doc chuẩn ↔ AC coverage)
 - Parent Documents: [CP-48: Standardize Doc](./CP-48-Standardize-Doc.md)
 - Child Documents: `None`
 - Related Documents: [Task-332: Conformance Scanner & AutoFixer](../../08-Task/done/Task-332-Doc-Conformance-Scanner-And-AutoFixer.md), [CP-49: Reverse-Documentation](./CP-49-Reverse-Documentation-And-Doc-Ingestion.md), [SS-13: Document Contract](../../05-System-Specs/SS-13-AI-Followable-Document-Contract.md), [safe-fix-contract](../../../.agents/skills/safe-fix-contract/SKILL.md)
@@ -112,6 +112,20 @@ go test ./internal/docscan/ -count=1 -v
    - Các nội dung văn bản cũ của người dùng được giữ nguyên vẹn 100%, không mất chữ nào.
 3. Chạy lại lệnh quét: Báo cáo kết quả 0 lỗi vi phạm cấu trúc.
 
+### Kịch bản 3 (Task-344 liên kết): Task doc sai chuẩn → AC coverage bỏ qua êm đẹp
+
+1. Dùng lại file `Task-000-Malformed.md` (Kịch bản 1 — không có `## 6. Acceptance Check`, không có token `AC-n`).
+2. Cho một flow chạy với task doc này và để reviewer nộp `submit_review_outcome` **thiếu/bất kỳ** verdict rows nào.
+3. **Quan sát**:
+   - Task-344 resolve expectedACs từ task doc governing — file không có `AC-n` → tập expected rỗng → coverage **tự bỏ qua**, KHÔNG chặn reviewer oan (fault-tolerant fallback của CP-62 P-2).
+   - Ngược lại, task doc ĐÚNG chuẩn (có `## 6. Acceptance Check` với `AC-n`) → checklist trở thành hợp đồng bắt buộc (chi tiết tại CP-47 Kịch bản 4).
+4. **Kết luận kiểm định**: chuẩn hóa tài liệu (CP-48) giờ còn là điều kiện để AC coverage kích hoạt — càng đúng chuẩn SS-13, nghiệm thu càng chặt.
+
+### Kịch bản 4 (Regression — Task-344..348): docscan không bị ảnh hưởng
+
+1. Sau khi merge nhóm follow-up CP-62 (CA-856..860 — đụng `gate_hook.go`, `submit path`, `sprint_handoff.go`, UI desktop/TUI), chạy lại đúng Kịch bản 1 + 2 ở trên.
+2. **Quan sát**: kết quả scan/fix và log `docscan_*` không đổi so với baseline — các thay đổi follow-up không đụng đường `internal/docscan` hay auto-fix (xác nhận trong CA notes).
+
 ---
 
 ## 5. Log Grep (Bằng chứng Kiểm toán)
@@ -128,3 +142,5 @@ docscan_autofix_applied file=... changes=...
 - [x] §2 Automated tests chạy xanh 100% (26/26 tests pass).
 - [ ] Kịch bản 1: Scanner phát hiện chính xác mọi lỗi vi phạm cấu trúc SS-13.
 - [ ] Kịch bản 2: Auto-Fixer khôi phục thành công cấu trúc chuẩn mà không làm biến đổi nội dung cũ.
+- [ ] Kịch bản 3: Task doc đúng chuẩn → AC coverage kích hoạt; sai chuẩn → bỏ qua êm đẹp (không chặn oan).
+- [ ] Kịch bản 4: Regression — docscan scan/fix không đổi sau khi merge Task-344..348.

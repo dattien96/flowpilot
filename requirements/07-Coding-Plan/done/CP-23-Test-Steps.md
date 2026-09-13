@@ -9,7 +9,7 @@
 - Owner: `FlowPilot`
 - Reviewers: `Operator`
 - Created: `2026-09-12`
-- Last Updated: `2026-09-12`
+- Last Updated: `2026-09-13` (bổ sung chân pause 80+ đã wire thật — Task-348)
 - Parent Documents: [CP-23: Auto-Learn-To-Skill](./CP-23-Auto-Learn-To-Skill.md)
 - Child Documents: `None`
 - Related Documents: [Task-334: Budget Packer](../../08-Task/done/Task-334-Context-Resolver-And-Budget-Packer.md), [Task-335: Drift Detector](../../08-Task/done/Task-335-Drift-Wrong-Way-Detector-And-Correction-Ladder.md), [Task-336: Mistake to Skill](../../08-Task/done/Task-336-Mistake-To-Skill-Promotion-And-Skillpack-Sync.md), [safe-fix-contract](../../../.agents/skills/safe-fix-contract/SKILL.md)
@@ -58,6 +58,9 @@ Thư mục làm việc: `apps/local-runner`.
 ```bash
 # Chạy toàn bộ test suites của 3 module thuộc CP-23
 go test ./internal/promptpacker ./internal/driftdetect ./internal/skillpack -count=1 -v
+
+# Task-348 (CA-859): chân pause 80+ đã wire — runner-side tests
+go test ./internal/runner/ -count=1 -race -run 'TestDriftPause_' -v
 ```
 
 | Step | Gói kiểm thử | Kịch bản kiểm tra | Pass khi | Tick |
@@ -76,6 +79,9 @@ go test ./internal/promptpacker ./internal/driftdetect ./internal/skillpack -cou
 | 2.12 | `skillpack` | `TestInstall_AndroidIncludesCommonAndAndroid` | Nền tảng Android cài Common + Android | [x] PASS 0.06s |
 | 2.13 | `skillpack` | `TestInstall_WritesGrokSkillsRoot` | Cài đặt đúng đường dẫn kỹ năng cho Grok | [x] PASS 0.01s |
 | 2.14 | `skillpack` | `TestProviderStatuses_IncludesGrokWithoutAlteringOthers` | Quản lý trạng thái cài đặt trên cả Claude, Codex, Grok | [x] PASS 0.00s |
+| 2.15 | `runner` (Task-348) | `TestDriftPause_DevModeParksRunAndEmitsEvent` | Dev mode drift ≥80 → run bị park (BlockReason `drift`) + event `drift_pause_required` | [ ] |
+| 2.16 | `runner` (Task-348) | `TestDriftPause_VibeModeNeverAsksUser` | Vibe mode không bao giờ park/hỏi user cho drift (owner debate sở hữu) | [ ] |
+| 2.17 | `runner` (Task-348) | `TestDriftPause_IdempotentWhileParked` + `TestDriftPause_FlowChildParksParent` | Không duplicate event; flow child drift → park parent hub | [ ] |
 
 ---
 
@@ -109,7 +115,9 @@ go test ./internal/promptpacker ./internal/driftdetect ./internal/skillpack -cou
 2. **Quan sát Hành vi**:
    - Lần 1: Drift score tăng nhẹ $\rightarrow$ Runner tự động chèn System Note cảnh báo vào prompt tiếp theo.
    - Lần 2: Model tiếp tục vòng lặp $\rightarrow$ Ngữ cảnh được thu hẹp, tập trung vào đoạn mã gây lỗi.
-   - Lần 3+: Drift score $\ge 80 \rightarrow$ Phiên chạy tự động dừng lại (Pause) và xuất hiện thẻ hỏi người dùng trợ giúp.
+   - Lần 3+: Drift score $\ge 80 \rightarrow$ **(Task-348 đã wire thật)** run chuyển `blocked` với BlockReason `drift`, GateReason ghi rõ score + signals + step; event `drift_pause_required` phát đúng 1 lần; log `[drift-pause]`.
+   - Trả lời qua kênh continue/feedback (giống gate card) $\rightarrow$ chạy tiếp; trông thấy blocked card trên Desktop/TUI kèm lý do.
+   - Lặp lại ở **vibe mode**: KHÔNG bao giờ hỏi user — owner debate sở hữu drift (SS-18 AC-7).
 
 ### Kịch bản 3: Kiểm thử Cài đặt Skillpack Đa Nền Tảng
 
@@ -125,6 +133,8 @@ prompt_context_audit
 drift_score_calculated
 drift_correction_ladder_action
 skillpack_installed
+drift_pause_required
+[drift-pause]
 ```
 
 ---
@@ -133,5 +143,5 @@ skillpack_installed
 
 - [x] §2 Automated tests chạy xanh 100% (14/14 tests pass).
 - [ ] Kịch bản 1: Budget Packer bảo vệ được hạn mức token và ghi log audit.
-- [ ] Kịch bản 2: Drift Detector phát hiện vòng lặp và dừng chờ can thiệp khi điểm vượt 80.
+- [ ] Kịch bản 2: Drift Detector phát hiện vòng lặp; ở ≥80 run bị park + hỏi user thật (Task-348), vibe không hỏi.
 - [ ] Kịch bản 3: Thư mục skillpack được khởi tạo chính xác trên workspace sandbox.

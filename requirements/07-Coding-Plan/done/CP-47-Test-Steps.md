@@ -9,7 +9,7 @@
 - Owner: `FlowPilot`
 - Reviewers: `Operator`
 - Created: `2026-09-12`
-- Last Updated: `2026-09-12`
+- Last Updated: `2026-09-13` (bổ sung AC coverage trên checklist nghiệm thu — Task-344)
 - Parent Documents: [CP-47: DOD Gate](./CP-47-DOD-Gate.md)
 - Child Documents: `None`
 - Related Documents: [Task-330: DOD Parser](../../08-Task/done/Task-330-DOD-Parser-And-Present-Gate.md), [Task-331: r-dod-complete](../../08-Task/done/Task-331-DOD-Complete-Gate-And-Runner-Wiring.md), [SS-13: Document Contract](../../05-System-Specs/SS-13-AI-Followable-Document-Contract.md), [safe-fix-contract](../../../.agents/skills/safe-fix-contract/SKILL.md)
@@ -57,6 +57,9 @@ Thư mục làm việc: `apps/local-runner`.
 ```bash
 # Chạy bộ test suites của DOD parser và 2 gate rules
 go test ./internal/flowgate/ -count=1 -run 'TestParseDefinitionOfDone|TestRDod' -v
+
+# Task-344 (CA-856): AC coverage — checklist AC trong task doc trở thành hợp đồng bắt buộc với reviewer
+go test ./internal/runner/ -count=1 -race -run 'TestReviewACCoverage_' -v
 ```
 
 | Step | Nhóm kiểm thử | Kịch bản kiểm tra | Pass khi | Tick |
@@ -75,6 +78,9 @@ go test ./internal/flowgate/ -count=1 -run 'TestParseDefinitionOfDone|TestRDod' 
 | 2.12 | `r-dod-complete` | `TestRDodComplete_OpenItemsNoExplanation_Block` | Còn checkbox trống không giải trình $\rightarrow$ Block | [x] PASS 0.00s |
 | 2.13 | `r-dod-complete` | `TestRDodComplete_OpenItemsWithExplanation_Warn` | Còn checkbox trống có giải trình $\rightarrow$ Warn | [x] PASS 0.00s |
 | 2.14 | `r-dod-complete` | `TestRDodComplete_PathBasedDoneDetection` | Nhận diện trạng thái done khi file chuyển vào `done/` | [x] PASS 0.00s |
+| 2.15 | `runner` (Task-344) | `TestReviewACCoverage_VibeTaskDoc_MissingACRejected` | Reviewer nộp thiếu AC → bị chặn với lỗi nêu đích danh AC thiếu | [ ] |
+| 2.16 | `runner` (Task-344) | `TestReviewACCoverage_TemplateInputBinding_NewestFileWins` | Task doc governing resolve đúng theo template/glob-newest, 0 token LLM | [ ] |
+| 2.17 | `runner` (Task-344) | `TestReviewACCoverage_OwnerVerdictOnly_NeverEnforced` + `TestReviewACCoverage_NoDoc_Passthrough` | Owner debate không bị chấm AC; task doc sai chuẩn → coverage tự bỏ qua | [ ] |
 
 ---
 
@@ -117,6 +123,14 @@ go test ./internal/flowgate/ -count=1 -run 'TestParseDefinitionOfDone|TestRDod' 
 2. **Quan sát Gate**:
    - `r-dod-complete` ghi nhận giải trình $\rightarrow$ Chuyển từ `block` sang `warn`, cho phép phiên chạy tiếp tục.
 
+### Kịch bản 4: AC Coverage gắn với checklist nghiệm thu (Task-344)
+
+1. Trong Kịch bản 1/2, can thiệp để reviewer nộp `submit_review_outcome` thiếu verdict cho 1 AC trong mục `## 6. Acceptance Check` của task doc.
+2. **Quan sát**:
+   - Tool call bị từ chối ngay: `submit_review_outcome: missing verdicts for required ACs: <AC-x> — ...` (lỗi hiện như tool result → reviewer tự nộp lại đủ trong cùng lượt).
+   - Nếu reviewer vẫn lì đến hub-done → cổng CP-61 refuse `done` (fail-closed backstop).
+3. Hướng ngược: task doc **không có** mục Acceptance Check / không có token `AC-n` (file sai chuẩn — xem CP-48 Kịch bản 1) → coverage tự động bỏ qua, không chặn oan.
+
 ---
 
 ## 5. Log Grep (Bằng chứng Kiểm toán)
@@ -125,6 +139,7 @@ go test ./internal/flowgate/ -count=1 -run 'TestParseDefinitionOfDone|TestRDod' 
 flow_control_gate_violation rule=r-dod-present action=reprompt
 flow_control_gate_violation rule=r-dod-complete action=block
 flow_control_gate_warning rule=r-dod-complete action=warn
+submit_review_outcome: missing verdicts for required ACs
 ```
 
 ---
@@ -135,3 +150,4 @@ flow_control_gate_warning rule=r-dod-complete action=warn
 - [ ] Kịch bản 1: `r-dod-present` reprompt thành công khi file task thiếu DOD.
 - [ ] Kịch bản 2: `r-dod-complete` block thành công khi còn tiêu chí chưa tick.
 - [ ] Kịch bản 3: Cơ chế giải trình mở khóa gate thành công kèm cảnh báo.
+- [ ] Kịch bản 4: Checklist AC trong task doc trở thành hợp đồng bắt buộc với reviewer (thiếu AC bị chặn; doc sai chuẩn thì bỏ qua êm đẹp).
