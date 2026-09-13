@@ -115,3 +115,22 @@ func TestStashVibeFlowForDebate_ClearsDriftLadderActions(t *testing.T) {
 			st.pendingNote, st.pendingNarrow)
 	}
 }
+
+// Task-352 re-review (P2): warn-mode gate — violation-routed debate downgrade
+// về passthrough (Enforce hạ block → warn); drift-routed debate vẫn escalate.
+func TestVibeGatePrecedence_WarnModeDowngradesViolationDebate(t *testing.T) {
+	violations := []flowgate.Violation{{
+		Rule: flowgate.Rule{ID: "r-scope", Action: "block"},
+	}}
+	// Enforce ở warn mode hạ Action về "warn" → block/reprompt debate → passthrough.
+	if got := classifyVibeGateWithDrift(workingmode.Vibe, flowgate.EnforceResult{
+		Action:     "warn",
+		Violations: violations,
+	}, 40); got != vibeGatePassthrough {
+		t.Fatalf("warn-mode block violations: got %d, want passthrough", got)
+	}
+	// Drift-routed debate (clean gate) không phụ thuộc gate action → vẫn debate.
+	if got := classifyVibeGateWithDrift(workingmode.Vibe, flowgate.EnforceResult{}, 95); got != vibeGateOwnerDebate {
+		t.Fatalf("drift-routed debate in warn mode: got %d, want owner debate", got)
+	}
+}

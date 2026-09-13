@@ -354,10 +354,11 @@ export function applyTimelineEvent(s: TimelineState, e: ProviderEventDTO): Parti
       });
 
     case "user_decision_card_requested":
-      // CP-62 P-3 (Task-345): render the structured escalation card. The
-      // answer channel is the chat prompt (chooseDecisionOption sends the
-      // option id), so no pendingQuestions entry is registered — the prose
-      // composer stays usable as the Q-1 fallback.
+      // CP-62 P-3 (Task-345/350): render the structured escalation card.
+      // The answer channel is chooseDecisionOption → POST agent-loop/continue
+      // (a parked run seals POST /turns with 409); no pendingQuestions entry
+      // is registered — the Q-1 prose fallback is the FlowAwaitingUserCard
+      // feedback box, not the composer (which stays blocked while parked).
       closeAssistant();
       timeline.push({ kind: "decision_card", id: e.id, card: e.input });
       return finalize(timeline);

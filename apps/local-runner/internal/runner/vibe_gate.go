@@ -35,7 +35,8 @@ func classifyVibeGate(mode string, result flowgate.EnforceResult) vibeGateKind {
 // mode != vibe is passthrough (the Task-335 ladder owns dev). In vibe:
 // requirement-class wins first (user-only, SS-18 BR-4); drift >= 80 escalates
 // to the owner debate even on a clean gate; other block/reprompt violations
-// keep today's owner-debate semantics; warn-only results pass through.
+// keep today's owner-debate semantics; warn-gated results pass through
+// (Enforce's warn downgrade is honored — Task-352 re-review).
 // Task-351: the live classifier CONSUMES flowgate.ResolvePrecedence (SD-20 §7)
 // instead of duplicating the precedence — one semantics, one place to change.
 func classifyVibeGateWithDrift(mode string, result flowgate.EnforceResult, driftScore int) vibeGateKind {
@@ -46,6 +47,14 @@ func classifyVibeGateWithDrift(mode string, result flowgate.EnforceResult, drift
 	// per-run drift state (structural no-re-route), so the drift-routed
 	// debate is the only escalation surface.
 	res := flowgate.ResolvePrecedence(result.Violations, mode, driftScore, false)
+	// Warn-mode gate (Task-352 re-review): Enforce downgrades block/reprompt to
+	// "warn" under a warn-configured gate — the pre-unification live behavior
+	// passed those through, so only a VIOLATION-routed debate downgrades back
+	// to passthrough. Drift-routed debates (DriftRouted) are independent of
+	// the gate action and still escalate.
+	if res.Route == flowgate.PrecedenceRouteOwnerDebate && !res.DriftRouted && result.Action == "warn" {
+		return vibeGatePassthrough
+	}
 	switch res.Route {
 	case flowgate.PrecedenceRouteUser:
 		return vibeGateRequirement
