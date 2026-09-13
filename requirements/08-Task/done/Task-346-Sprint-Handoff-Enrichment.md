@@ -49,6 +49,16 @@ Sprint sau đọc handoff thấy đủ: quyết định nào user/owner đã ch�
 
 ## 4. Exact Change
 
+### 4.0 Before → After
+
+| | Before (hiện trạng trước Task-346) | After (sau Task-346) |
+|---|---|---|
+| **`decisions` trong handoff** | Chỉ lắp từ verdict rows của reviewer ("AC-1: pass"); lựa chọn của user trên decision card **không được consume** | Thêm entry từ card: `what` = "user chose opt_session — <question>", `why` = label + consequence của lựa chọn (hoặc detail / "recommended: …" khi user trả lời prose), `alternatives` = các option còn lại |
+| **`weakened_tests`** | Có trong schema nhưng **không bao giờ được điền** — sprint sau thấy test bị sửa nhưng không biết đã được phép | Oracle guard (đã chạy sẵn ở 2 điểm gate_hook) surface `TamperedTestPaths` lên run state → handoff ghi `WeakenedTest{path, justification}` — sprint sau biết test nào bị đụng trong sprint trước và vì sao |
+| **`open`** | Chỗ trống trong schema | Giữ nguyên — chỗ trống **chủ đích**, không điền cho có (đúng plan) |
+| **Tương thích** | n/a | Schema KHÔNG đổi (tên field giữ nguyên CP-62 P-6); không có nguồn → field omitted, file **byte-identical** với output Task-342 |
+
+
 - `T-1` `gate_hook.go`: nơi build TurnResult (2 điểm đã có `oracle.Tampered`) → lưu `rs.lastTamperedTestPaths` (field additive trên interactiveRun) kèm detail.
 - `T-2` `interactive_service.go`: khi run có `decisionCard` và nhận resume/answer khớp option → `rs.decisionCardChosen = optionID`.
 - `T-3` `sprint_handoff.go` `emitSprintHandoff`: (a) `rs.decisionCard != nil` → 1 entry `decisions` (what = question, why = recommended + chosen nếu có, alternatives = labels còn lại); (b) `rs.lastTamperedTestPaths` → `WeakenedTest{Path, Justification}`.

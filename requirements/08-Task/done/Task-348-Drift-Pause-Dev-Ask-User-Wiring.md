@@ -50,6 +50,17 @@
 
 ## 4. Exact Change
 
+### 4.0 Before → After
+
+| | Before (hiện trạng trước Task-348) | After (sau Task-348) |
+|---|---|---|
+| **Drift ≥ 80 (dev mode)** | `ActionPauseForHuman` chỉ được **ghi nhận + log** (deferred Task-335 — sợ bắn event confirm khi chưa có backend sẽ kẹt modal); user **không bao giờ được hỏi** dù agent lạc đề nặng | Run bị **park thật**: loop status `blocked`, BlockReason `drift`, GateReason mang score + signals + step; emit event `drift_pause_required` (additive) — user thấy blocked card kèm lý do và được hỏi thật |
+| **Cách resume** | Không có — không có gì để resume | Qua kênh **parked-run feedback hiện có** (`POST /agent-loop/continue`) — đúng kênh gate và decision card dùng → không có endpoint mới, không thể strand client (mối lo của Task-335 được giải trọn vẹn) |
+| **Drift ≥ 80 (vibe mode)** | Log-only (và P-1 route debate ở tầng khác) | **Không bao giờ** hỏi user — `armDriftPause` guard mode ngay từ đầu, owner debate (P-1) tiếp tục sở hữu (SS-18 AC-7) |
+| **Ai bị park** | n/a | Flow child drift → park **parent hub** (hub điều khiển loop); chat run thường → park chính nó; idempotent khi đã park-drift (không duplicate event) |
+| **Lock order** | n/a | `armDriftPause` chạy **sau** `st.mu.Unlock()` — không bao giờ lấy `s.mu` khi đang giữ `st.mu` (lớp lỗi đã fix trong review CP-62); surface drift/gate `-race` xanh |
+
+
 - `T-1` Discovery: confirm backend (`ssLockGate` registration, `EventUserConfirmRequired` lifecycle, kênh trả lời client) — chốt điểm emit an toàn.
 - `T-2` `gate_hook.go` case `ActionPauseForHuman`: dev mode + backend ready → emit confirm (đóng gói drift score + signals + step để user hiểu vì sao bị hỏi); vibe mode → không emit (đường owner debate đã xử lý).
 - `T-3` Xử lý câu trả lời: user xác nhận → run tiếp tục (clear pending ladder state); user từ chối/không trả lời → hành vi theo cơ chế confirm hiện có (không tự resume).

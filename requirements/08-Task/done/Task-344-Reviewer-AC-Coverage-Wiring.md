@@ -50,6 +50,17 @@ Reviewer không thể "đóng dấu duyệt bừa" — nộp `submit_review_outc
 
 ## 4. Exact Change
 
+### 4.0 Before → After
+
+| | Before (hiện trạng trước Task-344) | After (sau Task-344) |
+|---|---|---|
+| **Kiểm tra độ phủ AC** | `ValidateReviewOutcomeVerdicts` + `ExtractACIDs` có sẵn (Task-338) nhưng **không có call site production nào gọi** — reviewer nộp thiếu AC vẫn đi qua | Mọi `submit_review_outcome` (claude MCP, codex, grok — chung 1 điểm `turnBridge.SubmitFlowControl`) bị check coverage trước khi xử lý |
+| **Khi thiếu AC** | Accept im lặng → rubber-stamp ("đóng dấu duyệt bừa") | Tool result trả lỗi **đặt tên đích danh AC thiếu** ("missing verdicts for required ACs: AC-2") — chính là reprompt in-turn, model tự nộp lại |
+| **Nguồn expectedACs** | Không có — chưa ai biết task doc governing nằm đâu | 4 nguồn deterministic, 0 token LLM: vibe short task name (định vị file mới nhất dưới `requirements/`) → vibe plan entry (hub inline) → INPUT pathTemplate binding của node (glob-newest) → OUTPUT template của node writer anh em (reviewer không có binding riêng) |
+| **Ai bị enforce** | n/a | Reviewer `read_only` bị chặn cả khi nộp 0 verdict; hub (posture "") chỉ bị chặn khi ĐÃ nộp rows mà thiếu; owner `verdict_only` **không bao giờ** bị enforce (owner trả lời tranh luận, không chấm AC) |
+| **Flow tự do / legacy** | n/a | Không resolve được doc → no-op — byte-identical như trước |
+
+
 - `T-1` File mới `internal/runner/review_ac_coverage.go`:
   - `flowNodeFor(rs)` — resolve node của child submit từ `parent.activeFlowNodes` (mirror matching của `flowNodePostureFor`: stepID/label; trả node, không đổi hàm cũ).
   - `expectedReviewACs(s, rs) []string` — nguồn theo thứ tự: `rs.vibeTaskName` (join `rs.workspaceCwd`, abs-aware) → node INPUT binding `pathTemplate` → glob-newest (`{{idx}}`→`\d+`, `{{slug}}`→`[a-z0-9-]+`, pick ModTime mới nhất) → nil. I/O ngoài `s.mu`; cache dưới `s.mu`.

@@ -50,6 +50,16 @@ Khi agent gọi `request_user_decision`, user trên desktop app và TUI thấy t
 
 ## 4. Exact Change
 
+### 4.0 Before → After
+
+| | Before (hiện trạng trước Task-345) | After (sau Task-345) |
+|---|---|---|
+| **Hỏi user** | Event `user_decision_card_requested` chỉ là payload JSON — **không client nào render** (Task-339 chủ tường minh không đụng renderer); user chỉ nhận prose | Desktop app + TUI render **thẻ lựa chọn thật**: question, options dạng nút/dòng đánh số, `consequence` dưới mỗi lựa chọn, `recommended` highlight, `evidence` file:line |
+| **Cách trả lời** | User gõ văn xuôi tự do ("ừ chọn cái đầu nhưng thêm refresh token") → runner khó map về option | 1 chạm nút (desktop) / gõ số-tên (TUI) → gửi **`option_id`** qua kênh parked-run feedback (`/agent-loop/continue`) — máy đọc được |
+| **Fallback** | n/a | Q-1 giữ nguyên: payload hỏng → prose card; user vẫn gõ tự do được (desktop composer không khóa, TUI text lạ gửi nguyên văn) |
+| **Phạm vi** | n/a | admin-web **không** đụng (Operator chốt); runner không đổi gì (client-only) |
+
+
 - `T-1` Discovery: trace `user_decision_card_requested` từ ProviderEvent stream tới desktop app (`apps/desktop-flowpilot`) và TUI — tìm chỗ render event gate/ask_user hiện có để đặt card cạnh đó.
 - `T-2` Desktop app: component DecisionCard (question, options buttons, recommended highlight, consequence, evidence, detail) + click → gửi `option_id` qua kênh answer/resume hiện có.
 - `T-3` TUI: render options đánh số + chấp nhận selection + gửi `option_id` cùng kênh.

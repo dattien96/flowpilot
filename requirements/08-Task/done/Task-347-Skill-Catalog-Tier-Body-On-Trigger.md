@@ -49,6 +49,16 @@ Prompt nền của agent không còn gánh body của mọi skill (hàng ngàn t
 
 ## 4. Exact Change
 
+### 4.0 Before → After
+
+| | Before (hiện trạng trước Task-347) | After (sau Task-347) |
+|---|---|---|
+| **One-shot path** (`injectSkillContent` — PromptExecution + 2 seam `promptPrep` của claude/codex) | Nhồi **TOÀN BỘ body** SKILL.md vào prompt: `### Skill: <name>```markdown<body>``` ` — token prompt **scale theo kích thước skill file** | Chỉ inject **pointer block**: mỗi skill 1 dòng `- /<name> → <path>` + `> <description từ frontmatter>` — token nền cố định, không phụ thuộc body |
+| **Chat path** | Đã pointer-only từ Task-260 — hai path lệch chuẩn nhau | Hai path **cùng một block format** ("## Selected Skills") — injectSkillContent delegate thẳng vào injectSelectedSkills |
+| **Body nạp khi nào** | Luôn luôn, ngay cả khi không cần | Provider harness trigger skill **native** (skill đã install ở `.agents/skills/`), hoặc agent chủ động **Read** body từ pointer path khi cần — đúng thiết kế CP-62 P-5 "body nạp theo trigger" |
+| **Test cũ** | Không có test nào pin body injection ("### Skill:"/"Included Skills" vắng bóng trong test tree) → R1 sạch | 3 test mới pin: pointer có description + KHÔNG có body; nhiều skill + id lạ; không skill → byte-identical |
+
+
 - `T-1` Discovery + đo: xác định điểm gắn skill body vào prompt hiện tại (skillpack/prompt assembly), ghi baseline token vào `prompt_context_audit`.
 - `T-2` Skill catalog builder: đọc frontmatter (name, description) của skill pack → 1 section catalog (mỗi skill 1 dòng), thay chỗ gắn body.
 - `T-3` Trigger loader: khi trigger khớp (CP-23 machinery) → nạp body/compact card của đúng skill đó one-shot vào pack.
