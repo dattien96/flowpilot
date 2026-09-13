@@ -327,8 +327,10 @@ func (a *grokAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Turn
 	// Read-only postures (scan/plan) must ALSO route every tool through
 	// RequestApproval so the read-only policy approves reads / denies writes —
 	// so they clear the yoloModes auto-approve flag regardless of the profile's
-	// YOLO flag.
-	a.yoloModes[sessionID] = req.YoloMode && !req.ForceShellBridge && !IsReadOnlyChatPosture(req.ChatPosture)
+	// YOLO flag. Gated flow-node postures (CP-62 P-4, Task-349) do the same —
+	// bypassPermissions would never emit session/request_permission, leaving
+	// read_only/verdict_only nodes unenforced.
+	a.yoloModes[sessionID] = req.YoloMode && !req.ForceShellBridge && !IsReadOnlyChatPosture(req.ChatPosture) && !IsGatedFlowNodePosture(req.FlowNodePosture)
 	// BUG-342: permission-deny tracking resets per new prompt/turn.
 	delete(a.permissionDenied, sessionID)
 	a.mu.Unlock()

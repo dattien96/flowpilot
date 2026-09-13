@@ -113,8 +113,18 @@ func evaluateVerdictOnlyApproval(details ApprovalDetails) string {
 
 // isVerdictToolCall reports whether the approval is for the declared verdict
 // face (Reason carries the tool name on the claude MCP bridge; Command may
-// carry it on other bridges).
+// carry it on other bridges). Wrapped MCP names count: providers surface the
+// runner-hosted MCP face as `mcp__flowpilot__submit_review_outcome` or
+// `flowpilot__submit_review_outcome` (the same wrapping BUG-344 documents for
+// ask_user), so the match is exact OR `__<tool>`-suffixed.
 func isVerdictToolCall(details ApprovalDetails) bool {
-	return strings.TrimSpace(details.Reason) == verdictToolName ||
-		strings.TrimSpace(details.Command) == verdictToolName
+	for _, name := range []string{strings.TrimSpace(details.Reason), strings.TrimSpace(details.Command)} {
+		if name == "" {
+			continue
+		}
+		if name == verdictToolName || strings.HasSuffix(name, "__"+verdictToolName) {
+			return true
+		}
+	}
+	return false
 }

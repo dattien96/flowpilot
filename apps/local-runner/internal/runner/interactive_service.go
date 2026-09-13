@@ -1411,6 +1411,10 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 		if raw, ok := in.Payload["decision_card"]; ok {
 			if m, ok := raw.(map[string]any); ok {
 				if card, cardErr := parseUserDecisionCard(m); cardErr == nil {
+					// Task-350: a NEW card invalidates a previous card's
+					// choice — keeping the stale chosen id would pair it
+					// with the new question in the sprint handoff (CP-49).
+					rs.decisionCardChosen = ""
 					rs.decisionCard = &card
 					s.emitLocked(rs, ProviderEvent{
 						Type:           EventUserDecisionCardRequested,
@@ -7353,19 +7357,24 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	// Task-260: auto-mention safe-fix-contract on Chat Plan/Code (pointer only, not full content).
 	mergedSkills := mergeChatSafeFixContractSkills(posture, rs.runKind, rs.flowEngineDriven, in.SelectedSkills)
 	req := TurnRequest{
-		RunID:                    rs.id,
-		StepID:                   in.StepID,
-		ProjectID:                rs.projectID,
-		ProviderSessionID:        providerSessionID,
-		ProviderAccountID:        rs.providerAccountID,
-		ProviderTurnID:           turnID,
-		Prompt:                   providerPrompt,
-		ModelName:                model,
-		SelectedSkills:           mergedSkills,
-		YoloMode:                 yolo,
-		ForceShellBridge:         forceShellBridge,
-		ReasoningEffort:          effort,
-		ChatPosture:              posture,
+		RunID:             rs.id,
+		StepID:            in.StepID,
+		ProjectID:         rs.projectID,
+		ProviderSessionID: providerSessionID,
+		ProviderAccountID: rs.providerAccountID,
+		ProviderTurnID:    turnID,
+		Prompt:            providerPrompt,
+		ModelName:         model,
+		SelectedSkills:    mergedSkills,
+		YoloMode:          yolo,
+		ForceShellBridge:  forceShellBridge,
+		ReasoningEffort:   effort,
+		ChatPosture:       posture,
+		// CP-62 P-4 (Task-349): carry the declared flow-node posture so the
+		// adapters force gated provider modes — bypass modes never emit
+		// permission requests, which left read_only/verdict_only nodes
+		// structurally unenforced.
+		FlowNodePosture:          s.flowNodePostureFor(rs),
 		Cwd:                      rs.workspaceCwd,
 		Scenario:                 scenario,
 		Attachments:              in.Attachments,
