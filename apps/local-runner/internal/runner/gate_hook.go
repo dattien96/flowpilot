@@ -303,6 +303,9 @@ func (s *InteractiveService) runFlowGateAtEpoch(
 		HeadRetirePending:           detectRetirePending(cwd, knownFeatureKeys),
 		TamperedTestPaths:           append([]string(nil), oracle.Tampered...),
 	}
+	// Task-346: surface the tampered pre-existing test files on run state so
+	// the sprint handoff can record them as weakened_tests.
+	s.setTamperedTestPaths(rs, oracle.Tampered)
 	// Task-331 (CP-47 P-3): DOD completion signals from Task-*/BUG-* docs
 	// written this turn, BEFORE Evaluate runs so r-dod-complete can fire.
 	applyDodSignals(&tr)
@@ -1142,6 +1145,7 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 			Regressed: regressedTests,
 		}
 		tr.TamperedTestPaths = append([]string(nil), oracle.Tampered...)
+		s.setTamperedTestPaths(rs, oracle.Tampered)
 	}
 	// Task-335 (CP-23 Phase 2): drift telemetry on the child path — placed
 	// AFTER the optional oracle block so tr.Tests is populated (mirrors the

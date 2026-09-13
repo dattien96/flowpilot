@@ -85,6 +85,13 @@ func (s *InteractiveService) emitSprintHandoff(rs *interactiveRun) string {
 	s.mu.Lock()
 	sprint, task := rs.vibeSprintIndex, rs.vibeTaskName
 	verdicts := append([]VerdictRow(nil), rs.lastFlowVerdicts...)
+	var card *UserDecisionCard
+	if rs.decisionCard != nil {
+		cardCopy := *rs.decisionCard
+		card = &cardCopy
+	}
+	chosen := strings.TrimSpace(rs.decisionCardChosen)
+	tampered := append([]string(nil), rs.lastTamperedTestPaths...)
 	cwd := rs.workspaceCwd
 	s.mu.Unlock()
 
@@ -97,6 +104,37 @@ func (s *InteractiveService) emitSprintHandoff(rs *interactiveRun) string {
 			handoff.Risks = append(handoff.Risks, dec.What)
 		}
 		handoff.Decisions = append(handoff.Decisions, dec)
+	}
+	// Task-346: the parked decision card (Task-339/345) is a verified decision
+	// source — the question plus the human's choice, or the runner's
+	// recommendation when the answer was prose. Remaining options become the
+	// alternatives. CP-49 hard ceiling: only what actually happened.
+	if card != nil && len(card.Options) > 0 {
+		why := strings.TrimSpace(card.Detail)
+		var alternatives []string
+		for _, opt := range card.Options {
+			if chosen != "" && strings.EqualFold(strings.TrimSpace(opt.ID), chosen) {
+				why = opt.Label + " — " + opt.Consequence
+				continue
+			}
+			alternatives = append(alternatives, opt.Label)
+		}
+		if why == "" {
+			why = "recommended: " + strings.TrimSpace(card.Recommended)
+		}
+		what := card.Question
+		if chosen != "" {
+			what = "user chose " + chosen + " — " + card.Question
+		}
+		handoff.Decisions = append(handoff.Decisions, SprintDecision{What: what, Why: why, Alternatives: alternatives})
+	}
+	// Task-346: oracle-guard tampered test files record as weakened_tests so
+	// the next sprint knows which pre-existing tests were touched and why.
+	for _, p := range tampered {
+		handoff.WeakenedTests = append(handoff.WeakenedTests, WeakenedTest{
+			Path:          p,
+			Justification: "oracle guard flagged this pre-existing test file as changed during the sprint",
+		})
 	}
 	path := sprintHandoffPath(cwd, sprint)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -129,4 +167,38 @@ func previousSprintHandoffContext(workspaceCwd string, currentSprintIndex int) s
 	}
 	return "[Sprint Handoff — verified context from the previous sprint (sprint " +
 		fmt.Sprint(currentSprintIndex-1) + ")]\n" + content
+}
+
+// setTamperedTestPaths records the oracle guard's tampered pre-existing test
+// files on run state (Task-346): the sprint handoff's weakened_tests source.
+func (s *InteractiveService) setTamperedTestPaths(rs *interactiveRun, paths []string) {
+	if s == nil || rs == nil || len(paths) == 0 {
+		return
+	}
+	s.mu.Lock()
+	rs.lastTamperedTestPaths = append([]string(nil), paths...)
+	s.mu.Unlock()
+}
+
+// captureDecisionChoice records the human's choice on a parked decision card
+// (Task-346): continue feedback matching an option id or label
+// (case-insensitive) stamps the choice for the sprint handoff; prose answers
+// leave the choice empty — the fallback never guesses.
+func (s *InteractiveService) captureDecisionChoice(runID, feedback string) {
+	feedback = strings.TrimSpace(feedback)
+	if feedback == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rs := s.runs[runID]
+	if rs == nil || rs.decisionCard == nil {
+		return
+	}
+	for _, opt := range rs.decisionCard.Options {
+		if strings.EqualFold(feedback, strings.TrimSpace(opt.ID)) || strings.EqualFold(feedback, strings.TrimSpace(opt.Label)) {
+			rs.decisionCardChosen = strings.TrimSpace(opt.ID)
+			return
+		}
+	}
 }

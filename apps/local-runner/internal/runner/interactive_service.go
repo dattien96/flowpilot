@@ -195,6 +195,14 @@ type interactiveRun struct {
 	// control — additive to the prose GateReason (Q-1 wrap-around: the prose
 	// card stays the fallback; this only enriches the client render).
 	decisionCard *UserDecisionCard
+	// decisionCardChosen is the option id the human picked for the parked
+	// decision card (Task-346), captured from the continue feedback; empty
+	// when the answer was prose (never guessed).
+	decisionCardChosen string
+	// lastTamperedTestPaths are the oracle guard's tampered pre-existing test
+	// files from the most recent gate evaluation (Task-346): the sprint
+	// handoff's weakened_tests source.
+	lastTamperedTestPaths []string
 	// expectedACsCache holds the per-child-run expected AC set resolved from
 	// the governing task artifact (Task-344): resolved once per run — the doc
 	// set does not change mid-review — so repeated submits skip the file I/O.

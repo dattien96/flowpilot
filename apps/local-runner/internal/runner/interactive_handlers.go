@@ -1654,6 +1654,9 @@ func (s *InteractiveService) handleContinueFlow(w http.ResponseWriter, r *http.R
 	}
 	// Task-241: opportunistically check stalls before resume (lazy Q-2).
 	_ = s.checkAndBlockStalledMembers(runID)
+	// Task-346: record the human's decision-card choice (option id/label
+	// match) before the feedback resumes the run.
+	s.captureDecisionChoice(runID, body.Feedback)
 	snap, err := s.resumeFlowWithFeedback(runID, body.Feedback)
 	if err != nil {
 		writeInteractiveError(w, newAPIErr(http.StatusUnprocessableEntity, "continue_flow_failed", err.Error()))
