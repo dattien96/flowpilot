@@ -3041,21 +3041,29 @@ func (s *InteractiveService) recordDriftTelemetry(rs *interactiveRun, turnID str
 			st.pendingNarrow = true
 		}
 	case driftdetect.ActionPauseForHuman:
-		// Deferred wiring (Task-335): the CP-60-style user-confirm pause
-		// event (EventUserConfirmRequired) is bound to the ss-lock confirm
-		// backend — emitting it without a registered ssLockGate would strand
-		// the client modal on an unanswerable confirm endpoint. The action
-		// stays recorded on the persisted event
-		// (correction_action=pause_for_human) and in the run log; wiring it
-		// to a dedicated non-bypassable confirm flow is the follow-up
-		// integration (noted in the Task-335 completion report).
+		// Task-348: the run-level pause is armed AFTER st.mu.Unlock (see
+		// pauseRequested below) — here the action only stays recorded on the
+		// persisted event (correction_action=pause_for_human) and in the run
+		// log.
 	}
+	// Task-348: the pause leg must run OUTSIDE st.mu — arming the drift pause
+	// mutates run/loop state (s.mu via mutateLoop) and taking s.mu while
+	// holding st.mu would invert the documented lock order.
+	pauseRequested := event.CorrectionAction == driftdetect.ActionPauseForHuman
 	st.mu.Unlock()
 
 	log.Printf("[drift] run=%s turn=%s score=%d signals=%v action=%s",
 		rs.id, event.TurnID, event.DriftScore, event.TriggeredSignals, event.CorrectionAction)
 	if event.DriftScore > 0 || len(event.TriggeredSignals) > 0 {
 		persistDriftEvent(rs.workspaceCwd, event)
+	}
+	if pauseRequested {
+		// CP-23 ladder 80+ (Task-348): in dev mode the run parks with a
+		// drift block reason so the human is actually asked (blocked card +
+		// drift_pause_required event; resume through the normal continue
+		// channel). Vibe keeps the P-1 owner-debate routing — never a user
+		// card (SS-18 AC-7).
+		s.armDriftPause(rs, event)
 	}
 }
 
