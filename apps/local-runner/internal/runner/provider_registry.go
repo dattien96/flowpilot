@@ -65,6 +65,13 @@ type TurnRequest struct {
 	// every tool reaches the bridge, where the read-only policy auto-approves
 	// reads and auto-denies writes (never asks).
 	ChatPosture string
+	// FlowNodePosture is the CP-62 P-4 (Task-340/349) posture declared on the
+	// flow node this child turn executes ("read_only" | "verdict_only", empty
+	// = standard). Like scan/plan chat postures, a gated flow-node posture
+	// must NEVER run under provider bypass modes: the adapters force gated
+	// permission modes and clear runner auto-approve so every tool call
+	// reaches turnBridge.RequestApproval, where the posture matrix decides.
+	FlowNodePosture string
 	// Cwd is the run's active workspace directory (04-06). The adapter binds the
 	// provider thread to this cwd; it takes precedence over any adapter default.
 	Cwd string

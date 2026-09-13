@@ -51,7 +51,21 @@ func ValidateFlowContextSources(def agentpack.FlowDefinition) error {
 			}
 		}
 	}
+	// CP-62 P-5 (Task-341): profile source ids must resolve, and node profile
+	// refs must exist — fail-fast at flow load, the same contract as sources.
+	for name, profile := range def.ContextProfiles {
+		for _, id := range profile.CandidateSources {
+			if _, err := registry.Resolve(id); err != nil {
+				return fmt.Errorf("flow %q context profile %q declares unknown source %q: %w", def.ID, name, id, err)
+			}
+		}
+	}
 	for _, node := range def.Nodes {
+		if name := strings.TrimSpace(node.ContextProfile); name != "" {
+			if _, ok := def.ContextProfiles[name]; !ok {
+				return fmt.Errorf("flow %q node %q declares unknown context profile %q", def.ID, node.ID, name)
+			}
+		}
 		for _, id := range node.ContextSources {
 			if _, err := registry.Resolve(id); err != nil {
 				return fmt.Errorf("flow %q node %q declares unknown context source %q: %w", def.ID, node.ID, id, err)
@@ -131,6 +145,14 @@ func resolveEnabledContextSourceIDs(def agentpack.FlowDefinition, node agentpack
 	if ids, ok := resolveArtifactBoundContextSources(node); ok {
 		return ids
 	}
+	// CP-62 P-5 (Task-341): a declared context profile is the candidate-set
+	// tier between the framework's artifact bindings and the node's own
+	// sources. A profile without candidate sources falls through unchanged.
+	if name := strings.TrimSpace(node.ContextProfile); name != "" {
+		if profile, ok := def.ContextProfiles[name]; ok && len(profile.CandidateSources) > 0 {
+			return profile.CandidateSources
+		}
+	}
 	if len(node.ContextSources) > 0 {
 		return node.ContextSources
 	}
@@ -142,6 +164,7 @@ func resolveEnabledContextSourceIDs(def agentpack.FlowDefinition, node agentpack
 // can validate/enable it via `contexts.<name>.sources`, Task-194) but is not
 // part of defaultContextSourceIDs — it only runs when a flow opts in.
 func registerBuiltinContextSources(r *ContextSourceRegistry) {
+	mustRegisterContextSource(r, &conventionsSource{priority: 0}) // CP-62 P-7: repo-as-config, packs first
 	mustRegisterContextSource(r, &canonicalHeadSource{priority: 1}) // Task-244: before feature.history
 	mustRegisterContextSource(r, &featureHistorySource{priority: 2})
 	mustRegisterContextSource(r, &chatSummarySource{priority: 5})

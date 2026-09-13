@@ -516,6 +516,8 @@ interface AppState {
   sendPrompt(prompt: string, skills?: string[], attachments?: PromptAttachment[]): Promise<void>;
   approve(approvalId: string, decision: string, remember?: boolean): Promise<void>;
   answer(questionId: string, choice: string | string[]): Promise<void>;
+  /** CP-62 P-3 (Task-345): answer a structured escalation card by sending the option id as the next prompt. */
+  chooseDecisionOption(itemId: string, optionId: string): Promise<void>;
   stop(): Promise<void>;
   reconnect(): Promise<void>;
   loadRunHistory(): Promise<void>;
@@ -2023,6 +2025,37 @@ export const useStore = create<AppState>((set, get) => ({
           ...s.timeline,
           { kind: "system", id: `err-answer-${s.timeline.length}`, text: runErrorMessage(err), tone: "error" },
         ],
+      }));
+    }
+  },
+
+  async chooseDecisionOption(itemId, optionId) {
+    // CP-62 P-3 (Task-345/350): a card-parked run is SEALED against new
+    // turns (POST /turns answers 409 flow_awaiting_user), so the answer MUST
+    // go through the parked-run feedback channel — POST .../agent-loop/continue
+    // — exactly like the TUI and FlowAwaitingUserCard. The runner matches the
+    // option id back to the card there (captureDecisionChoice, Task-346) and
+    // records it in the sprint handoff. Q-1 prose fallback = the
+    // FlowAwaitingUserCard feedback box (the composer stays blocked while the
+    // run is parked), not this card.
+    set((s) => ({
+      timeline: s.timeline.map((it) =>
+        it.kind === "decision_card" && it.id === itemId ? { ...it, chosenOptionId: optionId } : it,
+      ),
+    }));
+    try {
+      await get().continueFlow(optionId);
+    } catch (err) {
+      // BUG-172-style rollback: the optimistic "answered" state must not
+      // survive a failed resume — the card stays actionable.
+      // eslint-disable-next-line no-console
+      console.error("[FlowPilot] decision option failed:", err);
+      set((s) => ({
+        timeline: s.timeline.map((it) =>
+          it.kind === "decision_card" && it.id === itemId && it.chosenOptionId === optionId
+            ? { ...it, chosenOptionId: undefined }
+            : it,
+        ),
       }));
     }
   },

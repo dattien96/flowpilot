@@ -780,11 +780,36 @@ type ReviewIssue struct {
 	Resolution string `json:"resolution,omitempty"`
 }
 
+// EvidenceItem is one file:line citation backing a VerdictRow (CP-62 P-2,
+// Task-338). Path is workspace-relative; Line is 1-based; Excerpt quotes the
+// cited source region.
+type EvidenceItem struct {
+	Path    string `json:"path"`
+	Line    int    `json:"line,omitempty"`
+	Excerpt string `json:"excerpt,omitempty"`
+}
+
+// VerdictRow is one per-acceptance-criterion verdict (CP-62 P-2, Task-338).
+// Verdict enum: pass | fail | blocked.
+type VerdictRow struct {
+	ACID     string         `json:"ac_id"`
+	Verdict  string         `json:"verdict"`
+	Evidence []EvidenceItem `json:"evidence,omitempty"`
+	Note     string         `json:"note,omitempty"`
+}
+
+var verdictEnumValues = map[string]bool{"pass": true, "fail": true, "blocked": true}
+
 // ReviewOutcomeInput is the schema for the submit_review_outcome tool call.
 type ReviewOutcomeInput struct {
 	Status   string        `json:"status"` // "approved"|"changes_requested"|"blocked"
 	Issues   []ReviewIssue `json:"issues,omitempty"`
 	Feedback string        `json:"feedback,omitempty"`
+	// Verdicts are the per-AC verdict rows (CP-62 P-2, Task-338). Optional at
+	// the parse layer (legacy callers omit them); coverage against the node's
+	// AC list is enforced by ValidateReviewOutcomeVerdicts where the expected
+	// set is known.
+	Verdicts []VerdictRow `json:"verdicts,omitempty"`
 }
 
 // ReviewOutcomeResult is the tool call result: mirrors FlowControlResult with open count.
@@ -848,6 +873,61 @@ func parseReviewOutcomeInput(args map[string]any) (ReviewOutcomeInput, error) {
 			}
 		}
 	}
+	// CP-62 P-2 (Task-338): shape-validate verdict rows at the ONE shared
+	// parse point — every provider path (claude MCP, codex, board handler)
+	// funnels through here, so a schema violation is a tool error for all
+	// providers alike (cross-provider Case 1). An invalid row rejects the
+	// whole call: the reviewer retries in-turn (the reprompt), and the CP-61
+	// hub-done gate is the fail-closed backstop if it never succeeds.
+	// Task-352 (review finding): a PRESENT-but-malformed verdicts arg (not an
+	// array) must be rejected, not silently ignored — a silent drop would
+	// feed the empty-rows passthrough instead of the in-turn reprompt.
+	if rawAny, present := args["verdicts"]; present {
+		raw, ok := rawAny.([]any)
+		if !ok {
+			return in, fmt.Errorf("submit_review_outcome: verdicts must be an array of per-AC rows")
+		}
+		for _, item := range raw {
+			m, ok := item.(map[string]any)
+			if !ok {
+				return in, fmt.Errorf("submit_review_outcome: each verdicts entry must be an object")
+			}
+			row := VerdictRow{}
+			row.ACID, _ = m["ac_id"].(string)
+			if strings.TrimSpace(row.ACID) == "" {
+				return in, fmt.Errorf("submit_review_outcome: verdicts[].ac_id is required")
+			}
+			row.Verdict, _ = m["verdict"].(string)
+			if !verdictEnumValues[row.Verdict] {
+				return in, fmt.Errorf("submit_review_outcome: verdicts[].verdict must be pass|fail|blocked, got %q", row.Verdict)
+			}
+			if rawEvidence, ok := m["evidence"].([]any); ok {
+				for _, ev := range rawEvidence {
+					em, ok := ev.(map[string]any)
+					if !ok {
+						return in, fmt.Errorf("submit_review_outcome: verdicts[].evidence entries must be objects")
+					}
+					item := EvidenceItem{}
+					item.Path, _ = em["path"].(string)
+					if strings.TrimSpace(item.Path) == "" {
+						return in, fmt.Errorf("submit_review_outcome: verdicts[].evidence.path is required")
+					}
+					// Providers decode JSON numbers as float64; Go-constructed
+					// arg maps (board/tests) carry int. Accept both.
+					switch line := em["line"].(type) {
+					case float64:
+						item.Line = int(line)
+					case int:
+						item.Line = line
+					}
+					item.Excerpt, _ = em["excerpt"].(string)
+					row.Evidence = append(row.Evidence, item)
+				}
+			}
+			row.Note, _ = m["note"].(string)
+			in.Verdicts = append(in.Verdicts, row)
+		}
+	}
 	return in, nil
 }
 
@@ -862,6 +942,9 @@ func reviewOutcomeToFlowControl(in ReviewOutcomeInput) (FlowControlInput, error)
 	payload := map[string]any{
 		"issues":   in.Issues,
 		"feedback": in.Feedback,
+		// CP-62 P-2 T-3: raw verdict rows ride the payload verbatim — the
+		// back-edge re-entry prompt receives the reviewer's rows unparaphrased.
+		"verdicts": in.Verdicts,
 	}
 	return FlowControlInput{
 		Status:              generic,

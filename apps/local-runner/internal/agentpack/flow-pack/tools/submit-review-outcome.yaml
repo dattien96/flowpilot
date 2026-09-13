@@ -17,6 +17,42 @@ input:
         - blocked
     feedback:
       type: string
+    # CP-62 P-2 (Task-338): per-AC machine-checkable verdict rows with
+    # file:line evidence. One row per AC listed in the artifact the reviewer
+    # node reads; coverage is enforced by runner ValidateReviewOutcomeVerdicts
+    # (a missing row is a tool error naming the missing ACs — in-turn
+    # reprompt; the CP-61 hub-done gate is the fail-closed backstop).
+    verdicts:
+      type: array
+      items:
+        type: object
+        required:
+          - ac_id
+          - verdict
+        properties:
+          ac_id:
+            type: string
+          verdict:
+            type: string
+            enum:
+              - pass
+              - fail
+              - blocked
+          evidence:
+            type: array
+            items:
+              type: object
+              required:
+                - path
+              properties:
+                path:
+                  type: string
+                line:
+                  type: integer
+                excerpt:
+                  type: string
+          note:
+            type: string
     issues:
       type: array
       items:
@@ -37,4 +73,7 @@ statusMap:
 payloadMap:
   issues: payload.issues
   feedback: summary
+  # CP-62 P-2 T-3: raw verdict rows ride the payload to the hub verbatim —
+  # the synthesizer forwards them on the back-edge without paraphrasing.
+  verdicts: payload.verdicts
 

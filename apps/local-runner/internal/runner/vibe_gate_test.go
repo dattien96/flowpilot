@@ -32,10 +32,14 @@ func TestClassifyVibeGate_RequirementWins(t *testing.T) {
 }
 
 func TestClassifyVibeGate_OwnerDebateOnReg(t *testing.T) {
+	// Task-352 round-3 fixture reshape (disclosed in CA-866, mirroring
+	// CA-863's sibling reshape): the shipped classifier routes on the
+	// per-violation Rule.Action that flowgate.Enforce always embeds — a
+	// violation with an empty Rule.Action cannot occur in production.
 	got := classifyVibeGate(workingmode.Vibe, flowgate.EnforceResult{
 		Action: "block",
 		Violations: []flowgate.Violation{{
-			Rule: flowgate.Rule{ID: "r-reg"},
+			Rule: flowgate.Rule{ID: "r-reg", Action: "block"},
 		}},
 	})
 	if got != vibeGateOwnerDebate {

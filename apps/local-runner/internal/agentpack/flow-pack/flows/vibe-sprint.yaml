@@ -16,6 +16,18 @@ policy:
   extendMax: 2
 tools:
   - tools/vibe-requirement-outcome.yaml
+# CP-62 P-5 (Task-341): vibe-sprint profiles — tdd/coder see the SS slice +
+# dependence; the previous sprint's handoff (P-6) rides the pack when present.
+contextProfiles:
+  scout:
+    candidateSources: [conventions, canonical.head, feature.history]
+    maxTokens: 6000
+  coder:
+    candidateSources: [conventions, canonical.head, change.contract, source.dependence, source.excerpt]
+    maxTokens: 24000
+  tdd:
+    candidateSources: [conventions, canonical.head, change.contract, source.excerpt]
+    maxTokens: 12000
 acceptance_nodes:
   - validate
   - synthesis
@@ -26,6 +38,9 @@ nodes:
     lifecycle: once
     behavior: agent.delegate
     agent: agents/contract-planner.md
+    # CP-62 P-4 (Task-340): scout is read-only (BUG-344 classifier).
+    posture: read_only
+    contextProfile: scout
   - id: preflight_contract_freeze
     run: inline
     lifecycle: once
@@ -41,6 +56,7 @@ nodes:
     agent: agents/tester.md
     promptTemplate: prompts/test-signatures.md
     join: all
+    contextProfile: tdd
     artifactBindings:
       - direction: output
         slotName: tdd_signatures
@@ -57,6 +73,7 @@ nodes:
     agent: agents/coder.md
     promptTemplate: prompts/implement-complete-tests.md
     join: all
+    contextProfile: coder
   - id: validate
     run: inline
     lifecycle: once

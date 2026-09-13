@@ -679,3 +679,32 @@ test("re-applying the same flow_audit_draft does not duplicate the card (BUG-243
   const cards = twice.timeline.filter((it) => it.kind === "system" && it.id === "evt-audit");
   assert.equal(cards.length, 1, "re-streamed flow_audit_draft must not duplicate the card");
 });
+
+// CP-62 P-3 (Task-345): user_decision_card_requested renders the structured
+// escalation card and unlocks the composer (waiting_question semantics).
+test("user_decision_card_requested pushes a decision_card timeline item", () => {
+  const state = thinkingState([
+    { kind: "prompt", id: "prompt-1", text: "Fix it" },
+    { kind: "assistant", id: "assistant-1", text: "Working...", finalized: false },
+  ]);
+
+  const next = applyTimelineEvent(state, baseEvent({
+    type: "user_decision_card_requested",
+    input: {
+      question: "JWT or Session?",
+      detail: "Distributed system.",
+      recommended: "opt_jwt",
+      options: [
+        { id: "opt_jwt", label: "Stateless JWT", consequence: "No Redis dependency." },
+        { id: "opt_session", label: "Redis Session", consequence: "Instant revoke." },
+      ],
+      evidence: [{ path: "docs/arch.md", line: 45 }],
+    },
+  } as unknown as Partial<ProviderEventDTO>));
+
+  const card = next.timeline?.find((it) => it.kind === "decision_card");
+  assert.ok(card && card.kind === "decision_card");
+  assert.equal(card.card.question, "JWT or Session?");
+  assert.equal(card.card.recommended, "opt_jwt");
+  assert.equal(next.status, "waiting_question");
+});

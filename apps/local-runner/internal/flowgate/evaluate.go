@@ -2,6 +2,7 @@ package flowgate
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -236,8 +237,236 @@ func checkRule(rule Rule, tr TurnResult) *Violation {
 			}
 			return &Violation{Rule: rule, Detail: detail}
 		}
+
+	case "task_or_bug_doc_missing_dod":
+		// Task-330 (CP-47 P-2): every Task-*/BUG-*.md the AI wrote this turn
+		// must carry a Definition of Done section with at least one checkbox.
+		// Same WrittenPaths reasoning as "code_changed" above — only files the
+		// AI actually wrote trigger the check. MissingDodDocs reads each doc
+		// from disk under WorkspaceCwd (Task-223 pattern) and skips unreadable
+		// files gracefully, so a deleted/renamed doc never panics the gate.
+		missing := MissingDodDocs(tr.WorkspaceCwd, tr.WrittenPaths)
+		if len(missing) > 0 {
+			return &Violation{
+				Rule:   rule,
+				Detail: "Task/BUG document(s) without a Definition of Done checklist: " + strings.Join(missing, ", ") + " — add a '## Definition of Done' section with at least one '- [ ]' acceptance checkbox",
+			}
+		}
+
+	case "marked_done_with_open_dod":
+		// Task-331 (CP-47 P-4): block-or-explained (mirrors the r-tests
+		// RequiredOutput contract). Fires only when a written Task-*/BUG-*.md
+		// transitioned to done this turn (DodTransitionedToDone, computed by
+		// the runner's gate hook) AND its checklist still has open checkboxes.
+		// Total == 0 (heading without checkboxes, or an unreadable doc) never
+		// fires here — Checked(0) < Total(0) is false — delegating the
+		// missing-DOD contract to r-dod-present above.
+		if tr.DodTransitionedToDone && tr.DodStatus.Checked < tr.DodStatus.Total {
+			if hasValidDodExplanation(tr) {
+				// Có giải trình -> Cho phép qua nhưng gắn cảnh báo
+				// (CP-47 R-2: prefer downgrade-to-warn over false blocks).
+				explained := rule
+				explained.Action = "warn"
+				return &Violation{
+					Rule: explained,
+					Detail: fmt.Sprintf("tài liệu hoàn thành nhưng còn %d mục DOD chưa tích (đã có giải trình): %s",
+						len(tr.DodStatus.OpenItems), strings.Join(tr.DodStatus.OpenItems, ", ")),
+				}
+			}
+			// Không có giải trình -> Chặn cứng, liệt kê đích danh các mục mở.
+			return &Violation{
+				Rule: rule,
+				Detail: fmt.Sprintf("chặn hoàn thành: còn %d mục DOD chưa hoàn thành và không có giải trình: %s",
+					len(tr.DodStatus.OpenItems), strings.Join(tr.DodStatus.OpenItems, ", ")),
+			}
+		}
 	}
 	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Task-331 (CP-47 P-3/P-4): done-transition detection and block-or-explained
+// explanation heuristics for r-dod-complete. Deterministic pure Go, offline,
+// 0 LLM tokens (CP-47 constraint). Shared by the runner's gate hook
+// (applyDodSignals) and the r-dod-complete checkRule case so both paths use
+// one source of truth for the done contract (CP-47 D-2: metadata first,
+// done/ path segment as backup, never commit messages).
+// ---------------------------------------------------------------------------
+
+// dodDoneMetadataRegex matches the SS-13 metadata bullet declaring the
+// document done ("- Status: done"), case-insensitive, allowing an optional
+// leading dash and trailing period/whitespace. Hardening (review CA-835
+// follow-up): the value may be wrapped in backticks ("- Status: `done`") —
+// the form this repo's own FORMAT-REFERENCE-TASK and done docs use — mirroring
+// the optional backticks vibeDocMetadataStatus already accepts. "draft"/
+// "todo"/"in-progress" never match (\b after done).
+var dodDoneMetadataRegex = regexp.MustCompile("(?i)^\\s*-?\\s*status\\s*:\\s*`?done\\b`?\\.?\\s*$")
+
+// dodExplanationPhraseRegex matches the Task-331 T-2 explanation phrases
+// ("Hoãn", "Deferred", "Loại bỏ", "Bỏ qua vì"), case-insensitive. Kept
+// deliberately minimal and deterministic (CP-47 R-2): a miss degrades to the
+// block action, never to a silent pass.
+var dodExplanationPhraseRegex = regexp.MustCompile(`(?i)(hoãn|deferred|loại bỏ|bỏ qua vì)`)
+
+// dodExplanationSectionRegex matches a "## Deferred" / "## Open Items" ATX
+// heading (any level 1-6, case-insensitive) — the doc-side explanation
+// sections named by Task-331 T-2.
+var dodExplanationSectionRegex = regexp.MustCompile(`(?i)^#{1,6}\s+(deferred|open items)\b`)
+
+// hasDoneMetadata reports whether markdown content declares the document
+// done via a metadata line (SS-13 `- Status: done` form, including the
+// backticked variant). Fence-aware (review round 2 hardening): a
+// `- Status: done` line quoted inside a fenced code block is documentation,
+// not a done declaration — mirrors ParseDefinitionOfDone's fence skipping.
+func hasDoneMetadata(content string) bool {
+	var fenceMarker string
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+			marker := trimmed[:3]
+			if fenceMarker == "" {
+				fenceMarker = marker
+			} else if strings.HasPrefix(marker, fenceMarker) {
+				fenceMarker = ""
+			}
+			continue
+		}
+		if fenceMarker != "" {
+			continue
+		}
+		if dodDoneMetadataRegex.MatchString(line) {
+			return true
+		}
+	}
+	return false
+}
+
+// isDonePathSegment reports whether path contains a "done" directory segment
+// (CP-47 D-2 backup done signal: the doc was moved into .../done/).
+func isDonePathSegment(path string) bool {
+	p := strings.TrimSpace(filepath.ToSlash(filepath.FromSlash(strings.TrimSpace(path))))
+	if p == "" {
+		return false
+	}
+	for _, seg := range strings.Split(p, "/") {
+		if strings.TrimSpace(seg) == "done" {
+			return true
+		}
+	}
+	return false
+}
+
+// DodDoneTransition returns the DodStatus of the first Task-*/BUG-*.md in
+// writtenPaths that transitioned to done this turn, and whether any did.
+// Done detection per CP-47 D-2: metadata `Status: done` in the on-disk doc
+// takes priority; a `done/` path segment is the backup signal; commit
+// messages are never consulted. When several docs transition, one whose
+// checklist still has open items wins (fail-closed bias) over a fully
+// checked one; otherwise the first transitioned doc in WrittenPaths order.
+//
+// Unreadable/missing docs are skipped gracefully (never panic — an I/O error
+// must not hard-fail the gate): they contribute no signal, so the caller
+// leaves the TurnResult fields zero and r-dod-complete no-ops (Task-331 §10
+// graceful-degradation contract). An empty workspace or empty writtenPaths
+// yields (DodStatus{}, false) — flows that never touch a Task/BUG doc bypass
+// the gate entirely (CP-47 D-5 bypass safety).
+func DodDoneTransition(workspaceCwd string, writtenPaths []string) (DodStatus, bool) {
+	workspaceCwd = strings.TrimSpace(workspaceCwd)
+	if workspaceCwd == "" || len(writtenPaths) == 0 {
+		return DodStatus{}, false
+	}
+	root, err := filepath.Abs(workspaceCwd)
+	if err != nil {
+		return DodStatus{}, false
+	}
+	var fallback DodStatus
+	haveFallback := false
+	seen := make(map[string]bool, len(writtenPaths))
+	for _, p := range writtenPaths {
+		p = strings.TrimSpace(p)
+		if p == "" || seen[p] || !isTaskOrBugDocPath(p) {
+			continue
+		}
+		seen[p] = true
+		data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(p)))
+		if err != nil {
+			continue // unreadable/missing file → graceful skip
+		}
+		if hasDoneMetadata(string(data)) || isDonePathSegment(p) {
+			status := ParseDefinitionOfDone(string(data))
+			if status.Checked < status.Total {
+				return status, true // open checklist wins over a completed one
+			}
+			if !haveFallback {
+				fallback = status
+				haveFallback = true
+			}
+		}
+	}
+	return fallback, haveFallback
+}
+
+// hasValidDodExplanation reports whether the turn carries a valid explanation
+// for its open DOD items (Task-331 T-2, CP-47 D-3 block-or-explained):
+//
+//  1. tr.FinalMessage explains the open items (explanation phrases).
+//  2. An open checkbox line itself explains — the OpenItems text already
+//     parsed into DodStatus (e.g. "- [ ] Mục X (Hoãn sang sprint sau do
+//     phụ thuộc Y)").
+//  3. Doc-side: a written Task-*/BUG-*.md carries a "## Deferred" or
+//     "## Open Items" section.
+//
+// Deterministic and heuristic-lean: any one signal downgrades the block to a
+// warn (CP-47 R-2). Doc reads that fail are skipped gracefully (never panic —
+// mirrors MissingDodDocs); an empty WorkspaceCwd skips the doc-side check.
+func hasValidDodExplanation(tr TurnResult) bool {
+	// CP-62 P-3 (Task-339): the structured explanation field wins — a
+	// schema'd explanation is deterministic, no phrase matching required.
+	if tr.DodExplanation != nil && strings.TrimSpace(tr.DodExplanation.Explanation) != "" {
+		return true
+	}
+	if dodExplanationPhraseRegex.MatchString(tr.FinalMessage) {
+		return true
+	}
+	for _, item := range tr.DodStatus.OpenItems {
+		if dodExplanationPhraseRegex.MatchString(item) {
+			return true
+		}
+	}
+	return hasDodExplanationSectionInDocs(tr.WorkspaceCwd, tr.WrittenPaths)
+}
+
+// hasDodExplanationSectionInDocs reports whether any Task-*/BUG-*.md in
+// writtenPaths (read from disk under workspaceCwd) has a "## Deferred" or
+// "## Open Items" heading. Unreadable files are skipped; empty inputs yield
+// false.
+func hasDodExplanationSectionInDocs(workspaceCwd string, writtenPaths []string) bool {
+	workspaceCwd = strings.TrimSpace(workspaceCwd)
+	if workspaceCwd == "" || len(writtenPaths) == 0 {
+		return false
+	}
+	root, err := filepath.Abs(workspaceCwd)
+	if err != nil {
+		return false
+	}
+	seen := make(map[string]bool, len(writtenPaths))
+	for _, p := range writtenPaths {
+		p = strings.TrimSpace(p)
+		if p == "" || seen[p] || !isTaskOrBugDocPath(p) {
+			continue
+		}
+		seen[p] = true
+		data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(p)))
+		if err != nil {
+			continue // unreadable/missing file → graceful skip
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			if dodExplanationSectionRegex.MatchString(line) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 var telegramMessageIDPattern = regexp.MustCompile(`(?i)message_id["':=\s]*\d+`)

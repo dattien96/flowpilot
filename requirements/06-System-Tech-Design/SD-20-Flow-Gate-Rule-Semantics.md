@@ -291,3 +291,17 @@ Until one of these lands, treat per-turn full-suite execution as a known cost, d
 - `SS-14 AC-11` (force required outputs) → §2, §3.
 - New: regression performance trade-off → §5 (`D-6`, `Q-1`).
 - Planned hardening: `Task-155` (regression decision card) → `D-3`, §2.4, §3; `Task-156` (polyglot signal + baseline cost) → `D-4`, `D-6`, §2.3, §2.4, §4, §5, `Q-1`, `Q-2`; `Task-157` (feature-key gate) → §2.9, `Q-4`.
+
+## 7. Gate precedence (CP-62 P-1, Task-337)
+
+Four systems share the prompt/loop — the flowgate rules (§2), the CP-23 drift ladder (Task-335), the vibe owner-debate resolver (SS-18), and the r-dod settlement (CP-47). When they fire on the same turn, precedence resolves deterministically (pure routing over already-computed violations, 0 LLM tokens — `flowgate.ResolvePrecedence`):
+
+| Tier | Signal | Route | Notes |
+|---|---|---|---|
+| 1 | Requirement-class (`r-requirement` / signature drift) | `user` — user-only block | Never owner-resolved (`SS-18 BR-4`); wins even over drift 80+. |
+| 2 | Drift score ≥ 80 on a `working_mode=vibe` run | `owner_debate` | Fires even on a clean gate; never the deferred dev pause path. Dev mode: unchanged (Task-335 ladder owns it). |
+| 3 | `r-dod-complete` (block-or-explained) | settled first in evaluation order | On a shared turn, the DOD checklist settles before the requirement block lands; requirement still wins the final route. |
+| 4 | Other block/reprompt rules in vibe | `owner_debate` | Today's semantics, now explicit. Warn-only results stay passthrough. |
+| — | Context pruning (Budget Packer / drift narrow) | disabled for owner-debate turns | The debate needs the full violation context; pending ladder note/narrow actions are dropped when a debate starts and not stashed while one runs (T-3). |
+
+Implementation anchors: `internal/flowgate/precedence.go` (`ResolvePrecedence`, `PrecedenceRoute*`, `VibeDriftDebateThreshold`), `internal/runner/vibe_gate.go` (`classifyVibeGateWithDrift`, `applyVibeDriftOnlyResolver`, `startVibeOwnerDebate`, `latestVibeDriftScore`), `internal/runner/gate_hook.go` (`driftRunState.lastScore`, debate-active ladder skip). Invariants: dev mode byte-for-byte unchanged; drift 80+ on an owner-debate turn never re-routes into another debate (the debate's own cap bounds it); the legacy two-arg `classifyVibeGate` is byte-stable for existing pins.

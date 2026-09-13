@@ -303,7 +303,11 @@ func (a *opencodeAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge 
 	a.mu.Lock()
 	a.bridges[sessionID] = bridge
 	a.allowReviewOutcome[sessionID] = req.OfferReviewOutcomeTool
-	a.yoloModes[sessionID] = req.YoloMode && !req.ForceShellBridge && !IsReadOnlyChatPosture(req.ChatPosture)
+	// Gated flow-node postures (CP-62 P-4, Task-349/352 re-review P1) clear the
+	// auto-approve fast path exactly like grok — bypassPermissions would
+	// answer session/request_permission in-adapter and never reach the bridge
+	// posture matrix.
+	a.yoloModes[sessionID] = req.YoloMode && !req.ForceShellBridge && !IsReadOnlyChatPosture(req.ChatPosture) && !IsGatedFlowNodePosture(req.FlowNodePosture)
 	if a.permissionDenied == nil {
 		a.permissionDenied = map[string]bool{}
 	}

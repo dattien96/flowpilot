@@ -634,6 +634,15 @@ export type ProviderEventDTO =
        *  a fresh interactive form. */
       answer?: string | string[];
     })
+  | (ProviderEventBaseDTO & {
+      /** CP-62 P-3 (Task-339/345): structured escalation card from the
+       *  request_user_decision tool. The prose card stays the fallback
+       *  (Q-1). Answered by sending the chosen option id as the next
+       *  prompt — the runner matches it back to the parked card. */
+      type: "user_decision_card_requested";
+      /** Runner ProviderEvent.Input — the UserDecisionCard payload. */
+      input: DecisionCardDTO;
+    })
   | (ProviderEventBaseDTO & { type: "turn_failed"; error: string; recoverable: boolean })
   | (ProviderEventBaseDTO & { type: "turn_completed"; finalMessage: string })
   | (ProviderEventBaseDTO & { type: "agent_graph_updated"; agentGraphSnapshot: AgentGraphSnapshot })
@@ -701,6 +710,31 @@ export interface QuestionOption {
   description?: string;
   /** Value submitted back; defaults to label when omitted. */
   value?: string;
+}
+
+// ---- CP-62 P-3 (Task-339/345): structured escalation card --------------------
+
+export interface DecisionCardOptionDTO {
+  id: string;
+  label: string;
+  /** What happens when this option is chosen — a non-tech user decides from consequences. */
+  consequence: string;
+}
+
+export interface DecisionCardEvidenceDTO {
+  path: string;
+  line?: number;
+  excerpt?: string;
+}
+
+/** Payload of the runner's user_decision_card_requested event (UserDecisionCard). */
+export interface DecisionCardDTO {
+  question: string;
+  detail?: string;
+  /** Option id the runner recommends; highlighted on the card. */
+  recommended?: string;
+  options: DecisionCardOptionDTO[];
+  evidence?: DecisionCardEvidenceDTO[];
 }
 
 // ---- CP-51 / SS-17 dispatch operator surface --------------------------------

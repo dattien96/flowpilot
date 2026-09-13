@@ -89,7 +89,7 @@ func (a *claudeAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Tu
 	if req.Cwd != "" {
 		cwd = req.Cwd
 	}
-	posture := resolveYoloPostureForChatPosture(req.YoloMode, req.ForceShellBridge, req.ChatPosture)
+	posture := resolveYoloPostureForFlowNode(req.YoloMode, req.ForceShellBridge, req.ChatPosture, req.FlowNodePosture)
 
 	// Resume ONLY with the real Claude session id captured on a prior turn — never the
 	// synthetic FlowPilot run session id (review finding 1). Empty on the first turn.

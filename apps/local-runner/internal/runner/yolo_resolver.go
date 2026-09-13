@@ -109,6 +109,38 @@ func resolveYoloPostureForChatPosture(yolo, forceShellBridge bool, posture strin
 	return p
 }
 
+// IsGatedFlowNodePosture reports whether a CP-62 P-4 flow-node posture gates
+// the child at the approval bridge (Task-340/349). standard/undeclared keeps
+// the flow YOLO behavior unchanged.
+func IsGatedFlowNodePosture(posture string) bool {
+	switch strings.TrimSpace(posture) {
+	case PostureReadOnly, PostureVerdictOnly:
+		return true
+	default:
+		return false
+	}
+}
+
+// resolveYoloPostureForFlowNode extends resolveYoloPostureForChatPosture with
+// the flow-node posture dimension (Task-349): a read_only or verdict_only node
+// must run under gated provider modes with runner auto-approve OFF — provider
+// bypass modes (approval-never, bypassPermissions) never emit permission
+// requests, so the posture matrix in turnBridge.RequestApproval would be dead
+// code for exactly the nodes that declare it. Provider-agnostic by
+// construction: every adapter resolves its modes through this SSOT.
+func resolveYoloPostureForFlowNode(yolo, forceShellBridge bool, chatPosture, flowNodePosture string) YoloPosture {
+	p := resolveYoloPostureForChatPosture(yolo, forceShellBridge, chatPosture)
+	if IsGatedFlowNodePosture(flowNodePosture) {
+		p.CodexSandbox = "workspace-write"
+		p.CodexApprovalMode = "untrusted"
+		p.ClaudePermissionMode = "default"
+		p.GrokPermissionMode = ""
+		p.OpencodePermissionMode = ""
+		p.RunnerAutoApprove = false
+	}
+	return p
+}
+
 // shouldForceFlowYolo reports whether product policy requires YOLO=true for this
 // run (BUG-299 residual). Normal Chat (runKind=="chat", no workflow, not
 // flow-engine-driven) keeps the user's toggle and is never forced here.

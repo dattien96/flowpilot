@@ -183,6 +183,78 @@ func Install(targetRepoDir string, platform string) (InstallResult, error) {
 	return result, nil
 }
 
+// InstallFromRoot copies skills from a filesystem flow-pack root — NOT the
+// embedded pack — into a target repo's provider skill dirs, reusing the same
+// platform group selection (platformGroups) and the same provider install
+// roots (installRoots) as Install (Task-336: "Cung cấp hàm xuất bản vào
+// skillpack").
+//
+// flowPackRoot must contain <group>/<skill>/SKILL.md directories, exactly the
+// layout SkillExporter (internal/skilllearn) produces for core exports. This
+// is the smallest real install path that makes a freshly published core skill
+// discoverable in a target project without recompiling the embedded pack.
+//
+// Divergence from Install (intentional, Task-336 Open Question "Skill trùng
+// tên sẽ tạo version mới, không ghi đè file cũ"): an existing destination
+// SKILL.md is NEVER overwritten — it is reported in InstallResult.Skipped
+// (Install's version-based skip/replace semantics do not apply to promoted
+// lesson skills). A missing group directory in the root is tolerated, like
+// the embedded path. All errors are collected in InstallResult.Errors; the
+// function never panics.
+func InstallFromRoot(targetRepoDir string, platform string, flowPackRoot string) (InstallResult, error) {
+	result := InstallResult{Target: targetRepoDir}
+
+	if strings.TrimSpace(flowPackRoot) == "" {
+		return result, fmt.Errorf("skillpack: flowPackRoot is required")
+	}
+
+	for _, group := range platformGroups(platform) {
+		groupDir := filepath.Join(flowPackRoot, group)
+		entries, err := os.ReadDir(groupDir)
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			return result, fmt.Errorf("skillpack: read flow-pack group %q: %w", group, err)
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			srcFile := filepath.Join(groupDir, entry.Name(), "SKILL.md")
+			srcBytes, err := os.ReadFile(srcFile)
+			if err != nil {
+				result.Errors = append(result.Errors, fmt.Sprintf("read %s: %v", srcFile, err))
+				continue
+			}
+
+			for _, root := range installRoots {
+				destDir := filepath.Join(targetRepoDir, root.RootPath, entry.Name())
+				destFile := filepath.Join(destDir, "SKILL.md")
+
+				if _, statErr := os.Stat(destFile); statErr == nil {
+					result.Skipped = append(result.Skipped, destFile)
+					continue
+				}
+
+				if mkErr := os.MkdirAll(destDir, 0o755); mkErr != nil {
+					result.Errors = append(result.Errors, fmt.Sprintf("mkdir %s: %v", destDir, mkErr))
+					continue
+				}
+
+				if writeErr := os.WriteFile(destFile, srcBytes, 0o644); writeErr != nil {
+					result.Errors = append(result.Errors, fmt.Sprintf("write %s: %v", destFile, writeErr))
+					continue
+				}
+
+				result.Installed = append(result.Installed, destFile)
+			}
+		}
+	}
+
+	return result, nil
+}
+
 // IsInstalled returns true when the primary sentinel file exists in each
 // provider dir. The sentinel is a common-group skill, so it is present for
 // every platform once the pack has been installed.

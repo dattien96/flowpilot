@@ -159,7 +159,7 @@ func (a *codexAdapter) Capabilities() ProviderCapabilities {
 }
 
 func (a *codexAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge TurnBridge) error {
-	sandbox, approvalMode := codexYoloDeriveForChatPosture(req.YoloMode, req.ForceShellBridge, req.ChatPosture)
+	sandbox, approvalMode := codexYoloDeriveForFlowNode(req.YoloMode, req.ForceShellBridge, req.ChatPosture, req.FlowNodePosture)
 
 	// Per-thread cwd is authoritative (04-06 multi-workspace): the run's cwd takes
 	// precedence over the adapter default.
@@ -685,5 +685,14 @@ func codexYoloDeriveForTurn(yolo, forceShellBridge bool) (sandbox, approvalMode 
 // read-only policy approves reads and denies writes without asking.
 func codexYoloDeriveForChatPosture(yolo, forceShellBridge bool, posture string) (sandbox, approvalMode string) {
 	p := resolveYoloPostureForChatPosture(yolo, forceShellBridge, posture)
+	return p.CodexSandbox, p.CodexApprovalMode
+}
+
+// codexYoloDeriveForFlowNode is codexYoloDeriveForChatPosture extended with the
+// CP-62 P-4 flow-node posture dimension (Task-349): read_only/verdict_only
+// nodes force the gated "untrusted" approval mode so every approval reaches
+// the runner bridge posture matrix.
+func codexYoloDeriveForFlowNode(yolo, forceShellBridge bool, chatPosture, flowNodePosture string) (sandbox, approvalMode string) {
+	p := resolveYoloPostureForFlowNode(yolo, forceShellBridge, chatPosture, flowNodePosture)
 	return p.CodexSandbox, p.CodexApprovalMode
 }

@@ -224,6 +224,14 @@ func (s *InteractiveService) maybeParkVibeSprintBoundary(ctx context.Context, pa
 	if !stillOwned {
 		return true
 	}
+	// Task-351 (CP-62 P-6): the sprint that just reached the boundary IS
+	// finished — write its handoff here, on the STANDARD park path, pinned to
+	// the just-finished index (a concurrent Continue advancing the cursor
+	// must not attribute sprint N's data to handoff N+1). Best-effort: a
+	// write failure only degrades the next sprint's context.
+	if r := s.runs[parentRunID]; r != nil {
+		s.emitSprintHandoffAt(r, index)
+	}
 	s.parkFlowForAwaitingUser(parentRunID)
 	s.emitAgentGraph(parentRunID, snap)
 	// Persist synchronously: an async goroutine here could outlive a later
@@ -325,6 +333,14 @@ func (s *InteractiveService) continueVibeSprintBoundary(parentRunID, note string
 	switch {
 	case d.Start:
 		prompt := vibeSprintPromptWithNote(d.Task, note)
+		// Task-351 (CP-62 P-6): the boundary-continue start is the STANDARD
+		// next-sprint entry — it must carry the previous sprint's handoff
+		// exactly like maybeStartNextVibeSprint does (d.Sprint is already
+		// N+1 after takeNext; the handoff read is sprint N = index-1).
+		// Missing file → empty (graceful fallback), never blocks the start.
+		if handoff := previousSprintHandoffContext(rs.workspaceCwd, d.Sprint); handoff != "" {
+			prompt = prompt + "\n\n" + handoff
+		}
 		takenTask := d.Task
 		prevDeclined := rs.vibeSprintBoundaryDeclined
 		rs.vibeSprintBoundaryPending = false

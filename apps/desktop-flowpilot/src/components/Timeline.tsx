@@ -224,6 +224,7 @@ function sliceTimelineFromPrompt(timeline: TimelineItem[], visiblePromptCount: n
 }
 import { ApprovalCard } from "./ApprovalCard";
 import { QuestionCard } from "./QuestionCard";
+import { DecisionCard } from "./DecisionCard";
 import { TranslatePopup } from "./TranslatePopup";
 
 const shortName = (path: string): string => path.split("/").pop() ?? path;
@@ -671,6 +672,8 @@ function Item({ it }: { it: TimelineGroup }): React.ReactElement | null {
           answer={it.answer}
         />
       );
+    case "decision_card":
+      return <DecisionCard itemId={it.id} card={it.card} chosenOptionId={it.chosenOptionId} />;
     case "system":
       return <div className={`system-line ${it.tone}`}>{it.text}</div>;
     default:

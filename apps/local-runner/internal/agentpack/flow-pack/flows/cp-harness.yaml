@@ -55,6 +55,8 @@ nodes:
     behavior: agent.delegate
     agent: agents/contract-planner.md
     promptTemplate: prompts/plan-safe-fix-contract.md
+    # CP-62 P-4 (Task-340): scout is read-only (BUG-344 classifier).
+    posture: read_only
   # --- Draft context (broad repo architecture excerpts) ---
   - id: context
     run: inline
@@ -84,6 +86,8 @@ nodes:
     behavior: agent.delegate
     agent: agents/reviewer.md
     promptTemplate: prompts/review-cp.md
+    # CP-62 P-4 (Task-340): read-only reviewer.
+    posture: read_only
     dependsOn:
       - cp_plan_writer
     cohort: plan

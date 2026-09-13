@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -17,6 +18,7 @@ import (
 
 	"flowpilot-runner/internal/agentpack"
 	"flowpilot-runner/internal/flowgate"
+	"flowpilot-runner/internal/promptpacker"
 	"flowpilot-runner/internal/workingmode"
 )
 
@@ -188,6 +190,28 @@ type interactiveRun struct {
 	vibeCoderResumeInFlight bool
 	vibeResumeConfirm       bool
 	vibeResumeFromNode      string
+	// decisionCard is the CP-62 P-3 (Task-339) structured escalation card
+	// captured from a request_user_decision payload on an escalate flow
+	// control — additive to the prose GateReason (Q-1 wrap-around: the prose
+	// card stays the fallback; this only enriches the client render).
+	decisionCard *UserDecisionCard
+	// decisionCardChosen is the option id the human picked for the parked
+	// decision card (Task-346), captured from the continue feedback; empty
+	// when the answer was prose (never guessed).
+	decisionCardChosen string
+	// lastTamperedTestPaths are the oracle guard's tampered pre-existing test
+	// files from the most recent gate evaluation (Task-346): the sprint
+	// handoff's weakened_tests source.
+	lastTamperedTestPaths []string
+	// expectedACsCache holds the per-child-run expected AC set resolved from
+	// the governing task artifact (Task-344): resolved once per run — the doc
+	// set does not change mid-review — so repeated submits skip the file I/O.
+	expectedACsCache    []string
+	expectedACsResolved bool
+	// lastFlowVerdicts are the raw reviewer verdict rows from the most recent
+	// flow_control application (CP-62 P-6, Task-342): the sprint handoff's
+	// verified decisions source. Rows arrive typed via payload["verdicts"].
+	lastFlowVerdicts []VerdictRow
 	// vibeSprintBoundaryPending is the sprint-boundary Continue gate: set when
 	// a vibe-sprint audit completes with plan tasks left (memory-only, like
 	// vibeResumeConfirm — re-derived on open from audit DONE + plan/index).
@@ -1373,6 +1397,37 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 			"status", in.Status,
 		)
 		return FlowControlResult{}, fmt.Errorf("applyFlowControl: run %q not found", parentRunID)
+	}
+	// CP-62 P-3 (Task-339): an escalate decision may carry a schema'd
+	// request_user_decision payload — emit the structured card additively
+	// (Q-1 wrap-around: the prose GateReason path is untouched; a malformed
+	// payload is logged and dropped so the prose card remains the fallback).
+	// CP-62 P-6 (Task-342): verdict rows on ANY flow-control status are
+	// captured verbatim as the sprint handoff's verified decisions source.
+	if rows, ok := in.Payload["verdicts"].([]VerdictRow); ok {
+		rs.lastFlowVerdicts = rows
+	}
+	if strings.TrimSpace(in.Status) == "escalate" {
+		if raw, ok := in.Payload["decision_card"]; ok {
+			if m, ok := raw.(map[string]any); ok {
+				if card, cardErr := parseUserDecisionCard(m); cardErr == nil {
+					// Task-350: a NEW card invalidates a previous card's
+					// choice — keeping the stale chosen id would pair it
+					// with the new question in the sprint handoff (CP-49).
+					rs.decisionCardChosen = ""
+					rs.decisionCard = &card
+					s.emitLocked(rs, ProviderEvent{
+						Type:           EventUserDecisionCardRequested,
+						ProviderTurnID: rs.currentTurnID,
+						Input:          card,
+					})
+				} else {
+					s.flowDiagLog(parentRunID, "decision_card_invalid", "decision_card payload rejected; prose card stays",
+						"error", cardErr.Error(),
+					)
+				}
+			}
+		}
 	}
 	// BUG-288 #26: validate status enum BEFORE stamping one-decision. An
 	// unknown status (typo) must not burn the turn's decision slot, or a later
@@ -5773,6 +5828,29 @@ func (b *turnBridge) RequestApproval(details ApprovalDetails) (string, error) {
 		return "deny", nil
 	}
 
+	// CP-62 P-4 (Task-340): flow-node posture enforcement. A node declared
+	// read_only/verdict_only in its FlowDefinition is structurally gated at
+	// this shared bridge — every provider's approval funnel passes here, so
+	// the posture wins BEFORE YOLO (same ordering rationale as the chat
+	// read-only posture below: the posture's discipline must not be bypassed
+	// by an auto-approve). Standard/undeclared nodes fall through untouched.
+	if decision, reason, handled := s.decideFlowNodePosture(b.rs, details); handled {
+		s.recordAutoApproval(b.rs, details, decision, reason)
+		if decision == "deny" {
+			b.Emit(ProviderEvent{
+				Type:     EventNodeIsolationWriteDenied,
+				ToolName: details.Reason,
+				Status:   "deny",
+				Input: map[string]string{
+					"posture": reason,
+					"command": details.Command,
+					"kind":    details.Kind,
+				},
+			})
+		}
+		return decision, nil
+	}
+
 	// Read-only posture (Scan/Plan): auto-decide WITHOUT asking the human. Reads
 	// are approved, writes and anything unclassified are denied, and the reply is
 	// recorded like every auto-decision so the adapter never hangs. Checked BEFORE
@@ -6013,6 +6091,13 @@ func (b *turnBridge) SpawnAgent(in SpawnAgentInput) (SpawnAgentResult, error) {
 // already instructs (BUG-NOTE-CP42 #13). Non-cohort children (flowCohortId ==
 // "") and the hub itself are unaffected.
 func (b *turnBridge) SubmitFlowControl(in FlowControlInput) (FlowControlResult, error) {
+	// Task-344 (CP-62 P-2 follow-up): per-AC verdict coverage — the
+	// reviewer's governing task artifact supplies the expected set; a
+	// submission missing ACs is rejected in-turn (the error result IS the
+	// reprompt). Unresolvable artifact → no-op, legacy flows byte-identical.
+	if err := b.svc.validateReviewACCoverage(b.rs, in); err != nil {
+		return FlowControlResult{}, err
+	}
 	if b.rs.flowCohortId != "" {
 		targetParentID := b.rs.parentRunID
 		if targetParentID == "" {
@@ -7230,6 +7315,14 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 		providerPrompt = injectFeatureHistoryPromptCtx(rs.workspaceCwd, providerPrompt, transcriptTurnsFromRun(rs),
 			MarkerVerificationContext{Secret: markerSecret, AllowedMarkerIDs: allowedIDs})
 	}
+	// Task-334 (CP-23 Phase 1): Budget Packer — independent rollout flag
+	// enable_budget_packer (env FLOWPILOT_ENABLE_BUDGET_PACKER), default OFF.
+	// Flag OFF returns the prompt byte-identical; flag ON packs the fully
+	// composed prompt under the token budget (pruning raw excerpts / memory /
+	// skills first, never the current task or mandatory context) and writes the
+	// prompt_context_audit record before the model call — so logComposedPrompt
+	// below captures exactly what the provider receives.
+	providerPrompt = s.applyBudgetPackerIfEnabled(rs, providerPrompt, turnID)
 	// Observability for E2E: persist/log the fully-composed turn prompt (feature
 	// history + discussion + mode prefix + user text) under the FlowPilot tool
 	// workspace (namespaced by project id), NOT inside the target project. On by
@@ -7264,19 +7357,24 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	// Task-260: auto-mention safe-fix-contract on Chat Plan/Code (pointer only, not full content).
 	mergedSkills := mergeChatSafeFixContractSkills(posture, rs.runKind, rs.flowEngineDriven, in.SelectedSkills)
 	req := TurnRequest{
-		RunID:                    rs.id,
-		StepID:                   in.StepID,
-		ProjectID:                rs.projectID,
-		ProviderSessionID:        providerSessionID,
-		ProviderAccountID:        rs.providerAccountID,
-		ProviderTurnID:           turnID,
-		Prompt:                   providerPrompt,
-		ModelName:                model,
-		SelectedSkills:           mergedSkills,
-		YoloMode:                 yolo,
-		ForceShellBridge:         forceShellBridge,
-		ReasoningEffort:          effort,
-		ChatPosture:              posture,
+		RunID:             rs.id,
+		StepID:            in.StepID,
+		ProjectID:         rs.projectID,
+		ProviderSessionID: providerSessionID,
+		ProviderAccountID: rs.providerAccountID,
+		ProviderTurnID:    turnID,
+		Prompt:            providerPrompt,
+		ModelName:         model,
+		SelectedSkills:    mergedSkills,
+		YoloMode:          yolo,
+		ForceShellBridge:  forceShellBridge,
+		ReasoningEffort:   effort,
+		ChatPosture:       posture,
+		// CP-62 P-4 (Task-349): carry the declared flow-node posture so the
+		// adapters force gated provider modes — bypass modes never emit
+		// permission requests, which left read_only/verdict_only nodes
+		// structurally unenforced.
+		FlowNodePosture:          s.flowNodePostureFor(rs),
 		Cwd:                      rs.workspaceCwd,
 		Scenario:                 scenario,
 		Attachments:              in.Attachments,
@@ -9952,4 +10050,226 @@ func defaultModelForProvider(key ProviderKey) string {
 	default:
 		return ""
 	}
+}
+
+// --- Task-334 (CP-23 Phase 1): Budget Packer ---------------------------------
+
+// budgetPackerEnvFlag is the independent rollout flag for the Budget Packer
+// (CP-23 §7: each phase can be toggled independently via config flag
+// enable_budget_packer). Default OFF: the composed turn prompt passes through
+// byte-identical. Opt in with FLOWPILOT_ENABLE_BUDGET_PACKER=1|true|yes|on.
+const budgetPackerEnvFlag = "FLOWPILOT_ENABLE_BUDGET_PACKER"
+
+// budgetPackerEnabled reports whether the Task-334 Budget Packer should pack
+// the composed turn prompt. Default OFF (behavior-neutral rollout).
+func budgetPackerEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(budgetPackerEnvFlag))) {
+	case "1", "true", "yes", "on", "enable", "enabled":
+		return true
+	default:
+		return false
+	}
+}
+
+// defaultBudgetPackerBudget is the CP-23 Phase 1 default token budget
+// (Task-334 T-1), delegated to promptpacker.DefaultPackerOptions so the
+// documented slice percentages live next to the packer they configure.
+func defaultBudgetPackerBudget() promptpacker.SectionBudget {
+	return promptpacker.DefaultPackerOptions().Budget
+}
+
+// applyBudgetPackerIfEnabled is the Task-334 integration seam, called in
+// runTurn after flow-context / feature-history injection and before the model
+// call.
+//
+// Flag OFF (default): returns providerPrompt unchanged — byte-identical to the
+// pre-Task-334 behavior. Flag ON: decomposes the composed prompt into
+// PromptSections, packs them under the default token budget (dedup + prune
+// lowest priority first), writes the prompt_context_audit record next to the
+// composed-prompt log, and returns the packed prompt. Pack failures fall back
+// to the original prompt so a packer bug can never blank a turn.
+//
+// Task-335 (CP-23 Phase 2) extension: when the Drift Detector flag
+// (FLOWPILOT_ENABLE_DRIFT_DETECTOR) is ON, this seam also consumes the pending
+// Correction Ladder actions stashed by recordDriftTelemetry after the previous
+// turn's gate — inject_system_note appends the deterministic warning note to
+// the assembled prompt, narrow_context packs with halved (tightened) caps.
+// Both are one-shot and only ever fire when the drift flag is ON; with the
+// drift flag OFF this function behaves exactly as pre-Task-335.
+func (s *InteractiveService) applyBudgetPackerIfEnabled(rs *interactiveRun, providerPrompt, turnID string) string {
+	drift := s.pullDriftLadderActions(rs) // zero value when the drift flag is OFF
+	pack := budgetPackerEnabled() || drift.narrowContext
+	if !pack && drift.systemNote == "" {
+		return providerPrompt
+	}
+	if strings.TrimSpace(providerPrompt) == "" {
+		// Nothing to pack or annotate this assembly — put the one-shot ladder
+		// actions back so the next non-empty prompt still receives them
+		// (review hardening: don't silently drop a pending drift note).
+		s.restoreDriftLadderActions(rs, drift)
+		return providerPrompt
+	}
+	packed := providerPrompt
+	if pack {
+		budget := defaultBudgetPackerBudget()
+		// CP-62 P-5 (Task-341): a node's context profile caps the pack total
+		// when packing is active (narrower wins; drift narrow may halve
+		// further). A profile never turns the packer on by itself — the
+		// flag-gated default stays byte-identical.
+		if profileBudget := s.flowNodeProfileBudgetFor(rs); profileBudget > 0 && profileBudget < budget.TotalMaxTokens {
+			budget.TotalMaxTokens = profileBudget
+			log.Printf("[prompt-pack] profile budget run=%s turn=%s total=%d", rs.id, turnID, profileBudget)
+		}
+		if drift.narrowContext {
+			// Task-335 ladder 60-79: tighten the context pack for this turn.
+			budget = narrowContextBudget(budget)
+			log.Printf("[drift] narrow_context: packing with halved budget run=%s turn=%s total=%d", rs.id, turnID, budget.TotalMaxTokens)
+		}
+		sections := splitPromptIntoSections(providerPrompt)
+		p, report, err := promptpacker.PackPrompt(sections, budget)
+		if err != nil {
+			log.Printf("[prompt-pack] pack failed, keeping original prompt run=%s turn=%s err=%v", rs.id, turnID, err)
+		} else {
+			packed = p
+			// CP-62 P-5 catalog tier: one line per pruned section, so the
+			// model keeps a cheap index of WHAT exists (metadata always,
+			// body on demand).
+			if catalog := buildCatalogSummary(report.DroppedItems); catalog != "" {
+				packed = packed + "\n\n" + catalog
+			}
+			toolWorkspace := ""
+			if s != nil && s.runner != nil {
+				toolWorkspace = s.runner.workspace
+			}
+			writePromptContextAudit(toolWorkspace, rs.projectID, rs.id, turnID, report)
+			log.Printf("[prompt-pack] packed run=%s turn=%s selected_tokens=%d dropped_tokens=%d dropped_items=%d bytes=%d->%d",
+				rs.id, turnID, report.SelectedTokens, report.DroppedTokens, len(report.DroppedItems), len(providerPrompt), len(packed))
+		}
+	}
+	if drift.systemNote != "" {
+		// Task-335 ladder 30-59: append the deterministic drift warning note
+		// to the assembled prompt (the "bơm system note" step — the note is
+		// generated by driftdetect.GenerateSystemNote and cites the
+		// triggered signals).
+		packed = packed + "\n\n" + drift.systemNote
+		log.Printf("[drift] injected system note run=%s turn=%s bytes=%d", rs.id, turnID, len(drift.systemNote))
+	}
+	return packed
+}
+
+// splitPromptIntoSections decomposes the fully-composed turn prompt into
+// PromptSections (Task-334 Context Resolver): fence-aware markdown blocks are
+// classified as mandatory flow context (trusted envelope / Context header /
+// Canonical Head / change.contract), raw source excerpts, memory summaries
+// (history / discussion), or the trailing current task.
+func splitPromptIntoSections(prompt string) []promptpacker.PromptSection {
+	blocks := splitMarkdownBlocks(prompt)
+	out := make([]promptpacker.PromptSection, 0, len(blocks))
+	for i, block := range blocks {
+		kind, priority, title := classifyPromptBlock(block, i == len(blocks)-1)
+		out = append(out, promptpacker.PromptSection{
+			Kind:     kind,
+			Title:    title,
+			Content:  block,
+			Priority: priority,
+		})
+	}
+	return out
+}
+
+// classifyPromptBlock maps one markdown block of the composed prompt to its
+// PromptSection kind/priority (CP-23 §2 allocation order 1-6). Unrecognized
+// non-final blocks default to memory_summary so only the trailing user
+// instruction is treated as the mandatory current task.
+func classifyPromptBlock(block string, isLast bool) (promptpacker.SectionKind, int, string) {
+	firstLine := block
+	if idx := strings.IndexByte(block, '\n'); idx >= 0 {
+		firstLine = block[:idx]
+	}
+	firstLine = strings.TrimSpace(firstLine)
+	switch {
+	case strings.Contains(block, flowContextHandoffPrefix),
+		strings.Contains(block, "<!-- flowpilot-fcp:"),
+		strings.HasPrefix(firstLine, "## Context"),
+		strings.HasPrefix(firstLine, "## Canonical"),
+		strings.HasPrefix(firstLine, "### change.contract"):
+		return promptpacker.SectionMandatoryDoc, 3, ""
+	case strings.HasPrefix(firstLine, "### Source: "):
+		return promptpacker.SectionRawExcerpt, 5,
+			strings.TrimSpace(strings.TrimPrefix(firstLine, "### Source: "))
+	case strings.HasPrefix(firstLine, "## History"),
+		strings.HasPrefix(firstLine, "## Prior work"),
+		strings.HasPrefix(firstLine, "## Discussion"):
+		return promptpacker.SectionMemorySummary, 4, ""
+	}
+	if isLast {
+		return promptpacker.SectionCurrentTask, 2, "Task"
+	}
+	return promptpacker.SectionMemorySummary, 4, ""
+}
+
+// splitMarkdownBlocks splits a composed prompt into markdown blocks at H2/H3
+// heading lines and horizontal rules, keeping fenced code blocks atomic (a
+// "### Source:" excerpt's fenced body is never split mid-fence). Horizontal
+// rules ("---") hard-separate the composed context region from the trailing
+// current task — ComposeFlowCodingPrompt and injectFeatureHistoryBody join
+// context blocks and the user instruction with "\n\n---\n\n" — so the
+// instruction is never absorbed into a prunable context section.
+func splitMarkdownBlocks(prompt string) []string {
+	lines := strings.Split(prompt, "\n")
+	var blocks []string
+	var cur []string
+	inFence := false
+	flush := func() {
+		if len(cur) > 0 {
+			blocks = append(blocks, strings.Join(cur, "\n"))
+			cur = nil
+		}
+	}
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") {
+			inFence = !inFence
+			cur = append(cur, line)
+			continue
+		}
+		if !inFence && (isMarkdownRule(trimmed) ||
+			strings.HasPrefix(line, "## ") || strings.HasPrefix(line, "### ")) {
+			flush()
+			cur = append(cur, line)
+			continue
+		}
+		cur = append(cur, line)
+	}
+	flush()
+	return blocks
+}
+
+// isMarkdownRule reports whether a trimmed line is a markdown horizontal rule
+// as used by the prompt-assembly seam between context and user instruction.
+func isMarkdownRule(trimmed string) bool {
+	return trimmed == "---" || trimmed == "***"
+}
+
+// writePromptContextAudit persists the Task-334 prompt_context_audit record as
+// a JSON line under the FlowPilot tool workspace run dir (same path
+// convention as logComposedPrompt). Best-effort: an unavailable workspace only
+// skips the file; the caller still logs the audit summary.
+func writePromptContextAudit(toolWorkspace, projectID, runID, turnID string, report promptpacker.PromptAuditReport) {
+	if strings.TrimSpace(toolWorkspace) == "" {
+		return
+	}
+	if strings.TrimSpace(projectID) == "" {
+		projectID = "unknown-project"
+	}
+	runDir := filepath.Join(toolWorkspace, ".flowpilot", "runs", projectID, runID)
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		return
+	}
+	f, err := os.Create(filepath.Join(runDir, "prompt-context-audit-"+turnID+".jsonl"))
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	_ = promptpacker.WriteAuditLog(f, report)
 }

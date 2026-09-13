@@ -9,7 +9,7 @@
 - Owner: `FlowPilot`
 - Created: `2026-xx`
 - Last Updated: `2026-09-11`
-- Parent Documents: [CP-23: Context Control, Wrong-Way Detection, and Mistake-to-Skill Learning](../todo/CP-23-Auto-Learn-To-Skill.md)
+- Parent Documents: [CP-23: Context Control, Wrong-Way Detection, and Mistake-to-Skill Learning](./CP-23-Auto-Learn-To-Skill.md)
 - Replaces: `None`
 - Tags: `absorbed, token-usage, context-pack`
 
@@ -21,6 +21,6 @@ This CP was a one-line stub:
 
 That intent is **Phase 1 (Auto Size-Down Context)** of the umbrella plan:
 
-- **Source of truth:** [CP-23](../todo/CP-23-Auto-Learn-To-Skill.md) §5
+- **Source of truth:** [CP-23](./CP-23-Auto-Learn-To-Skill.md) §5
 
 Do not implement new work against this stub. Track token/prompt packing under CP-23.

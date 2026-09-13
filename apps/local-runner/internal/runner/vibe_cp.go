@@ -98,6 +98,9 @@ type vibeSprintDecision struct {
 	Done   bool
 	Locked bool
 	Task   string
+	// Sprint is the 1-based sprint number of the sprint being started (CP-62
+	// P-6, Task-342): the previous handoff file is sprint-1.
+	Sprint int
 }
 
 func decideNextVibeSprint(awaitingLock bool, tasks []string, index, budget int) vibeSprintDecision {
@@ -127,6 +130,19 @@ func (s *InteractiveService) takeNextVibeSprintLocked(rs *interactiveRun) vibeSp
 	d := decideNextVibeSprint(rs.vibeAwaitingLock, rs.vibeTaskPlan, rs.vibeSprintIndex, rs.vibeSprintBudget)
 	if d.Start {
 		rs.vibeSprintIndex++
+		d.Sprint = rs.vibeSprintIndex
+		// Task-350: cross-sprint verified-state reset. The handoff/coverage
+		// sources belong to the sprint that just ended — carrying verdict
+		// rows, tampered-test paths, or a stale decision card (and its
+		// choice) into sprint N+1 misattributes them (CP-49 hard ceiling).
+		// The AC cache is keyed to the governing task doc, which advances
+		// with the sprint, so it must be re-resolved too.
+		rs.lastFlowVerdicts = nil
+		rs.lastTamperedTestPaths = nil
+		rs.decisionCard = nil
+		rs.decisionCardChosen = ""
+		rs.expectedACsCache = nil
+		rs.expectedACsResolved = false
 	}
 	return d
 }
@@ -195,7 +211,14 @@ func (s *InteractiveService) maybeStartNextVibeSprint(parentRunID string) {
 		return
 	}
 	ref := workingmode.PackPrefix + vibeSprintFlowID
-	s.startResolvedFlow(context.Background(), parentRunID, ref, d.Task)
+	// CP-62 P-6 (Task-342): carry the previous sprint's verified handoff into
+	// the entry prompt — decisions/findings survive across sprints. A missing
+	// file degrades to the bare task reference (graceful fallback, T-4).
+	prompt := d.Task
+	if handoff := previousSprintHandoffContext(cwd, d.Sprint); handoff != "" {
+		prompt = prompt + "\n\n" + handoff
+	}
+	s.startResolvedFlow(context.Background(), parentRunID, ref, prompt)
 }
 
 func collectLatestVibeCP(cwd string) string {
@@ -552,15 +575,18 @@ func (s *InteractiveService) maybeChainVibeSprint(parentRunID, completedNodeID s
 	}
 	s.mu.Lock()
 	rs := s.runs[parentRunID]
-	// The sprint-boundary Continue gate owns the next start once parked; a
-	// stray chain (e.g. a replayed audit advance) must not double-start, and
-	// neither a just-started sprint (start-in-flight) nor a declined run may
-	// chain into a new one.
 	ok := rs != nil && rs.workingMode == workingmode.Vibe && len(rs.vibeTaskPlan) > 0 &&
 		!rs.vibeSprintBoundaryPending && !rs.vibeSprintStartInFlight && !rs.vibeSprintBoundaryDeclined
+	sprintRan := rs != nil && rs.vibeSprintIndex > 0
 	s.mu.Unlock()
 	if !ok {
 		return
+	}
+	// CP-62 P-6 (Task-342): the sprint that just finished writes its handoff
+	// from verified run state before the next one starts. Best-effort — an
+	// I/O failure never blocks the chain (next sprint falls back).
+	if sprintRan {
+		s.emitSprintHandoff(rs)
 	}
 	go s.maybeStartNextVibeSprint(parentRunID)
 }
@@ -623,6 +649,15 @@ func (s *InteractiveService) stashVibeFlowForDebate(parentRunID string) {
 	rs.vibeParkedEdges = append([]agentpack.FlowEdge(nil), rs.activeFlowEdges...)
 	rs.vibeParkedAcceptance = append([]string(nil), rs.activeFlowAcceptanceNodes...)
 	rs.vibeParkedFlowRef = rs.chatFlowRef
+	// CP-62 P-1 T-3 (Task-337): the debate turn must assemble with the full
+	// violation context — drop any pending drift-ladder context reduction
+	// (note/narrow) before the debate prompt is packed.
+	if st := driftStateFor(s, parentRunID); st != nil {
+		st.mu.Lock()
+		st.pendingNote = ""
+		st.pendingNarrow = false
+		st.mu.Unlock()
+	}
 }
 
 func (s *InteractiveService) restoreVibeFlowAfterDebate(parentRunID string) bool {

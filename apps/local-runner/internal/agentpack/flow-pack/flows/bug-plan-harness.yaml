@@ -40,6 +40,20 @@ contexts:
       - source.dependence
       - chat.summary
       - source.excerpt
+# CP-62 P-5 (Task-341): same profile family as task-harness (its clone).
+contextProfiles:
+  scout:
+    candidateSources: [conventions, canonical.head, feature.history]
+    maxTokens: 6000
+  plan_writer:
+    candidateSources: [conventions, canonical.head, feature.history, change.contract, source.excerpt]
+    maxTokens: 16000
+  reviewer:
+    candidateSources: [conventions, change.contract, source.excerpt]
+    maxTokens: 12000
+  coder:
+    candidateSources: [conventions, canonical.head, change.contract, source.dependence, source.excerpt]
+    maxTokens: 24000
 tools:
   - tools/submit-review-outcome.yaml
 acceptance_nodes:
@@ -55,6 +69,9 @@ nodes:
     behavior: agent.delegate
     agent: agents/contract-planner.md
     promptTemplate: prompts/plan-safe-fix-contract.md
+    # CP-62 P-4 (Task-340): scout is read-only (BUG-344 classifier).
+    posture: read_only
+    contextProfile: scout
   # --- Draft context (code excerpts feed plan_writer) ---
   - id: context
     run: inline
@@ -67,6 +84,7 @@ nodes:
     behavior: agent.delegate
     agent: agents/doc-writer.md
     promptTemplate: prompts/plan-bug.md
+    contextProfile: plan_writer
     artifactBindings:
       # Task-324: the BUG md is a typed file_artifact OUTPUT slot (same shape
       # as task-harness plan_md, routed to 09-BugFix). The pathTemplate is
@@ -87,6 +105,9 @@ nodes:
     behavior: agent.delegate
     agent: agents/reviewer.md
     promptTemplate: prompts/review-bug-plan.md
+    # CP-62 P-4 (Task-340): read-only reviewer (structural oracle rule).
+    posture: read_only
+    contextProfile: reviewer
     dependsOn:
       - plan_writer
     cohort: plan
@@ -124,6 +145,7 @@ nodes:
     behavior: agent.code
     agent: agents/coder.md
     promptTemplate: prompts/implement-complete-tests.md
+    contextProfile: coder
   - id: validate
     run: inline
     lifecycle: once
@@ -134,6 +156,9 @@ nodes:
     behavior: agent.delegate
     agent: agents/reviewer.md
     promptTemplate: prompts/review-safe-fix-contract.md
+    # CP-62 P-4 (Task-340): read-only reviewer.
+    posture: read_only
+    contextProfile: reviewer
     dependsOn:
       - validate
     cohort: review

@@ -56,8 +56,14 @@ func readOnlyApprovalDecision(details ApprovalDetails) string {
 		}
 		return "deny"
 	case "mcp", "other", "":
-		// MCP elicitation and anything unclassifiable can mutate — never
-		// auto-approved in a read-only posture.
+		// The verdict face (submit_review_outcome, incl. wrapped MCP names)
+		// is runner-hosted and enforced at SubmitFlowControl — a read_only
+		// reviewer MUST be able to submit it (Task-349). MCP elicitation and
+		// anything unclassifiable can mutate — never auto-approved in a
+		// read-only posture.
+		if isVerdictToolCall(details) {
+			return "approve"
+		}
 		return "deny"
 	default:
 		return "deny"

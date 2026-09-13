@@ -59,6 +59,17 @@ type GateState struct {
 	AwaitingCustom bool
 }
 
+// DecisionCardState holds the armed CP-62 P-3 (Task-345) structured
+// escalation card (request_user_decision). Matching input (number, option id,
+// or label) submits that option id as parked-run feedback; any other text is
+// sent verbatim as the Q-1 prose fallback.
+type DecisionCardState struct {
+	RunID       string
+	Question    string
+	Options     []client.DecisionCardOption
+	Recommended string
+}
+
 // ApprovalState holds the active approval UI state.
 type ApprovalState struct {
 	ID      string
@@ -543,11 +554,15 @@ type AppModel struct {
 	// unresolved) cards — kept as pointers so every legacy check works unchanged —
 	// while `approvals`/`questions` carry the full queue. All mutations go
 	// through the helpers in chat_pending_queue.go.
-	gate      *GateState
-	approval  *ApprovalState
-	question  *QuestionState
-	approvals []ApprovalState
-	questions []QuestionState
+	gate     *GateState
+	approval *ApprovalState
+	question *QuestionState
+	// decisionCard is the CP-62 P-3 (Task-345) structured escalation card
+	// (request_user_decision): answered by sending the chosen option id as
+	// parked-run feedback; any other text is the Q-1 prose fallback.
+	decisionCard *DecisionCardState
+	approvals    []ApprovalState
+	questions    []QuestionState
 
 	// Navigation
 	project          *client.Project
