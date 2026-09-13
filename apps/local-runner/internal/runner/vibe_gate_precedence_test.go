@@ -45,11 +45,19 @@ func TestVibeGatePrecedence_DriftOnlyCleanGateEscalates(t *testing.T) {
 }
 
 // Edge: drift dưới ngưỡng giữ nguyên semantics cũ (block vẫn debate, clean passthrough).
+// Task-351: classifier consume ResolvePrecedence — routing derive từ từng
+// violation (shape thật do flowgate.Enforce tạo), không từ EnforceResult.Action
+// trống không có violations (shape nhân tạo không thể xảy ra trong production).
 func TestVibeGatePrecedence_DriftBelowThresholdLegacySemantics(t *testing.T) {
 	if got := classifyVibeGateWithDrift(workingmode.Vibe, flowgate.EnforceResult{}, 79); got != vibeGatePassthrough {
 		t.Fatalf("clean 79: got %d, want passthrough", got)
 	}
-	if got := classifyVibeGateWithDrift(workingmode.Vibe, flowgate.EnforceResult{Action: "block"}, 79); got != vibeGateOwnerDebate {
+	if got := classifyVibeGateWithDrift(workingmode.Vibe, flowgate.EnforceResult{
+		Action: "block",
+		Violations: []flowgate.Violation{{
+			Rule: flowgate.Rule{ID: "r-scope", Action: "block"},
+		}},
+	}, 79); got != vibeGateOwnerDebate {
 		t.Fatalf("block 79: got %d, want owner debate", got)
 	}
 }

@@ -36,22 +36,24 @@ func classifyVibeGate(mode string, result flowgate.EnforceResult) vibeGateKind {
 // requirement-class wins first (user-only, SS-18 BR-4); drift >= 80 escalates
 // to the owner debate even on a clean gate; other block/reprompt violations
 // keep today's owner-debate semantics; warn-only results pass through.
+// Task-351: the live classifier CONSUMES flowgate.ResolvePrecedence (SD-20 §7)
+// instead of duplicating the precedence — one semantics, one place to change.
 func classifyVibeGateWithDrift(mode string, result flowgate.EnforceResult, driftScore int) vibeGateKind {
 	if mode != workingmode.Vibe {
 		return vibeGatePassthrough
 	}
-	for _, v := range result.Violations {
-		if flowgate.IsRequirementViolation(v) {
-			return vibeGateRequirement
-		}
-	}
-	if driftScore >= vibeDriftDebateThreshold {
+	// isOwnerDebateTurn stays false: the debate child carries its own fresh
+	// per-run drift state (structural no-re-route), so the drift-routed
+	// debate is the only escalation surface.
+	res := flowgate.ResolvePrecedence(result.Violations, mode, driftScore, false)
+	switch res.Route {
+	case flowgate.PrecedenceRouteUser:
+		return vibeGateRequirement
+	case flowgate.PrecedenceRouteOwnerDebate:
 		return vibeGateOwnerDebate
+	default:
+		return vibeGatePassthrough
 	}
-	if result.Action == "block" || result.Action == "reprompt" {
-		return vibeGateOwnerDebate
-	}
-	return vibeGatePassthrough
 }
 
 func requirementDetail(result flowgate.EnforceResult) string {

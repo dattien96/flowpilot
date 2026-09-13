@@ -76,10 +76,16 @@ func ResolvePrecedence(violations []Violation, workingMode string, driftScore in
 		switch {
 		case IsRequirementViolation(v):
 			requirement = append(requirement, v)
-		case IsDODCompleteViolation(v):
-			dod = append(dod, v)
 		default:
-			others = append(others, v)
+			// r-dod-complete settles FIRST in Ordered but still counts toward
+			// the vibe debate routing (SS-18 AC-5: every non-requirement r-*
+			// rule is owner-debatable) — Task-351 alignment with the live
+			// gate's EnforceResult.Action semantics.
+			if IsDODCompleteViolation(v) {
+				dod = append(dod, v)
+			} else {
+				others = append(others, v)
+			}
 			switch v.Rule.Action {
 			case "block":
 				hasBlock = true

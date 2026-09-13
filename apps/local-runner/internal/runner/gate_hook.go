@@ -1241,6 +1241,14 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 			r.gateFixCodeAttempts = 0
 		}
 		s.mu.Unlock()
+		// CP-62 P-1 (Task-337/351): a clean-gate vibe CHILD at drift >= 80
+		// escalates exactly like the root gate — the child records drift in
+		// its own per-run state, so without this the badly drifting turn
+		// completes with no owner debate (SD-20 §7 tier 2 scopes by working
+		// mode, not gate role).
+		if s.applyVibeDriftOnlyResolver(runID, parentID, rs) {
+			return true
+		}
 		return false
 	}
 	result := flowgate.Enforce(violations, loadGateMode(filepath.Join(cwd, ".flowpilot")))

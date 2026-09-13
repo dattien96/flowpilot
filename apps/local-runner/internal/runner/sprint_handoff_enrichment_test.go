@@ -115,3 +115,103 @@ func readHandoffForTest(t *testing.T, path string) []byte {
 	}
 	return data
 }
+
+// Task-350: takeNextVibeSprintLocked phải reset cross-sprint verified state —
+// verdict rows / tampered paths / card+choice / AC cache thuộc về sprint cũ.
+func TestHandoffEnrichment_SprintAdvanceResetsVerifiedState(t *testing.T) {
+	svc, rs, _ := handoffRun(t)
+	svc.mu.Lock()
+	rs.vibeTaskPlan = []string{"requirements/08-Task/todo/Task-a.md", "requirements/08-Task/todo/Task-b.md"}
+	rs.vibeSprintIndex = 1
+	rs.expectedACsCache = []string{"AC-1"}
+	rs.expectedACsResolved = true
+	rs.decisionCardChosen = "opt_stale"
+	svc.mu.Unlock()
+
+	svc.mu.Lock()
+	d := svc.takeNextVibeSprintLocked(rs)
+	svc.mu.Unlock()
+	if !d.Start || d.Sprint != 2 {
+		t.Fatalf("decision = %+v, want Start sprint 2", d)
+	}
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	if rs.lastFlowVerdicts != nil || rs.lastTamperedTestPaths != nil || rs.decisionCard != nil ||
+		rs.decisionCardChosen != "" || rs.expectedACsCache != nil || rs.expectedACsResolved {
+		t.Fatalf("cross-sprint state not reset: verdicts=%d tampered=%d chosen=%q cache=%v",
+			len(rs.lastFlowVerdicts), len(rs.lastTamperedTestPaths), rs.decisionCardChosen, rs.expectedACsCache)
+	}
+}
+
+// Task-351: emitSprintHandoffAt pin sprint index — index advance giữa quyết
+// định và ghi file không được ghi nhầm dữ liệu sprint N vào handoff N+1.
+func TestHandoffEnrichment_EmitAtPinnedIndex(t *testing.T) {
+	svc, rs, cwd := handoffRun(t)
+	svc.mu.Lock()
+	rs.vibeSprintIndex = 3 // cursor advanced concurrently after the decision
+	svc.mu.Unlock()
+	path := svc.emitSprintHandoffAt(rs, 2)
+	if path == "" {
+		t.Fatalf("handoff not written")
+	}
+	want := cwd + "/requirements/.flowpilot/vibe/handoffs/handoff-sprint-2.yaml"
+	if path != want {
+		t.Fatalf("path = %q, want %q (pinned sprint 2)", path, want)
+	}
+}
+
+// Task-352: captureDecisionChoice khớp cả LABEL (không chỉ id) — đúng hợp đồng
+// TUI/desktop gửi label khi user trả lời bằng tên option.
+func TestHandoffEnrichment_CaptureMatchesLabel(t *testing.T) {
+	svc, rs, _ := handoffRun(t)
+	svc.emitUserDecisionCard(rs.id, UserDecisionCard{
+		Question: "DB?",
+		Options: []DecisionCardOption{
+			{ID: "opt_sqlite", Label: "SQLite", Consequence: "Embedded."},
+		},
+	})
+	svc.captureDecisionChoice(rs.id, "  sqlite ") // case-insensitive + trim
+	svc.mu.Lock()
+	chosen := rs.decisionCardChosen
+	svc.mu.Unlock()
+	if chosen != "opt_sqlite" {
+		t.Fatalf("chosen = %q, want opt_sqlite via label match", chosen)
+	}
+}
+
+// Task-352: production integration — decision_card payload qua applyFlowControl
+// (không qua helper) phải emit event + stamp run state; payload hỏng → prose stays.
+func TestHandoffEnrichment_ApplyFlowControlEmitsCard(t *testing.T) {
+	svc, rs, _ := handoffRun(t)
+	in := FlowControlInput{
+		Status: "escalate",
+		Payload: map[string]any{
+			"decision_card": map[string]any{
+				"question": "Go left or right?",
+				"options": []any{
+					map[string]any{"id": "left", "label": "Left", "consequence": "Faster."},
+					map[string]any{"id": "right", "label": "Right", "consequence": "Safer."},
+				},
+				"recommended": "left",
+			},
+		},
+	}
+	if _, err := svc.applyFlowControl(rs.id, in); err != nil {
+		t.Fatalf("applyFlowControl: %v", err)
+	}
+	svc.mu.Lock()
+	card := rs.decisionCard
+	var found bool
+	for _, ev := range rs.events {
+		if ev.Type == EventUserDecisionCardRequested {
+			found = true
+		}
+	}
+	svc.mu.Unlock()
+	if card == nil || card.Question != "Go left or right?" {
+		t.Fatalf("card not stamped from payload: %+v", card)
+	}
+	if !found {
+		t.Fatalf("user_decision_card_requested not emitted from applyFlowControl")
+	}
+}

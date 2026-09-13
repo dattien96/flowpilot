@@ -79,11 +79,25 @@ func (s *InteractiveService) completedSprintNodeIDs(parentRunID string) []string
 // captured flow-control verdict rows. Best-effort: an I/O failure is logged
 // and never blocks the sprint chain (the next sprint falls back gracefully).
 func (s *InteractiveService) emitSprintHandoff(rs *interactiveRun) string {
+	if s == nil || rs == nil {
+		return ""
+	}
+	s.mu.Lock()
+	sprint := rs.vibeSprintIndex
+	s.mu.Unlock()
+	return s.emitSprintHandoffAt(rs, sprint)
+}
+
+// emitSprintHandoffAt is emitSprintHandoff with a caller-pinned sprint index:
+// call sites that captured the index under their own lock (boundary park,
+// chain) pass it through so a concurrent index advance between their decision
+// and this write cannot attribute sprint N's data to handoff N+1 (Task-351).
+func (s *InteractiveService) emitSprintHandoffAt(rs *interactiveRun, sprint int) string {
 	if s == nil || rs == nil || strings.TrimSpace(rs.workspaceCwd) == "" {
 		return ""
 	}
 	s.mu.Lock()
-	sprint, task := rs.vibeSprintIndex, rs.vibeTaskName
+	task := rs.vibeTaskName
 	verdicts := append([]VerdictRow(nil), rs.lastFlowVerdicts...)
 	var card *UserDecisionCard
 	if rs.decisionCard != nil {
