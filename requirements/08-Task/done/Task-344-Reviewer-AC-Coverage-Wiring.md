@@ -61,7 +61,7 @@ Reviewer không thể "đóng dấu duyệt bừa" — nộp `submit_review_outc
 | **Flow tự do / legacy** | n/a | Không resolve được doc → no-op — byte-identical như trước |
 
 
-- `T-1` File mới `internal/runner/review_ac_coverage.go`:
+- `T-1` File mới `internal/runner/review_ac_coverage.go`: (deviation Task-352: helper `flowNodeFor` được inline vào `expectedReviewACs` thay vì hàm riêng — cùng pattern khóa)
   - `flowNodeFor(rs)` — resolve node của child submit từ `parent.activeFlowNodes` (mirror matching của `flowNodePostureFor`: stepID/label; trả node, không đổi hàm cũ).
   - `expectedReviewACs(s, rs) []string` — nguồn theo thứ tự: `rs.vibeTaskName` (join `rs.workspaceCwd`, abs-aware) → node INPUT binding `pathTemplate` → glob-newest (`{{idx}}`→`\d+`, `{{slug}}`→`[a-z0-9-]+`, pick ModTime mới nhất) → nil. I/O ngoài `s.mu`; cache dưới `s.mu`.
   - `validateReviewACCoverage(s, rs, in)` — `!in.viaReviewOutcome` → nil; rows từ `in.Payload["verdicts"].([]VerdictRow)`; gọi `ValidateReviewOutcomeVerdicts`.
@@ -75,11 +75,11 @@ Reviewer không thể "đóng dấu duyệt bừa" — nộp `submit_review_outc
 
 ## 6. Acceptance Check
 
-- [ ] AC-1: Reviewer vibe submit thiếu AC → tool result lỗi nêu đích danh AC thiếu, trong cùng turn model nộp lại được.
-- [ ] AC-2: Reviewer harness (cohort, `plan_reviewer` qua pathTemplate) thiếu AC → bị chặn trước khi verdict được record.
-- [ ] AC-3: Flow không có task doc resolvable → hành vi byte-identical như trước (no-op).
-- [ ] AC-4: Cả 3 provider path (claude MCP, codex, grok-bridge) đều bị chặn như nhau — test ở tầng bridge (điểm hội).
-- [ ] AC-5: Test cũ không bị sửa; toàn bộ suite `go test ./internal/runner/ ./internal/flowgate/` xanh (trừ pre-existing TestBUG327/TestTask330).
+- [x] AC-1: Reviewer vibe submit thiếu AC → tool result lỗi nêu đích danh AC thiếu, trong cùng turn model nộp lại được.
+- [x] AC-2: Reviewer harness (cohort, `plan_reviewer` qua pathTemplate) thiếu AC → bị chặn trước khi verdict được record.
+- [x] AC-3: Flow không có task doc resolvable → hành vi byte-identical như trước (no-op).
+- [x] AC-4: Cả 3 provider path (claude MCP, codex, grok-bridge) đều bị chặn như nhau — test ở tầng bridge (điểm hội).
+- [x] AC-5: Test cũ không bị sửa; toàn bộ suite `go test ./internal/runner/ ./internal/flowgate/` xanh (trừ pre-existing TestBUG327/TestTask330).
 
 ## 7. Out of Scope
 

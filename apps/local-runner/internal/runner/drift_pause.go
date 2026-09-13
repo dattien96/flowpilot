@@ -58,9 +58,13 @@ func (s *InteractiveService) armDriftPause(rs *interactiveRun, event driftdetect
 	gateReason := fmt.Sprintf("drift score %d (signals: %s) at step %q — confirm to continue",
 		event.DriftScore, strings.Join(event.TriggeredSignals, ", "), event.StepID)
 
-	// Idempotence: a run already parked on drift is left alone (no duplicate
-	// events, no reason clobbering). Block reasons live in the loop state.
-	if st := s.agentOrchestrator.loopStateFor(targetID); st.BlockReason == DriftPauseBlockReason {
+	// Idempotence + non-clobbering (Task-352): ANY existing park — drift
+	// re-arm included — is a no-op (the first ask to the user wins, no
+	// duplicate events), and foreign parks ("cap", "escalate", sprint
+	// boundary...) are never overwritten; resumeFlowWithFeedback keys
+	// special handling off some of those reasons (e.g. cap auto-extend).
+	// Block reasons live in the loop state.
+	if st := s.agentOrchestrator.loopStateFor(targetID); st.BlockReason != "" {
 		return false
 	}
 

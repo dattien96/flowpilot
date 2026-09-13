@@ -879,7 +879,14 @@ func parseReviewOutcomeInput(args map[string]any) (ReviewOutcomeInput, error) {
 	// providers alike (cross-provider Case 1). An invalid row rejects the
 	// whole call: the reviewer retries in-turn (the reprompt), and the CP-61
 	// hub-done gate is the fail-closed backstop if it never succeeds.
-	if raw, ok := args["verdicts"].([]any); ok {
+	// Task-352 (review finding): a PRESENT-but-malformed verdicts arg (not an
+	// array) must be rejected, not silently ignored — a silent drop would
+	// feed the empty-rows passthrough instead of the in-turn reprompt.
+	if rawAny, present := args["verdicts"]; present {
+		raw, ok := rawAny.([]any)
+		if !ok {
+			return in, fmt.Errorf("submit_review_outcome: verdicts must be an array of per-AC rows")
+		}
 		for _, item := range raw {
 			m, ok := item.(map[string]any)
 			if !ok {

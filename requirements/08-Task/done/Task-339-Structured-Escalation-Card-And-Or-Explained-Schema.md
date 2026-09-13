@@ -28,7 +28,7 @@
 ### Current Ask
 
 - Tạo tool mới `apps/local-runner/internal/agentpack/flow-pack/tools/request-user-decision.yaml`.
-- Cập nhật hàm `parkVibeRequirement` trong `runner/vibe_gate.go` và điểm xử lý `gate_hook.go` để đóng gói dữ liệu thẻ có cấu trúc.
+- Đóng gói dữ liệu thẻ có cấu trúc tại điểm xử lý flow-control: `runner/interactive_service.go` `applyFlowControl` (nhánh escalate, payload `decision_card`) — Task-352 hiệu chỉnh: tích hợp thực tế nằm ở đây, không phải `gate_hook.go`/`vibe_gate.go` như ghi ban đầu.
 - Cập nhật logic `or-explained` trong `internal/flowgate/evaluate.go` và `internal/flowgate/rules.go` để đọc trường có schema thay vì so khớp regex.
 
 ### Key Decisions

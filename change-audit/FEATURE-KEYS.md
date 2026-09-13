@@ -42,4 +42,4 @@ Source of truth for stable `feature_key` values used by:
 
 - skill-catalog — CP-62 P-5 catalog tier: skills enter prompts as name+description+path pointers (never full bodies), provider harness triggers natively / agents Read on demand (Task-347)
 - decision-card-ui — CP-62 P-3 card rendering: user_decision_card_requested event rendered as an interactive escalation card in desktop app + TUI, option id answered through the chat prompt channel (Task-345)
-- drift-pause — CP-23 ladder pause leg: dev-mode drift ≥80 asks the human through the confirm backend, vibe keeps owner-debate routing (Task-348)
+- drift-pause — CP-23 ladder pause leg: dev-mode drift ≥80 parks the run (BlockReason `drift`) + additive `drift_pause_required` event, resume via the parked-run continue channel — no dedicated confirm backend; vibe keeps owner-debate routing (Task-348)

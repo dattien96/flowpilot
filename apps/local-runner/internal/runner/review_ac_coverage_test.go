@@ -295,3 +295,46 @@ func TestReviewACCoverage_CachedPerChildRun(t *testing.T) {
 		t.Fatalf("cached set must still enforce after doc removal: got %v", got)
 	}
 }
+
+// Task-352 (review finding): read_only face + resolvable doc + ZERO verdict
+// rows → reject-all. Đây là cell "rubber-stamp guard" — mục đích tuyên bố của
+// task — nhưng trước đây chỉ được pin qua các test partial rows.
+func TestReviewACCoverage_ReadOnlyZeroRows_Rejected(t *testing.T) {
+	svc, parent := coverageRun(t)
+	ws := parent.workspaceCwd
+	coverageWriteDoc(t, ws, "requirements/08-Task/todo/Task-1-auth.md",
+		"- [ ] AC-1\n- [ ] AC-2\n", time.Now())
+	svc.mu.Lock()
+	parent.activeFlowNodes = []agentpack.FlowNode{
+		{
+			ID: "plan_writer",
+			ArtifactBindings: []agentpack.FlowArtifactBinding{{
+				Direction:      "output",
+				Required:       true,
+				ArtifactTypeID: ArtifactTypeFile,
+				ConfigJSON:     map[string]any{"pathTemplate": "requirements/08-Task/todo/Task-{{idx}}-{{slug}}.md"},
+			}},
+		},
+		{ID: "reviewer", Posture: PostureReadOnly},
+	}
+	svc.mu.Unlock()
+	child := coverageChild(t, svc, parent, "reviewer")
+
+	in, _ := reviewOutcomeToFlowControl(ReviewOutcomeInput{Status: "approved"})
+	got := svc.validateReviewACCoverage(child, in)
+	if got == nil || !strings.Contains(got.Error(), "AC-1") {
+		t.Fatalf("read_only zero rows must be rejected with named ACs, got %v", got)
+	}
+}
+
+// Task-352: malformed `verdicts` arg (present nhưng không phải array) phải bị
+// từ chối ở parse layer — không được rơi im lặng vào empty-passthrough.
+func TestReviewACCoverage_MalformedVerdictsArgRejected(t *testing.T) {
+	_, err := parseReviewOutcomeInput(map[string]any{
+		"status":   "approved",
+		"verdicts": map[string]any{"ac_id": "AC-1"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "verdicts must be an array") {
+		t.Fatalf("malformed verdicts arg must be rejected, got %v", err)
+	}
+}

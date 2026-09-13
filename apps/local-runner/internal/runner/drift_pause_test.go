@@ -135,3 +135,34 @@ func TestDriftPause_FlowChildParksParent(t *testing.T) {
 		t.Fatalf("parent loop state = %+v, want blocked/drift", pst)
 	}
 }
+
+// Task-352 (review finding): drift pause không được đè lên park khác — một
+// "cap"/"escalate" park đang chờ user phải giữ nguyên (auto-extend của
+// resumeFlowWithFeedback keys off BlockReason "cap").
+func TestDriftPause_DoesNotClobberForeignPark(t *testing.T) {
+	svc, rs := driftPauseRun(t, workingmode.Dev)
+	svc.agentOrchestrator.mutateLoop(rs.id, func(st AgentLoopState) AgentLoopState {
+		st.Status = "blocked"
+		st.BlockReason = "cap"
+		st.GateReason = "round cap reached"
+		return st
+	})
+	if svc.armDriftPause(rs, driftPauseEvent()) {
+		t.Fatalf("drift pause must not land over a foreign park")
+	}
+	st := svc.agentOrchestrator.loopStateFor(rs.id)
+	if st.BlockReason != "cap" {
+		t.Fatalf("BlockReason = %q, want cap preserved", st.BlockReason)
+	}
+	svc.mu.Lock()
+	count := 0
+	for _, ev := range rs.events {
+		if ev.Type == EventDriftPauseRequired {
+			count++
+		}
+	}
+	svc.mu.Unlock()
+	if count != 0 {
+		t.Fatalf("no drift event may be emitted over a foreign park, got %d", count)
+	}
+}

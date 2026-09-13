@@ -31,7 +31,7 @@
 
 ### Key Decisions
 
-- `D-1` Dev mode + drift ≥80 + backend đã đăng ký → emit user-confirm pause (card hỏi user), run dừng chờ trả lời; trả lời quyết định tiếp/quay về.
+- `D-1` (Task-352 hiệu chỉnh theo thiết kế đã ship — CA-859): Dev mode + drift ≥80 → park run bằng machinery blocked-flow (`BlockReason: drift`) + event additive `drift_pause_required`; KHÔNG dùng confirm backend riêng. Resume qua kênh parked-run feedback hiện có (`POST /agent-loop/continue`).
 - `D-2` Vibe mode → KHÔNG BAO GIỜ emit pause cho drift (P-1 `applyVibeDriftOnlyResolver` / owner debate giữ nguyên — verify thứ tự chạy trước pause).
 - `D-3` Backend chưa đăng ký (headless/không client) → giữ hành vi hiện tại (log-only) — không bao giờ kẹt modal.
 - `D-4` Flag-gated giữ nguyên (`FLOWPILOT_ENABLE_DRIFT_DETECTOR`); không đổi ladder thresholds; không đổi precedence contract (P-1).
@@ -62,7 +62,7 @@
 
 
 - `T-1` Discovery: confirm backend (`ssLockGate` registration, `EventUserConfirmRequired` lifecycle, kênh trả lời client) — chốt điểm emit an toàn.
-- `T-2` `gate_hook.go` case `ActionPauseForHuman`: dev mode + backend ready → emit confirm (đóng gói drift score + signals + step để user hiểu vì sao bị hỏi); vibe mode → không emit (đường owner debate đã xử lý).
+- `T-2` (đã ship) `runner/drift_pause.go` `armDriftPause` — park qua `mutateLoop` + `parkFlowForAwaitingUser`; `gate_hook.go` gọi sau `st.mu.Unlock()` (lock order). Task-352: chỉ arm khi loop CHƯA bị park (không đè park `cap`/`escalate`).
 - `T-3` Xử lý câu trả lời: user xác nhận → run tiếp tục (clear pending ladder state); user từ chối/không trả lời → hành vi theo cơ chế confirm hiện có (không tự resume).
 - `T-4` Tests mới: dev+80+backend → confirm emitted 1 lần/turn; vibe+80 → owner debate, không confirm; dev+80+no-backend → log-only (hiện trạng); không đụng test cũ.
 

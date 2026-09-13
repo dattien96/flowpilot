@@ -14,7 +14,7 @@ import (
 
 var acIDPattern = regexp.MustCompile(`\bAC-\d+\b`)
 
-// ExtractACIDs returns the deduplicated, first-appearance-ordered AC ids
+// ExtractACIDs returns the deduplicated, lexicographically sorted AC ids
 // (AC-N) present in an SS-13 artifact body. Acceptance checklists ("- [ ]
 // AC-1: ..."), headings ("## AC-3 notes"), and inline references all count —
 // the reviewer must rule on every criterion the artifact names.

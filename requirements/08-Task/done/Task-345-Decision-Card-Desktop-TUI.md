@@ -33,7 +33,7 @@
 
 - `D-1` Card là view **additive** trên event mới — client không biết event thì bỏ qua (Q-1 wrap-around giữ nguyên: prose card vẫn là fallback).
 - `D-2` `recommended` highlight nổi bật; mỗi option hiển thị `label` + `consequence`; `evidence` là danh sách file:line có thể click/hiển thị; `detail` là đoạn phụ đề.
-- `D-3` Answer channel: dùng đúng kênh resume/answer hiện có của park/escalate (không tạo endpoint mới) — message mang `option_id`; runner-side match option (Task-346 ghi nhận lựa chọn).
+- `D-3` Answer channel: dùng đúng kênh resume/answer hiện có của park/escalate (không tạo endpoint mới) — message mang `option_id`; runner-side match option (Task-346 ghi nhận lựa chọn). **Task-350 hiệu chỉnh**: desktop gửi qua `continueFlow` (POST `/agent-loop/continue`) — `/turns` bị seal 409 trên run parked; Q-1 prose fallback trên desktop là ô feedback của FlowAwaitingUserCard (composer bị khóa khi parked).
 - `D-4` Parity: cùng payload event, cùng hành vi answer trên cả desktop + TUI.
 
 ## 1. Goal
