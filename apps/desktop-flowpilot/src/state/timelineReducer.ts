@@ -97,9 +97,12 @@ function statusFromEvent(e: ProviderEventDTO, prev: RunStatus): RunStatus {
       // and let that event flip back to running. (CP-35)
       return e.status === "reprompt" ? prev : "completed";
     case "user_decision_card_requested":
-      // CP-62 P-3 (Task-345): the run parks on the escalation card. Unlock the
-      // composer (same "waiting_question" semantics) so the structured option
-      // buttons AND a manual prose fallback both stay available (Q-1).
+      // CP-62 P-3 (Task-345/350): the run parks on the escalation card.
+      // waiting_question keeps the run out of the "running" spinner; the
+      // answer channel is the card buttons (POST agent-loop/continue) and
+      // the FlowAwaitingUserCard feedback box — the chat composer stays
+      // blocked while the run is parked (Q-1 prose fallback rides the
+      // feedback box, not the composer).
       return "waiting_question";
     default:
       return prev === "waiting_approval" || prev === "waiting_question" ? "running" : prev;

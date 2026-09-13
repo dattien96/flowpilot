@@ -131,6 +131,18 @@ func (s *InteractiveService) takeNextVibeSprintLocked(rs *interactiveRun) vibeSp
 	if d.Start {
 		rs.vibeSprintIndex++
 		d.Sprint = rs.vibeSprintIndex
+		// Task-350: cross-sprint verified-state reset. The handoff/coverage
+		// sources belong to the sprint that just ended — carrying verdict
+		// rows, tampered-test paths, or a stale decision card (and its
+		// choice) into sprint N+1 misattributes them (CP-49 hard ceiling).
+		// The AC cache is keyed to the governing task doc, which advances
+		// with the sprint, so it must be re-resolved too.
+		rs.lastFlowVerdicts = nil
+		rs.lastTamperedTestPaths = nil
+		rs.decisionCard = nil
+		rs.decisionCardChosen = ""
+		rs.expectedACsCache = nil
+		rs.expectedACsResolved = false
 	}
 	return d
 }

@@ -7,12 +7,13 @@ interface Props {
   chosenOptionId?: string;
 }
 
-// CP-62 P-3 (Task-345): the structured escalation card for the runner's
+// CP-62 P-3 (Task-345/350): the structured escalation card for the runner's
 // user_decision_card_requested event (request_user_decision). One-tap options
 // with stated consequences; the recommended option is highlighted. The answer
-// channel is the chat prompt — the runner matches the option id back to the
-// parked card (Task-346) — and the prose composer stays available as the Q-1
-// fallback, so the card never blocks free-text replies.
+// channel is the parked-run feedback endpoint (POST agent-loop/continue) — the
+// runner matches the option id back to the parked card (Task-346). Q-1 prose
+// fallback = the FlowAwaitingUserCard feedback box; the chat composer stays
+// blocked while the run is parked.
 export function DecisionCard({ itemId, card, chosenOptionId }: Props): React.ReactElement {
   const choose = useStore((s) => s.chooseDecisionOption);
   const resolved = chosenOptionId !== undefined;

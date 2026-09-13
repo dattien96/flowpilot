@@ -2030,17 +2030,34 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   async chooseDecisionOption(itemId, optionId) {
-    // CP-62 P-3 (Task-345): the decision card's answer channel IS the chat
-    // prompt — the runner matches the option id back to the parked decision
-    // card (Task-346 records the choice in the sprint handoff). Optimistically
-    // mark the specific card answered; the prose composer stays usable as the
-    // Q-1 fallback either way.
+    // CP-62 P-3 (Task-345/350): a card-parked run is SEALED against new
+    // turns (POST /turns answers 409 flow_awaiting_user), so the answer MUST
+    // go through the parked-run feedback channel — POST .../agent-loop/continue
+    // — exactly like the TUI and FlowAwaitingUserCard. The runner matches the
+    // option id back to the card there (captureDecisionChoice, Task-346) and
+    // records it in the sprint handoff. Q-1 prose fallback = the
+    // FlowAwaitingUserCard feedback box (the composer stays blocked while the
+    // run is parked), not this card.
     set((s) => ({
       timeline: s.timeline.map((it) =>
         it.kind === "decision_card" && it.id === itemId ? { ...it, chosenOptionId: optionId } : it,
       ),
     }));
-    await get().sendPrompt(optionId);
+    try {
+      await get().continueFlow(optionId);
+    } catch (err) {
+      // BUG-172-style rollback: the optimistic "answered" state must not
+      // survive a failed resume — the card stays actionable.
+      // eslint-disable-next-line no-console
+      console.error("[FlowPilot] decision option failed:", err);
+      set((s) => ({
+        timeline: s.timeline.map((it) =>
+          it.kind === "decision_card" && it.id === itemId && it.chosenOptionId === optionId
+            ? { ...it, chosenOptionId: undefined }
+            : it,
+        ),
+      }));
+    }
   },
 
   async stop() {
