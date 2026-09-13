@@ -40,6 +40,8 @@ Source of truth for stable `feature_key` values used by:
 
 - zcode-parity — CP-62 harness hardening from ZCode lessons: gate precedence, verdict schema, structured escalation card, node isolation posture, context profiles, sprint handoff, conventions source
 
+- sprint-handoff — CP-62 P-6 inter-sprint handoff artifact (sprint_handoff.v1) written from verified state at the boundary, injected into the next sprint's entry prompt, enriched with card choices + weakened tests (Task-342/346)
+- node-isolation — CP-62 P-4 per-node posture enforcement (read_only/verdict_only) with gated provider modes so the bridge matrix is reachable end-to-end (Task-340/349)
 - skill-catalog — CP-62 P-5 catalog tier: skills enter prompts as name+description+path pointers (never full bodies), provider harness triggers natively / agents Read on demand (Task-347)
 - decision-card-ui — CP-62 P-3 card rendering: user_decision_card_requested event rendered as an interactive escalation card in desktop app + TUI, option id answered through the chat prompt channel (Task-345)
 - drift-pause — CP-23 ladder pause leg: dev-mode drift ≥80 parks the run (BlockReason `drift`) + additive `drift_pause_required` event, resume via the parked-run continue channel — no dedicated confirm backend; vibe keeps owner-debate routing (Task-348)

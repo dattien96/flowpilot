@@ -72,11 +72,11 @@
 
 ## 6. Acceptance Check
 
-- [ ] AC-1: Dev mode, drift ≥80, backend sẵn → user nhận confirm pause đúng 1 lần cho turn đó, kèm lý do drift.
-- [ ] AC-2: Vibe mode, drift ≥80 → owner debate (P-1), không có confirm nào tới user.
-- [ ] AC-3: Backend chưa đăng ký → hành vi giữ nguyên (log-only), không kẹt client.
-- [ ] AC-4: 30–79 ladder (note/narrow) không đổi; dev mode byte-stable trừ pause leg mới.
-- [ ] AC-5: Suite xanh (trừ pre-existing), test cũ untouched.
+- [x] AC-1: Dev mode, drift ≥80, backend sẵn → user nhận confirm pause đúng 1 lần cho turn đó, kèm lý do drift.
+- [x] AC-2: Vibe mode, drift ≥80 → owner debate (P-1), không có confirm nào tới user.
+- [x] AC-3: Backend chưa đăng ký → hành vi giữ nguyên (log-only), không kẹt client.
+- [x] AC-4: 30–79 ladder (note/narrow) không đổi; dev mode byte-stable trừ pause leg mới.
+- [x] AC-5: Suite xanh (trừ pre-existing), test cũ untouched.
 
 ## 7. Out of Scope
 

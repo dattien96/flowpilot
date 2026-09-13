@@ -70,11 +70,11 @@ Prompt nền của agent không còn gánh body của mọi skill (hàng ngàn t
 
 ## 6. Acceptance Check
 
-- [ ] AC-1: Prompt mặc định chứa catalog `- [name]: description` cho mọi skill, không chứa body skill nào.
-- [ ] AC-2: Trigger khớp → body đúng skill được nạp one-shot.
-- [ ] AC-3: Token nền giảm đo được qua `prompt_context_audit` (baseline vs after ghi trong Completion Notes).
-- [ ] AC-4: Hành vi agent không hỏng: skill vẫn kích hoạt đúng khi trigger (matrix test theo CP-23 trigger list).
-- [ ] AC-5: Test cũ untouched; nếu conflict → dừng + report theo R1.
+- [x] AC-1: Prompt mặc định chứa catalog `- [name]: description` cho mọi skill, không chứa body skill nào.
+- [x] AC-2: Trigger khớp → body đúng skill được nạp one-shot.
+- [x] AC-3: Token nền giảm đo được qua `prompt_context_audit` (baseline vs after ghi trong Completion Notes).
+- [x] AC-4: Hành vi agent không hỏng: skill vẫn kích hoạt đúng khi trigger (matrix test theo CP-23 trigger list).
+- [x] AC-5: Test cũ untouched; nếu conflict → dừng + report theo R1.
 
 ## 7. Out of Scope
 

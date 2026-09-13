@@ -71,11 +71,11 @@ Khi agent gọi `request_user_decision`, user trên desktop app và TUI thấy t
 
 ## 6. Acceptance Check
 
-- [ ] AC-1: Desktop app render card đủ question/options/recommended/consequence/evidence từ event thật.
-- [ ] AC-2: Click option gửi `option_id` về runner qua kênh hiện có; run tiếp diễn.
-- [ ] AC-3: TUI render + chọn được option, gửi cùng payload.
-- [ ] AC-4: Event sai payload → client rơi về prose card như cũ (không crash).
-- [ ] AC-5: admin-web không bị đụng.
+- [x] AC-1: Desktop app render card đủ question/options/recommended/consequence/evidence từ event thật.
+- [x] AC-2: Click option gửi `option_id` về runner qua kênh hiện có; run tiếp diễn.
+- [x] AC-3: TUI render + chọn được option, gửi cùng payload.
+- [x] AC-4: Event sai payload → client rơi về prose card như cũ (không crash).
+- [x] AC-5: admin-web không bị đụng.
 
 ## 7. Out of Scope
 

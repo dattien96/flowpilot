@@ -70,11 +70,11 @@ Sprint sau đọc handoff thấy đủ: quyết định nào user/owner đã ch�
 
 ## 6. Acceptance Check
 
-- [ ] AC-1: Handoff sprint có entry decisions từ card (kèm chosen + alternatives khi có lựa chọn).
-- [ ] AC-2: Tampered test trong sprint xuất hiện ở `weakened_tests` với justification.
-- [ ] AC-3: Không có dữ liệu → file giống hệt hiện tại (field omitted).
-- [ ] AC-4: Sprint chain không bao giờ fail vì enrichment (best-effort).
-- [ ] AC-5: Suite runner xanh (trừ pre-existing), test cũ untouched.
+- [x] AC-1: Handoff sprint có entry decisions từ card (kèm chosen + alternatives khi có lựa chọn).
+- [x] AC-2: Tampered test trong sprint xuất hiện ở `weakened_tests` với justification.
+- [x] AC-3: Không có dữ liệu → file giống hệt hiện tại (field omitted).
+- [x] AC-4: Sprint chain không bao giờ fail vì enrichment (best-effort).
+- [x] AC-5: Suite runner xanh (trừ pre-existing), test cũ untouched.
 
 ## 7. Out of Scope
 
