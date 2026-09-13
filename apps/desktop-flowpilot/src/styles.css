@@ -6775,3 +6775,69 @@ body.is-resizing-sidebar {
   opacity: 0.65;
   border: 1px solid currentColor;
 }
+
+/* CP-62 P-3 (Task-345): structured escalation decision card. */
+.card.decision-card {
+  border-color: var(--ask);
+}
+.decision-card-question {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+.decision-card-detail {
+  color: var(--text-dim);
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+.decision-card-options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.decision-card-option {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  text-align: left;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-3);
+  color: var(--text);
+  cursor: pointer;
+}
+.decision-card-option:hover:not(:disabled) {
+  border-color: var(--ask);
+}
+.decision-card-option.recommended {
+  border-color: var(--warn);
+}
+.decision-card-option.chosen {
+  border-color: var(--accent);
+}
+.decision-card-option:disabled {
+  cursor: default;
+  opacity: 0.85;
+}
+.decision-card-option-label {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  font-weight: 600;
+  font-size: 13px;
+}
+.decision-card-option-consequence {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.decision-card-evidence {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.decision-card-evidence-row {
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  color: var(--text-dim);
+}

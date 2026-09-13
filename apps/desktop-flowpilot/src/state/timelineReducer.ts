@@ -1,4 +1,4 @@
-import type { ApprovalDetails, FlowAuditDraftDTO, ProviderEventDTO, QuestionOption, RunStatus } from "../types/contract";
+import type { ApprovalDetails, DecisionCardDTO, FlowAuditDraftDTO, ProviderEventDTO, QuestionOption, RunStatus } from "../types/contract";
 
 /** BUG-243 F-3: condenses a FlowAuditDraft into the inline timeline card's
  *  markdown text. Mirrors RenderAuditDraftText's section order
@@ -39,6 +39,7 @@ export type TimelineItem =
   | { kind: "approval"; id: string; approvalId: string; details: ApprovalDetails; decision?: string }
   | { kind: "question"; id: string; questionId: string; prompt: string; options: QuestionOption[]; multiSelect?: boolean; answer?: string | string[] }
   | { kind: "agent"; id: string; agentName: string; childRunId: string; finalMessage?: string }
+  | { kind: "decision_card"; id: string; card: DecisionCardDTO; chosenOptionId?: string }
   | { kind: "system"; id: string; text: string; tone: "info" | "error" | "warn" };
 
 export interface PendingApproval {
@@ -95,6 +96,11 @@ function statusFromEvent(e: ProviderEventDTO, prev: RunStatus): RunStatus {
       // reprompt is immediately followed by a turn_started, so keep the prior status
       // and let that event flip back to running. (CP-35)
       return e.status === "reprompt" ? prev : "completed";
+    case "user_decision_card_requested":
+      // CP-62 P-3 (Task-345): the run parks on the escalation card. Unlock the
+      // composer (same "waiting_question" semantics) so the structured option
+      // buttons AND a manual prose fallback both stay available (Q-1).
+      return "waiting_question";
     default:
       return prev === "waiting_approval" || prev === "waiting_question" ? "running" : prev;
   }
@@ -343,6 +349,15 @@ export function applyTimelineEvent(s: TimelineState, e: ProviderEventDTO): Parti
                 { questionId: e.questionId, prompt: e.prompt, options: e.options, multiSelect: e.multiSelect },
               ],
       });
+
+    case "user_decision_card_requested":
+      // CP-62 P-3 (Task-345): render the structured escalation card. The
+      // answer channel is the chat prompt (chooseDecisionOption sends the
+      // option id), so no pendingQuestions entry is registered — the prose
+      // composer stays usable as the Q-1 fallback.
+      closeAssistant();
+      timeline.push({ kind: "decision_card", id: e.id, card: e.input });
+      return finalize(timeline);
 
     case "turn_completed":
       closeAssistant();

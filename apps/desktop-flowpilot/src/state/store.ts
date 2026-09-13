@@ -516,6 +516,8 @@ interface AppState {
   sendPrompt(prompt: string, skills?: string[], attachments?: PromptAttachment[]): Promise<void>;
   approve(approvalId: string, decision: string, remember?: boolean): Promise<void>;
   answer(questionId: string, choice: string | string[]): Promise<void>;
+  /** CP-62 P-3 (Task-345): answer a structured escalation card by sending the option id as the next prompt. */
+  chooseDecisionOption(itemId: string, optionId: string): Promise<void>;
   stop(): Promise<void>;
   reconnect(): Promise<void>;
   loadRunHistory(): Promise<void>;
@@ -2025,6 +2027,20 @@ export const useStore = create<AppState>((set, get) => ({
         ],
       }));
     }
+  },
+
+  async chooseDecisionOption(itemId, optionId) {
+    // CP-62 P-3 (Task-345): the decision card's answer channel IS the chat
+    // prompt — the runner matches the option id back to the parked decision
+    // card (Task-346 records the choice in the sprint handoff). Optimistically
+    // mark the specific card answered; the prose composer stays usable as the
+    // Q-1 fallback either way.
+    set((s) => ({
+      timeline: s.timeline.map((it) =>
+        it.kind === "decision_card" && it.id === itemId ? { ...it, chosenOptionId: optionId } : it,
+      ),
+    }));
+    await get().sendPrompt(optionId);
   },
 
   async stop() {

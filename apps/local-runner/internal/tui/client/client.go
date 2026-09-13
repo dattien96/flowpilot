@@ -471,7 +471,10 @@ type ProviderEvent struct {
 	Recoverable bool                `json:"recoverable,omitempty"`
 	Options     []map[string]string `json:"options,omitempty"`
 	MultiSelect bool                `json:"multiSelect,omitempty"`
-	OccurredAt  string              `json:"occurredAt"`
+	// DecisionCard is the runner UserDecisionCard payload on
+	// user_decision_card_requested events (CP-62 P-3, Task-345).
+	DecisionCard *DecisionCardData `json:"input,omitempty"`
+	OccurredAt   string            `json:"occurredAt"`
 	// TokenUsage is present on token_usage_updated events.
 	TokenUsage *TokenUsageSnapshot `json:"tokenUsage,omitempty"`
 	// AgentGraph is present on agent_graph_updated events (legacy runner name).
@@ -491,6 +494,31 @@ type ProviderEvent struct {
 	// read-only instead of re-showing an interactive form (runner
 	// ProviderEvent.Answer twin).
 	Answer []string `json:"answer,omitempty"`
+}
+
+// DecisionCardData mirrors the runner's UserDecisionCard (CP-62 P-3,
+// Task-339/345): a structured escalation question with actionable options.
+type DecisionCardData struct {
+	Question    string                 `json:"question"`
+	Detail      string                 `json:"detail,omitempty"`
+	Recommended string                 `json:"recommended,omitempty"`
+	Options     []DecisionCardOption   `json:"options"`
+	Evidence    []DecisionCardEvidence `json:"evidence,omitempty"`
+}
+
+// DecisionCardOption is one choice on the card; Consequence states what
+// happens when chosen.
+type DecisionCardOption struct {
+	ID          string `json:"id"`
+	Label       string `json:"label"`
+	Consequence string `json:"consequence"`
+}
+
+// DecisionCardEvidence is one file:line citation backing the question.
+type DecisionCardEvidence struct {
+	Path    string `json:"path"`
+	Line    int    `json:"line,omitempty"`
+	Excerpt string `json:"excerpt,omitempty"`
 }
 
 // EffectiveAgentGraph returns the graph from either json name so old and new

@@ -2135,6 +2135,25 @@ func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 			m.statusMsg = "gate"
 		}
 
+	case "user_decision_card_requested":
+		// CP-62 P-3 (Task-345): structured escalation card. Arm the decision
+		// state; the next input submits the chosen option id as parked-run
+		// feedback (Task-346 matches it back). A payload without usable
+		// options keeps the prose card (Q-1 wrap-around).
+		if ev.DecisionCard != nil && len(ev.DecisionCard.Options) > 0 {
+			m.decisionCard = &DecisionCardState{
+				RunID:       ev.WorkflowRunID,
+				Question:    ev.DecisionCard.Question,
+				Options:     ev.DecisionCard.Options,
+				Recommended: ev.DecisionCard.Recommended,
+			}
+			m.connStatus = ConnWaiting
+			m.statusMsg = "decision"
+			m.addMessage("system", formatDecisionCardMessage(ev.DecisionCard), "decision")
+		} else {
+			m.addMessage("system", "request_user_decision arrived without a usable card — answer in prose.", "gate")
+		}
+
 	case "token_usage_updated":
 		if ev.TokenUsage != nil {
 			m.lastTokens = ev.TokenUsage
@@ -3771,6 +3790,13 @@ func (m *AppModel) processInput(input string) (tea.Model, tea.Cmd) {
 		return m.handleGateInput(input)
 	}
 
+	// CP-62 P-3 (Task-345): an armed decision card consumes the next input —
+	// an option number/id/label submits that option; any other text is the
+	// Q-1 prose fallback sent verbatim to the parked run.
+	if m.decisionCard != nil {
+		return m.handleDecisionCardInput(input)
+	}
+
 	if !m.canSend() {
 		m.addMessage("system", "Child transcript is read-only. Return to main (/agent main).", "error")
 		return m, nil
@@ -3955,6 +3981,73 @@ func (m *AppModel) handleGateInput(input string) (tea.Model, tea.Cmd) {
 	opts := strings.Join(optionChips(m.gate.Options), " ")
 	m.addMessage("system", fmt.Sprintf("Gate options: %s (click a chip or type number/name)", opts), "gate")
 	return m, nil
+}
+
+// handleDecisionCardInput interprets user input while a CP-62 P-3 (Task-345)
+// decision card is armed. An option number (1-based), option id, or option
+// label submits that option id as parked-run feedback (Task-346 matches it
+// back to the card); any other non-empty text is the Q-1 prose fallback sent
+// verbatim. Empty input is ignored.
+func (m *AppModel) handleDecisionCardInput(input string) (tea.Model, tea.Cmd) {
+	card := m.decisionCard
+	if card == nil {
+		return m, nil
+	}
+	text := strings.TrimSpace(input)
+	if text == "" {
+		m.addMessage("system", "Decision card: type the option number/name, or your own answer.", "decision")
+		return m, nil
+	}
+	runID := card.RunID
+	for i, opt := range card.Options {
+		if strings.EqualFold(text, fmt.Sprintf("%d", i+1)) ||
+			strings.EqualFold(text, opt.ID) ||
+			strings.EqualFold(text, opt.Label) {
+			m.decisionCard = nil
+			m.connStatus = ConnRunning
+			m.statusMsg = "thinking…"
+			m.addMessage("user", opt.Label, "")
+			return m, m.cmdContinueFlowWithFeedback(runID, opt.ID)
+		}
+	}
+	m.decisionCard = nil
+	m.connStatus = ConnRunning
+	m.statusMsg = "thinking…"
+	m.addMessage("user", text, "")
+	return m, m.cmdContinueFlowWithFeedback(runID, text)
+}
+
+// formatDecisionCardMessage renders the armed card as a chat message: the
+// question, numbered options with consequences (the recommended one marked),
+// and the evidence citations.
+func formatDecisionCardMessage(card *client.DecisionCardData) string {
+	var b strings.Builder
+	b.WriteString("Decision needed: " + card.Question)
+	if card.Detail != "" {
+		b.WriteString("\n" + card.Detail)
+	}
+	for i, opt := range card.Options {
+		marker := ""
+		if card.Recommended != "" && opt.ID == card.Recommended {
+			marker = " [recommended]"
+		}
+		b.WriteString(fmt.Sprintf("\n  %d. %s%s — %s", i+1, opt.Label, marker, opt.Consequence))
+	}
+	if len(card.Evidence) > 0 {
+		b.WriteString("\nEvidence:")
+		for _, ev := range card.Evidence {
+			ref := ev.Path
+			if ev.Line > 0 {
+				ref += fmt.Sprintf(":%d", ev.Line)
+			}
+			if ev.Excerpt != "" {
+				ref += " — " + ev.Excerpt
+			}
+			b.WriteString("\n  - " + ref)
+		}
+	}
+	b.WriteString("\nReply with the option number/name, or type your own answer.")
+	return b.String()
 }
 
 // armGateCustom arms the [Custom] chip flow: the next Enter submits the typed
@@ -7382,6 +7475,16 @@ func runHeadless(m *AppModel, prompt string) error {
 		case "flow_gate_violation":
 			// In headless mode, gate violations are fatal.
 			return fmt.Errorf("gate violation blocked headless run (options: %s)", strings.Join(ev.GateOptions, ", "))
+		case "user_decision_card_requested":
+			// CP-62 P-3 (Task-345): headless has no interactive card — print
+			// the question and options so the operator can answer on the next
+			// stdin turn; non-fatal (Q-1 prose fallback).
+			if card := ev.DecisionCard; card != nil {
+				fmt.Fprintf(os.Stdout, "Decision needed: %s\n", card.Question)
+				for i, opt := range card.Options {
+					fmt.Fprintf(os.Stdout, "  %d. %s — %s\n", i+1, opt.Label, opt.Consequence)
+				}
+			}
 		}
 	}
 	if err := <-errCh; err != nil {
