@@ -195,6 +195,11 @@ type interactiveRun struct {
 	// control — additive to the prose GateReason (Q-1 wrap-around: the prose
 	// card stays the fallback; this only enriches the client render).
 	decisionCard *UserDecisionCard
+	// expectedACsCache holds the per-child-run expected AC set resolved from
+	// the governing task artifact (Task-344): resolved once per run — the doc
+	// set does not change mid-review — so repeated submits skip the file I/O.
+	expectedACsCache    []string
+	expectedACsResolved bool
 	// lastFlowVerdicts are the raw reviewer verdict rows from the most recent
 	// flow_control application (CP-62 P-6, Task-342): the sprint handoff's
 	// verified decisions source. Rows arrive typed via payload["verdicts"].
@@ -6074,6 +6079,13 @@ func (b *turnBridge) SpawnAgent(in SpawnAgentInput) (SpawnAgentResult, error) {
 // already instructs (BUG-NOTE-CP42 #13). Non-cohort children (flowCohortId ==
 // "") and the hub itself are unaffected.
 func (b *turnBridge) SubmitFlowControl(in FlowControlInput) (FlowControlResult, error) {
+	// Task-344 (CP-62 P-2 follow-up): per-AC verdict coverage — the
+	// reviewer's governing task artifact supplies the expected set; a
+	// submission missing ACs is rejected in-turn (the error result IS the
+	// reprompt). Unresolvable artifact → no-op, legacy flows byte-identical.
+	if err := b.svc.validateReviewACCoverage(b.rs, in); err != nil {
+		return FlowControlResult{}, err
+	}
 	if b.rs.flowCohortId != "" {
 		targetParentID := b.rs.parentRunID
 		if targetParentID == "" {

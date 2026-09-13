@@ -39,3 +39,7 @@ Source of truth for stable `feature_key` values used by:
 - runtime-intelligence — context budget packer, wrong-way drift detection, mistake-to-skill learning (CP-23)
 
 - zcode-parity — CP-62 harness hardening from ZCode lessons: gate precedence, verdict schema, structured escalation card, node isolation posture, context profiles, sprint handoff, conventions source
+
+- skill-catalog — CP-62 P-5 catalog tier: skills enter prompts as name+description+path pointers (never full bodies), provider harness triggers natively / agents Read on demand (Task-347)
+- decision-card-ui — CP-62 P-3 card rendering: user_decision_card_requested event rendered as an interactive escalation card in desktop app + TUI, option id answered through the chat prompt channel (Task-345)
+- drift-pause — CP-23 ladder pause leg: dev-mode drift ≥80 asks the human through the confirm backend, vibe keeps owner-debate routing (Task-348)
