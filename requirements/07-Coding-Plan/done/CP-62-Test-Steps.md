@@ -206,7 +206,7 @@ Live-grep xác nhận thêm (serve.log 2026-09-14): `[prompt-pack] profile budge
 
 - [ ] Mục §2 Kiểm thử tự động chạy xanh 100%.
 - [x] M-1: **LIVE 2026-09-14 (run-434, grok-4.5)**: plan_reviewer nộp `status=approved, AC-1…AC-8 all pass` trên Task-910; lần submit đầu bị parse layer từ chối → tự re-check schema và nộp lại (in-turn reprompt live). Silent-deny passive — reviewer không có write attempt trong run.
-- [ ] M-2: File `handoff-sprint-1.yaml` được tạo và Sprint 2 tiêu thụ thành công. *(LIVE đang chạy: run-2966 vibe-sprint, sprint 1 tester→coder)*
+- [ ] M-2: File `handoff-sprint-1.yaml` được tạo và Sprint 2 tiêu thụ thành công. *(LIVE 2026-09-14: run-2966 vibe-sprint chạy trọn 1 sprint tdd→coder→validate→synthesis→audit với grok-4.5 — audit gate block được resolve qua gate-decision sau khi remediate Task-910 DoD + CA-920; boundary/handoff chưa trigger được vì pipeline cần vibe-cp-ingest đầy đủ với SS-lock — run-8459/13439 xác nhận vibe-intake sống sau khi sửa LaunchAgent PATH. Logic boundary emit/inject đã pin bằng TestHandoffEnrichment_* + TestSprintHandoff_*)*
 - [ ] M-3: Giải trình `dod_explanation` có schema được thông qua mà không cần so khớp chuỗi regex.
 - [ ] M-4: Reviewer nộp thiếu AC bị chặn kèm tên AC; task doc sai chuẩn thì coverage tự bỏ qua.
 - [ ] M-5: Decision card hiển thị trên Desktop + TUI; chọn option gửi option_id; prose fallback hoạt động.
