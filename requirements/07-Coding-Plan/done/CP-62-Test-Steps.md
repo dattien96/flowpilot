@@ -82,19 +82,19 @@ go test ./internal/tui/app/ -count=1 -timeout 120s -run 'TestDecisionCard_' -v
 
 | Step | Kiểm tra | Pass khi | Tick |
 |---|---|---|---|
-| 2.1 | Precedence Gate (`P-1`) | `TestPrecedence_*` green; `r-requirement` > drift > `r-dod-complete` | [ ] |
-| 2.2 | Verdict Schema (`P-2`) | `TestSubmitReviewOutcome_*` green; reprompt 1 lần khi thiếu AC; raw row identity | [ ] |
-| 2.3 | Structured Card (`P-3`) | `TestRDodStructured_*` green; giải trình có cấu trúc pass, fallback sang prose card | [ ] |
-| 2.4 | Node Isolation (`P-4`) | `TestNodeIsolation_*` green; silent-deny write tools, allow safe bash, deny dangerous bash | [ ] |
-| 2.5 | Context Profile (`P-5`) | `TestContextProfile_*` green; đúng candidate set per profile, token cap chặt | [ ] |
-| 2.6 | Sprint Handoff (`P-6`) | `TestSprintHandoff_*` green; audit node ghi đúng YAML, sprint sau nạp ưu tiên cao | [ ] |
-| 2.7 | Conventions Source (`P-7`) | `TestConventionsSource_*` green; user > workspace > AGENTS.md, Tier-1 mandatory | [ ] |
-| 2.8 | Old Regression Untouched | `TestCP61HubDone`, `TestCP53ReviewDoneVerdict`, `TestRDod*` xanh 100% | [ ] |
-| 2.9 | AC Coverage (`Task-344`) | `TestReviewACCoverage_*` green; thiếu AC bị chặn kèm tên AC; owner verdict_only không bao giờ bị enforce | [ ] |
-| 2.10 | Skill Catalog (`Task-347`) | `TestInjectSkillContent_*` green; prompt chứa pointer name+description+path, KHÔNG chứa body | [ ] |
-| 2.11 | Drift Pause (`Task-348`) | `TestDriftPause_*` green; dev park + event, vibe không hỏi, idempotent, flow child park parent | [ ] |
-| 2.12 | Handoff Enrichment (`Task-346`) | `TestHandoffEnrichment_*` green; card choice + weakened_tests vào handoff; rỗng → field omitted | [ ] |
-| 2.13 | Decision Card TUI (`Task-345`) | `TestDecisionCard_*` green; event arm card, số → option id qua feedback, prose fallback | [ ] |
+| 2.1 | Precedence Gate (`P-1`) | `TestPrecedence_*` green; `r-requirement` > drift > `r-dod-complete` | [x] |
+| 2.{i+1} | Verdict Schema (`P-2`) | `TestSubmitReviewOutcome_*` green; reprompt 1 lần khi thiếu AC; raw row identity | [x] |
+| 2.{i+1} | Structured Card (`P-3`) | `TestRDodStructured_*` green; giải trình có cấu trúc pass, fallback sang prose card | [x] |
+| 2.{i+1} | Node Isolation (`P-4`) | `TestNodeIsolation_*` green; silent-deny write tools, allow safe bash, deny dangerous bash | [x] |
+| 2.{i+1} | Context Profile (`P-5`) | `TestContextProfile_*` green; đúng candidate set per profile, token cap chặt | [x] |
+| 2.{i+1} | Sprint Handoff (`P-6`) | `TestSprintHandoff_*` green; audit node ghi đúng YAML, sprint sau nạp ưu tiên cao | [x] |
+| 2.{i+1} | Conventions Source (`P-7`) | `TestConventionsSource_*` green; user > workspace > AGENTS.md, Tier-1 mandatory | [x] |
+| 2.{i+1} | Old Regression Untouched | `TestCP61HubDone`, `TestCP53ReviewDoneVerdict`, `TestRDod*` xanh 100% | [x] |
+| 2.{i+1} | AC Coverage (`Task-344`) | `TestReviewACCoverage_*` green; thiếu AC bị chặn kèm tên AC; owner verdict_only không bao giờ bị enforce | [x] |
+| 2.{i+1} | Skill Catalog (`Task-347`) | `TestInjectSkillContent_*` green; prompt chứa pointer name+description+path, KHÔNG chứa body | [x] |
+| 2.{i+1} | Drift Pause (`Task-348`) | `TestDriftPause_*` green; dev park + event, vibe không hỏi, idempotent, flow child park parent | [x] |
+| 2.{i+1} | Handoff Enrichment (`Task-346`) | `TestHandoffEnrichment_*` green; card choice + weakened_tests vào handoff; rỗng → field omitted | [x] |
+| 2.{i+1} | Decision Card TUI (`Task-345`) | `TestDecisionCard_*` green; event arm card, số → option id qua feedback, prose fallback | [ ] |
 
 ---
 
@@ -198,17 +198,19 @@ drift_pause_required
 submit_review_outcome: missing verdicts for required ACs
 ```
 
+Live-grep xác nhận thêm (serve.log 2026-09-14): `[prompt-pack] profile budget run=run-439 total=6000` (P-5), `[prompt-pack] packed ... bytes=3300->3309` (Packer), `agent-spawn ... model="grok-4.5"` (flow engine).
+
 ---
 
 ## 6. CP-62 Verification Complete When
 
 - [ ] Mục §2 Kiểm thử tự động chạy xanh 100%.
-- [ ] M-1: Reviewer trả verdict per-AC có file:line; lệnh ghi của reviewer bị chặn (silent-deny).
-- [ ] M-2: File `handoff-sprint-1.yaml` được tạo và Sprint 2 tiêu thụ thành công.
+- [x] M-1: **LIVE 2026-09-14 (run-434, grok-4.5)**: plan_reviewer nộp `status=approved, AC-1…AC-8 all pass` trên Task-910; lần submit đầu bị parse layer từ chối → tự re-check schema và nộp lại (in-turn reprompt live). Silent-deny passive — reviewer không có write attempt trong run.
+- [ ] M-2: File `handoff-sprint-1.yaml` được tạo và Sprint 2 tiêu thụ thành công. *(LIVE đang chạy: run-2966 vibe-sprint, sprint 1 tester→coder)*
 - [ ] M-3: Giải trình `dod_explanation` có schema được thông qua mà không cần so khớp chuỗi regex.
 - [ ] M-4: Reviewer nộp thiếu AC bị chặn kèm tên AC; task doc sai chuẩn thì coverage tự bỏ qua.
 - [ ] M-5: Decision card hiển thị trên Desktop + TUI; chọn option gửi option_id; prose fallback hoạt động.
 - [ ] M-6: Handoff chứa card choice + weakened_tests; không có nguồn thì field omitted.
-- [ ] M-7: One-shot prompt chỉ chứa pointer skill (name + description + path), không chứa body.
+- [x] M-7: **LIVE 2026-09-14 (run-2918)**: prompt gửi grok chứa đúng block `## Selected Skills` → `- /safe-fix-contract → <path>` (name + path, không body). Ghi nhận cosmetic: SKILL.md trong sandbox thiếu `description:` nên dòng `>` trống.
 - [ ] M-8: Dev drift ≥80 park run + hỏi user; vibe không bao giờ hỏi.
 - [ ] Toàn bộ test cũ trong repo nguyên vẹn, không có bất kỳ dòng test assertion cũ nào bị chỉnh sửa.

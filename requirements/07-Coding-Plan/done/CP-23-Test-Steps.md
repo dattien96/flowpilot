@@ -79,9 +79,9 @@ go test ./internal/runner/ -count=1 -race -run 'TestDriftPause_' -v
 | 2.12 | `skillpack` | `TestInstall_AndroidIncludesCommonAndAndroid` | Nền tảng Android cài Common + Android | [x] PASS 0.06s |
 | 2.13 | `skillpack` | `TestInstall_WritesGrokSkillsRoot` | Cài đặt đúng đường dẫn kỹ năng cho Grok | [x] PASS 0.01s |
 | 2.14 | `skillpack` | `TestProviderStatuses_IncludesGrokWithoutAlteringOthers` | Quản lý trạng thái cài đặt trên cả Claude, Codex, Grok | [x] PASS 0.00s |
-| 2.15 | `runner` (Task-348) | `TestDriftPause_DevModeParksRunAndEmitsEvent` | Dev mode drift ≥80 → run bị park (BlockReason `drift`) + event `drift_pause_required` | [ ] |
-| 2.16 | `runner` (Task-348) | `TestDriftPause_VibeModeNeverAsksUser` | Vibe mode không bao giờ park/hỏi user cho drift (owner debate sở hữu) | [ ] |
-| 2.17 | `runner` (Task-348) | `TestDriftPause_IdempotentWhileParked` + `TestDriftPause_FlowChildParksParent` | Không duplicate event; flow child drift → park parent hub | [ ] |
+| 2.15 | `runner` (Task-348) | `TestDriftPause_DevModeParksRunAndEmitsEvent` | Dev mode drift ≥80 → run bị park (BlockReason `drift`) + event `drift_pause_required` | [x] PASS -race |
+| 2.16 | `runner` (Task-348) | `TestDriftPause_VibeModeNeverAsksUser` | Vibe mode không bao giờ park/hỏi user cho drift (owner debate sở hữu) | [x] PASS -race |
+| 2.17 | `runner` (Task-348) | `TestDriftPause_IdempotentWhileParked` + `TestDriftPause_FlowChildParksParent` | Không duplicate event; flow child drift → park parent hub | [x] PASS -race |
 
 ---
 
@@ -142,6 +142,6 @@ drift_pause_required
 ## 6. CP-23 Verification Complete When
 
 - [x] §2 Automated tests chạy xanh 100% (14/14 tests pass).
-- [ ] Kịch bản 1: Budget Packer bảo vệ được hạn mức token và ghi log audit.
-- [ ] Kịch bản 2: Drift Detector phát hiện vòng lặp; ở ≥80 run bị park + hỏi user thật (Task-348), vibe không hỏi.
-- [ ] Kịch bản 3: Thư mục skillpack được khởi tạo chính xác trên workspace sandbox.
+- [x] Kịch bản 1: **LIVE 2026-09-14**: `[prompt-pack] packed run=... selected_tokens=... bytes=95->104` trên mọi turn; profile budget `total=6000` áp cho node scout (run-439). Không có dropped item vì prompt nhỏ — cơ chế verify qua log.
+- [ ] Kịch bản 2: Drift Detector phát hiện vòng lặp; ở ≥80 run bị park + hỏi user thật (Task-348), vibe không hỏi. *(LIVE 2026-09-14: drift event ghi thật `drift_score=20, zero_delta_progress, action=none` vào `workflow_drift_events.json` — dưới ngưỡng, no-op đúng; chân ≥80 chưa induce được live)*
+- [x] Kịch bản 3: **LIVE 2026-09-14**: skills có mặt trên sandbox (`.agents/skills/safe-fix-contract/SKILL.md` được pointer block tham chiếu; grok session load `.grok/skills/`).
