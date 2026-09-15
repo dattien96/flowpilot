@@ -1,6 +1,7 @@
-# 1. No chat-based AI usage
-We do not support chat-based AI usage for now.
-We only support workflow-based AI usage.
+# 1. Workflow-First Principle & Chat as an Auxiliary Surface
+- **Workflow is primary**: Engineering tasks, feature implementations, and bug fixes must follow structured, gated workflows rather than unstructured, free-form chat.
+- **Chat as an auxiliary surface**: Chat Mode (Desktop App & Terminal TUI) is officially supported as an interactive exploratory scratchpad. However, unlike standard ephemeral chatbots, Chat Mode in FlowPilot is anchored by a durable **Chat-SSOT** (`chatId`, leg-based runs, and linearized cross-provider handoff — see SD-26), ensuring complete persistence and traceability.
+- Unstructured, unmonitored chat without workflow/gate backing remains prohibited for production engineering changes.
 
 # 2. Workflow is first, not LLM
 

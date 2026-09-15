@@ -1,0 +1,44 @@
+name: "💡 Feature Request"
+description: Propose an idea or enhancement for FlowPilot
+title: "[Feature]: "
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for suggesting a feature! Please provide context on the problem you're trying to solve.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem Statement
+      description: Is your feature request related to a problem or limitation?
+      placeholder: I am always frustrated when...
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution / Desired Behavior
+      description: Describe what you would like to happen and how it fits into FlowPilot's architecture.
+      placeholder: Add a new Flow Gate that verifies...
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Any alternative solutions or workarounds you've considered?
+  - type: dropdown
+    id: component
+    attributes:
+      label: Target Component
+      options:
+        - "Local Runner / CLI"
+        - "Terminal TUI (`flowpilot chat`)"
+        - "Desktop App"
+        - "Admin Web Dashboard"
+        - "FlowGate Rules"
+        - "MCP Tools & Ecosystem"
+        - "Context Sources / Budget Packer"
+    validations:
+      required: true

@@ -1,0 +1,77 @@
+name: "🐛 Bug Report"
+description: File a reproducible bug report to help improve FlowPilot
+title: "[Bug]: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting an issue! Please ensure you have tested against the latest version.
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug Description
+      description: A clear and concise description of what the bug is.
+      placeholder: When running flowpilot chat with Codex, switching models causes...
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to Reproduce
+      description: Provide reproducible steps or terminal commands.
+      placeholder: |
+        1. Run `just chat-dev /path/to/project`
+        2. Execute `/switch codex`
+        3. Observe error...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected vs Actual Behavior
+      description: What did you expect to happen, and what actually happened?
+    validations:
+      required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: Affected Component
+      options:
+        - "Local Runner Daemon (Go)"
+        - "Terminal TUI (`flowpilot chat`)"
+        - "Desktop Application (Electron)"
+        - "Admin Web Dashboard"
+        - "FlowGate Engine / The Oracle Rule"
+        - "MCP Server (Google Drive / Jira / etc.)"
+        - "Context Engine / Change Ledger"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating System
+      options:
+        - "macOS (Apple Silicon)"
+        - "macOS (Intel)"
+        - "Linux (Ubuntu / Debian / Arch / Fedora)"
+        - "Windows 11 / 10"
+        - "WSL2"
+    validations:
+      required: true
+  - type: dropdown
+    id: provider
+    attributes:
+      label: AI Provider (if applicable)
+      options:
+        - "Anthropic Claude (Claude Code / 3.7 Sonnet)"
+        - "OpenAI (Codex / GPT-5)"
+        - "Google Gemini"
+        - "xAI Grok"
+        - "N/A - Not Provider Specific"
+  - type: textarea
+    id: logs
+    attributes:
+      label: Runner Logs / Terminal Output
+      description: Paste relevant logs from `~/.flowpilot/logs` or the terminal.
+      render: shell
