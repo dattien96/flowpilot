@@ -46,7 +46,7 @@ brews:
   - name: flowpilot
     repository:
       owner: dattien96
-      name: homebrew-tap
+      name: homebrew-flowpilot
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     directory: Formula
     homepage: "https://github.com/dattien96/flowpilot"

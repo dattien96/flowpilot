@@ -22,13 +22,13 @@ Tài liệu này hướng dẫn chi tiết từng bước để cấu hình tự
         ▼                                                   ▼
 ┌───────────────────────────────┐           ┌───────────────────────────────┐
 │ 1. GitHub Releases (Storage)  │           │ 2. Homebrew Tap (Formula)     │
-│ Repo: dattien96/flowpilot     │           │ Repo: dattien96/homebrew-tap  │
+│ Repo: dattien96/flowpilot     │           │ Repo: dattien96/homebrew-flowpilot │
 ├───────────────────────────────┤           ├───────────────────────────────┤
 │ • flowpilot_darwin_arm64.tar  │           │ Tự động commit file:          │
 │ • flowpilot_darwin_amd64.tar  │           │ Formula/flowpilot.rb          │
 │ • flowpilot_linux_amd64.tar   │           │                               │
 │ • flowpilot_windows_amd64.zip │           │ Phục vụ lệnh:                 │
-│ • checksums.txt (SHA-256)     │           │ brew install dattien96/tap/...│
+│ • checksums.txt (SHA-256)     │           │ brew install dattien96/flowpilot│
 └───────────────────────────────┘           └───────────────────────────────┘
 ```
 
@@ -36,14 +36,14 @@ Tài liệu này hướng dẫn chi tiết từng bước để cấu hình tự
 
 ## 📋 Các Bước Thiết Lập Cần Làm (Chỉ cần làm 1 lần duy nhất)
 
-### Bước 1: Tạo Repository `homebrew-tap` trên GitHub
+### Bước 1: Tạo Repository `homebrew-flowpilot` trên GitHub
 
-Homebrew cài đặt phần mềm từ kho cá nhân thông qua repository có tên chuẩn là `homebrew-tap`:
+Homebrew cho phép đặt tên repo theo dạng `homebrew-<tên_tool>` để người dùng có thể gõ lệnh cài đặt ngắn gọn và đẹp nhất:
 
 1. Đăng nhập vào tài khoản GitHub của bạn (`dattien96`).
 2. Nhấn vào dấu **`+`** ở góc trên cùng bên phải $\to$ chọn **New repository**.
 3. Điền các thông tin:
-   - **Repository name**: `homebrew-tap` (bắt buộc đúng tên này).
+   - **Repository name**: `homebrew-flowpilot` (khuyên dùng để có lệnh `brew install dattien96/flowpilot`).
    - **Visibility**: Chọn **Public** (bắt buộc Public để Homebrew đọc được).
    - **Initialize this repository with**: Tick chọn **Add a README file**.
 4. Nhấn **Create repository**.
@@ -52,7 +52,7 @@ Homebrew cài đặt phần mềm từ kho cá nhân thông qua repository có t
 
 ### Bước 2: Tạo GitHub Personal Access Token (PAT)
 
-Mặc định, GitHub Actions trong repo `flowpilot` chỉ có quyền thao tác trên chính repo `flowpilot`, không thể tự ý ghi code sang repo `homebrew-tap`. Bạn cần tạo một Token để cấp quyền này cho GoReleaser:
+Mặc định, GitHub Actions trong repo `flowpilot` chỉ có quyền thao tác trên chính repo `flowpilot`, không thể tự ý ghi code sang repo `homebrew-flowpilot`. Bạn cần tạo một Token để cấp quyền này cho GoReleaser:
 
 1. Bấm vào Avatar góc trên cùng bên phải $\to$ chọn **Settings**.
 2. Kéo thanh cuộn xuống góc dưới cùng bên trái, chọn **Developer settings**.
@@ -114,7 +114,7 @@ git push origin v0.1.0
 2. Trong khoảng **1 - 2 phút**, GoReleaser sẽ tự động:
    - Biên dịch binary cho macOS (M1/M2/M3 & Intel), Linux, Windows.
    - Tạo mục Release `v0.1.0` tại [https://github.com/dattien96/flowpilot/releases](https://github.com/dattien96/flowpilot/releases).
-   - Commit công thức `Formula/flowpilot.rb` vào repo `homebrew-tap`.
+   - Commit công thức `Formula/flowpilot.rb` vào repo `homebrew-flowpilot`.
 
 ---
 
@@ -122,7 +122,7 @@ git push origin v0.1.0
 
 ### 1. Kiểm tra trên macOS / Linux qua Homebrew:
 ```bash
-brew install dattien96/tap/flowpilot
+brew install dattien96/flowpilot
 flowpilot --version
 flowpilot chat .
 ```
@@ -155,6 +155,6 @@ Script sẽ tự tải bản `windows_amd64.zip`, giải nén `flowpilot.exe` v�
 | Lỗi gặp phải | Nguyên nhân | Cách khắc phục |
 | :--- | :--- | :--- |
 | `Resource not accessible by integration` | GitHub Actions chưa được cấp quyền ghi | Làm lại **Bước 4**: Vào *Settings* $\to$ *Actions* $\to$ *General* $\to$ chọn **Read and write permissions**. |
-| `Repository not found: dattien96/homebrew-tap` | Chưa tạo repo `homebrew-tap` hoặc để Private | Làm lại **Bước 1**: Đảm bảo repo tên là `homebrew-tap` và để chế độ **Public**. |
+| `Repository not found: dattien96/homebrew-flowpilot` | Chưa tạo repo `homebrew-flowpilot` hoặc để Private | Làm lại **Bước 1**: Đảm bảo repo tên là `homebrew-flowpilot` và để chế độ **Public**. |
 | `Bad credentials / 401 Unauthorized` | Token `HOMEBREW_TAP_GITHUB_TOKEN` bị sai hoặc hết hạn | Làm lại **Bước 2 & 3**: Tạo lại Personal Access Token mới và cập nhật lại vào Secret. |
 | Tag bị lỗi cần tạo lại | Đã lỡ push tag bị lỗi và muốn chạy lại | Xóa tag cũ cục bộ và trên remote: `git tag -d v0.1.0 && git push origin :refs/tags/v0.1.0`, sau đó tạo lại tag mới. |

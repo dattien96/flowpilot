@@ -220,9 +220,9 @@ graph TD
 
 Choose your preferred package manager or one-line script:
 
-#### macOS & Linux (via Homebrew Tap)
+#### macOS & Linux (via Homebrew)
 ```bash
-brew install dattien96/tap/flowpilot
+brew install dattien96/flowpilot
 flowpilot chat .
 ```
 
