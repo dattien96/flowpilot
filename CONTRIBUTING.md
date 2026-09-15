@@ -138,4 +138,3 @@ When submitting a Pull Request:
 
 - Open a [GitHub Discussion](https://github.com/dattien96/flowpilot/discussions) for architectural discussions or questions.
 - Report bugs via [GitHub Issues](https://github.com/dattien96/flowpilot/issues).
-- Review our [Code of Conduct](./CODE_OF_CONDUCT.md).
