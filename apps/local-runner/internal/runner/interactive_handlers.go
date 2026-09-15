@@ -22,6 +22,7 @@ import (
 func (s *InteractiveService) RegisterInteractiveRoutes(mux *http.ServeMux) {
 	// interactive (client)
 	mux.HandleFunc("GET /client/projects", s.handleListProjects)
+	mux.HandleFunc("POST /client/projects", s.handleCreateProject)
 	mux.HandleFunc("GET /client/workflows", s.handleListWorkflows)
 	mux.HandleFunc("GET /client/projects/{projectId}/workflows", s.handleListWorkflows)
 	mux.HandleFunc("GET /client/steps", s.handleListSteps)
@@ -133,6 +134,33 @@ func (s *InteractiveService) handleListProjects(w http.ResponseWriter, r *http.R
 		return
 	}
 	writeInteractiveJSON(w, http.StatusOK, projects)
+}
+
+func (s *InteractiveService) handleCreateProject(w http.ResponseWriter, r *http.Request) {
+	creator, ok := s.catalog.(ProjectCreatorStore)
+	if !ok {
+		writeInteractiveError(w, newAPIErr(http.StatusNotImplemented, "not_implemented", "current catalog store does not support creating projects"))
+		return
+	}
+	var input CreateProjectInput
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "invalid_body", fmt.Sprintf("invalid request body: %v", err)))
+		return
+	}
+	if strings.TrimSpace(input.Name) == "" {
+		writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "missing_name", "project name is required"))
+		return
+	}
+	if strings.TrimSpace(input.DirectoryPath) == "" {
+		writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "missing_directory", "directory path is required"))
+		return
+	}
+	project, err := creator.CreateProject(r.Context(), input)
+	if err != nil {
+		writeInteractiveError(w, newAPIErr(http.StatusInternalServerError, "create_project_failed", err.Error()))
+		return
+	}
+	writeInteractiveJSON(w, http.StatusCreated, project)
 }
 
 func (s *InteractiveService) handleListWorkflows(w http.ResponseWriter, r *http.Request) {

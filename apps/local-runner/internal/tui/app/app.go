@@ -377,13 +377,28 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case ErrMsg:
+		errText := msg.Err.Error()
+		if m.projectWizardOpen {
+			m.projectWizardBusy = false
+			m.projectWizardErr = errText
+			return m, nil
+		}
+		if m.loginModalOpen {
+			m.loginModalBusy = false
+			m.loginModalErr = errText
+			return m, nil
+		}
+		if m.supabaseSetupModalOpen {
+			m.supabaseSetupModalBusy = false
+			m.supabaseSetupModalErr = errText
+			return m, nil
+		}
 		m.err = msg.Err
 		m.sessionLoading = false
 		m.pendingPrompt = ""
 		m.turnSendPending = false
 		m.connStatus = ConnError
 		m.statusMsg = "error"
-		errText := msg.Err.Error()
 		m.addMessage("system", "Error: "+errText, "error")
 		if strings.Contains(errText, "connection refused") || strings.Contains(errText, "dial tcp") ||
 			strings.Contains(errText, "connection reset") || strings.Contains(errText, "i/o timeout") ||
@@ -795,7 +810,12 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.applyAuthNotice(msg.CatalogErr)
 		if firstLoad {
-			m.addMessage("system", "Ready — type / for commands.", "")
+			m.handleOnboardingAfterSession(msg, true)
+		} else if m.supabaseJustConfigured {
+			// F-2: a first-run Supabase save re-arms the onboarding chain —
+			// the follow-up SessionDefaultsMsg is not firstLoad, but the user
+			// still needs login (then project binding).
+			m.handleOnboardingAfterSession(msg, false)
 		}
 		// Restore flow mode only after project_id exists (cold-start arm is unsafe).
 		if m.project != nil {
@@ -1274,6 +1294,10 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case LoginResultMsg:
 		m.authPhase = AuthNone
 		m.authEmail = ""
+		m.loginModalOpen = false
+		m.loginModalBusy = false
+		m.loginModalPassword = ""
+		m.loginModalErr = ""
 		m.signedInEmail = msg.Email
 		m.authNeedLogin = false
 		line := fmt.Sprintf("Signed in as %s", orDash(msg.Email))
@@ -1287,6 +1311,11 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			line += "\nLogin succeeded on runner; sign in on Desktop if it still shows Login."
 		}
 		m.addMessage("system", line, "")
+		if m.project == nil && m.cfg.ProjectPath != "" && !m.projectWizardOpen {
+			// F-2: after a successful login the D-2 chain continues — an
+			// unbound project path still needs the onboarding wizard.
+			m.openProjectWizard(m.cfg.ProjectPath)
+		}
 		m.sessionLoading = true
 		m.statusMsg = "loading session..."
 		m.addMessage("system", "Reloading session after login…", "")
@@ -1296,6 +1325,39 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cmdLoadSessionDefaults(),
 			tea.Tick(45*time.Second, func(time.Time) tea.Msg { return sessionLoadTimeoutMsg{} }),
 		)
+
+	case ProjectCreatedMsg:
+		m.projectWizardOpen = false
+		m.projectWizardBusy = false
+		m.projectWizardErr = ""
+		m.project = &msg.Project
+		m.projects = append(m.projects, msg.Project)
+		m.statusMsg = "ready"
+		m.addMessage("system", fmt.Sprintf("Project created and bound: %s (%s) — you can chat now.", msg.Project.Name, msg.Project.Platform), "")
+		if notice := m.tryApplyPendingFlowRestore(); notice != "" {
+			m.addMessage("system", notice, "")
+		}
+		var cmds []tea.Cmd
+		if len(m.chatList) == 0 {
+			m.chatListInflight = true
+			cmds = append(cmds, m.cmdPrefetchChats())
+		}
+		cmds = append(cmds, m.cmdRefreshProjectContext())
+		return m, tea.Batch(cmds...)
+
+	case SupabaseConfigSavedMsg:
+		m.supabaseSetupModalOpen = false
+		m.supabaseSetupModalBusy = false
+		m.supabaseSetupModalErr = ""
+		m.addMessage("system", "Supabase workspace credentials saved successfully!", "")
+		m.supabaseJustConfigured = true
+		m.sessionLoading = true
+		m.statusMsg = "reloading..."
+		cmds := []tea.Cmd{
+			m.cmdLoadSessionDefaults(),
+			tea.Tick(45*time.Second, func(time.Time) tea.Msg { return sessionLoadTimeoutMsg{} }),
+		}
+		return m, tea.Batch(cmds...)
 
 	case FlowListMsg:
 		m.flowListInflight = false
@@ -2240,6 +2302,15 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// Modal takes precedence over all other key handling.
+	if m.projectWizardOpen {
+		return m.handleProjectWizardKey(msg)
+	}
+	if m.loginModalOpen {
+		return m.handleLoginModalKey(msg)
+	}
+	if m.supabaseSetupModalOpen {
+		return m.handleSupabaseSetupModalKey(msg)
+	}
 	if m.modeSetupModalOpen {
 		return m.handleModeSetupModalKey(msg)
 	}
@@ -4834,6 +4905,18 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 	case "/login":
 		return m.beginLogin(args)
 
+	case "/project":
+		dir := m.cfg.ProjectPath
+		if len(args) > 1 && args[0] == "add" {
+			dir = strings.Join(args[1:], " ")
+		}
+		m.openProjectWizard(dir)
+		return m, nil
+
+	case "/setup", "/supabase":
+		m.openSupabaseSetupModal()
+		return m, nil
+
 	case "/settings", "/setting":
 		host := strings.TrimSpace(m.cfg.DesktopHost)
 		if host == "" {
@@ -5052,11 +5135,11 @@ func (m *AppModel) renderChatPane(w, h int) string {
 	// black/gray mix inside the input.
 	rows = append(rows, "")
 	rows = append(rows, "")
-	if len(c.sugg) > 0 && !m.modeSetupModalOpen {
+	if len(c.sugg) > 0 && !m.hasModalOpen() {
 		rows = append(rows, strings.Split(m.renderSuggestions(c.sugg), "\n")...)
 	}
-	if m.modeSetupModalOpen && c.modalBlock != "" {
-		// BUG-332: render the block cached by tuiChrome — same string its
+	if m.hasModalOpen() && c.modalBlock != "" {
+		// Render the block cached by tuiChrome — same string its
 		// modalH was measured from, so the height budget is always exact.
 		rows = append(rows, strings.Split(c.modalBlock, "\n")...)
 	}
@@ -5135,7 +5218,7 @@ func viewDebugEnabled() bool {
 // anything live or active makes the caret meaningful. When false the caret is
 // pinned steady and the composed frame is cached across cursor ticks (CA-633).
 func (m *AppModel) cursorBlinkRelevant() bool {
-	if m.sessionLoading || m.authPhase != AuthNone || m.modeSetupModalOpen || m.viewingChild() {
+	if m.sessionLoading || m.authPhase != AuthNone || m.hasModalOpen() || m.viewingChild() {
 		return true
 	}
 	if m.workIsLive() || m.flowLoopBlocked() {
@@ -6596,6 +6679,7 @@ func (m *AppModel) beginLogin(args []string) (tea.Model, tea.Cmd) {
 	}
 	switch len(args) {
 	case 0:
+		m.openLoginModal()
 		m.authPhase = AuthEmail
 		m.authEmail = ""
 		m.addMessage("system", "Supabase login — enter email (Esc to cancel):", "")
@@ -6788,17 +6872,25 @@ func (m *AppModel) cmdLoadSessionDefaults() tea.Cmd {
 				}
 			}
 		}
-		tuiLog("cmdLoadSessionDefaults() done dur=%v accounts=%d providers=%d projects=%d catalogErr=%q accErr=%v provErr=%v", time.Since(start), len(accounts), len(providers), len(projects), catalogErr, accErr, provErr)
+		var supabaseConfigured bool
+		ctxSupabase, cancelSupabase := context.WithTimeout(context.Background(), 5*time.Second)
+		if sc, scErr := cl.GetSupabaseConfig(ctxSupabase); scErr == nil && strings.TrimSpace(sc.APIURL) != "" && strings.TrimSpace(sc.AnonKey) != "" {
+			supabaseConfigured = true
+		}
+		cancelSupabase()
+
+		tuiLog("cmdLoadSessionDefaults() done dur=%v accounts=%d providers=%d projects=%d catalogErr=%q accErr=%v provErr=%v supabase=%v", time.Since(start), len(accounts), len(providers), len(projects), catalogErr, accErr, provErr, supabaseConfigured)
 		return SessionDefaultsMsg{
-			Provider:         provider,
-			Model:            model,
-			AccountLabel:     label,
-			Providers:        providers,
-			ProviderAccounts: accounts,
-			Projects:         projects,
-			Project:          project,
-			Account:          account,
-			CatalogErr:       catalogErr,
+			Provider:           provider,
+			Model:              model,
+			AccountLabel:       label,
+			Providers:          providers,
+			ProviderAccounts:   accounts,
+			Projects:           projects,
+			Project:            project,
+			Account:            account,
+			CatalogErr:         catalogErr,
+			SupabaseConfigured: supabaseConfigured,
 		}
 	}
 }

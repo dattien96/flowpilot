@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -67,6 +68,23 @@ func newInteractiveCatalog() *interactiveCatalog {
 // CatalogStore implementation (ctx ignored — the fake is in-memory).
 func (c *interactiveCatalog) ListProjects(context.Context) ([]Project, error) {
 	return c.projects, nil
+}
+
+func (c *interactiveCatalog) CreateProject(_ context.Context, input CreateProjectInput) (Project, error) {
+	name := strings.TrimSpace(input.Name)
+	dir := strings.TrimSpace(input.DirectoryPath)
+	if name == "" {
+		name = "Project"
+	}
+	p := Project{
+		ID:       fmt.Sprintf("proj-%d", len(c.projects)+1),
+		Name:     name,
+		Path:     dir,
+		Model:    input.DefaultModel,
+		Platform: input.Platform,
+	}
+	c.projects = append(c.projects, p)
+	return p, nil
 }
 
 func (c *interactiveCatalog) ListWorkflows(context.Context) ([]Workflow, error) {

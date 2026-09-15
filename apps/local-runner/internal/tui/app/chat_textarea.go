@@ -48,7 +48,7 @@ func newChatTextArea(width int) textarea.Model {
 // stay on the legacy path so the CA-633 idle-pin/caching contract and CA-560
 // no-clamp/windowRunesAround caret-visibility are preserved.
 func (m *AppModel) useTextareaView() bool {
-	if !m.mirrorReady() || m.authPhase != AuthNone || m.viewingChild() || m.modeSetupModalOpen || m.pasteBurst.active {
+	if !m.mirrorReady() || m.authPhase != AuthNone || m.viewingChild() || m.hasModalOpen() || m.pasteBurst.active {
 		return false
 	}
 	if m.inputCursor >= 0 {
@@ -142,5 +142,5 @@ func (m *AppModel) mirrorReady() bool {
 // isTextareaReady reports whether the textarea mirror can be used.
 // Kept for compatibility; new code should also check auth/child/modal.
 func (m *AppModel) isTextareaReady() bool {
-	return m.textareaReady && m.authPhase == AuthNone && !m.viewingChild() && !m.modeSetupModalOpen
+	return m.textareaReady && m.authPhase == AuthNone && !m.viewingChild() && !m.hasModalOpen()
 }

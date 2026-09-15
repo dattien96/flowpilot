@@ -423,7 +423,7 @@ func TestSessionLoading_DisablesChatUntilDefaults(t *testing.T) {
 	if m3b.(*AppModel).inputValue != "/" {
 		t.Fatalf("slash should remain available while loading, got %q", m3b.(*AppModel).inputValue)
 	}
-	m4, _ := am.Update(SessionDefaultsMsg{Provider: "codex", Model: "o3"})
+	m4, _ := am.Update(SessionDefaultsMsg{Provider: "codex", Model: "o3", SupabaseConfigured: true})
 	ready := m4.(*AppModel)
 	if ready.sessionLoading {
 		t.Fatal("sessionLoading should clear after SessionDefaultsMsg")

@@ -693,6 +693,21 @@ func (c *Client) ListProjects(ctx context.Context) ([]Project, error) {
 	return ps, err
 }
 
+// CreateProjectInput mirrors the POST /client/projects request.
+type CreateProjectInput struct {
+	Name          string `json:"name"`
+	DirectoryPath string `json:"directoryPath"`
+	Platform      string `json:"platform,omitempty"`
+	DefaultModel  string `json:"defaultModel,omitempty"`
+}
+
+// CreateProject calls POST /client/projects.
+func (c *Client) CreateProject(ctx context.Context, input CreateProjectInput) (Project, error) {
+	var out Project
+	err := c.postJSON(ctx, "/client/projects", input, &out)
+	return out, err
+}
+
 // GetOpencodeModelVariants fetches GET /client/providers/opencode-variants —
 // the model's real reasoning effort options (live ACP probe, cached runner-side).
 func (c *Client) GetOpencodeModelVariants(ctx context.Context, modelID string) ([]string, string, error) {

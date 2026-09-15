@@ -214,6 +214,7 @@ type SessionDefaultsMsg struct {
 	Project          *client.Project
 	Account          *client.ProviderAccountSummary
 	CatalogErr       string
+	SupabaseConfigured bool
 }
 
 // FlowListMsg carries /flow list results.
@@ -241,6 +242,14 @@ type LoginResultMsg struct {
 
 // QuitMsg requests app exit.
 type QuitMsg struct{}
+
+// ProjectCreatedMsg is returned after successfully creating and binding a project.
+type ProjectCreatedMsg struct {
+	Project client.Project
+}
+
+// SupabaseConfigSavedMsg is returned after saving Supabase workspace config.
+type SupabaseConfigSavedMsg struct{}
 
 // ApprovalResolvedMsg is a successful POST /client/approvals/{id}/decision.
 type ApprovalResolvedMsg struct {
@@ -425,6 +434,34 @@ type AppModel struct {
 	// model picker (same UX as the /model input picker): typing narrows the
 	// list, Backspace deletes, Esc closes. Empty = unfiltered.
 	modeSetupModalPickerFilter string
+	// Project onboarding wizard (standalone TUI project creation & binding).
+	projectWizardOpen     bool
+	projectWizardField    int // 0: name, 1: platform, 2: model, 3: submit
+	projectWizardDir      string
+	projectWizardName     string
+	projectWizardPlatform string
+	projectWizardModel    string
+	projectWizardBusy     bool
+	projectWizardErr      string
+	// In-TUI interactive login modal.
+	loginModalOpen     bool
+	loginModalField    int // 0: email, 1: password, 2: submit
+	loginModalEmail    string
+	loginModalPassword string
+	loginModalBusy     bool
+	loginModalErr      string
+	// In-TUI interactive Supabase setup wizard.
+	supabaseSetupModalOpen       bool
+	supabaseSetupModalField      int // 0: url, 1: anonKey, 2: serviceRoleKey, 3: submit
+	supabaseSetupModalURL        string
+	supabaseSetupModalAnonKey    string
+	supabaseSetupModalServiceKey string
+	supabaseSetupModalBusy       bool
+	supabaseSetupModalErr        string
+	// supabaseJustConfigured arms the onboarding chain for the next
+	// SessionDefaultsMsg after a first-run Supabase setup save (F-2): the
+	// follow-up session load is not firstLoad, but the user still needs login.
+	supabaseJustConfigured bool
 	// chatPosturePending remembers what to do after the runner config loads:
 	// "" = nothing; "apply:<posture>" = apply that posture's profile; "show" =
 	// just display the config; "setup:<posture>:<field>:<value>" = apply a
@@ -776,8 +813,58 @@ var knownSlashCommands = []slashCommand{
 	{"/dumpview", "Dump live View() layout to /tmp/flowpilot-you-view.txt (debug)"},
 	{"/info", "Print session/status details (also F2)"},
 	{"/login", "Sign in to Supabase (email/password) — Desktop session parity"},
+	{"/project", "Project management — /project add to onboard current folder"},
+	{"/setup", "Configure Supabase workspace credentials"},
+	{"/supabase", "Configure Supabase workspace credentials (alias for /setup)"},
 	{"/settings", "Open Desktop app for Settings (start if not running)"},
 	{"/sync", "Push session to Drive — /sync · /sync all"},
 	{"/restore", "Pull a Drive-backed chat — /restore · /restore all"},
 	{"/init", "Init — /init skill (flow-pack) · /init all (full engine)"},
 }
+
+// hasModalOpen returns true if any full-screen or popup modal is open.
+func (m *AppModel) hasModalOpen() bool {
+	return m.projectWizardOpen || m.loginModalOpen || m.supabaseSetupModalOpen || m.modeSetupModalOpen
+}
+
+// handleOnboardingAfterSession runs the Task-353 D-2 first-run chain after a
+// SessionDefaultsMsg: Supabase setup → login → project wizard. Called on
+// firstLoad and once more after a first-run Supabase save (supabaseJustConfigured).
+// Note: m.sessionDefaultsLoaded is already true when the handler calls this, so
+// firstLoad must be passed explicitly.
+func (m *AppModel) handleOnboardingAfterSession(msg SessionDefaultsMsg, firstLoad bool) {
+	if !firstLoad && !m.supabaseJustConfigured {
+		return
+	}
+	if firstLoad {
+		m.addMessage("system", "Ready — type / for commands.", "")
+	}
+	m.supabaseJustConfigured = false
+	m.maybeAutoOnboard(msg.SupabaseConfigured)
+}
+
+// maybeAutoOnboard opens the first missing onboarding step for the standalone
+// TUI. Idempotent per modal — a modal that is already open is never re-opened,
+// so repeated SessionDefaultsMsg refreshes cannot reset in-progress input.
+func (m *AppModel) maybeAutoOnboard(supabaseConfigured bool) {
+	if !supabaseConfigured {
+		// F-1: an unconfigured workspace means the catalog is the offline
+		// fake, so setup takes precedence over login — but never interrupt an
+		// established session that already has a bound project (CA-633 typing
+		// contract, chat_posture_test).
+		if m.project == nil && !m.supabaseSetupModalOpen {
+			m.openSupabaseSetupModal()
+		}
+		return
+	}
+	if m.authNeedLogin {
+		if !m.loginModalOpen {
+			m.openLoginModal()
+		}
+		return
+	}
+	if m.project == nil && m.cfg.ProjectPath != "" && !m.projectWizardOpen {
+		m.openProjectWizard(m.cfg.ProjectPath)
+	}
+}
+

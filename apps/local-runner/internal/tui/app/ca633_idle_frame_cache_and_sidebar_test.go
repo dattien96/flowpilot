@@ -61,7 +61,7 @@ func TestCA633_KeyAfterSessionReady_Inserts(t *testing.T) {
 			m.width, m.height = 126, 50
 			m2, _ := m.Update(ConnectedMsg{RunnerURL: "http://127.0.0.1:4317"})
 			am := m2.(*AppModel)
-			m3, _ := am.Update(SessionDefaultsMsg{Provider: pk, Model: "m", Projects: []client.Project{{ID: "p1", Name: "proj"}}})
+			m3, _ := am.Update(SessionDefaultsMsg{Provider: pk, Model: "m", Projects: []client.Project{{ID: "p1", Name: "proj"}}, SupabaseConfigured: true})
 			am = m3.(*AppModel)
 			if am.sessionLoading {
 				t.Fatalf("[%s] sessionLoading must clear after defaults", pk)

@@ -101,7 +101,22 @@ func (m *AppModel) tuiChrome() tuiChrome {
 	// must be built ONCE here and its height MUST be part of the height
 	// budget below — otherwise the frame overflows the terminal and the
 	// modal's fields/buttons (and composer) get clipped off-screen.
-	if m.modeSetupModalOpen {
+	if m.projectWizardOpen {
+		c.modalBlock = m.renderProjectWizard(w)
+		if c.modalBlock != "" {
+			c.modalH = strings.Count(c.modalBlock, "\n") + 1
+		}
+	} else if m.loginModalOpen {
+		c.modalBlock = m.renderLoginModal(w)
+		if c.modalBlock != "" {
+			c.modalH = strings.Count(c.modalBlock, "\n") + 1
+		}
+	} else if m.supabaseSetupModalOpen {
+		c.modalBlock = m.renderSupabaseSetupModal(w)
+		if c.modalBlock != "" {
+			c.modalH = strings.Count(c.modalBlock, "\n") + 1
+		}
+	} else if m.modeSetupModalOpen {
 		c.modalBlock = m.renderModeSetupModal(w)
 		if c.modalBlock != "" {
 			c.modalH = strings.Count(c.modalBlock, "\n") + 1
@@ -121,7 +136,7 @@ func (m *AppModel) tuiChrome() tuiChrome {
 	// With the modal open the suggestions block is NOT rendered — the modal
 	// occupies that slot, so the mouse/cursor Y chain must step over modalH.
 	c.attachPanelY = c.statusY + c.suggLines
-	if m.modeSetupModalOpen {
+	if m.hasModalOpen() {
 		c.attachPanelY = c.statusY + c.modalH
 	}
 	c.inputY = c.attachPanelY + c.attachPanelH
