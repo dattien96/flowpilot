@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: GitHub Discussions
+    url: https://github.com/dattien96/flowpilot/discussions
+    about: Ask questions, share ideas, or discuss AI agent architectures with the community.
+  - name: Documentation & System Specs
+    url: https://github.com/dattien96/flowpilot/tree/main/requirements
+    about: Read FlowPilot's System Principles (SP) and System Specifications (SS).

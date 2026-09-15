@@ -214,36 +214,67 @@ graph TD
 
 ---
 
-## 🚀 Quick Start Guide
+## 🚀 Quick Start & Installation
 
-### Prerequisites
+### 📦 Option 1: Instant CLI Installation (Recommended)
+
+Choose your preferred package manager or one-line script:
+
+#### macOS & Linux (via Homebrew Tap)
+```bash
+brew install dattien96/tap/flowpilot
+flowpilot chat .
+```
+
+#### macOS & Linux (One-line Shell Script)
+```bash
+curl -fsSL https://raw.githubusercontent.com/dattien96/flowpilot/main/scripts/install.sh | bash
+```
+
+#### Windows (PowerShell)
+```powershell
+irm https://raw.githubusercontent.com/dattien96/flowpilot/main/scripts/install.ps1 | iex
+```
+
+#### Go Native Install
+```bash
+go install github.com/dattien96/flowpilot/apps/local-runner/cmd/flowpilot@latest
+```
+
+---
+
+### 🛠️ Option 2: Local Development Setup (Full Stack)
+
+If you are developing or contributing to the FlowPilot monorepo (Admin Web + Runner + Desktop):
+
+#### Prerequisites
 - **Go**: `1.22+`
 - **Node.js**: `20+` and `npm` / `pnpm`
 - **Just**: Command runner (`cargo install just`, `brew install just`, or `choco install just`)
 - **Git**: Installed and configured
 - **Supabase**: Local Supabase CLI or a free Cloud project
 
-### 1. Clone the Repository
+#### 1. Clone the Repository
 ```bash
 git clone https://github.com/dattien96/flowpilot.git
 cd flowpilot
 ```
 
-### 2. Configure Environment
+#### 2. Configure Environment
 Copy the sample environment file and configure your credentials:
 ```bash
 cp .env.example .env
 ```
 Set your `SUPABASE_URL` and `SUPABASE_ANON_KEY`, and ensure your local AI CLI tools (`claude`, `codex`, `gemini`) are authenticated in your terminal.
 
-### 3. Start the Full Stack (`just dev`)
+#### 3. Start the Full Stack (`just dev`)
 Start the **Admin Web**, **Local Runner daemon**, and **Desktop Application** together in a single command:
 ```bash
 just dev
 ```
 The supervisor orchestrates all three components, auto-wiring the Desktop interface to the live Local Runner over HTTP/SSE.
 
-### 4. Start the Terminal TUI Client (`just chat-dev`)
+#### 4. Start the Terminal TUI Client (`just chat-dev`)
 For a fast, keyboard-driven terminal experience running directly against any target project:
 ```bash
 just chat-dev /path/to/your/project
