@@ -1,6 +1,6 @@
-# Hướng Dẫn Cấu Hình Token & Tự Động Hóa Phát Hành (GoReleaser + Homebrew Tap)
+# Hướng Dẫn Cấu Hình Token & Tự Động Hóa Phát Hành (CLI & Desktop App)
 
-Tài liệu này hướng dẫn chi tiết từng bước để cấu hình tự động hóa toàn bộ quy trình phát hành FlowPilot CLI cho **macOS, Linux và Windows** thông qua GitHub Actions, GoReleaser và Homebrew Tap.
+Tài liệu này hướng dẫn chi tiết từng bước để cấu hình tự động hóa toàn bộ quy trình phát hành FlowPilot CLI (GoReleaser + Homebrew Tap) và FlowPilot Desktop App (Electron + NSIS/.exe/.dmg) cho **macOS, Linux và Windows** thông qua GitHub Actions.
 
 ---
 
@@ -147,6 +147,38 @@ Mở PowerShell và chạy:
 irm https://raw.githubusercontent.com/dattien96/flowpilot/main/scripts/install.ps1 | iex
 ```
 Script sẽ tự tải bản `windows_amd64.zip`, giải nén `flowpilot.exe` vào `$HOME\.flowpilot\bin` và tự thêm vào PATH của Windows.
+
+---
+
+## 🖥️ Phát Hành Bộ Cài Desktop App (FlowPilot Setup.exe, macOS .dmg, Linux .AppImage)
+
+Bên cạnh bản CLI (`flowpilot.exe`), dự án FlowPilot có ứng dụng giao diện đồ họa **Desktop App** (Electron + React) tại thư mục `apps/desktop-flowpilot`. Quy trình build và đóng gói bộ cài đã được cấu hình tự động 100% qua GitHub Actions (`.github/workflows/desktop-release.yml`).
+
+### 1. Cách Kích Hoạt Bản Release Desktop
+Khác với CLI kích hoạt bằng tag `v*` (ví dụ `v0.1.1`), Desktop App được kích hoạt khi đẩy tag có tiền tố **`desktop-v*`**:
+
+```bash
+# 1. Đảm bảo nhánh hiện tại đã commit sạch
+git status
+
+# 2. Tạo một tag riêng cho Desktop (theo chuẩn desktop-vMAJOR.MINOR.PATCH)
+git tag desktop-v0.1.0
+
+# 3. Đẩy tag lên GitHub
+git push origin desktop-v0.1.0
+```
+
+### 2. Quá trình tự động diễn ra:
+GitHub Actions (`desktop-release`) sẽ chạy song song trên 3 hệ điều hành (matrix: `windows-latest`, `macos-latest`, `ubuntu-latest`), sử dụng `electron-builder` để tạo ra các bộ cài:
+- **Windows**: File cài đặt NSIS `FlowPilot Setup <version>.exe`
+- **macOS**: File đĩa ảo `.dmg` và `.zip` (cho cả Apple Silicon & Intel)
+- **Linux**: File thực thi độc lập `.AppImage` và gói `.deb`
+
+Các file cài đặt này sẽ được tự động đưa lên trang **GitHub Releases** dưới tên release `desktop-v0.1.0`.
+
+### 3. Lưu ý về Code Signing (Chữ ký số):
+- **Windows**: Nếu có cấu hình Secret `WIN_CSC_LINK` & `WIN_CSC_KEY_PASSWORD`, file `.exe` sẽ được ký số. Nếu chưa cấu hình, GitHub Actions vẫn tạo file cài đặt bình thường (unsigned) — khi cài trên Windows chỉ cần bấm **More info** $\to$ **Run anyway** trên màn hình Microsoft Defender SmartScreen.
+- **macOS**: Để tránh cảnh báo của Apple Gatekeeper khi phân phối rộng rãi, có thể cấu hình các secret notarization (`APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`, `CSC_LINK`, `CSC_KEY_PASSWORD`). Không có secret này, build macOS vẫn sinh file `.dmg` unsigned để dùng thử nghiệm nội bộ.
 
 ---
 
