@@ -4,10 +4,6 @@ version: 2
 
 project_name: flowpilot
 
-before:
-  hooks:
-    - go mod tidy -C apps/local-runner
-
 builds:
   - id: flowpilot
     dir: apps/local-runner

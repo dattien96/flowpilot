@@ -25,7 +25,8 @@ func (g *gitNexusProvider) Available() bool {
 // return a non-nil error so callers can distinguish failure from a legitimate zero
 // blast radius; callers must remain non-fatal (AC-9).
 func (g *gitNexusProvider) Dependents(ctx context.Context, target string) (DependentsSummary, error) {
-	ctx = ensureDeadline(ctx, 30*time.Second)
+	ctx, cancel := ensureDeadline(ctx, 30*time.Second)
+	defer cancel()
 
 	repo := repoNameFromDir(g.repoDir)
 	args := []string{"gitnexus", "impact", target, "--repo", repo}
@@ -263,12 +264,11 @@ func tryParseText(output string) DependentsSummary {
 	return DependentsSummary{Nearest: nearest}
 }
 
-// ensureDeadline returns ctx if it already has a deadline, otherwise wraps it
-// with the given timeout.
-func ensureDeadline(ctx context.Context, timeout time.Duration) context.Context {
+// ensureDeadline returns ctx and a cancel func if it already has a deadline,
+// otherwise wraps it with the given timeout.
+func ensureDeadline(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
 	if _, ok := ctx.Deadline(); ok {
-		return ctx
+		return ctx, func() {}
 	}
-	newCtx, _ := context.WithTimeout(ctx, timeout) //nolint:govet
-	return newCtx
+	return context.WithTimeout(ctx, timeout)
 }
