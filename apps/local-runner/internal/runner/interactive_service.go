@@ -5856,6 +5856,27 @@ func (b *turnBridge) RequestApproval(details ApprovalDetails) (string, error) {
 		return decision, nil
 	}
 
+	// CP-64 P-3 (Task-366 T-2): reproduce-first read-only lock. The reproduction
+	// test file that proved the bug is frozen on the coder step's contract; a
+	// write/edit/mutating-command aimed at it is silent-denied here — the same
+	// provider-neutral choke point the posture uses, and likewise BEFORE YOLO so
+	// an auto-approve can never weaken the evidence the fix is judged against.
+	// Reads of the locked file are deliberately not handled (they fall through).
+	if decision, reason, handled := s.decideReproduceTestLock(b.rs, details); handled {
+		s.recordAutoApproval(b.rs, details, decision, reason)
+		b.Emit(ProviderEvent{
+			Type:     EventNodeIsolationWriteDenied,
+			ToolName: details.Reason,
+			Status:   "deny",
+			Input: map[string]string{
+				"posture": reason,
+				"command": details.Command,
+				"kind":    details.Kind,
+			},
+		})
+		return decision, nil
+	}
+
 	// Read-only posture (Scan/Plan): auto-decide WITHOUT asking the human. Reads
 	// are approved, writes and anything unclassified are denied, and the reply is
 	// recorded like every auto-decision so the adapter never hangs. Checked BEFORE

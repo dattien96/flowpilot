@@ -329,6 +329,29 @@ func (s *InteractiveService) runFlowGateAtEpoch(
 	rules = prepareWorkingModeRules(rs.workingMode, rules, &tr)
 	s.injectVibeSSDrift(rs, &tr)
 
+	// 7b. CP-64 P-1: reproduce-first wiring. A reproduce turn's new test is
+	// MEANT to be red, so r-tests/r-reg are suppressed for exactly this turn
+	// and r-reproduce is armed in their place (the same one-turn exemption
+	// shape the proposal-turn path below uses). The pure rule engine learns
+	// what actually happened through the caller-computed signals: the compile
+	// classification comes from the suite output the oracle already captured.
+	reproduceTurn := s.reproduceTurnForRun(rs)
+	reproduceLockRunID := rs.id
+	if reproduceTurn {
+		if rs.parentRunID != "" {
+			reproduceLockRunID = rs.parentRunID
+		}
+		baselineTestCmd := ""
+		if baseline != nil {
+			baselineTestCmd = baseline.TestCmd
+		}
+		tr.ReproduceExpected = true
+		tr.ReproduceCompileFailed = flowgate.ClassifySuiteOutput(baselineTestCmd, oracle.Output)
+		rules = flowgate.SuppressTestRules(flowgate.EnabledReproduceRules(rules, true))
+		log.Printf("[gate] reproduce turn: r-reproduce armed, r-tests/r-reg suppressed (compileFailed=%v failed=%v)",
+			tr.ReproduceCompileFailed, tr.Tests.Failed)
+	}
+
 	// 8. Evaluate rule set.
 	violations := flowgate.Evaluate(tr, rules)
 	hasCA := flowgate.HasChangeAuditNote(diff)
@@ -357,6 +380,12 @@ func (s *InteractiveService) runFlowGateAtEpoch(
 	// No synthetic r-tamper warn — the rule itself (reprompt) owns the signal.
 
 	if len(violations) == 0 {
+		// CP-64 P-3: a passed reproduce turn locks its new test file(s)
+		// read-only for the coder step — the physical evidence of the bug can
+		// no longer be weakened by the fix that follows.
+		if reproduceTurn {
+			s.recordReproduceTestLock(cwd, reproduceLockRunID, tr.WrittenPaths)
+		}
 		// CP-63 P-5 (Task-358): live compiler diagnostics ride the allow
 		// path — contract/scope violations keep their own reprompt; only a
 		// gate-clean turn consults LSP. Nil checker returns "" immediately.
@@ -669,6 +698,11 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 		return true
 	}
 	node, nodeOK := flowNodeForRun(s, rs)
+	// CP-64 P-1/P-3: a reproduce node's turn is the reproduce turn. The test it
+	// writes is meant to be RED, so this turn arms r-reproduce and suppresses
+	// r-tests/r-reg (and it may pass with no artifact bindings at all, so the
+	// no-op early returns below must not swallow it).
+	reproduceTurn := ReproduceGateEnabled() && nodeOK && IsReproduceBehavior(node.Behavior)
 	isDelegate := false
 	if nodeOK {
 		if canonical, ok := agentpack.NormalizeBehaviorID(node.Behavior); ok && canonical == "agent.delegate" {
@@ -910,6 +944,20 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 			}
 			codeOnlyWritten = append(codeOnlyWritten, p)
 		}
+		// CP-64 P-3: the reproduction test file is the reproduce step's own
+		// evidence, locked read-only on THIS contract after its gate passed. It
+		// shows up in the diff since BaseSHA but was never the coder's write,
+		// and the approval bridge denies the coder from touching it — counting
+		// it as coder drift would park every bug fix right after a successful
+		// reproduction.
+		lockedOnly := codeOnlyWritten[:0]
+		for _, p := range codeOnlyWritten {
+			if changecontract.IsReadOnlyLockedPath(rec, p) {
+				continue
+			}
+			lockedOnly = append(lockedOnly, p)
+		}
+		codeOnlyWritten = lockedOnly
 		// Run-144900 false-drift fix: leftover untracked skill dirs
 		// (e.g. .agents/skills/flow-mode-orchestrator/SKILL.md created at
 		// 10:28 before the flow started) show up in ObserveGitDiffSince(BaseSHA)
@@ -1032,14 +1080,21 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 	// the "this node's Canonical Head effect does nothing" bug this phase's
 	// own fix (above) exists to close, just conditionally on rule
 	// configuration this check had no defensive coupling to.
+	// CP-64 P-1: r-reproduce is armed in place of the ordinary suite rules for
+	// this one reproduce turn (the new test is meant to be red), which also
+	// keeps `only` non-empty so the no-op early returns below cannot swallow a
+	// reproduce turn that declares no artifact bindings.
+	if reproduceTurn {
+		only = flowgate.SuppressTestRules(flowgate.EnabledReproduceRules(only, true))
+	}
 	if len(only) == 0 && !isCodingChild {
 		return false
 	}
 	// Artifact-only path with no bindings and no coding/doc rules selected â†’ no-op.
-	if len(required) == 0 && len(structured) == 0 && len(telegramSends) == 0 && !isCodingChild {
+	if len(required) == 0 && len(structured) == 0 && len(telegramSends) == 0 && !isCodingChild && !reproduceTurn {
 		return false
 	}
-	if len(required) == 0 && len(structured) == 0 && len(telegramSends) == 0 && len(diff) == 0 && !isCodingChild {
+	if len(required) == 0 && len(structured) == 0 && len(telegramSends) == 0 && len(diff) == 0 && !isCodingChild && !reproduceTurn {
 		return false
 	}
 
@@ -1066,13 +1121,17 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 		HeadSpecDrifted:                       headSpecDrifted,
 		HeadCodeDrifted:                       headCodeDrifted,
 		HeadAttachSpecPending:                 headAttachSpecPending,
+		ReproduceExpected:                     reproduceTurn,
 	}
 	// Task-331 (CP-47 P-3): DOD completion signals from Task-*/BUG-* docs
 	// written this turn, BEFORE Evaluate runs so r-dod-complete can fire on
 	// flow coding children too (tier-1 doc family).
 	applyDodSignals(&tr)
-	// Optional oracle for tier-2b when test rules are in `only`.
-	needsOracle := false
+	// Optional oracle for tier-2b when test rules are in `only`; ALWAYS for a
+	// reproduce turn, which needs the real suite verdict (failed tests +
+	// compile classification) to judge the reproduction (CP-64 P-1).
+	needsOracle := reproduceTurn
+	baselineTestCmd := ""
 	for _, r := range only {
 		for _, id := range flowgate.TestRuleIDs() {
 			if r.ID == id {
@@ -1150,6 +1209,12 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 			Failed:    failedTests,
 			Regressed: regressedTests,
 		}
+		if baseline != nil {
+			baselineTestCmd = baseline.TestCmd
+		}
+		// CP-64 P-1: the compile/assertion split the (pure) r-reproduce rule
+		// consumes — a compile error is never a successful reproduction.
+		tr.ReproduceCompileFailed = flowgate.ClassifySuiteOutput(baselineTestCmd, oracle.Output)
 		tr.TamperedTestPaths = append([]string(nil), oracle.Tampered...)
 		s.setTamperedTestPaths(rs, oracle.Tampered)
 	}
@@ -1207,6 +1272,13 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 
 	violations := flowgate.Evaluate(tr, only)
 	if len(violations) == 0 {
+		// CP-64 P-3: a passed reproduce turn locks its NEW test file(s)
+		// read-only on the coder step's frozen contract — the coder can no
+		// longer weaken the reproduction that proves the bug (enforced at the
+		// shared approval bridge for every provider).
+		if reproduceTurn {
+			s.recordReproduceTestLock(cwd, parentID, tr.WrittenPaths)
+		}
 		// CP-63 P-5 (Task-358): same live-diagnostics allow-path hook as the
 		// root gate above; nil checker returns "" immediately.
 		if diagMsg := s.lspDiagnosticsForTurn(ctx, cwd, fin.ChangedFiles); diagMsg != "" {

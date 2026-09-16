@@ -145,7 +145,7 @@ type FlowNode struct {
 	// enforced at the shared approval bridge (turnBridge.RequestApproval) so
 	// every provider is gated identically. Engine stays domain-free (SD-19
 	// BR-1): no role strings, just the declared posture value.
-	Posture         string
+	Posture string
 	// ContextSources is this node's own enabled context-source ids (CP-44 P-7
 	// / Task-196), the step-definition-level equivalent of
 	// FlowContextBinding.Sources. Empty means "fall back to the flow-level
@@ -282,6 +282,15 @@ var behaviorAliases = map[string]string{
 	// interchangeable synonym like "coding"/"code".
 	"agent.code":      "agent.code",
 	"contract.freeze": "contract.freeze",
+	// CP-64 P-2 (Task-365): the reproduce-first node behavior. Self-mapped plus
+	// two documented aliases (behaviors/registry.yaml lists the same set).
+	// Like agent.code, agent.reproduce is a graph-topology marker, not an
+	// interchangeable synonym of agent.delegate: the runner's gate hook
+	// activates the r-reproduce rule on this behavior, so an alias must never
+	// resolve onto it from an unrelated id.
+	"agent.reproduce":  "agent.reproduce",
+	"reproduce":        "agent.reproduce",
+	"reproducing_test": "agent.reproduce",
 }
 
 // NormalizeBehaviorID maps known aliases onto canonical behavior IDs.

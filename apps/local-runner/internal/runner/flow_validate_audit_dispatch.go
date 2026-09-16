@@ -222,7 +222,7 @@ func (s *InteractiveService) runContextProduceNode(ctx context.Context, parentRu
 		return escalate("forward target " + targets[0] + " missing from flow nodes")
 	}
 	canonical, ok := agentpack.NormalizeBehaviorID(target.Behavior)
-	if !ok || (canonical != "agent.delegate" && canonical != "agent.code") {
+	if !ok || (canonical != "agent.delegate" && canonical != "agent.code" && !IsReproduceBehavior(target.Behavior)) {
 		return escalate("forward target " + target.ID + " is not a spawnable delegate/writer (behavior " + target.Behavior + ")")
 	}
 	agentName := flowNodeAgentName(target)
@@ -425,7 +425,6 @@ func (s *InteractiveService) maybeAdvancePendingValidateAfterCoder(parentRunID s
 	s.mu.Unlock()
 	return s.tryAdvanceFlowFromNode(parentRunID, pred, "retry after hub_stalled")
 }
-
 
 // loadValidateCommand resolves the validate node's shell command from
 // .flowpilot/guard/test_baseline.json's test_command field (BUG-243 Q-1's
@@ -1233,21 +1232,21 @@ func (s *InteractiveService) runAuditNode(ctx context.Context, parentRunID strin
 					if auditCtxCancelled(ctx, parentRunID, node.ID, "tier3_before_escalate") {
 						return false
 					}
-				log.Printf("[flow-executor] audit tier-3 gate: %s (tier-1 should have caught earlier)", result.Message)
-				s.flowDiagLog(parentRunID, "flow_audit_tier3_block", "audit aggregate gate blocked done",
-					"node_id", node.ID, "message", result.Message,
-				)
-				// run-202550: stamp the audit node (not the plan hub) as the
-				// escalated node — without this, applyFlowControl's escalate
-				// settles plan_synthesis WAITING via setFlowStepAwaitingUser's
-				// first-hub fallback, and Retry reinvokes the plan hub instead
-				// of remediating the audit block (e.g. a missing CA note).
-				// Settle audit WAITING directly (freeze-escalate shape) so the
-				// plan hub is left alone — exactly one WAITING node.
-				s.stampLastEscalatedInlineNode(parentRunID, node.ID)
-				if s.isFlowEngineDriven(parentRunID) {
-					s.setFlowStepStatus(ctx, parentRunID, node.ID, StepStatusWaitingUserApr)
-				}
+					log.Printf("[flow-executor] audit tier-3 gate: %s (tier-1 should have caught earlier)", result.Message)
+					s.flowDiagLog(parentRunID, "flow_audit_tier3_block", "audit aggregate gate blocked done",
+						"node_id", node.ID, "message", result.Message,
+					)
+					// run-202550: stamp the audit node (not the plan hub) as the
+					// escalated node — without this, applyFlowControl's escalate
+					// settles plan_synthesis WAITING via setFlowStepAwaitingUser's
+					// first-hub fallback, and Retry reinvokes the plan hub instead
+					// of remediating the audit block (e.g. a missing CA note).
+					// Settle audit WAITING directly (freeze-escalate shape) so the
+					// plan hub is left alone — exactly one WAITING node.
+					s.stampLastEscalatedInlineNode(parentRunID, node.ID)
+					if s.isFlowEngineDriven(parentRunID) {
+						s.setFlowStepStatus(ctx, parentRunID, node.ID, StepStatusWaitingUserApr)
+					}
 					if auditCtxCancelled(ctx, parentRunID, node.ID, "tier3_immediate_before_escalate") {
 						return false
 					}
@@ -1342,7 +1341,7 @@ func (s *InteractiveService) runAuditNode(ctx context.Context, parentRunID strin
 			if s.maybeParkVibeSprintBoundary(ctx, parentRunID, node.ID, false) {
 				return true
 			}
-		if _, err := s.applyFlowControl(parentRunID, FlowControlInput{
+			if _, err := s.applyFlowControl(parentRunID, FlowControlInput{
 				Status:  "done",
 				Summary: summary,
 				Payload: map[string]any{"auditDraft": draft},
@@ -2167,6 +2166,7 @@ func (s *InteractiveService) advanceAfterContractFreeze(ctx context.Context, par
 	}
 	return s.advanceToNextInlineOrDelegate(ctx, parentRunID, edges, nodes, freezeNode.ID, "done", resultMessage)
 }
+
 // flowAgentCodeWriterNodes returns every agent.code writer node in nodes — the
 // nodes a frozen preflight contract must be bound to (Task-293: a freeze node
 // governs the whole coding chain, e.g. rag-harness's test_signatures AND
@@ -2175,7 +2175,16 @@ func flowAgentCodeWriterNodes(nodes []agentpack.FlowNode) []agentpack.FlowNode {
 	var out []agentpack.FlowNode
 	for _, n := range nodes {
 		canonical, ok := agentpack.NormalizeBehaviorID(n.Behavior)
-		if !ok || canonical != "agent.code" {
+		if !ok {
+			continue
+		}
+		// CP-64 (Task-366 T-6): with the reproduce gate OFF, a reproduce node
+		// behaves exactly like the old agent.code test_signatures node — it
+		// writes the empty signature files the coder later fills, so it must be
+		// bound to the same frozen draft scope. With the gate ON it is NOT a
+		// frozen writer (it writes a brand-new test file governed by
+		// r-reproduce instead).
+		if canonical != "agent.code" && !reproduceNodeAsFrozenWriter(n.Behavior) {
 			continue
 		}
 		out = append(out, n)

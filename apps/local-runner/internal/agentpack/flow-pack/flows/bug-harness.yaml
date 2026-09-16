@@ -59,12 +59,19 @@ nodes:
     run: inline
     lifecycle: once
     behavior: context.produce
-  - id: test_signatures
+  # CP-64 P-3 (Task-366): reproduce-first node. It replaces the old
+  # empty-signature test_signatures node in the bug flows: the reproducer must
+  # physically reproduce the bug with a RED (assertion-failing) test before the
+  # coder may touch production code. r-reproduce rejects both a green suite and
+  # a compile error, and the written test file is then locked read-only for the
+  # implement step. Flag off (FLOWPILOT_ENABLE_REPRODUCE_GATE unset) degrades
+  # this node back to the legacy empty-signature behavior at runtime.
+  - id: reproduce_test
     run: delegate
     lifecycle: once
-    behavior: agent.code
-    agent: agents/tester.md
-    promptTemplate: prompts/test-signatures.md
+    behavior: agent.reproduce
+    agent: agents/reproducer.md
+    promptTemplate: prompts/reproduce-failing-test.md
   - id: implement
     run: delegate
     lifecycle: reinvoke
@@ -107,10 +114,10 @@ edges:
     when: done
     kind: forward
   - from: context
-    to: test_signatures
+    to: reproduce_test
     when: done
     kind: forward
-  - from: test_signatures
+  - from: reproduce_test
     to: implement
     when: done
     kind: forward

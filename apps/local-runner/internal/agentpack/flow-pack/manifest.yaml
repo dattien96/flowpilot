@@ -7,6 +7,7 @@ agents:
   - agents/doc-writer.md
   - agents/reviewer.md
   - agents/tester.md
+  - agents/reproducer.md
   - agents/synthesizer.md
   - agents/contract-planner.md
   - agents/owner.md
@@ -90,6 +91,7 @@ prompts:
   - prompts/flow-start-wait.md
   - prompts/plan-safe-fix-contract.md
   - prompts/test-signatures.md
+  - prompts/reproduce-failing-test.md
   - prompts/implement-complete-tests.md
   - prompts/review-safe-fix-contract.md
   - prompts/plan-task.md

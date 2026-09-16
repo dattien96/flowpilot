@@ -13,6 +13,11 @@ test-signatures step.
    must cover the situation matrix, not only the happy path. If the change
    touches provider code, verify Claude, Codex and Grok.
 4. Run the validation command when available and report results honestly.
+   CP-64 reproduce-first: when this run went through a `reproduce_test` step, the
+   reproduction test file is LOCKED read-only — its content is the evidence that
+   the bug was real. Never edit, weaken, delete, or `t.Skip` it; your job is to
+   make it go from RED to GREEN by fixing production code only. A write to that
+   file is silent-denied by the runner.
 5. Do **not** set Task or CP document `status: done`. Leave status
    `in_progress` / `approved`. Tick DoD / Acceptance Check boxes (`- [ ]` →
    `- [x]`) for work this sprint actually finished. The engine also stamps

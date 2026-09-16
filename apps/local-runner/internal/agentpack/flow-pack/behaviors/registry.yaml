@@ -75,6 +75,50 @@ behaviors:
       - flows/rag-harness.yaml#test_signatures
       - flows/rag-harness.yaml#implement
 
+  - id: agent.reproduce
+    scope: delegate
+    aliases:
+      - reproduce
+      - reproducing_test
+    purpose: Write a single new test that physically reproduces a reported bug (RED on its assertion) before production code may change.
+    runtimeHandler: behaviorAgentDelegate
+    notes:
+      - CP-64 P-2/P-3 (reproduce-first-gate). Reference-only documentation — the
+        runtime contract is behavior_registry_builtin.go.
+      - The runner's gate hook activates the r-reproduce rule on this behavior
+        and suppresses r-tests/r-reg for that one turn (the test is MEANT to be
+        red). A passing or non-compiling test is rejected with a reprompt.
+      - After the gate passes, the written test file is recorded in the coder
+        step's frozen contract as read_only_paths and silent-denied at the
+        shared approval bridge, so the coder cannot weaken it.
+    aiRole:
+      sees:
+        - The bug report / stack trace / frozen contract intent and the flow context package.
+        - The node's static promptTemplate (prompts/reproduce-failing-test.md).
+      does:
+        - Writes ONE new test file with complete assertions and runs it.
+      doesNotDo:
+        - Does not fix the bug and does not touch production code.
+        - Does not fill, weaken, or edit pre-existing tests.
+    goRuntime:
+      inputs:
+        - BehaviorInput.Prompt
+      does:
+        - Reuses behaviorAgentDelegate verbatim (no new spawn path).
+        - Spawns the node's agent (agents/reproducer.md) as a child run.
+      usesExistingLogic:
+        - spawnChildRun / tryAdvanceFlowFromNode generic delegate path
+        - r-reproduce rule evaluation in gate_hook.go (runChildArtifactOutputGate)
+      doesNotDo:
+        - No provider call inside the handler itself.
+        - No frozen preflight writer binding (this is not an agent.code node).
+    runtimeEffects:
+      - Gate pass requires a compiled suite with at least one failing test.
+      - Gate pass locks the reproduction test file read-only for the coder step.
+    usedBy:
+      - flows/bug-harness.yaml#reproduce_test
+      - flows/bug-plan-harness.yaml#reproduce_test
+
   - id: hub.inline
     scope: inline
     aliases:

@@ -7,6 +7,7 @@ import (
 	"log"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -326,6 +327,86 @@ func isContextAbortError(msg string) bool {
 	low := strings.ToLower(msg)
 	return strings.Contains(low, "context canceled") ||
 		strings.Contains(low, "context deadline exceeded")
+}
+
+// compileErrorRegex matches the toolchain's own diagnostic prefix shapes
+// (`error TS2345:`, `SyntaxError:`, `E   SyntaxError:`) without hard-coding a
+// full grammar per runner.
+var compileErrorRegex = regexp.MustCompile(`(?i)(\berror ts\d+\b|\bsyntaxerror\b)`)
+
+// ClassifySuiteOutput reports whether a suite's combined output shows a
+// COMPILE/COLLECTION failure rather than an assertion failure (CP-64 P-1
+// T-2/T-3). The runner's reproduce gate uses this to refuse a compile error as
+// evidence of reproduction: a test that never built proves nothing about the
+// bug, while a test that built and failed on `expected X got Y` is the
+// reproduce-first oracle.
+//
+// Deliberately additive: it only reads the output string executeSuite already
+// captured on OracleResult.Output, so RunOracleContext's behavior is unchanged.
+// Detection is best-effort per runner family — a miss degrades to "assertion
+// failure", which is the pre-CP-64 verdict, never a false block.
+func ClassifySuiteOutput(testCmd, output string) bool {
+	trimmed := strings.TrimSpace(output)
+	if trimmed == "" {
+		return false
+	}
+	low := strings.ToLower(trimmed)
+	cmd := strings.ToLower(strings.TrimSpace(testCmd))
+
+	switch {
+	case strings.Contains(cmd, "go test"):
+		for _, sig := range []string{
+			"[build failed]",
+			"syntax error:",
+			"undefined:",
+			"cannot use ",
+			"declared and not used",
+			"imported and not used",
+			"is not a type",
+			"missing return",
+			"expected declaration",
+			"too many arguments",
+			"not enough arguments",
+		} {
+			if strings.Contains(low, sig) {
+				return true
+			}
+		}
+		return false
+	case strings.Contains(cmd, "pytest"):
+		for _, sig := range []string{
+			"error collecting",
+			"errors during collection",
+			"syntaxerror",
+			"indentationerror",
+			"modulenotfounderror",
+			"importerror",
+			"e   syntaxerror",
+		} {
+			if strings.Contains(low, sig) {
+				return true
+			}
+		}
+		return false
+	case strings.Contains(cmd, "npm"), strings.Contains(cmd, "npx"),
+		strings.Contains(cmd, "yarn"), strings.Contains(cmd, "pnpm"),
+		strings.Contains(cmd, "node "), strings.Contains(cmd, "jest"),
+		strings.Contains(cmd, "vitest"):
+		// TypeScript/Jest/Vitest fail to BUILD on a module-resolution or
+		// parse error; anything else is an ordinary assertion failure.
+		for _, sig := range []string{"cannot find module", "unexpected token", "failed to load esm"} {
+			if strings.Contains(low, sig) {
+				return true
+			}
+		}
+		return compileErrorRegex.MatchString(trimmed)
+	default:
+		// Unknown runner: only the unambiguous cross-toolchain markers.
+		if strings.Contains(trimmed, "[build failed]") {
+			return true
+		}
+		return compileErrorRegex.MatchString(trimmed)
+	}
 }
 
 // shellSplit splits a command with simple single/double quote awareness so

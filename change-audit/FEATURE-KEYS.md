@@ -47,3 +47,6 @@ Source of truth for stable `feature_key` values used by:
 - drift-pause — CP-23 ladder pause leg: dev-mode drift ≥80 parks the run (BlockReason `drift`) + additive `drift_pause_required` event, resume via the parked-run continue channel — no dedicated confirm backend; vibe keeps owner-debate routing (Task-348)
 - release-automation — GoReleaser, Homebrew tap, binary distribution, and release automation
 - lsp-runtime — CP-63 IDE-grade LSP runtime: JSON-RPC client, server lifecycle, platform registry, diagnostics hook, context source, Kotlin/Gradle fallback
+- reproduce-first-gate — CP-64 Reproduce-first TDD gate (r-reproduce): enforce executable red test before code mutation in bug and refactor flows
+- tournament-harness — CP-65 Multi-candidate tournament harness & PDR escalation fallback for hard bugs and stalled debates
+- living-knowledge-base — CP-66 Living knowledge base & execution flow context source (knowledge.flow) distilled from GitNexus and LSP

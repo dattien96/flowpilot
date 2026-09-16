@@ -34,6 +34,12 @@ const (
 	// CP-55 slice (P-8), not P-1.
 	BehaviorAgentCode      BehaviorID = "agent.code"
 	BehaviorContractFreeze BehaviorID = "contract.freeze"
+	// BehaviorAgentReproduce (CP-64 P-1/P-2) marks the reproduce-first node: a
+	// delegate whose write scope is the new reproduction test file only. It
+	// reuses behaviorAgentDelegate verbatim (T-2), but it is deliberately NOT
+	// an IsCodeWritingBehavior id — the reproduce node is not a frozen
+	// preflight writer and must not be treated as one by topology/gate code.
+	BehaviorAgentReproduce BehaviorID = "agent.reproduce"
 )
 
 // IsCodeWritingBehavior reports whether id is the CP-55 explicit

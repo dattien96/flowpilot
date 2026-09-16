@@ -4,39 +4,42 @@
 
 - Document ID: `SS-14`
 - Title: `Code Context And Regression Safety`
-- Feature Keys: `change-contract`
+- Feature Keys: `change-contract, lsp-runtime, reproduce-first-gate, living-knowledge-base`
 - Phase: `system_spec`
 - Status: `draft`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-06-23`
-- Last Updated: `2026-07-09` (added `US-10`/`AC-17` — typed artifacts as first-class flow I/O; `2026-07-08` added `US-9`/`AC-16` — extensible context sources)
+- Last Updated: `2026-09-15` (added AC-18 Two-Tier Intelligence CP-63, AC-19 Reproduce-First CP-64, AC-20 Living Knowledge Base CP-66)
 - Parent Documents: `Product Vision`
-- Child Documents: [SD-17: Context And Regression Engine](../06-System-Tech-Design/SD-17-Context-And-Regression-Engine.md), [SD-22: Pluggable Context Source Registry](../06-System-Tech-Design/SD-22-Pluggable-Context-Source-Registry.md) (US-9), [SD-23: Generic Artifact Framework](../06-System-Tech-Design/SD-23-Generic-Artifact-Framework.md) (US-10, AC-17; also US-9, AC-16 — generalizes SD-22 into typed artifacts), [CP-35: Context And Regression Engine Rollout](../07-Coding-Plan/inprogress/CP-35-Context-And-Regression-Engine-Rollout.md)
-- Related Documents: [SS-02: Project Context](./SS-02-Project-Context.md), [SS-09: Artifact Memory Context Retrieval](./SS-09-Artifact-Memory-Context-Retrieval.md), [SS-13: AI-Followable Document Contract](./SS-13-AI-Followable-Document-Contract.md)
+- Child Documents: [SD-17: Context And Regression Engine](../06-System-Tech-Design/SD-17-Context-And-Regression-Engine.md), [SD-22: Pluggable Context Source Registry](../06-System-Tech-Design/SD-22-Pluggable-Context-Source-Registry.md) (US-9), [SD-23: Generic Artifact Framework](../06-System-Tech-Design/SD-23-Generic-Artifact-Framework.md) (US-10, AC-17), [CP-35: Context And Regression Engine Rollout](../07-Coding-Plan/done/CP-35-Context-And-Regression-Engine-Rollout.md), [CP-63: IDE-Grade LSP Runtime](../07-Coding-Plan/todo/CP-63-IDE-Grade-LSP-Runtime.md), [CP-64: Reproduce-First TDD Gate](../07-Coding-Plan/done/CP-64-Reproduce-First-TDD-Gate.md), [CP-66: Living Knowledge Base](../07-Coding-Plan/todo/CP-66-Living-Knowledge-Base-Context-Source.md)
+- Related Documents: [SS-02: Project Context](./SS-02-Project-Context.md), [SS-09: Artifact Memory Context Retrieval](./SS-09-Artifact-Memory-Context-Retrieval.md), [SS-13: AI-Followable Document Contract](./SS-13-AI-Followable-Document-Contract.md), [SP-06: Oracle Rule And Schema First Gate](../04-System-Principle/SP-06-Oracle-Rule-And-Schema-First-Gate.md)
 - Replaces: `None`
-- Tags: `context, regression, code-graph, oracle-guard, multi-tenant, accuracy`
+- Tags: `context, regression, code-graph, oracle-guard, two-tier-intelligence, lsp, reproduce-first, living-knowledge`
 
 ## AI Quick View
 
 ### Summary
 
 - FlowPilot wraps AI providers; its core promise is correct output on a real, evolving codebase, not just plausible text.
-- Two failures break that promise today: the AI lacks whole-project context (it edits inside one file's scope), and it has no change history (it conflicts with, duplicates, or deletes load-bearing prior work — a regression).
-- This spec defines the business acceptance criteria for **context sufficiency** and **regression safety** that any FlowPilot-driven code change must meet.
-- It must hold on **any bound repository**, including ones that do not follow the SS-13 document format.
-- It establishes the rule that **tests are an oracle**: a failing test must trigger a spec re-check, never a silent rewrite of the test or the intended behavior to go green.
-- It also requires that the AI can find the right feature from a plain-language request (no id needed), that required outputs (change-audit note, Task/BugFix doc, green tests) are *forced* after each step, and that the needed tooling and flow-aware skills are installed and verified on the user's machine.
+- Two failures break that promise: the AI lacks whole-project context (it edits inside one file's scope), and it has no change history (it conflicts with or deletes prior work — a regression).
+- **Two-Tier Code Intelligence (CP-63)**: Operates at both the **Macro Plane** (GitNexus knowledge graph, 300 execution flows, blast radius) and the **Micro Plane** (embedded LSP runtime providing compiler diagnostics in <200ms on RAM).
+- **The Reproduce-First Oracle (CP-64)**: Pre-existing tests are ground truth; for bugfixes, an agent is physically gated from editing production files until it produces an executable test that compiles and fails via assertion (`r-reproduce`).
+- **Living Knowledge Base (CP-66)**: Distills repo execution flows into `.flowpilot/knowledge/`, injected via the `knowledge.flow` context source to eliminate exploratory file-reading token waste.
+- This spec defines the business acceptance criteria for **context sufficiency** and **regression safety** that any FlowPilot-driven code change must meet across any bound repository.
 
 ### Current Ask
 
-- Define, at the spec level, what "enough context" and "no regression" mean as testable outcomes, so SD-17 and CP-35 implement against explicit criteria rather than implicit intent.
+- Define, at the spec level, what "enough context", "two-tier intelligence", and "regression safety" mean as testable outcomes.
 
 ### Key Decisions
 
-- `AC-1` The engine operates only on the currently bound target project. If FlowPilot itself is intentionally bound as the target project, it is treated like any other target; no other project's data is injected.
-- `AC-3` Before editing a feature, the AI receives that feature's prior change history in order, so it builds on rather than undoes prior work.
-- `AC-6` A failing pre-existing test is never resolved by weakening the test or the code's intended behavior; it forces an SS/SD re-check.
+- `AC-1` The engine operates only on the currently bound target project with strict isolation.
+- `AC-3` Before editing a feature, the AI receives that feature's prior change history ranked by locus.
+- `AC-6` A failing pre-existing test is never resolved by weakening the test; it forces an SS/SD re-check.
+- `AC-18` Live compiler feedback is supplied in <200ms via embedded LSP stdio JSON-RPC (Micro Plane), while architectural blast radius is gated via GitNexus (Macro Plane).
+- `AC-19` Bugfix flows enforce `r-reproduce`: coder write access requires an executable test failing with assertion error.
+- `AC-20` Living knowledge flows are incrementally maintained at flow audit and injected into planning contexts.
 
 ### Constraints
 
@@ -125,6 +128,9 @@ A third, subtler failure compounds regressions: when a test fails, the AI "fixes
 - `AC-15` Engine data is stored locally under the bound project, and the shared, machine-independent parts (feature-history summaries, catalog, flow rules) sync to the project's configured Drive folder using the same mechanism as chat; machine-specific data (tooling status, indexes) stays local.
 - `AC-16` A new source of context can be added and enabled per-flow *declaratively* (config/pack, not a code change to the context package): the context package composes an open set of typed sections rather than a fixed set of blocks. Every context source is deterministic (explicit lookup by key/reference — no similarity search), and when a source's backing system is unavailable it degrades to a warning rather than failing the step (`AC-9`, `AC-13`). External sources are limited to already-supported/connected integrations (e.g. MCP), never arbitrary command or path input.
 - `AC-17` Step grounding is modeled as **typed artifacts** with three layers: a system-owned artifact **type** (a versioned contract; users cannot define custom types in v1), a user-authored **instance** (a reusable, project-scoped configuration validated against its type), and a step **binding** that attaches an instance to a step's input or output slot. A slot accepts only an instance whose type matches the slot; an incompatible binding, or a missing *required* one, fails at authoring or flow-load time with an actionable error (never as an opaque provider-turn failure), while a missing *optional* one degrades to a warning (`AC-9`). Artifact producers stay deterministic and their external backings stay limited to already-supported integrations (`AC-16`). At least one artifact type beyond context (e.g. a set of files) exists, so the mechanism is not context-specific. Existing context-source configurations (`AC-16`) remain valid and resolve through a compatibility fallback rather than a hard cutover.
+- `AC-18` (Two-Tier Intelligence, CP-63): Code intelligence operates in two tiers: GitNexus governs macro-level architecture, blast radius, and 300 execution flows, while an embedded LSP client provides sub-200ms in-memory compiler diagnostics after each file write. Syntax and type errors are corrected before full test or build suites execute, saving token budgets.
+- `AC-19` (Reproduce-First Defect Verification, CP-64): For bugfix workflows, the coder agent is physically barred from modifying production code until an executable test is authored that compiles cleanly and fails via assertion error (`r-reproduce`). A green test on arrival fails the reproduce gate; compile/syntax errors do not satisfy reproduction.
+- `AC-20` (Living Knowledge Base, CP-66): Macro execution flows and symbol schemas are distilled into `.flowpilot/knowledge/` and exposed as a pluggable context source (`knowledge.flow`). Planning and scout nodes receive exact flow traces based on retrieval locus without reading raw source files. The knowledge base is updated incrementally at the flow audit stage.
 
 ## 7. Business Rules
 
@@ -154,7 +160,7 @@ A third, subtler failure compounds regressions: when a test fails, the AI "fixes
 ## 10. Open Questions
 
 - `Q-1` Resolved — regression enforcement (a previously-green test breaking) is **always on** (not opt-in); it is a high-confidence signal. Softer documentation rules (change-audit note, doc presence) may still roll out warn→block per project.
-- `Q-2` Resolved — not applicable in v1: FlowPilot does not build per-language symbol parsers. Structural context comes from GitNexus (its own language coverage) with a file-level fallback, so there is no minimum-language commitment to make.
+- `Q-2` Resolved (CP-63) — Two-Tier Intelligence model: GitNexus provides language-agnostic knowledge graphs and blast radius (Macro Plane), while language-specific Language Servers (gopls, vtsls, pyright, clangd, kotlin-language-server) supply real-time in-memory compiler diagnostics via standard JSON-RPC over stdio (Micro Plane).
 - `Q-3` Resolved — when a test and its governing spec mismatch, the system raises the conflict and requires explicit user confirmation before either is changed; it never resolves the mismatch silently.
 - `Q-4` Resolved — single project only for now: strict per-project isolation, no cross-project/organization-wide retrieval.
 

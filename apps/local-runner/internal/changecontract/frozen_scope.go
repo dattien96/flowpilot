@@ -463,3 +463,96 @@ func sameStringSet(a, b []string) bool {
 	}
 	return true
 }
+
+// LockReproduceTestPaths opens the workspace's frozen-contract store and locks
+// paths read-only on the active contract bound to (runID, coderStepID),
+// returning the newly active record. It fails when no active frozen contract
+// exists for that step — the caller (the reproduce gate's pass path) treats
+// that as a no-op with a diagnostic, never as a reason to block a legitimate
+// turn (CP-64 P-3).
+func LockReproduceTestPaths(workspace, runID, coderStepID string, paths []string, now time.Time) (FrozenContractRecord, error) {
+	if len(normalizeScopePaths(paths)) == 0 {
+		return FrozenContractRecord{}, nil
+	}
+	store, err := NewFrozenStore(workspace)
+	if err != nil {
+		return FrozenContractRecord{}, err
+	}
+	existing, ok, err := store.GetFrozenForStep(runID, coderStepID)
+	if err != nil {
+		return FrozenContractRecord{}, err
+	}
+	if !ok {
+		return FrozenContractRecord{}, fmt.Errorf("changecontract: no active frozen contract for step %q in run %q to lock read-only paths on", coderStepID, runID)
+	}
+	return LockReproduceTestPathsOn(store, existing, paths, now)
+}
+
+// LockReproduceTestPathsOn is LockReproduceTestPaths against an already-loaded
+// contract and store. Same version+1 / save-before-supersede ordering as
+// AmendFrozenContract (CA-427 Finding 4): the successor is written first, so a
+// crash between the two calls can never leave the step with no active record.
+//
+// A no-op (existing returned unchanged, no new version) when every path is
+// already locked, so multiple reproduce turns/members never mint pointless
+// versions.
+func LockReproduceTestPathsOn(store *FrozenStore, existing FrozenContractRecord, paths []string, now time.Time) (FrozenContractRecord, error) {
+	union := uniqueNormalizedPaths(append(append([]string(nil), existing.ReadOnlyPaths...), paths...))
+	if sameStringSet(union, uniqueNormalizedPaths(existing.ReadOnlyPaths)) {
+		return existing, nil
+	}
+	draft := PreflightContractDraft{
+		FeatureKey:    existing.FeatureKey,
+		Intent:        existing.Intent,
+		DeclaredPaths: existing.DeclaredPaths,
+		SourceDocID:   existing.SourceDocID,
+	}
+	id := ComputeContractID(existing.RunID, existing.CoderStepID, existing.Version+1, draft, existing.BaseSHA, existing.BaselineWorktree)
+	locked := FrozenContractRecord{
+		ContractID:        id,
+		Version:           existing.Version + 1,
+		RunID:             existing.RunID,
+		PlannerStepID:     existing.PlannerStepID,
+		CoderStepID:       existing.CoderStepID,
+		FeatureKey:        existing.FeatureKey,
+		Intent:            existing.Intent,
+		DeclaredPaths:     uniqueNormalizedPaths(existing.DeclaredPaths),
+		AllowedExtraPaths: uniqueNormalizedPaths(existing.AllowedExtraPaths),
+		ReadOnlyPaths:     union,
+		SourceDocID:       existing.SourceDocID,
+		BaseSHA:           existing.BaseSHA,
+		BaselineWorktree:  existing.BaselineWorktree,
+		Supersedes:        existing.ContractID,
+		DeclaredAt:        now,
+	}
+	if err := store.SaveFrozen(locked); err != nil {
+		return FrozenContractRecord{}, err
+	}
+	if err := store.AppendStatus(existing.ContractID, ContractStatusSuperseded, "reproduce-first: reproduce test locked read-only", now); err != nil {
+		return FrozenContractRecord{}, err
+	}
+	return locked, nil
+}
+
+// IsReadOnlyLockedPath reports whether candidate matches one of the record's
+// ReadOnlyPaths after the same normalization FrozenContractScopeDrift applies.
+// Pure and workspace-free: a caller holding an absolute candidate must make it
+// workspace-relative first (the runner's bridge does).
+func IsReadOnlyLockedPath(rec FrozenContractRecord, candidate string) bool {
+	np := normalizeScopePath(candidate)
+	if np == "" {
+		return false
+	}
+	for _, p := range rec.ReadOnlyPaths {
+		if normalizeScopePath(p) == np {
+			return true
+		}
+	}
+	return false
+}
+
+// ReadOnlyLockedPaths returns a copy of the record's read-only paths (audit/UI
+// use), normalized and sorted.
+func ReadOnlyLockedPaths(rec FrozenContractRecord) []string {
+	return uniqueNormalizedPaths(rec.ReadOnlyPaths)
+}

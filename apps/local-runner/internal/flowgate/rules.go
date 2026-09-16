@@ -102,6 +102,20 @@ type TurnResult struct {
 	// r-additive-tests (pre_existing_test_edited) so Evaluate can fire without
 	// re-deriving the IsTestFile M/D/R/C signal.
 	TamperedTestPaths []string `json:"tampered_test_paths,omitempty"`
+	// CP-64 P-1 (r-reproduce): reproduce-first signals. Caller-computed, the
+	// same contract as the Tampered*/Dod* fields above — flowgate never runs
+	// the suite itself (T-4: it stays I/O-free and pure).
+	//
+	// ReproduceExpected is true only for a turn whose active node must PROVE
+	// the bug (behavior agent.reproduce), or a bug-flow behavior-change turn;
+	// an ordinary task/new-feature turn never sets it, so r-reproduce can
+	// never fire outside the reproduce-first scope (CP-64 P-1 activation).
+	ReproduceExpected bool `json:"reproduce_expected,omitempty"`
+	// ReproduceCompileFailed is the suite-output classification
+	// (ClassifySuiteOutput): a syntax/compile error is explicitly NOT a
+	// successful reproduction (CP-64 P-2 Key Decision) and always reprompts
+	// with compile guidance instead of passing the gate.
+	ReproduceCompileFailed bool `json:"reproduce_compile_failed,omitempty"`
 	// CP-60 P-2: vibe-only r-requirement advisory (signature↔locked SS).
 	RequirementDrift       bool   `json:"requirement_drift,omitempty"`
 	RequirementDriftDetail string `json:"requirement_drift_detail,omitempty"`

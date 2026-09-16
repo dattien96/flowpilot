@@ -94,6 +94,11 @@ func checkRule(rule Rule, tr TurnResult) *Violation {
 			return &Violation{Rule: rule, Detail: "task reference detected but no task document found"}
 		}
 
+	case "reproduce_not_demonstrated":
+		// CP-64 P-1: r-reproduce. Opt-in — only fires when the caller marked
+		// this turn as a reproduce turn (TurnResult.ReproduceExpected).
+		return checkReproduceRule(rule, tr)
+
 	case "tests_failed":
 		// Ordinary suite failures only (V9-27) — not regression names.
 		if tr.Tests.Ran && len(tr.Tests.Failed) > 0 {
