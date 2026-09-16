@@ -43,10 +43,10 @@ contexts:
 # CP-62 P-5 (Task-341): same profile family as task-harness (its clone).
 contextProfiles:
   scout:
-    candidateSources: [conventions, canonical.head, feature.history]
+    candidateSources: [conventions, knowledge.flow, canonical.head, feature.history]
     maxTokens: 6000
   plan_writer:
-    candidateSources: [conventions, canonical.head, feature.history, change.contract, source.excerpt]
+    candidateSources: [conventions, knowledge.flow, canonical.head, feature.history, change.contract, source.excerpt]
     maxTokens: 16000
   reviewer:
     candidateSources: [conventions, change.contract, source.excerpt]

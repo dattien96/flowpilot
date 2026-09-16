@@ -10,7 +10,7 @@
 - Reviewers: `Claude agent review`
 - Created: `2026-09-15`
 - Last Updated: `2026-09-15`
-- Parent Documents: [CP-66 P-3](../../07-Coding-Plan/todo/CP-66-Living-Knowledge-Base-Context-Source.md)
+- Parent Documents: [CP-66 P-3](../../07-Coding-Plan/done/CP-66-Living-Knowledge-Base-Context-Source.md)
 - Child Documents: `None`
 - Related Documents: [SS-09](../../05-System-Specs/SS-09-Artifact-Memory-Context-Retrieval.md), [SD-17](../../06-System-Tech-Design/SD-17-Context-And-Regression-Engine.md), [CP-62](../../07-Coding-Plan/done/CP-62-Zcode-Harness-Parity.md), [CP-55](../../07-Coding-Plan/done/CP-55-Flow-First-Preflight-Contract-Context-Retrieval-And-Canonical-Acceptance.md)
 - Replaces: `None`

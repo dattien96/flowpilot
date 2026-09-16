@@ -49,10 +49,10 @@ contexts:
 # these by name; a node without a profile falls back to main_context.
 contextProfiles:
   scout:
-    candidateSources: [conventions, canonical.head, feature.history]
+    candidateSources: [conventions, knowledge.flow, canonical.head, feature.history]
     maxTokens: 6000
   plan_writer:
-    candidateSources: [conventions, canonical.head, feature.history, change.contract, source.excerpt]
+    candidateSources: [conventions, knowledge.flow, canonical.head, feature.history, change.contract, source.excerpt]
     maxTokens: 16000
   reviewer:
     candidateSources: [conventions, change.contract, source.excerpt]

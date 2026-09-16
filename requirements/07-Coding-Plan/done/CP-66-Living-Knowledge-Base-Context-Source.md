@@ -5,14 +5,14 @@
 - Document ID: `CP-66`
 - Title: `Living Knowledge Base and Execution Flow Context Source`
 - Phase: `coding_plan`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot Architecture`
 - Reviewers: `Claude agent review`
 - Created: `2026-09-15`
-- Last Updated: `2026-09-15`
+- Last Updated: `2026-09-16`
 - Parent Documents: [SS-09: Artifact Memory Context Retrieval](../../05-System-Specs/SS-09-Artifact-Memory-Context-Retrieval.md), [SD-17: Context And Regression Engine](../../06-System-Tech-Design/SD-17-Context-And-Regression-Engine.md), [SD-22: Pluggable Context Source Registry](../../06-System-Tech-Design/SD-22-Pluggable-Context-Source-Registry.md)
-- Child Documents: [Task-373](../../08-Task/todo/Task-373-Knowledge-Distiller-Engine.md) (P-1), [Task-374](../../08-Task/todo/Task-374-Knowledge-Flow-Context-Source.md) (P-2), [Task-375](../../08-Task/todo/Task-375-Knowledge-Base-Incremental-Update-Audit-Node.md) (P-3), [Task-376](../../08-Task/todo/Task-376-Knowledge-Flow-Profile-Wiring-E2E.md) (P-4)
-- Related Documents: [CP-44: Pluggable Context Source Registry](../done/CP-44-Pluggable-Context-Source-Registry.md), [CP-54: Locus-Anchored Context Relevance](../done/CP-54-Locus-Anchored-Context-Relevance.md), [CP-62: Zcode Harness Parity](../done/CP-62-Zcode-Harness-Parity.md), [CP-63: IDE-Grade LSP Runtime](CP-63-IDE-Grade-LSP-Runtime.md)
+- Child Documents: [Task-373](../../08-Task/done/Task-373-Knowledge-Distiller-Engine.md) (P-1), [Task-374](../../08-Task/done/Task-374-Knowledge-Flow-Context-Source.md) (P-2), [Task-375](../../08-Task/done/Task-375-Knowledge-Base-Incremental-Update-Audit-Node.md) (P-3), [Task-376](../../08-Task/done/Task-376-Knowledge-Flow-Profile-Wiring-E2E.md) (P-4)
+- Related Documents: [CP-44: Pluggable Context Source Registry](../done/CP-44-Pluggable-Context-Source-Registry.md), [CP-54: Locus-Anchored Context Relevance](../done/CP-54-Locus-Anchored-Context-Relevance.md), [CP-62: Zcode Harness Parity](../done/CP-62-Zcode-Harness-Parity.md), [CP-63: IDE-Grade LSP Runtime](../todo/CP-63-IDE-Grade-LSP-Runtime.md)
 - Replaces: `None`
 - Tags: `knowledge-base, execution-flows, gitnexus, context-source, deepwiki, prompt-compression`
 - Feature Keys: `living-knowledge-base`
@@ -112,7 +112,7 @@ KnowledgeFlowSource.Produce()
 
 ### P-1: Knowledge Distiller Engine (GitNexus + LSP $\rightarrow$ Markdown)
 
-**Status: draft**
+**Status: done**
 
 **Production changes**
 - `internal/knowledge/distiller.go` (**new**): Chuyển đổi dữ liệu thô từ GitNexus CLI/MCP và LSP symbols thành các bản tóm tắt Markdown có cấu trúc.
@@ -131,7 +131,7 @@ func TestDistillerIncrementalUpdateOnChangedFiles(t *testing.T)
 
 ### P-2: `knowledge.flow` Context Source Implementation
 
-**Status: draft**
+**Status: done**
 
 **Production changes**
 - `internal/runner/knowledge_flow_context_source.go` (**new**): Implement interface `ContextSource` (CP-44). Đăng ký key `knowledge.flow` (priority ngay sau `conventions`; token cap ~500/1000 đo bằng counter của Budget Packer, cắt theo nguyên section).
@@ -149,7 +149,7 @@ func TestKnowledgeFlowSourceRespectsTokenLimit(t *testing.T)
 
 ### P-3: Tích Hợp Incremental Update vào Node `audit`
 
-**Status: draft**
+**Status: done**
 
 **Production changes**
 - `internal/runner/flow_validate_audit_dispatch.go` (modified): Tại completion path node `audit` sau gate pass — thu code paths (`ChangedPaths`+`WrittenPaths` lọc `isConcreteCodeTarget`), gọi worker nền khi `.flowpilot/knowledge/` đã tồn tại.
@@ -165,7 +165,7 @@ func TestAuditNodeNonBlockingOnKnowledgeError(t *testing.T)
 
 ### P-4: Cập nhật Flow Profiles & E2E Validation
 
-**Status: draft**
+**Status: done**
 
 **Production changes**
 - Cập nhật `task-harness.yaml`, `bug-plan-harness.yaml`: Thêm `knowledge.flow` vào `candidateSources` của `scout` → `[conventions, knowledge.flow, canonical.head, feature.history]` và `plan_writer` (giữ nguyên `reviewer`/`coder`; không có profile investigate riêng — đã verify).
@@ -213,11 +213,11 @@ func TestCoderNodeDoesNotReceiveKnowledgeFlow(t *testing.T)
 
 ## 10. Definition of Done
 
-- [ ] Bộ chưng cất sinh ra 3 file markdown chuẩn xác trong `.flowpilot/knowledge/`.
-- [ ] Context Source `knowledge.flow` giải nghĩa đúng luồng nghiệp vụ từ Locus.
-- [ ] Node `audit` tự động cập nhật vi sai sau khi hoàn thành task.
-- [ ] Planner nhận được tóm tắt luồng mà không phải đọc 50 file code thô.
-- [ ] Toàn bộ test additive đều green.
+- [x] Bộ chưng cất sinh ra 3 file markdown chuẩn xác trong `.flowpilot/knowledge/`. (P-1: 9 tests + live distill flowpilot — overview/flows/models/index, CA-881)
+- [x] Context Source `knowledge.flow` giải nghĩa đúng luồng nghiệp vụ từ Locus. (P-2: 7 tests — path direct + symbol suffix, ~500-token pack, CA-882)
+- [x] Node `audit` tự động cập nhật vi sai sau khi hoàn thành task. (P-3: 4 hook tests — 3 settle sites, single choke point, non-blocking, CA-883)
+- [x] Planner nhận được tóm tắt luồng mà không phải đọc 50 file code thô. (P-4: plan_writer renders Checkout section ~500 tokens, coder clean, CA-884)
+- [x] Toàn bộ test additive đều green. (28 new tests + 1 live-index proof green; blast-radius suites green; 3 pre-existing env/timing failures documented, untouched)
 
 ---
 

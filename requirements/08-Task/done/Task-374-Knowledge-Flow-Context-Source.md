@@ -10,7 +10,7 @@
 - Reviewers: `Claude agent review`
 - Created: `2026-09-15`
 - Last Updated: `2026-09-15`
-- Parent Documents: [CP-66 P-2](../../07-Coding-Plan/todo/CP-66-Living-Knowledge-Base-Context-Source.md)
+- Parent Documents: [CP-66 P-2](../../07-Coding-Plan/done/CP-66-Living-Knowledge-Base-Context-Source.md)
 - Child Documents: `None`
 - Related Documents: [SD-22](../../06-System-Tech-Design/SD-22-Pluggable-Context-Source-Registry.md), [SS-09](../../05-System-Specs/SS-09-Artifact-Memory-Context-Retrieval.md), [CP-44](../../07-Coding-Plan/done/CP-44-Pluggable-Context-Source-Registry.md), [CP-54](../../07-Coding-Plan/done/CP-54-Locus-Anchored-Context-Relevance.md)
 - Replaces: `None`

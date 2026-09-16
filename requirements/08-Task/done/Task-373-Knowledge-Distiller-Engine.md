@@ -10,7 +10,7 @@
 - Reviewers: `Claude agent review`
 - Created: `2026-09-15`
 - Last Updated: `2026-09-15`
-- Parent Documents: [CP-66 P-1](../../07-Coding-Plan/todo/CP-66-Living-Knowledge-Base-Context-Source.md)
+- Parent Documents: [CP-66 P-1](../../07-Coding-Plan/done/CP-66-Living-Knowledge-Base-Context-Source.md)
 - Child Documents: `None`
 - Related Documents: [SS-09](../../05-System-Specs/SS-09-Artifact-Memory-Context-Retrieval.md), [SD-17](../../06-System-Tech-Design/SD-17-Context-And-Regression-Engine.md), [SD-22](../../06-System-Tech-Design/SD-22-Pluggable-Context-Source-Registry.md), [CP-63](../../07-Coding-Plan/todo/CP-63-IDE-Grade-LSP-Runtime.md)
 - Replaces: `None`

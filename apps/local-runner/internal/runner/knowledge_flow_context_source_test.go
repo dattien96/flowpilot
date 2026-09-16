@@ -147,7 +147,10 @@ func itoaTest(n int) string {
 }
 
 func TestKnowledgeSymbolMatches(t *testing.T) {
-	cases := []struct{ index, locus string; want bool }{
+	cases := []struct {
+		index, locus string
+		want         bool
+	}{
 		{"Checkout", "Checkout", true},
 		{"Checkout", "cart.Checkout", true},
 		{"cart.Checkout", "Checkout", true},

@@ -5,14 +5,14 @@
 - Document ID: `Task-376`
 - Title: `Knowledge Flow Profile Wiring And E2E Validation`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `Claude Sonnet MAX`
 - Reviewers: `Claude agent review`
 - Created: `2026-09-15`
 - Last Updated: `2026-09-15`
-- Parent Documents: [CP-66 P-4](../../07-Coding-Plan/todo/CP-66-Living-Knowledge-Base-Context-Source.md)
+- Parent Documents: [CP-66 P-4](../../07-Coding-Plan/done/CP-66-Living-Knowledge-Base-Context-Source.md)
 - Child Documents: `None`
-- Related Documents: [SS-19](../../05-System-Specs/SS-19-Engineering-Harness-Flow-Family.md), [SD-22](../../06-System-Tech-Design/SD-22-Pluggable-Context-Source-Registry.md), [CP-62](../../07-Coding-Plan/done/CP-62-Zcode-Harness-Parity.md), [CP-66](../../07-Coding-Plan/todo/CP-66-Living-Knowledge-Base-Context-Source.md)
+- Related Documents: [SS-19](../../05-System-Specs/SS-19-Engineering-Harness-Flow-Family.md), [SD-22](../../06-System-Tech-Design/SD-22-Pluggable-Context-Source-Registry.md), [CP-62](../../07-Coding-Plan/done/CP-62-Zcode-Harness-Parity.md), [CP-66](../../07-Coding-Plan/done/CP-66-Living-Knowledge-Base-Context-Source.md)
 - Replaces: `None`
 - Tags: `knowledge-base, context-profiles, flow-wiring, e2e, token-economy`
 - Feature Keys: `living-knowledge-base`
@@ -101,6 +101,18 @@ P-1→P-3 hoàn tất: tri thức sinh được, truy xuất được, tự cậ
 
 ## 8. Completion Notes
 
-- result:
-- follow-ups:
-- upstream docs updated:
+- result: scout + plan_writer of task-harness.yaml and bug-plan-harness.yaml
+  opt into `knowledge.flow` (position 2, after conventions); reviewer/coder
+  untouched. 5/5 new E2E tests green (profile declares, pack validates,
+  plan_writer renders the distilled Checkout section ~500 tokens, coder
+  clean, rag-harness byte-identical behavior). Manual §7: distilled
+  flowpilot itself — `.flowpilot/knowledge/` with system-overview.md (574 B),
+  execution-flows.md (10 sections, 11.5 KB), data-models.md (relevance-ranked,
+  e.g. `Struct Catalog` in 3 flows), index.json (16 KB; flow entries resolve
+  to existing files).
+- follow-ups: (1) measure token ROI before opting in rag/bug-harness/vibe
+  flows; (2) production LSP SymbolLister adapter (v1 distills GitNexus-only);
+  (3) observe >500-flow sharding on a monorepo (unit-covered, never live).
+- upstream docs updated: task-harness.yaml + bug-plan-harness.yaml
+  contextProfiles (scout/plan_writer); CP-66 DOD §10 fully ticked at
+  closeout.
