@@ -7526,6 +7526,14 @@ func Run(cfg config.ChatConfig, runnerURL string) error {
 	return err
 }
 
+// localProjectID derives a stable per-cwd project id for offline headless
+// runs (BUG-373): no catalog lookup, same cwd always maps to the same id.
+func localProjectID(cwd string) string {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(cwd))
+	return fmt.Sprintf("proj-local-%x", h.Sum64())
+}
+
 // runHeadless runs without a TUI: sends one prompt and prints the response.
 // Exits with non-zero when turn_failed or a gate blocks completion (CP-56 §7).
 func runHeadless(m *AppModel, prompt string) error {
@@ -7547,6 +7555,13 @@ func runHeadless(m *AppModel, prompt string) error {
 			input.Cwd = projects[0].Path
 		}
 	}
+	if input.ProjectID == "" && input.Cwd != "" {
+		// Offline headless has no catalog to resolve a project (BUG-373):
+		// synthesize a stable local id from the cwd so per-project dispatch
+		// logging works instead of failing every turn with 502
+		// dispatch_prepare_failed. Same cwd → same id → same log.
+		input.ProjectID = localProjectID(input.Cwd)
+	}
 
 	var handle client.RunHandle
 	var err error
@@ -7558,10 +7573,17 @@ func runHeadless(m *AppModel, prompt string) error {
 	if err != nil {
 		return fmt.Errorf("start run: %w", err)
 	}
+	// Mirror the interactive path (RunStartedMsg → m.stepID): seed the model
+	// with the fresh handle so resolveTurnStepID finds the runner-minted
+	// step ("chat-<runId>") instead of POSTing an empty stepId, which
+	// startTurn rejects with 400 "stepId is required" (BUG-373).
+	m.runHandle = &handle
+	m.stepID = handle.StepID
 
 	yoloCopy := m.yolo
 	turnIn := client.TurnInput{
 		RunID:           handle.RunID,
+		StepID:          m.resolveTurnStepID(),
 		Prompt:          prompt,
 		ReasoningEffort: m.cfg.ReasoningEffort,
 		YoloMode:        &yoloCopy,
