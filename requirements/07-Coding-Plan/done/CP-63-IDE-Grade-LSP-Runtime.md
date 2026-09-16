@@ -5,13 +5,14 @@
 - Document ID: `CP-63`
 - Title: `IDE-Grade LSP Runtime`
 - Phase: `coding_plan`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot Architecture`
 - Reviewers: `Claude agent review`
 - Created: `2026-09-15`
-- Last Updated: `2026-09-15`
+- Last Updated: `2026-09-16`
+- Completed: `2026-09-16` (Task-354..363, CA-869..871 + CA-885 test-green fix)
 - Parent Documents: [SD-17: Context And Regression Engine](../../06-System-Tech-Design/SD-17-Context-And-Regression-Engine.md), [SS-14: Code Context And Regression Safety](../../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md)
-- Child Documents: [Task-354](../../08-Task/todo/Task-354-LSP-JSONRPC-Client-Core.md) (P-1), [Task-355](../../08-Task/todo/Task-355-LSP-Server-Lifecycle-Manager.md) (P-2), [Task-356](../../08-Task/todo/Task-356-LSP-Platform-Registry-And-Auto-Detection.md) (P-3), [Task-357](../../08-Task/todo/Task-357-LSP-Document-Sync-And-Diagnostics-Collection.md) (P-4), [Task-358](../../08-Task/todo/Task-358-LSP-Post-Write-Diagnostics-Hook.md) (P-5), [Task-359](../../08-Task/todo/Task-359-LSP-Diagnostics-Context-Source.md) (P-6), [Task-360](../../08-Task/todo/Task-360-Kotlin-Language-Server-Integration.md) (P-7), [Task-361](../../08-Task/todo/Task-361-Android-Gradle-Build-Fallback.md) (P-8)
+- Child Documents: [Task-354](../../08-Task/done/Task-354-LSP-JSONRPC-Client-Core.md) (P-1), [Task-355](../../08-Task/done/Task-355-LSP-Server-Lifecycle-Manager.md) (P-2), [Task-356](../../08-Task/done/Task-356-LSP-Platform-Registry-And-Auto-Detection.md) (P-3), [Task-357](../../08-Task/done/Task-357-LSP-Document-Sync-And-Diagnostics-Collection.md) (P-4), [Task-358](../../08-Task/done/Task-358-LSP-Post-Write-Diagnostics-Hook.md) (P-5), [Task-359](../../08-Task/done/Task-359-LSP-Diagnostics-Context-Source.md) (P-6), [Task-360](../../08-Task/done/Task-360-Kotlin-Language-Server-Integration.md) (P-7), [Task-361](../../08-Task/done/Task-361-Android-Gradle-Build-Fallback.md) (P-8), [Task-362](../../08-Task/done/Task-362-LSP-Missing-Server-Warning.md) (follow-up, CA-870), [Task-363](../../08-Task/done/Task-363-flowpilot-doctor.md) (follow-up, CA-871)
 - Related Documents: [CP-55: Flow-First Preflight Contract](../done/CP-55-Flow-First-Preflight-Contract-Context-Retrieval-And-Canonical-Acceptance.md), [CP-44: Pluggable Context Source Registry](../done/CP-44-Pluggable-Context-Source-Registry.md), [CP-35: Context And Regression Engine Rollout](../done/CP-35-Context-And-Regression-Engine-Rollout.md)
 - Replaces: `None`
 - Tags: `lsp, language-server, diagnostics, code-intelligence, compiler-feedback`
@@ -217,7 +218,7 @@ gopls returns publishDiagnostics
 
 ### P-1: LSP JSON-RPC Client Core
 
-**Status: done** — Task: [Task-354](../../08-Task/todo/Task-354-LSP-JSONRPC-Client-Core.md) + [CA-869](../../../change-audit/CA-869-CP-63-IDE-Grade-LSP-Runtime-Implementation.md)
+**Status: done** — Task: [Task-354](../../08-Task/done/Task-354-LSP-JSONRPC-Client-Core.md) + [CA-869](../../../change-audit/CA-869-CP-63-IDE-Grade-LSP-Runtime-Implementation.md)
 
 **Production changes**
 - `internal/lsp/protocol.go` (**new**): LSP protocol message types — `InitializeParams`, `InitializeResult`, `DidOpenTextDocumentParams`, `DidChangeTextDocumentParams`, `PublishDiagnosticsParams`, `Diagnostic`, `Position`, `Range`, `Location`, `TextDocumentIdentifier`, `TextDocumentItem`, `VersionedTextDocumentIdentifier`, `ContentChangeEvent`.
@@ -255,7 +256,7 @@ func TestProtocolParseContentLength(t *testing.T)
 
 ### P-2: Server Lifecycle Manager
 
-**Status: done** — Task: [Task-355](../../08-Task/todo/Task-355-LSP-Server-Lifecycle-Manager.md) + [CA-869](../../../change-audit/CA-869-CP-63-IDE-Grade-LSP-Runtime-Implementation.md)
+**Status: done** — Task: [Task-355](../../08-Task/done/Task-355-LSP-Server-Lifecycle-Manager.md) + [CA-869](../../../change-audit/CA-869-CP-63-IDE-Grade-LSP-Runtime-Implementation.md)
 
 **Production changes**
 - `internal/lsp/server_manager.go` (**new**): `ServerManager` struct — manages OS process lifecycle for LSP servers. Methods: `Start(ctx, binary string, args []string, workspaceRoot string) error`, `Stop() error`, `Restart() error`, `IsRunning() bool`, `Client() *Client`. Pipes stdin/stdout to `Client`. Stderr captured to log.
@@ -288,7 +289,7 @@ func TestServerManagerIsRunningReflectsState(t *testing.T)
 
 ### P-3: Platform Registry and Auto-Detection
 
-**Status: done** — Task: [Task-356](../../08-Task/todo/Task-356-LSP-Platform-Registry-And-Auto-Detection.md) + [CA-869](../../../change-audit/CA-869-CP-63-IDE-Grade-LSP-Runtime-Implementation.md)
+**Status: done** — Task: [Task-356](../../08-Task/done/Task-356-LSP-Platform-Registry-And-Auto-Detection.md) + [CA-869](../../../change-audit/CA-869-CP-63-IDE-Grade-LSP-Runtime-Implementation.md)
 
 **Production changes**
 - `internal/lsp/platform_registry.go` (**new**): `PlatformLSPConfig` struct (`Platform string`, `Binary string`, `Args []string`, `FileExtensions []string`, `InitializationOptions map[string]interface{}`). `Registry` map keyed by platform. `DefaultRegistry()` returns configs for: `golang→gopls`, `nextjs/reactjs/node→vtsls`, `python→pyright`, `rust→rust-analyzer`, `android→kotlin-language-server`.
@@ -322,7 +323,7 @@ func TestDetectPlatformPython(t *testing.T)
 
 ### P-4: Document Sync and Diagnostics Collection
 
-**Status: done** — Task: [Task-357](../../08-Task/todo/Task-357-LSP-Document-Sync-And-Diagnostics-Collection.md) + [CA-869](../../../change-audit/CA-869-CP-63-IDE-Grade-LSP-Runtime-Implementation.md)
+**Status: done** — Task: [Task-357](../../08-Task/done/Task-357-LSP-Document-Sync-And-Diagnostics-Collection.md) + [CA-869](../../../change-audit/CA-869-CP-63-IDE-Grade-LSP-Runtime-Implementation.md)
 
 **Production changes**
 - `internal/lsp/doc_sync.go` (**new**): `DocumentSyncManager` — tracks open documents, version numbers. Methods: `OpenDocument(uri, languageID, content string)`, `ChangeDocument(uri, newContent string)`, `CloseDocument(uri string)`. Each method delegates to `Client.DidOpen`/`DidChange`/`DidClose` with correct versioning.
@@ -359,7 +360,7 @@ func TestFormatDiagnosticsForAgentOutput(t *testing.T)
 
 ### P-5: Runner Integration — Post-Write Diagnostics Hook
 
-**Status: done** — Task: [Task-358](../../08-Task/todo/Task-358-LSP-Post-Write-Diagnostics-Hook.md) + [CA-869](../../../change-audit/CA-869-CP-63-IDE-Grade-LSP-Runtime-Implementation.md)
+**Status: done** — Task: [Task-358](../../08-Task/done/Task-358-LSP-Post-Write-Diagnostics-Hook.md) + [CA-869](../../../change-audit/CA-869-CP-63-IDE-Grade-LSP-Runtime-Implementation.md)
 
 **Production changes**
 - `internal/lsp/runner_hook.go` (**new**): `PostWriteDiagnosticsHook` — called by Runner after `write_file` or `replace_file_content` tool execution. Sequence: (1) `DocSync.ChangeDocument(uri, newContent)`, (2) `Collector.WaitForDiagnostics(5s)`, (3) if `Collector.HasErrors()` → return formatted diagnostic string for injection into conversation, (4) if clean → return nil.
@@ -391,7 +392,7 @@ func TestRunnerSkipsLSPHookWhenNoServer(t *testing.T)
 
 ### P-6: LSP as Context Source (CP-44 Registry)
 
-**Status: done** — Task: [Task-359](../../08-Task/todo/Task-359-LSP-Diagnostics-Context-Source.md) + [CA-869](../../../change-audit/CA-869-CP-63-IDE-Grade-LSP-Runtime-Implementation.md)
+**Status: done** — Task: [Task-359](../../08-Task/done/Task-359-LSP-Diagnostics-Context-Source.md) + [CA-869](../../../change-audit/CA-869-CP-63-IDE-Grade-LSP-Runtime-Implementation.md)
 
 **Production changes**
 - `internal/lsp/context_source.go` (**new**): Implements CP-44 context source interface. `LSPDiagnosticsSource` provides latest diagnostics as a context slot — Agent sees current compiler errors in its context window. Slot key: `lsp.diagnostics`. Rendered section: "## Current Compiler Diagnostics (LSP)" with error list or "No compiler errors detected."
@@ -421,7 +422,7 @@ func TestLSPDiagnosticsSourceRegisteredInCP44Registry(t *testing.T)
 
 ### P-7: Kotlin Language Server Integration
 
-**Status: done** — Task: [Task-360](../../08-Task/todo/Task-360-Kotlin-Language-Server-Integration.md) + [CA-869](../../../change-audit/CA-869-CP-63-IDE-Grade-LSP-Runtime-Implementation.md)
+**Status: done** — Task: [Task-360](../../08-Task/done/Task-360-Kotlin-Language-Server-Integration.md) + [CA-869](../../../change-audit/CA-869-CP-63-IDE-Grade-LSP-Runtime-Implementation.md)
 
 **Production changes**
 - Update `platform_registry.go`: Finalize `android` platform config — `kotlin-language-server` binary, `--stdio` args, `.kt`/`.kts` extensions, initialization options for Gradle/Android project.
@@ -453,7 +454,7 @@ func TestKotlinFileExtensionsCorrect(t *testing.T)
 
 ### P-8: Android Gradle Build Fallback
 
-**Status: done** — Task: [Task-361](../../08-Task/todo/Task-361-Android-Gradle-Build-Fallback.md) + [CA-869](../../../change-audit/CA-869-CP-63-IDE-Grade-LSP-Runtime-Implementation.md)
+**Status: done** — Task: [Task-361](../../08-Task/done/Task-361-Android-Gradle-Build-Fallback.md) + [CA-869](../../../change-audit/CA-869-CP-63-IDE-Grade-LSP-Runtime-Implementation.md)
 
 **Production changes**
 - `internal/lsp/gradle_fallback.go` (**new**): `GradleFallbackValidator` — for Android projects, after LSP diagnostics pass (or when LSP reports 0 errors but Android-specific errors may still exist), optionally run `./gradlew assembleDebug --dry-run` or `./gradlew compileDebugKotlin` for deeper validation.
@@ -545,31 +546,31 @@ func TestGradleFallbackTimesOut(t *testing.T)
 ## 10. Definition of Done
 
 ### Core Infrastructure
-- [ ] JSON-RPC client handles Initialize handshake, DidOpen/DidChange/DidClose, and diagnostics notification.
-- [ ] ServerManager starts/stops/restarts LSP server processes with health monitoring.
-- [ ] Platform registry auto-detects project language and resolves correct LSP binary.
+- [x] JSON-RPC client handles Initialize handshake, DidOpen/DidChange/DidClose, and diagnostics notification. (P-1: 10 signature tests, CA-869)
+- [x] ServerManager starts/stops/restarts LSP server processes with health monitoring. (P-2: 8 tests + reap-semantics lock CA-885)
+- [x] Platform registry auto-detects project language and resolves correct LSP binary. (P-3: 8 tests + C/C++ clangd follow-up, CA-869/871)
 
 ### Diagnostics Pipeline
-- [ ] DocumentSyncManager correctly tracks open file versions.
-- [ ] DiagnosticsCollector stores, filters, and formats compiler errors.
-- [ ] PostWriteDiagnosticsHook integrates into Runner tool execution pipeline.
-- [ ] LSP diagnostics available as CP-44 context source.
+- [x] DocumentSyncManager correctly tracks open file versions. (P-4, CA-869)
+- [x] DiagnosticsCollector stores, filters, and formats compiler errors. (P-4, CA-869)
+- [x] PostWriteDiagnosticsHook integrates into Runner tool execution pipeline. (P-5 + Gradle call-site, CA-869/871)
+- [x] LSP diagnostics available as CP-44 context source. (P-6 `lsp.diagnostics` opt-in, CA-869)
 
 ### Kotlin/Android
-- [ ] kotlin-language-server configuration with Android SDK detection.
-- [ ] Gradle fallback covers R class and Compose compiler errors.
+- [x] kotlin-language-server configuration with Android SDK detection. (P-7, CA-869)
+- [x] Gradle fallback covers R class and Compose compiler errors. (P-8 + fake-echo fix, CA-869/871/885)
 
 ### Quality gates
-- [ ] GitNexus impact analysis run and reported before every symbol edit.
-- [ ] HIGH/CRITICAL impact reported before implementation proceeds.
-- [ ] All ~61 new test signatures implemented.
-- [ ] Existing green tests are not edited (additive tests only).
-- [ ] Package tests pass after every slice.
-- [ ] Full relevant regression suite passes.
-- [ ] GitNexus detect_changes shows only expected symbols/flows before commit.
-- [ ] Each implementation slice has a Task document and change-audit entry.
-- [ ] Implementation reviewed by reviewer gate with zero blocking findings.
-- [ ] Graceful degradation verified: no crash/block when LSP unavailable.
+- [x] GitNexus impact analysis run and reported before every symbol edit. (LOW per CA-869; CA-885 touched test-only files, grep-verified no provider/caller impact)
+- [x] HIGH/CRITICAL impact reported before implementation proceeds. (none; LOW only)
+- [x] All ~61 new test signatures implemented. (66 P-1→P-8 + 8 additive per CA-869, 16 warning per CA-870, doctor/C++ batch per CA-871, 5 matrix per CA-885)
+- [x] Existing green tests are not edited — exception: 3 legacy test-helper/assertion lines corrected with explicit operator approval (unix fake-gradlew echo ×2, Stop reap assertion ×1; zero production edits, zero assertion-weakening — CA-885).
+- [x] Package tests pass after every slice. (`internal/lsp` full green 2026-09-16 after CA-885)
+- [x] Full relevant regression suite passes. (runner lsp/knowledge/profile, cli, agentpack, flowgate, changecontract green; remaining env failures pre-existing per CA-869)
+- [x] GitNexus detect_changes shows only expected symbols/flows before commit. (per CA-869; CA-885 scope: 3 test files + 2 new test files + docs)
+- [x] Each implementation slice has a Task document and change-audit entry. (Task-354→363 in done/, CA-869/870/871/885)
+- [x] Implementation reviewed by reviewer gate with zero blocking findings. (CP63-66 audit 2026-09-16 raised 3 findings — all fixed in CA-885, suite re-green)
+- [x] Graceful degradation verified: no crash/block when LSP unavailable. (P-5 hook skip, §3.4 matrix, CA-869)
 
 ---
 

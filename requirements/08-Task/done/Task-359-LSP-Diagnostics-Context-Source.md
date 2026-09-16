@@ -10,9 +10,9 @@
 - Reviewers: `Claude agent review`
 - Created: `2026-09-15`
 - Last Updated: `2026-09-15`
-- Parent Documents: [CP-63 P-6](../../07-Coding-Plan/todo/CP-63-IDE-Grade-LSP-Runtime.md)
+- Parent Documents: [CP-63 P-6](../../07-Coding-Plan/done/CP-63-IDE-Grade-LSP-Runtime.md)
 - Child Documents: `None`
-- Related Documents: [SD-17](../../06-System-Tech-Design/SD-17-Context-And-Regression-Engine.md), [SS-14](../../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md), [CP-44](../../07-Coding-Plan/done/CP-44-Pluggable-Context-Source-Registry.md), [Task-358](../todo/Task-358-LSP-Post-Write-Diagnostics-Hook.md)
+- Related Documents: [SD-17](../../06-System-Tech-Design/SD-17-Context-And-Regression-Engine.md), [SS-14](../../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md), [CP-44](../../07-Coding-Plan/done/CP-44-Pluggable-Context-Source-Registry.md), [Task-358](../done/Task-358-LSP-Post-Write-Diagnostics-Hook.md)
 - Replaces: `None`
 - Tags: `lsp, context-source, cp-44, diagnostics, prompt-packing, code-intelligence`
 - Feature Keys: `lsp-runtime`

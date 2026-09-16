@@ -27,6 +27,14 @@ func TestLSPHelperProcess(t *testing.T) {
 		lspHelperServe()
 	case "diagnostics":
 		lspHelperDiagnostics()
+	case "hangkill": // like hang, but stdin EOF never ends the process:
+		// only a signal can take it down (deterministic kill shape).
+		b := make([]byte, 1)
+		for {
+			if _, err := os.Stdin.Read(b); err != nil {
+				time.Sleep(time.Hour)
+			}
+		}
 	default: // hang: block until stdin closes, never answer
 		_, _ = io.Copy(io.Discard, os.Stdin)
 	}
@@ -192,9 +200,13 @@ func TestServerManagerStopKillsProcess(t *testing.T) {
 	if err := m.Stop(); err != nil {
 		t.Fatalf("second Stop: %v", err)
 	}
-	if m.cmd.ProcessState == nil || !m.cmd.ProcessState.Exited() {
+	if m.cmd.ProcessState == nil {
 		t.Fatal("OS process was not reaped")
 	}
+	// NOTE: do NOT assert Exited() here. Stop() SIGKILLs a hanging server
+	// by design, and on Unix os.ProcessState.Exited reports false for
+	// signal deaths (the process is reaped via Wait, just did not "exit").
+	// Reap-only is the correct contract; see TestServerManagerStopReapsKill.
 }
 
 func TestServerManagerRestartRecreatesClient(t *testing.T) {

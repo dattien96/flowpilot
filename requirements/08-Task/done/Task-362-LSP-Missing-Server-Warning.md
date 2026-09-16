@@ -10,9 +10,9 @@
 - Reviewers: `Claude agent review`
 - Created: `2026-09-15`
 - Last Updated: `2026-09-15`
-- Parent Documents: [CP-63](../../07-Coding-Plan/todo/CP-63-IDE-Grade-LSP-Runtime.md) (follow-up to P-5/R-1)
+- Parent Documents: [CP-63](../../07-Coding-Plan/done/CP-63-IDE-Grade-LSP-Runtime.md) (follow-up to P-5/R-1)
 - Child Documents: `None`
-- Related Documents: [Task-358](../todo/Task-358-LSP-Post-Write-Diagnostics-Hook.md), [CA-869](../../../change-audit/CA-869-CP-63-IDE-Grade-LSP-Runtime-Implementation.md)
+- Related Documents: [Task-358](../done/Task-358-LSP-Post-Write-Diagnostics-Hook.md), [CA-869](../../../change-audit/CA-869-CP-63-IDE-Grade-LSP-Runtime-Implementation.md)
 - Replaces: `None`
 - Tags: `lsp, warning, sidebar, tui, desktop, install-hint`
 - Feature Keys: `lsp-runtime`

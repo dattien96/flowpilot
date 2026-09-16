@@ -10,9 +10,9 @@
 - Reviewers: `Claude agent review`
 - Created: `2026-09-15`
 - Last Updated: `2026-09-15`
-- Parent Documents: [CP-63](../../07-Coding-Plan/todo/CP-63-IDE-Grade-LSP-Runtime.md) (R-1 partial mitigation)
+- Parent Documents: [CP-63](../../07-Coding-Plan/done/CP-63-IDE-Grade-LSP-Runtime.md) (R-1 partial mitigation)
 - Child Documents: `None`
-- Related Documents: [Task-356](../todo/Task-356-LSP-Platform-Registry-And-Auto-Detection.md), [CA-871](../../../change-audit/CA-871-CP-63-Followup-Batch.md)
+- Related Documents: [Task-356](../done/Task-356-LSP-Platform-Registry-And-Auto-Detection.md), [CA-871](../../../change-audit/CA-871-CP-63-Followup-Batch.md)
 - Replaces: `None`
 - Tags: `lsp, doctor, cli, diagnostics, environment`
 - Feature Keys: `lsp-runtime`

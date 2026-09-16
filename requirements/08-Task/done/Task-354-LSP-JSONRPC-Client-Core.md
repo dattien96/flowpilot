@@ -10,7 +10,7 @@
 - Reviewers: `Claude agent review`
 - Created: `2026-09-15`
 - Last Updated: `2026-09-15`
-- Parent Documents: [CP-63 P-1](../../07-Coding-Plan/todo/CP-63-IDE-Grade-LSP-Runtime.md)
+- Parent Documents: [CP-63 P-1](../../07-Coding-Plan/done/CP-63-IDE-Grade-LSP-Runtime.md)
 - Child Documents: `None`
 - Related Documents: [SD-17](../../06-System-Tech-Design/SD-17-Context-And-Regression-Engine.md), [SS-14](../../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md), [CP-55](../../07-Coding-Plan/done/CP-55-Flow-First-Preflight-Contract-Context-Retrieval-And-Canonical-Acceptance.md)
 - Replaces: `None`

@@ -10,9 +10,9 @@
 - Reviewers: `Claude agent review`
 - Created: `2026-09-15`
 - Last Updated: `2026-09-15`
-- Parent Documents: [CP-63 P-5](../../07-Coding-Plan/todo/CP-63-IDE-Grade-LSP-Runtime.md)
+- Parent Documents: [CP-63 P-5](../../07-Coding-Plan/done/CP-63-IDE-Grade-LSP-Runtime.md)
 - Child Documents: `None`
-- Related Documents: [SD-17](../../06-System-Tech-Design/SD-17-Context-And-Regression-Engine.md), [SS-14](../../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md), [CP-55](../../07-Coding-Plan/done/CP-55-Flow-First-Preflight-Contract-Context-Retrieval-And-Canonical-Acceptance.md), [Task-357](../todo/Task-357-LSP-Document-Sync-And-Diagnostics-Collection.md), [Task-355](../todo/Task-355-LSP-Server-Lifecycle-Manager.md)
+- Related Documents: [SD-17](../../06-System-Tech-Design/SD-17-Context-And-Regression-Engine.md), [SS-14](../../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md), [CP-55](../../07-Coding-Plan/done/CP-55-Flow-First-Preflight-Contract-Context-Retrieval-And-Canonical-Acceptance.md), [Task-357](../done/Task-357-LSP-Document-Sync-And-Diagnostics-Collection.md), [Task-355](../done/Task-355-LSP-Server-Lifecycle-Manager.md)
 - Replaces: `None`
 - Tags: `lsp, runner, diagnostics-hook, file-write, auto-reprompt, code-intelligence`
 - Feature Keys: `lsp-runtime`

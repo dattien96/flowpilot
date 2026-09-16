@@ -34,7 +34,9 @@ func lspAndroidHarness(t *testing.T, diag, gradleOut string) (*ServerSet, string
 		t.Fatal(err)
 	}
 	name := "gradlew"
-	content := "#!/bin/sh\n" + gradleOut + "\nexit 1\n"
+	// Unix branch echoes each line quoted (raw output lines would execute
+	// as shell commands; "> Task ..." would redirect stdout away).
+	content := "#!/bin/sh\n" + lspEchoLines(gradleOut) + "\nexit 1\n"
 	if runtime.GOOS == "windows" {
 		name = "gradlew.bat"
 		lines := "@echo off\r\n"

@@ -10,9 +10,9 @@
 - Reviewers: `Claude agent review`
 - Created: `2026-09-15`
 - Last Updated: `2026-09-15`
-- Parent Documents: [CP-63 P-3](../../07-Coding-Plan/todo/CP-63-IDE-Grade-LSP-Runtime.md)
+- Parent Documents: [CP-63 P-3](../../07-Coding-Plan/done/CP-63-IDE-Grade-LSP-Runtime.md)
 - Child Documents: `None`
-- Related Documents: [SD-17](../../06-System-Tech-Design/SD-17-Context-And-Regression-Engine.md), [SS-14](../../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md), [Task-353](../done/Task-353-Standalone-TUI-Onboarding-And-Modals.md), [Task-354](../todo/Task-354-LSP-JSONRPC-Client-Core.md), [Task-355](../todo/Task-355-LSP-Server-Lifecycle-Manager.md)
+- Related Documents: [SD-17](../../06-System-Tech-Design/SD-17-Context-And-Regression-Engine.md), [SS-14](../../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md), [Task-353](../done/Task-353-Standalone-TUI-Onboarding-And-Modals.md), [Task-354](../done/Task-354-LSP-JSONRPC-Client-Core.md), [Task-355](../done/Task-355-LSP-Server-Lifecycle-Manager.md)
 - Replaces: `None`
 - Tags: `lsp, platform-detection, project-wizard, gopls, vtsls, pyright, rust-analyzer, code-intelligence`
 - Feature Keys: `lsp-runtime`

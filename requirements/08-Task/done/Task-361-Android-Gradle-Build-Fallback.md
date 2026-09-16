@@ -10,9 +10,9 @@
 - Reviewers: `Claude agent review`
 - Created: `2026-09-15`
 - Last Updated: `2026-09-15`
-- Parent Documents: [CP-63 P-8](../../07-Coding-Plan/todo/CP-63-IDE-Grade-LSP-Runtime.md)
+- Parent Documents: [CP-63 P-8](../../07-Coding-Plan/done/CP-63-IDE-Grade-LSP-Runtime.md)
 - Child Documents: `None`
-- Related Documents: [SD-17](../../06-System-Tech-Design/SD-17-Context-And-Regression-Engine.md), [SS-14](../../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md), [Task-358](../todo/Task-358-LSP-Post-Write-Diagnostics-Hook.md), [Task-360](../todo/Task-360-Kotlin-Language-Server-Integration.md)
+- Related Documents: [SD-17](../../06-System-Tech-Design/SD-17-Context-And-Regression-Engine.md), [SS-14](../../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md), [Task-358](../done/Task-358-LSP-Post-Write-Diagnostics-Hook.md), [Task-360](../done/Task-360-Kotlin-Language-Server-Integration.md)
 - Replaces: `None`
 - Tags: `lsp, gradle, android, kotlin, build-fallback, code-intelligence`
 - Feature Keys: `lsp-runtime`

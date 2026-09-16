@@ -11,10 +11,12 @@ import (
 )
 
 // lspFakeGradlew drops a fake wrapper that prints body and exits code.
+// Unix branch echoes each line quoted (a raw "e: ..." line would execute
+// as a shell command and vanish; "> Task ..." would redirect stdout).
 func lspFakeGradlew(t *testing.T, dir, body string, code string) {
 	t.Helper()
 	name := "gradlew"
-	content := "#!/bin/sh\n" + body + "\nexit " + code + "\n"
+	content := "#!/bin/sh\n" + lspEchoLines(body) + "\nexit " + code + "\n"
 	if runtime.GOOS == "windows" {
 		name = "gradlew.bat"
 		lines := "@echo off\r\n"
