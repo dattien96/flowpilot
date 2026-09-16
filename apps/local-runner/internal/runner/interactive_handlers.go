@@ -687,6 +687,9 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 	// HighSeverity and source.dependence can query real dependents. Runs once
 	// per process per workspace; non-blocking.
 	s.ensureGitNexusIndexAsync(in.Cwd)
+	// CP-66 P-1 (Task-373): distill the living knowledge base once per
+	// process in the background; non-blocking like the auto-index above.
+	s.ensureKnowledgeBaseForWorkspace(in.Cwd)
 
 	stepID := in.StepID
 	runKind := "workflow"
