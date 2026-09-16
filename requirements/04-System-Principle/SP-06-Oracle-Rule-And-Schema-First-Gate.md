@@ -11,7 +11,7 @@
 - Created: `2026-09-15`
 - Last Updated: `2026-09-15`
 - Parent Documents: [SP-04 Safe Gate](./SP-04-safe-gate.md), [SP-05 Kill-Review](./SP-05-Kill-Review-Closed-Claim-Contract.md)
-- Child Documents: [SS-14 Code Context And Regression Safety](../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md), [SD-20 Flow Gate Rule Semantics](../06-System-Tech-Design/SD-20-Flow-Gate-Rule-Semantics.md), [CP-62 Zcode Harness Parity](../07-Coding-Plan/done/CP-62-Zcode-Harness-Parity.md), [CP-64 Reproduce-First TDD Gate](../07-Coding-Plan/done/CP-64-Reproduce-First-TDD-Gate.md), [CP-65 Multi-Candidate Tournament Harness](../07-Coding-Plan/todo/CP-65-Multi-Candidate-Tournament-Harness.md)
+- Child Documents: [SS-14 Code Context And Regression Safety](../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md), [SD-20 Flow Gate Rule Semantics](../06-System-Tech-Design/SD-20-Flow-Gate-Rule-Semantics.md), [CP-62 Zcode Harness Parity](../07-Coding-Plan/done/CP-62-Zcode-Harness-Parity.md), [CP-64 Reproduce-First TDD Gate](../07-Coding-Plan/done/CP-64-Reproduce-First-TDD-Gate.md), [CP-65 Multi-Candidate Tournament Harness](../07-Coding-Plan/done/CP-65-Multi-Candidate-Tournament-Harness.md)
 - Related Documents: [SS-08 Approve Gate](../05-System-Specs/SS-08-Approve-Gate.md), [CP-35 Context And Regression Engine](../07-Coding-Plan/done/CP-35-Context-And-Regression-Engine-Rollout.md)
 - Replaces: `None`
 - Tags: `oracle-rule, regression, schema-first, flow-gate, test-protection, reproduce-first, tournament-arbiter`

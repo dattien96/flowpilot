@@ -11,7 +11,7 @@
 - Created: `2026-09-15`
 - Last Updated: `2026-09-16`
 - Completed: `2026-09-16` (CA-879)
-- Parent Documents: [CP-65 P-4](../../07-Coding-Plan/todo/CP-65-Multi-Candidate-Tournament-Harness.md)
+- Parent Documents: [CP-65 P-4](../../07-Coding-Plan/done/CP-65-Multi-Candidate-Tournament-Harness.md)
 - Child Documents: `None`
 - Related Documents: [SD-24](../../06-System-Tech-Design/SD-24-Durable-Turn-Dispatch.md), [SD-19](../../06-System-Tech-Design/SD-19-Agent-Flow-Engine.md), [SS-19](../../05-System-Specs/SS-19-Engineering-Harness-Flow-Family.md), [CP-36](../../07-Coding-Plan/done/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md)
 - Replaces: `None`

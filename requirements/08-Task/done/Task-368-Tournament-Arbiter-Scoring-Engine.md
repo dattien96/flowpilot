@@ -10,7 +10,7 @@
 - Reviewers: `Claude agent review`
 - Created: `2026-09-15`
 - Last Updated: `2026-09-16`
-- Parent Documents: [CP-65 P-1](../../07-Coding-Plan/todo/CP-65-Multi-Candidate-Tournament-Harness.md)
+- Parent Documents: [CP-65 P-1](../../07-Coding-Plan/done/CP-65-Multi-Candidate-Tournament-Harness.md)
 - Child Documents: `None`
 - Related Documents: [SS-19](../../05-System-Specs/SS-19-Engineering-Harness-Flow-Family.md), [SD-19](../../06-System-Tech-Design/SD-19-Agent-Flow-Engine.md), [CP-63](../../07-Coding-Plan/todo/CP-63-IDE-Grade-LSP-Runtime.md), [CP-64](../../07-Coding-Plan/todo/CP-64-Reproduce-First-TDD-Gate.md)
 - Replaces: `None`
