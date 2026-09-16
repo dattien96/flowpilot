@@ -25,6 +25,15 @@ import (
 // workflowRunSeeder), so reseeding works; a Supabase-backed step store that
 // doesn't implement the seeder simply keeps its catalog-seeded steps.
 
+// LoopStatusTournamentEscalation (CP-65 P-4, Task-371 T-1) marks a run whose
+// review/debate loop hit its cap or stalled and was rescued into a
+// tournament instead of parking failed/stopped: a tournament-harness child
+// run was dispatched with the stuck run's intent and contract, and the
+// parent waits for its verdict. It is a non-terminal waiting state like
+// "blocked" — never overwrite it with terminal/rejected transitions, and
+// stall sweeps must leave it alone (the rescue is already in flight).
+const LoopStatusTournamentEscalation = "tournament_escalation"
+
 // isFlowEngineDriven reports whether runID's step timeline is owned by the flow
 // executor rather than the legacy bulk planner. Takes s.mu — do not call while
 // already holding the lock; use flowEngineDrivenUnlocked instead.

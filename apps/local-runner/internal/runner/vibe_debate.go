@@ -97,6 +97,12 @@ func (s *InteractiveService) maybeSettleVibeOwnerDebate(parentRunID string) bool
 			st.ActiveNode = vibeDebateSynthesisNodeID
 			return st
 		})
+		// CP-65 P-4 (Task-371): flag-gated rescue replaces the owner-fail park.
+		// On escalation the legacy park below is skipped (the parent waits on
+		// the tournament child, not on a human form); flag off keeps it.
+		if s.maybeEscalateCapToTournament(parentRunID, "vibe owner debate stalled (owner-fail cap)") {
+			return true
+		}
 		s.parkFlowForAwaitingUser(parentRunID)
 		s.flowDiagLog(parentRunID, "vibe_owner_fail_cap",
 			"owner debate members failed; parked cap not hub_stalled",

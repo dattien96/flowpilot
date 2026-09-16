@@ -160,7 +160,7 @@ func TestTournamentHarnessParsesCandidateConfigs(t *testing.T)
 
 ### P-4: Escalation Fallback Wiring trong Review Loop
 
-**Status: draft**
+**Status: done** (Task-371, CA-879)
 
 **Production changes**
 - `internal/runner/agent_orchestrator.go` (modified): vùng round-cap — khi flag bật và flow hiện tại không phải `tournament-harness`, set `LoopStatusTournamentEscalation` (const mới trong `flow_step_runtime.go`) + dispatch tournament.

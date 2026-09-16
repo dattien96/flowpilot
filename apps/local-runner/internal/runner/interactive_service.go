@@ -1659,6 +1659,16 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 			}
 			return st
 		})
+		if result.NextAction == "awaiting_user" && result.Status == "blocked" {
+			// CP-65 P-4 (Task-371): flag-gated tournament rescue for a review
+			// loop that just hit its round cap. Safe against the park further
+			// below: parkFlowForAwaitingUser only freezes orchestrator-tracked
+			// children, and the tournament child is deliberately untracked
+			// (see tournament_escalation.go), so its rescue intent survives.
+			// No-op when the flag is off: the old escalate-card path
+			// underneath runs byte-identical.
+			s.maybeEscalateCapToTournament(parentRunID, fmt.Sprintf("review cap %d reached with %d open issue(s)", result.Cap, result.OpenIssues))
+		}
 		if result.NextAction == "looping" {
 			// BUG-174: a new review round is starting — reset the downstream nodes
 			// to PENDING and re-run the re-entry node (e.g. "coder") on the step

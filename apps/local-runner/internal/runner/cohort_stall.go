@@ -169,7 +169,9 @@ func (s *InteractiveService) checkAndBlockStalledMembers(parentRunID string) boo
 	// Only act while the loop is still advancing.
 	s.mu.Unlock()
 	loop := s.agentOrchestrator.loopStateFor(parentRunID)
-	if loop.Status == "blocked" || loop.Status == "done" || loop.Status == "stopped" || loop.Status == "paused" {
+	// CP-65 P-4: a resigned-to-tournament loop is already rescued — the
+	// sweep must not park over it (same terminal-ish treatment as blocked).
+	if loop.Status == "blocked" || loop.Status == "done" || loop.Status == "stopped" || loop.Status == "paused" || loop.Status == LoopStatusTournamentEscalation {
 		return false
 	}
 	if !s.agentOrchestrator.hasOpenCohort(parentRunID) {
@@ -240,6 +242,9 @@ func (s *InteractiveService) checkAndBlockStalledMembers(parentRunID string) boo
 		s.flowDiagLog(parentRunID, "member_stalled", "cohort member stalled; hub blocked",
 			"member", label, "age", age.String(), "timeout", timeout.String(),
 		)
+		// CP-65 P-4 (Task-371): flag-gated rescue replaces the stall park.
+		// No-op when the flag is off (the park above stands as before).
+		s.maybeEscalateCapToTournament(parentRunID, fmt.Sprintf("cohort stall: %s", reason))
 		return true
 	}
 	return false
