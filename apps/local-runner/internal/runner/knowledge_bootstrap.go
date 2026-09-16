@@ -133,3 +133,21 @@ func (s *InteractiveService) updateKnowledgeForAudit(workspace string, changedPa
 		return knowledge.Distill(ctx, workspace, &gitnexusProcessLister{repoDir: workspace}, nil)
 	})
 }
+
+// onAuditNodeCompleted is the single choke point every audit completion path
+// calls (CP-66 P-3 / Task-375) — and the ONLY knowledge-update trigger in any
+// flow: implement/validate/reviewer nodes never reach it, so mid-flight code
+// can never mark distilled knowledge stale. Fire-and-forget background;
+// verdicts and flow state are untouched by construction (no return values,
+// no error propagation).
+func (s *InteractiveService) onAuditNodeCompleted(workspace string, changedFiles []string) {
+	s.updateKnowledgeForAudit(workspace, auditKnowledgePaths(changedFiles))
+}
+
+// auditKnowledgePaths filters an audit turn's changed files down to concrete
+// code targets (Task-375 T-3: doc/test noise never marks a flow stale).
+// Empty output means "nothing knowledge-worthy changed" — UpdateAsync then
+// no-ops without spawning work.
+func auditKnowledgePaths(changedFiles []string) []string {
+	return filterKnowledgePaths(changedFiles)
+}

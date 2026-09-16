@@ -5,7 +5,7 @@
 - Document ID: `Task-375`
 - Title: `Knowledge Base Incremental Update At Audit Node`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `Claude Sonnet MAX`
 - Reviewers: `Claude agent review`
 - Created: `2026-09-15`

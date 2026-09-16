@@ -1349,6 +1349,9 @@ func (s *InteractiveService) runAuditNode(ctx context.Context, parentRunID strin
 				log.Printf("[flow-executor] vibe audit auto-finalize failed: %v", err)
 				return false
 			}
+			// CP-66 P-3 (Task-375): audit settled done — refresh distilled
+			// knowledge in the background (verdict already recorded above).
+			s.onAuditNodeCompleted(workspace, changedFiles)
 			if s.isFlowEngineDriven(parentRunID) {
 				s.setFlowStepStatus(ctx, parentRunID, node.ID, StepStatusDone)
 			}
@@ -1392,6 +1395,12 @@ func (s *InteractiveService) runAuditNode(ctx context.Context, parentRunID strin
 		}
 		okAdv := s.advanceToNextInlineOrDelegate(ctx, parentRunID, edges, nodes, node.ID, "done", RenderAuditDraftText(draft))
 		// advanceToNextInlineOrDelegate marks source DONE on success already.
+		// CP-66 P-3 (Task-375): audit completed into its successor — refresh
+		// distilled knowledge in the background (only on success: a failed
+		// advance settled nothing).
+		if okAdv {
+			s.onAuditNodeCompleted(workspace, changedFiles)
+		}
 		return okAdv
 	}
 	if auditCtxCancelled(ctx, parentRunID, node.ID, "before_flow_done") {
@@ -1411,6 +1420,9 @@ func (s *InteractiveService) runAuditNode(ctx context.Context, parentRunID strin
 		log.Printf("[flow-executor] audit: flow-done settle failed: %v", err)
 		return false
 	}
+	// CP-66 P-3 (Task-375): flow settled done at audit — refresh distilled
+	// knowledge in the background (settle already recorded above).
+	s.onAuditNodeCompleted(workspace, changedFiles)
 	if s.isFlowEngineDriven(parentRunID) {
 		s.setFlowStepStatus(ctx, parentRunID, node.ID, StepStatusDone)
 	}
