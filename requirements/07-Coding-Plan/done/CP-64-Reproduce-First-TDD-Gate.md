@@ -11,7 +11,7 @@
 - Created: `2026-09-15`
 - Last Updated: `2026-09-16`
 - Parent Documents: [SS-14: Code Context And Regression Safety](../../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md), [SD-20: Flow Gate Rule Semantics](../../06-System-Tech-Design/SD-20-Flow-Gate-Rule-Semantics.md), [SP-06: Oracle Rule And Schema First Gate](../../04-System-Principle/SP-06-Oracle-Rule-And-Schema-First-Gate.md)
-- Child Documents: [Task-364](../../08-Task/todo/Task-364-Reproduce-Gate-Rule-FlowGate.md) (P-1), [Task-365](../../08-Task/todo/Task-365-Reproducer-Prompt-Agent-Behavior.md) (P-2), [Task-366](../../08-Task/todo/Task-366-Bug-Flows-Reproduce-Node-Test-Lock.md) (P-3), [Task-367](../../08-Task/todo/Task-367-Bug-Fix-Lifecycle-E2E-Reproduce-Gate.md) (P-4)
+- Child Documents: [Task-364](../../08-Task/done/Task-364-Reproduce-Gate-Rule-FlowGate.md) (P-1), [Task-365](../../08-Task/done/Task-365-Reproducer-Prompt-Agent-Behavior.md) (P-2), [Task-366](../../08-Task/done/Task-366-Bug-Flows-Reproduce-Node-Test-Lock.md) (P-3), [Task-367](../../08-Task/done/Task-367-Bug-Fix-Lifecycle-E2E-Reproduce-Gate.md) (P-4)
 - Related Documents: [CP-55: Flow-First Preflight Contract](../done/CP-55-Flow-First-Preflight-Contract-Context-Retrieval-And-Canonical-Acceptance.md), [CP-62: Zcode Harness Parity](../done/CP-62-Zcode-Harness-Parity.md), [CP-63: IDE-Grade LSP Runtime](CP-63-IDE-Grade-LSP-Runtime.md)
 - Replaces: `None`
 - Tags: `tdd, reproduce-first, oracle-rule, flowgate, bugfix-safety, red-green`
