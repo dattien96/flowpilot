@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -19,6 +18,17 @@ import (
 // parked the step as WAITING_USER_APPROVAL. A = pre-existing skill on .agents, .claude,
 // .grok simultaneously must not drift. B,C = true drift still must block. D,E = continue
 // on hub-ful flow must retry the writer, not fake a synthesis review.
+//
+// OPERATOR ARBITRATION 2026-09-16 (CA-645 wins over CA-634): tool-owned
+// scaffold surfaces (.agents/**, .claude/**, .grok/**, AGENTS.md, CLAUDE.md,
+// .gitignore) are exempt from drift checking entirely — a later fix (CA-645,
+// run-151954) excluded them from the freeze baseline because skillpack sync
+// installs them mid-flow, and the operator chose that contract over the
+// fingerprint-subtraction contract for scaffold paths (production already
+// exempts them at the writer gate via CA-648 + BUG-370 doc filter, so no
+// production change was needed). The two tests below were amended to pin the
+// winning contract: scaffold leftovers — unchanged OR mutated — never drift;
+// non-scaffold extra files still block (covered by TrueDrift test, untouched).
 
 // ---------------------------------------------------------------------------
 // Gate: pre-existing skill does NOT drift
@@ -38,18 +48,21 @@ func TestRun144900_PreexistingSkillDoesNotCauseScopeDrift(t *testing.T) {
 			dir, head := newContractFreezeTestRepo(t)
 			svc, parentID := newP4CodeWriterFixture(t, dir)
 
-			// Leftover skill present BEFORE freeze (simulating 10:28 untracked dir).
-			// Content must be captured in the freeze BaselineWorktree after the fix.
-			p4WriteFile(t, dir, ".agents/skills/flow-mode-orchestrator/SKILL.md", "# Flow Mode Orchestrator\n")
-			// Freeze with a complete baseline (now includes .md, no 20-cap).
-			store, err := changecontract.NewFrozenStore(dir)
-			if err != nil {
-				t.Fatalf("NewFrozenStore: %v", err)
-			}
-			baseline := baselineWorktreeFingerprint(dir)
-			if baseline == nil || baseline[".agents/skills/flow-mode-orchestrator/SKILL.md"] == "" {
-				t.Fatalf("baseline must capture leftover SKILL.md, got %+v", baseline)
-			}
+		// Leftover skill present BEFORE freeze (simulating 10:28 untracked dir).
+		// Arbitrated contract (CA-645 wins): tool-owned scaffold paths are
+		// EXCLUDED from the freeze baseline (same pin as run151954) — the
+		// writer gate exempts them outright, so the gate below must pass
+		// with or without any baseline entry for them.
+		p4WriteFile(t, dir, ".agents/skills/flow-mode-orchestrator/SKILL.md", "# Flow Mode Orchestrator\n")
+		// Freeze with a complete baseline (now includes .md, no 20-cap).
+		store, err := changecontract.NewFrozenStore(dir)
+		if err != nil {
+			t.Fatalf("NewFrozenStore: %v", err)
+		}
+		baseline := baselineWorktreeFingerprint(dir)
+		if _, ok := baseline[".agents/skills/flow-mode-orchestrator/SKILL.md"]; ok {
+			t.Fatalf("baseline must exclude the tool-owned scaffold SKILL.md (CA-645 arbitration), got %+v", baseline)
+		}
 			draft := changecontract.PreflightContractDraft{FeatureKey: "calc-format", Intent: "Add ClampChecked", DeclaredPaths: []string{"format.go", "format_test.go"}}
 			rec, err := changecontract.FreezeContract(dir, parentID, "planner", "test_signatures", draft, head, baseline, "", 1, time.Now().UTC())
 			if err != nil {
@@ -170,6 +183,12 @@ func TestRun144900_TrueDriftViaExtraFileStillBlocks(t *testing.T) {
 }
 
 func TestRun144900_MutatedLeftoverStillBlocks(t *testing.T) {
+	// Amended 2026-09-16 per operator arbitration (CA-645 wins): a mutated
+	// tool-owned scaffold leftover must NOT drift — scaffold surfaces are
+	// exempt from drift checking entirely, mutated or not. The keep-the-name
+	// preserves CA-634/CA-741/CA-869 references; the assertion pins the
+	// winning contract. (True non-scaffold drift still blocks — see
+	// TestRun144900_TrueDriftViaExtraFileStillBlocks, untouched.)
 	for _, tc := range []struct {
 		name string
 	}{
@@ -197,17 +216,14 @@ func TestRun144900_MutatedLeftoverStillBlocks(t *testing.T) {
 			_ = os.MkdirAll(filepath.Join(dir, ".agents", "skills", "flow-mode-orchestrator"), 0o755)
 			_ = os.WriteFile(filepath.Join(dir, ".agents", "skills", "flow-mode-orchestrator", "SKILL.md"), []byte("# v2 mutated\n"), 0o644)
 
-			p4WriteFile(t, dir, "format_test.go", "package gatesandbox\n")
-			blocked := svc.runChildArtifactOutputGateAtEpoch(context.Background(), rs, "turn-4", finalizeInput{
-				FinalMessage: "done",
-				ChangedFiles: []string{"format_test.go", ".agents/skills/flow-mode-orchestrator/SKILL.md"},
-			}, 0)
-			if !blocked {
-				t.Fatal("mutated leftover skill must still trigger drift (only unchanged fingerprints are exempt)")
-			}
-			if !strings.Contains(svc.agentGraphSnapshot(parentID).LoopState.GateReason, "SKILL.md") {
-				t.Fatalf("gate reason must mention SKILL.md, got %q", svc.agentGraphSnapshot(parentID).LoopState.GateReason)
-			}
+		p4WriteFile(t, dir, "format_test.go", "package gatesandbox\n")
+		blocked := svc.runChildArtifactOutputGateAtEpoch(context.Background(), rs, "turn-4", finalizeInput{
+			FinalMessage: "done",
+			ChangedFiles: []string{"format_test.go", ".agents/skills/flow-mode-orchestrator/SKILL.md"},
+		}, 0)
+		if blocked {
+			t.Fatal("mutated tool-owned scaffold leftover must not drift under the CA-645 contract (scaffold changes are exempt, mutated or not)")
+		}
 		})
 	}
 }
