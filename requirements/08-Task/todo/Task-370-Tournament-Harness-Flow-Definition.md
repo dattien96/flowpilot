@@ -35,7 +35,7 @@
 - `T-1` Topology 4 node theo CP-65 §4 P-3: `problem_scout` (delegate — scout/context + freeze scope, posture `read_only` theo Task-340) → `parallel_rollout` (cohort các node candidate `lifecycle: spawn`, `join: all`) → `tournament_arbiter` (inline `tournament.arbiter`) → `merge_and_audit` (inline `tournament.merge` + draft audit) → done. Từ `tournament_arbiter` có 3 cạnh: `done` (có winner) → `merge_and_audit`; `retry` (back-edge về `parallel_rollout`, cùng pattern `synthesis` → `coder` của review-loop) khi verdict hòa/tất cả đỏ + còn lượt + `auto_pick=true`; `escalate` → `ask_user` khi hết lượt, `auto_pick=false`, hoặc merge conflict (conflict không retry — chạy lại cũng conflict tiếp). Mỗi lượt qua `parallel_rollout` spawn run candidate MỚI (`lifecycle: spawn` mới mỗi lượt, context sạch — cùng candidate configs/model, không đổi model); brief chưng cất fail lần trước do behavior `tournament.arbiter` đóng dấu vào config lượt rollout tiếp theo. Retryability suy ra từ `TournamentVerdict.NeedsHumanDecision` — không đổi P-1.
 - `T-2` Candidate configs khai báo trong config của node `parallel_rollout` (danh sách `{candidate_id, provider, model}`), pack parse vào `FlowNode` config — mặc định 2 candidate Claude+Codex theo R-1 (§9), cho phép 3; có cờ `serial: true` fallback cho máy < 8GB RAM. Node `tournament_arbiter` thêm `max_attempts: 2` (default 1 = đúng plan cũ, không retry — retry là opt-in).
 - `T-3` Behavior `tournament.arbiter` (inline, scope `inline`, runtimeHandler `behaviorTournamentArbiter`): với mỗi candidate — chạy test suite trong worktree, thu LSP diagnostics (`lsp.ServerSet.CheckFiles`), đếm dependents (`structure.Provider`), nạp vào `CandidateResult`, gọi `TournamentArbiter.Decide`; sản xuất payload verdict + decision card.
-- `T-4` Behavior `tournament.merge` (inline, runtimeHandler `behaviorTournamentMerge`): gọi `WorktreeManager.MergeWinner` cho candidate thắng rồi `Cleanup` toàn bộ; merge conflict → escalate `ask_user` (không terminate im lặng).
+- `T-4` Behavior `tournament.merge` (inline, runtimeHandler `behaviorTournamentMerge`): gọi `WorktreeManager.MergeWinner` cho candidate thắng rồi `Cleanup` toàn bộ (thua xóa tại verdict, thắng xóa khi flow done — policy Task-369); merge conflict → escalate `ask_user` kèm patch + path conflict trong card rồi vẫn dọn (không terminate im lặng, không mồ côi).
 - `T-5` Runtime registry là `runner/behavior_registry_builtin.go`; entry reference trong `behaviors/registry.yaml`; flow mới đăng ký `builtin.selectableIn: [flow]` như các harness khác (không mặc định).
 
 ### Constraints
@@ -97,7 +97,7 @@ P-1 (scorer) và P-2 (worktree) là thư viện thuần; cần một flow bọc 
 - [ ] AC-1: Pack load + validate pass — topology 4 node hợp lệ, behaviors resolve runtime được.
 - [ ] AC-2: Candidate configs parse đúng: default 2 candidate (Claude + Codex) theo R-1, chấp nhận 3, `serial: true` chuyển sang chạy tuần tự.
 - [ ] AC-3: `auto_pick=false` hoặc hòa → flow dừng ở escalate `ask_user` với decision card ranking đầy đủ (không merge); `auto_pick=true` + có winner → đi tiếp `merge_and_audit`.
-- [ ] AC-4: Merge conflict trong `tournament.merge` → escalate `ask_user`, worktree giữ nguyên (không mất dữ liệu candidate).
+- [ ] AC-4: Merge conflict trong `tournament.merge` → escalate `ask_user` với patch + path conflict trong card, worktree vẫn dọn sạch (bằng chứng trong card, không giữ điều tra).
 - [ ] AC-5: Flow không xuất hiện làm default cho task thường (chỉ selectable từ picker).
 - [ ] AC-6: 4 test signatures green:
   - `TestTournamentHarnessTopologyValid`
