@@ -165,6 +165,11 @@ func resolveEnabledContextSourceIDs(def agentpack.FlowDefinition, node agentpack
 // part of defaultContextSourceIDs — it only runs when a flow opts in.
 func registerBuiltinContextSources(r *ContextSourceRegistry) {
 	mustRegisterContextSource(r, &conventionsSource{priority: 0}) // CP-62 P-7: repo-as-config, packs first
+	// CP-66 P-2 (Task-374): distilled execution-flow knowledge. Opt-in only —
+	// NOT added to defaultContextSourceIDs, so default flows keep
+	// byte-identical output. Priority ties conventions (0) so it packs right
+	// after it (Collect sorts ties by SourceType: "conventions" first).
+	mustRegisterContextSource(r, &knowledgeFlowSource{priority: 0})
 	mustRegisterContextSource(r, &canonicalHeadSource{priority: 1}) // Task-244: before feature.history
 	mustRegisterContextSource(r, &featureHistorySource{priority: 2})
 	mustRegisterContextSource(r, &chatSummarySource{priority: 5})

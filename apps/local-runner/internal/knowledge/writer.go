@@ -272,6 +272,23 @@ func splitFlowSections(content string) []flowSection {
 	return out
 }
 
+// ExtractFlowSection returns the `## Flow: <id>` section starting at the
+// heading line through (not including) the next flow heading, or "" when the
+// heading is absent. Exported for the P-2 knowledge.flow source, which reads
+// sections straight from disk (single implementation — no runner duplicate).
+func ExtractFlowSection(doc, heading string) string {
+	start := strings.Index(doc, heading)
+	if start < 0 {
+		return ""
+	}
+	rest := doc[start:]
+	next := strings.Index(rest[len(heading):], "\n## Flow: ")
+	if next < 0 {
+		return rest
+	}
+	return rest[:len(heading)+next]
+}
+
 // stripSectionHeading drops the "## Flow: <id>" first line so a fresh
 // section swaps body-for-body against the split parts.
 func stripSectionHeading(section string) string {
