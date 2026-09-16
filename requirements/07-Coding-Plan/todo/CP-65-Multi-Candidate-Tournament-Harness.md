@@ -126,7 +126,7 @@ func TestArbiterDisqualifiesCandidateBreakingExistingTests(t *testing.T)
 
 ### P-2: Worktree Rollout Manager
 
-**Status: draft**
+**Status: done** (Task-369, CA-877)
 
 **Production changes**
 - `internal/tournament/worktree_manager.go` (**new**): Quản lý tạo, đồng bộ và dọn dẹp các Git Worktrees tạm thời cho các ứng viên chạy song song mà không xung đột file system.
