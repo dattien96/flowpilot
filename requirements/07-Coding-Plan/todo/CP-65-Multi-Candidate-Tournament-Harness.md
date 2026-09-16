@@ -9,7 +9,7 @@
 - Owner: `FlowPilot Architecture`
 - Reviewers: `Claude agent review`
 - Created: `2026-09-15`
-- Last Updated: `2026-09-15`
+- Last Updated: `2026-09-16`
 - Parent Documents: [SS-19: Engineering Harness Flow Family](../../05-System-Specs/SS-19-Engineering-Harness-Flow-Family.md), [SD-19: Agent Flow Engine](../../06-System-Tech-Design/SD-19-Agent-Flow-Engine.md), [SD-24: Durable Turn Dispatch](../../06-System-Tech-Design/SD-24-Durable-Turn-Dispatch.md)
 - Child Documents: [Task-368](../../08-Task/todo/Task-368-Tournament-Arbiter-Scoring-Engine.md) (P-1), [Task-369](../../08-Task/todo/Task-369-Worktree-Rollout-Manager.md) (P-2), [Task-370](../../08-Task/todo/Task-370-Tournament-Harness-Flow-Definition.md) (P-3), [Task-371](../../08-Task/todo/Task-371-Escalation-Fallback-Wiring-Review-Loop.md) (P-4), [Task-372](../../08-Task/todo/Task-372-Tournament-E2E-Verification.md) (P-5)
 - Related Documents: [CP-36: Agent Review Loop](../done/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md), [CP-62: Zcode Harness Parity](../done/CP-62-Zcode-Harness-Parity.md), [CP-63: IDE-Grade LSP Runtime](CP-63-IDE-Grade-LSP-Runtime.md), [CP-64: Reproduce-First TDD Gate](CP-64-Reproduce-First-TDD-Gate.md)
@@ -37,6 +37,7 @@
 - `P-1` Trọng tài (Tournament Arbiter) hoạt động 100% bằng code Go xác định (deterministic), không dùng LLM để chấm điểm, tính theo công thức: 50% Test Pass Rate + 30% LSP Diagnostics + 20% GitNexus Blast Radius.
 - `P-2` Mỗi candidate chạy trong một Git Worktree tạm thời (`.flowpilot/worktrees/candidate-<id>`), cô lập tuyệt đối file system giữa các ứng viên.
 - `P-3` Khi review loop chạm trần cap, Runner tự động chuyển trạng thái sang `tournament_escalation` thay vì đánh dấu failed/stopped.
+- `Retry` Tournament tối đa 2 attempts qua back-edge `tournament_arbiter` → `parallel_rollout` (`when: retry`) — cùng pattern vòng lặp `synthesis` → `coder` của review-loop; lần 2 GIỮ NGUYÊN candidate configs/model, chỉ spawn sub-agent mới (context sạch, `lifecycle: spawn` mới mỗi lượt) + brief chưng cất fail lần 1 do behavior đóng dấu; chỉ retry khi `auto_pick=true` và verdict hòa/tất cả đỏ (suy ra từ `NeedsHumanDecision`, không đổi P-1); merge-conflict → ra human ngay, không retry.
 
 ### Constraints
 
@@ -92,6 +93,7 @@ Parent Hub Node (Tournament Controller)
         ├── Thu thập điểm số 3 ứng viên
         ├── Chọn ứng viên đạt điểm cao nhất
         └── Merge Worktree thắng cuộc về Workspace chính
+↩ retry → parallel_rollout khi hòa/tất cả đỏ (tối đa 2 attempts, cùng model spawn mới + brief chưng cất; merge-conflict thì ra human, không retry)
 ```
 
 ### 3.2 Công thức chấm điểm (Arbiter Formula)
@@ -143,7 +145,7 @@ func TestWorktreeManagerMergesWinningCandidate(t *testing.T)
 **Status: draft**
 
 **Production changes**
-- `internal/agentpack/flow-pack/flows/tournament-harness.yaml` (**new**): Khai báo flow đấu trường độc lập với các node: `problem_scout` $\rightarrow$ `parallel_rollout` $\rightarrow$ `tournament_arbiter` $\rightarrow$ `merge_and_audit`.
+- `internal/agentpack/flow-pack/flows/tournament-harness.yaml` (**new**): Khai báo flow đấu trường độc lập với các node: `problem_scout` $\rightarrow$ `parallel_rollout` $\rightarrow$ `tournament_arbiter` $\rightarrow$ `merge_and_audit`, cộng back-edge `tournament_arbiter` $\rightarrow$ `parallel_rollout` (`when: retry`, tối đa 2 attempts — lần 2 giữ nguyên candidate configs, spawn sub-agent mới context sạch + brief chưng cất fail lần 1).
 - `internal/agentpack/flow-pack/prompts/tournament-candidate.md` (**new**): prompt riêng cho candidate (tái dùng persona `agents/coder.md`).
 - `internal/runner/tournament_behavior.go` (**new**): `behaviorTournamentArbiter` + `behaviorTournamentMerge` (thu metric test/LSP/dependents trong từng worktree, gọi Arbiter/WorktreeManager).
 - `internal/runner/behavior_registry_builtin.go` + `behaviors/registry.yaml` (modified): đăng ký `tournament.arbiter` + `tournament.merge`; `manifest.yaml` đăng ký flow + prompt mới.
@@ -162,7 +164,7 @@ func TestTournamentHarnessParsesCandidateConfigs(t *testing.T)
 
 **Production changes**
 - `internal/runner/agent_orchestrator.go` (modified): vùng round-cap — khi flag bật và flow hiện tại không phải `tournament-harness`, set `LoopStatusTournamentEscalation` (const mới trong `flow_step_runtime.go`) + dispatch tournament.
-- `internal/runner/interactive_service.go` (modified): helper `escalateToTournament(parentRunID, intent, frozen)` spawn run con kế thừa workspace/contract, chống đệ quy.
+- `internal/runner/interactive_service.go` (modified): helper `escalateToTournament(parentRunID, intent, frozen)` spawn run con kế thừa workspace/contract, chống đệ quy, theo dõi attempt (attempt/max_attempts trên run state; hết lượt → ask_user).
 - `internal/runner/cohort_stall.go` + `internal/runner/vibe_debate.go` (modified): stall sweep/owner-fail path cùng điều kiện flag, cùng `escalateToTournament`; return path qua `applyFlowControl` hiện có.
 
 **Test signatures**
@@ -210,7 +212,7 @@ func TestTournamentTieRequiresHumanDecision(t *testing.T)
 
 ## 7. Validation Plan
 
-- tests to add: ~13 tests (4 arbiter + 3 worktree + 2 flow + 2 escalation + 2 E2E winner/tie)
+- tests to add: ~15 tests (4 arbiter + 3 worktree + 4 flow + 2 escalation + 2 E2E winner/tie)
 - failure cases: Tất cả các candidate đều fail (Arbiter báo hòa và yêu cầu con người can thiệp — `TestTournamentTieRequiresHumanDecision`), lỗi merge worktree.
 
 ## 8. Rollout and Fallback
