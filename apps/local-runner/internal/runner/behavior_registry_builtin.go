@@ -53,6 +53,13 @@ func NewDefaultBehaviorRegistry() *BehaviorRegistry {
 	// gate/scope treatment lives in the runner's gate hook, not in this
 	// handler.
 	mustRegister(r, BehaviorSpec{ID: BehaviorAgentReproduce, Scope: BehaviorScopeDelegate, Handler: behaviorAgentDelegate})
+	// CP-65 P-3 (Task-370): tournament inline behaviors. Deterministic
+	// runner-owned logic (score/decide/merge/cleanup) with no provider call —
+	// same inline scope as command.validate/validation.summarize. Registering
+	// the canonical ids lets tournament-harness nodes select them and lets
+	// the pack validator's NormalizeBehaviorID check resolve.
+	mustRegister(r, BehaviorSpec{ID: BehaviorTournamentArbiter, Scope: BehaviorScopeInline, Handler: behaviorTournamentArbiter})
+	mustRegister(r, BehaviorSpec{ID: BehaviorTournamentMerge, Scope: BehaviorScopeInline, Handler: behaviorTournamentMerge})
 	mustRegister(r, BehaviorSpec{ID: BehaviorContractFreeze, Scope: BehaviorScopeInline, Handler: behaviorContractFreezeNotImplemented})
 	return r
 }

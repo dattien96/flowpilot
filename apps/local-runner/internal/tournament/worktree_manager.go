@@ -25,6 +25,12 @@ func worktreePath(repoDir, candidateID string) string {
 	return filepath.Join(worktreeRoot(repoDir), "candidate-"+candidateID)
 }
 
+// WorktreePath returns the on-disk path of a candidate worktree (exported
+// for runner glue and tests; no existence check).
+func WorktreePath(repoDir, candidateID string) string {
+	return worktreePath(repoDir, candidateID)
+}
+
 // baseSidecar records the base commit a worktree was created from, so
 // MergeWinner can refuse when the main workspace drifted since tournament
 // start (Task-369 T-2/T-3). It lives next to the worktree dir (never inside

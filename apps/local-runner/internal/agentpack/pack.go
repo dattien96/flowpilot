@@ -165,6 +165,11 @@ type FlowNode struct {
 	// resolves its context candidate set + token budget from. Empty means
 	// "no profile — the pre-Task-341 source precedence applies unchanged".
 	ContextProfile string
+	// Config is the CP-65 P-3 (Task-370) free-form node config map (root YAML
+	// key `config`): tournament nodes declare candidates/auto_pick/
+	// max_attempts/serial here. Nil for every pre-CP-65 flow — additive only,
+	// absent key parses to nil and changes nothing downstream.
+	Config map[string]any
 }
 
 // FlowArtifactBinding is one resolved typed-artifact binding for a
@@ -291,6 +296,11 @@ var behaviorAliases = map[string]string{
 	"agent.reproduce":  "agent.reproduce",
 	"reproduce":        "agent.reproduce",
 	"reproducing_test": "agent.reproduce",
+	// CP-65 P-3 (Task-370): tournament inline behaviors. Self-mapped; the
+	// runtime contract lives in runner/tournament_behavior.go and the
+	// reference docs in behaviors/registry.yaml.
+	"tournament.arbiter": "tournament.arbiter",
+	"tournament.merge":   "tournament.merge",
 }
 
 // NormalizeBehaviorID maps known aliases onto canonical behavior IDs.
@@ -826,6 +836,11 @@ func flowNodeFromMap(m map[string]any) (FlowNode, error) {
 		ContextProfile: strings.TrimSpace(stringField(m, "contextProfile")),
 		DependsOn:      stringSliceField(m, "dependsOn"),
 		ContextSources: stringSliceField(m, "contextSources"),
+	}
+	// CP-65 P-3 (Task-370): free-form node config for tournament nodes.
+	// Absent key leaves Config nil (every pre-CP-65 flow unaffected).
+	if config, ok := mapField(m, "config"); ok {
+		node.Config = config
 	}
 	// CP-58 Task-307: pack-level typed artifact bindings. The FS loader never
 	// parsed these before (only the Supabase mirror path populated them via

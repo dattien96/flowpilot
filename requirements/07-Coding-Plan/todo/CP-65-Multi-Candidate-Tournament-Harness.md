@@ -142,7 +142,7 @@ func TestWorktreeManagerMergesWinningCandidate(t *testing.T)
 
 ### P-3: Flow Definition `tournament-harness.yaml`
 
-**Status: draft**
+**Status: done** (Task-370, CA-878)
 
 **Production changes**
 - `internal/agentpack/flow-pack/flows/tournament-harness.yaml` (**new**): Khai báo flow đấu trường độc lập với các node: `problem_scout` $\rightarrow$ `parallel_rollout` $\rightarrow$ `tournament_arbiter` $\rightarrow$ `merge_and_audit`, cộng back-edge `tournament_arbiter` $\rightarrow$ `parallel_rollout` (`when: retry`, tối đa 2 attempts — lần 2 giữ nguyên candidate configs, spawn sub-agent mới context sạch + brief chưng cất fail lần 1).

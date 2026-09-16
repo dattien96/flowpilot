@@ -1,0 +1,134 @@
+# tournament-harness: CP-65 Multi-Candidate Tournament & PDR Escalation Harness
+# (Task-370). Standalone flow for hard problems, and the escalation target of
+# the P-4 fallback leg (review-cap / debate-stall). NEVER a default for normal
+# tasks (selectable from the picker only) — see the CP-65 token constraint.
+#
+# problem_scout -> parallel_rollout -> candidate_a/candidate_b (cohort,
+# isolated worktrees) -> tournament_arbiter -> merge_and_audit -> done.
+# The arbiter has three exits: done (winner) -> merge, retry (back-edge to
+# parallel_rollout, max_attempts, fresh spawns + distilled brief), escalate
+# (out of attempts / auto_pick=false) -> ask_user. Exactly ONE back-edge
+# (pack validator: one per (from, when)). No agent.code node: candidates run
+# agent.delegate inside sandboxed worktrees; the only main-workspace write is
+# the arbiter-approved patch applied by tournament.merge.
+id: tournament-harness
+version: 1
+description: Multi-candidate tournament (PDR) — parallel Claude/Codex candidates in isolated worktrees, deterministic Go arbiter picks the winner. Opt-in only.
+mode: flow
+builtin:
+  editable: false
+  selectableIn:
+    - flow
+  cloneable: true
+  mirror:
+    required: true
+    source: builtin
+policy:
+  cap: 3
+  onCap: escalate
+  extendBy: 2
+  extendMax: 2
+nodes:
+  - id: problem_scout
+    run: delegate
+    lifecycle: once
+    behavior: agent.delegate
+    agent: agents/reviewer.md
+    # CP-62 P-4 (Task-340): scout is read-only — it frames the problem and
+    # freezes scope context, never writes.
+    posture: read_only
+  - id: parallel_rollout
+    run: inline
+    lifecycle: once
+    # No behavior: rollout controller marker. The executor fans out to the
+    # candidate cohort via the done edges below (P-5 wires live dispatch;
+    # E2E drives with mock turns). Candidate set lives in config (Task-370
+    # T-2: default 2 per R-1, accepts 3; serial fallback for <8GB RAM).
+    config:
+      candidates:
+        - candidate_id: candidate-a
+          provider: claude
+          model: claude-sonnet
+        - candidate_id: candidate-b
+          provider: codex
+          model: gpt-5.4-mini
+      serial: false
+  - id: candidate-a
+    run: delegate
+    lifecycle: spawn
+    behavior: agent.delegate
+    agent: agents/coder.md
+    model: claude-sonnet
+    promptTemplate: prompts/tournament-candidate.md
+    dependsOn:
+      - parallel_rollout
+    cohort: tournament
+    join: all
+  - id: candidate-b
+    run: delegate
+    lifecycle: spawn
+    behavior: agent.delegate
+    agent: agents/coder.md
+    model: gpt-5.4-mini
+    promptTemplate: prompts/tournament-candidate.md
+    dependsOn:
+      - parallel_rollout
+    cohort: tournament
+    join: all
+  - id: tournament_arbiter
+    run: inline
+    lifecycle: once
+    behavior: tournament.arbiter
+    join: all
+    # Q-1 (CP-65): auto_pick=false (or a tie with no attempts left) escalates
+    # to ask_user with the ranking decision card instead of merging.
+    # max_attempts=2 enables one retry round: same models, fresh sub-agent
+    # spawns (lifecycle: spawn above) + distilled failure brief.
+    config:
+      auto_pick: true
+      max_attempts: 2
+  - id: merge_and_audit
+    run: inline
+    lifecycle: once
+    behavior: tournament.merge
+edges:
+  - from: problem_scout
+    to: parallel_rollout
+    when: done
+    kind: forward
+  - from: parallel_rollout
+    to: candidate-a
+    when: done
+    kind: forward
+  - from: parallel_rollout
+    to: candidate-b
+    when: done
+    kind: forward
+  - from: candidate-a
+    to: tournament_arbiter
+    when: done
+    kind: forward
+  - from: candidate-b
+    to: tournament_arbiter
+    when: done
+    kind: forward
+  - from: tournament_arbiter
+    to: merge_and_audit
+    when: done
+    kind: forward
+  - from: tournament_arbiter
+    to: parallel_rollout
+    when: retry
+    kind: back
+  - from: tournament_arbiter
+    to: ask_user
+    when: escalate
+    kind: forward
+  - from: merge_and_audit
+    to: done
+    when: done
+    kind: forward
+  - from: merge_and_audit
+    to: ask_user
+    when: escalate
+    kind: forward

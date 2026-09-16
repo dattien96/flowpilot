@@ -59,6 +59,14 @@ flows:
     editable: false
     selectableIn: []
     cloneable: true
+  # CP-65 P-3 (Task-370): tournament-harness. Opt-in only (selectable, never
+  # default) — the token constraint forbids auto-activation for normal tasks.
+  - path: flows/tournament-harness.yaml
+    visibility: builtin
+    editable: false
+    selectableIn:
+      - flow
+    cloneable: true
   - path: flows/vibe-ingest.yaml
     visibility: builtin
     editable: false
@@ -92,6 +100,7 @@ prompts:
   - prompts/plan-safe-fix-contract.md
   - prompts/test-signatures.md
   - prompts/reproduce-failing-test.md
+  - prompts/tournament-candidate.md
   - prompts/implement-complete-tests.md
   - prompts/review-safe-fix-contract.md
   - prompts/plan-task.md
