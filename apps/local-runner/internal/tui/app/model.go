@@ -251,6 +251,15 @@ type ProjectCreatedMsg struct {
 // SupabaseConfigSavedMsg is returned after saving Supabase workspace config.
 type SupabaseConfigSavedMsg struct{}
 
+// LSPStatusMsg carries the runner's LSP server presence for the bound
+// workspace (nil = unknown; fetch failed or not attempted yet). Path echoes
+// the requested workspace so stale responses for a previous project are
+// dropped instead of overwriting fresh state.
+type LSPStatusMsg struct {
+	Path   string
+	Status *client.LSPStatus
+}
+
 // ApprovalResolvedMsg is a successful POST /client/approvals/{id}/decision.
 type ApprovalResolvedMsg struct {
 	ID       string
@@ -462,6 +471,13 @@ type AppModel struct {
 	// SessionDefaultsMsg after a first-run Supabase setup save (F-2): the
 	// follow-up session load is not firstLoad, but the user still needs login.
 	supabaseJustConfigured bool
+	// lspStatus is the runner's LSP server presence for the bound workspace
+	// (nil = unknown). Rendered as a compact sidebar warning when the
+	// project platform's server binary is missing.
+	lspStatus *client.LSPStatus
+	// lspStatusPath is the workspace path lspStatus was fetched for; refetch
+	// when the bound project changes.
+	lspStatusPath string
 	// chatPosturePending remembers what to do after the runner config loads:
 	// "" = nothing; "apply:<posture>" = apply that posture's profile; "show" =
 	// just display the config; "setup:<posture>:<field>:<value>" = apply a

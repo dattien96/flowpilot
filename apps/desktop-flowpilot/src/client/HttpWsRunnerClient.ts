@@ -15,6 +15,7 @@ import type {
   HandoffContextRequest,
   HandoffContextResponse,
   ChatSummaryResult,
+  LSPStatus,
   Project,
   ProviderAccountSummary,
   ProviderEventDTO,
@@ -196,6 +197,9 @@ export class HttpWsRunnerClient implements RunnerClient {
     let url = `/client/workspace-files?cwd=${encodeURIComponent(cwd)}`;
     if (query) url += `&q=${encodeURIComponent(query)}`;
     return this.getJSON<string[]>(url);
+  }
+  getLSPStatus(cwd: string): Promise<LSPStatus> {
+    return this.getJSON<LSPStatus>(`/client/lsp-status?path=${encodeURIComponent(cwd)}`);
   }
 
   listBuiltinOrchestrationOptions(subMode: string): Promise<BuiltinFlowOption[]> {

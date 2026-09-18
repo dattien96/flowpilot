@@ -532,6 +532,9 @@ func (m *AppModel) renderRightSidebar(h int) []string {
 		}
 	}
 	out = append(out, "")
+	if lspLines := m.lspSidebarLines(w - 2); len(lspLines) > 0 {
+		out = append(out, lspLines...)
+	}
 	out = append(out, m.stepsSectionTitle())
 	// Height-aware step budget: fit as many steps as the sidebar rows allow
 	// after the session header. Sidebar now only holds session + steps (no

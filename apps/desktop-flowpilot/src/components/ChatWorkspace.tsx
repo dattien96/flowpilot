@@ -13,6 +13,7 @@ import { OrchestrationBoard } from "@/components/OrchestrationBoard";
 import { FlowAwaitingUserCard } from "@/components/FlowAwaitingUserCard";
 import { DispatchAttentionCard } from "@/components/DispatchAttentionCard";
 import { ChatPosturePanel } from "@/components/ChatPosturePanel";
+import { LSPStatusNotice } from "@/components/LSPStatusNotice";
 import { gateBlockSecondaryAction } from "@/components/gateBlockActions";
 import { useStore, accountLabel, providerLabel, type ChatStartMode } from "@/state/store";
 
@@ -819,6 +820,7 @@ export function ChatWorkspace({
           />
           <aside className="sidebar sidebar-right">
             <div className="right-sidebar-stack">
+              <LSPStatusNotice />
               <WorkflowControlPanel />
               <ChatPosturePanel />
               <ChatStartIntentPanel />

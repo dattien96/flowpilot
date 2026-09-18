@@ -778,6 +778,12 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		var cmds []tea.Cmd
+		if m.project != nil && strings.TrimSpace(m.project.Path) != "" && (firstLoad || m.lspStatusPath != m.project.Path) {
+			// Bound project (re)loaded: refresh the LSP sidebar hint.
+			m.lspStatusPath = m.project.Path
+			m.lspStatus = nil
+			cmds = append(cmds, m.cmdFetchLSPStatus(m.project.Path))
+		}
 		if firstLoad && m.project != nil && len(m.chatList) == 0 {
 			// Cold start with a bound project: the history picker renders
 			// from m.chatList, so init-loading must not report ready before
@@ -1343,7 +1349,23 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, m.cmdPrefetchChats())
 		}
 		cmds = append(cmds, m.cmdRefreshProjectContext())
+		if strings.TrimSpace(msg.Project.Path) != "" {
+			m.lspStatusPath = msg.Project.Path
+			m.lspStatus = nil
+			cmds = append(cmds, m.cmdFetchLSPStatus(msg.Project.Path))
+		}
 		return m, tea.Batch(cmds...)
+
+	case LSPStatusMsg:
+		// Drop stale responses for a previously bound project.
+		if msg.Path != "" && m.lspStatusPath != "" && msg.Path != m.lspStatusPath {
+			return m, nil
+		}
+		if msg.Path != "" {
+			m.lspStatusPath = msg.Path
+		}
+		m.lspStatus = msg.Status
+		return m, nil
 
 	case SupabaseConfigSavedMsg:
 		m.supabaseSetupModalOpen = false
@@ -1564,7 +1586,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					Round:       0,
 					RoundCap:    0,
 				})
-				var cmds []tea.Cmd
+		var cmds []tea.Cmd
 				if m.runHandle != nil {
 					cmds = append(cmds, m.cmdHydrateAgentGraph(m.runHandle.RunID))
 					cmds = append(cmds, m.cmdHydrateAgentRuns(m.runHandle.RunID))
