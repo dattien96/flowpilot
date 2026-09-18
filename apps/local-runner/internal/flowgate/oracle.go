@@ -225,7 +225,14 @@ func executeSuite(ctx context.Context, repoDir, testCmd, testDir string) (suiteP
 	start := time.Now()
 	log.Printf("[gate] suite start cmd=%q dir=%q", testCmd, cmd.Dir)
 	waitErr := make(chan error, 1)
-	go func() { waitErr <- cmd.Run() }()
+	// Publish cmd.Process before the cancellation path can inspect it.
+	// Running Start concurrently with killSuiteProcessGroup races on Process
+	// and its PID; only Wait needs to run in the background for bounded kill.
+	if startErr := cmd.Start(); startErr != nil {
+		waitErr <- startErr
+	} else {
+		go func() { waitErr <- cmd.Wait() }()
+	}
 	var err error
 	aborted := false
 WaitLoop:
