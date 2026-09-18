@@ -175,6 +175,10 @@ func registerBuiltinContextSources(r *ContextSourceRegistry) {
 	mustRegisterContextSource(r, &firebaseCrashlyticsSource{priority: 9})
 	mustRegisterContextSource(r, &changeContractSource{priority: 3}) // Task-247: after head, near history
 	mustRegisterContextSource(r, &dependenceSource{priority: 3})     // Task-259: after change.contract
+	// Task-359 (CP-63 P-6): live compiler diagnostics. Opt-in only — NOT
+	// added to defaultContextSourceIDs, so default flows keep byte-identical
+	// output. Priority after source.excerpt.
+	mustRegisterContextSource(r, &lspDiagnosticsSource{priority: 5})
 }
 
 // mustRegisterContextSource panics on a registration conflict among the
