@@ -46,3 +46,4 @@ Source of truth for stable `feature_key` values used by:
 - decision-card-ui — CP-62 P-3 card rendering: user_decision_card_requested event rendered as an interactive escalation card in desktop app + TUI, option id answered through the chat prompt channel (Task-345)
 - drift-pause — CP-23 ladder pause leg: dev-mode drift ≥80 parks the run (BlockReason `drift`) + additive `drift_pause_required` event, resume via the parked-run continue channel — no dedicated confirm backend; vibe keeps owner-debate routing (Task-348)
 - release-automation — GoReleaser, Homebrew tap, binary distribution, and release automation
+- lsp-runtime — CP-63 IDE-grade LSP runtime: JSON-RPC client, server lifecycle, platform registry, diagnostics hook, context source, Kotlin/Gradle fallback
