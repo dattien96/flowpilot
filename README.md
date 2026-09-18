@@ -55,8 +55,9 @@ FlowPilot prevents AI hallucinations and silent test corruption through an autom
 
 *   **The Oracle Rule**: Pre-existing unit and integration tests are an absolute ground truth (Oracle). When an agent modifies code, the runner captures test outcomes against a baseline. If a pre-existing test fails, the runner fires an **un-downgradable hard block**. Agents are physically barred from weakening or modifying pre-existing tests to force a green status.
 *   **The Reproduce-First Defect Engine (`r-reproduce`)**: When addressing a bug report or regression, the agent is physically locked out of editing production code until it authors an executable reproduction test that compiles cleanly and fails via an assertion error. Once verified RED by the runner, the test file is locked read-only during the coder's turn to prevent retroactive tampering.
+*   **Contract-First Scaffold TDD & Signature Lock (`r-signature-lock`)**: For feature tasks and autonomous sprints, a high-reasoning model designs production scaffolding stubs (`TODO()`, `return nil`) alongside executable red tests. Public API signatures are cryptographically snapshotted (`SignatureHash`). Coders are strictly confined to filling function bodies; modifying signatures triggers a mandatory batch renegotiation loop via the Main Agent (`cap: 5`), eliminating confirmation bias.
 *   **Comprehensive Flow Gate Suite**:
-    *   **Regression & Test Integrity**: `r-tests` (suite verification), `r-reg` (regression detection vs. baseline), `r-reproduce` (mandatory red test prior to fix), `r-additive-tests` (detects tampering with existing test files), and `r-newtest` (forces newly added unit tests for new production code).
+    *   **Regression & Test Integrity**: `r-tests` (suite verification), `r-reg` (regression detection vs. baseline), `r-reproduce` (mandatory red test prior to fix), `r-signature-lock` (enforces API contract immutability), `r-additive-tests` (detects tampering with existing test files), and `r-newtest` (forces newly added unit tests for new production code).
     *   **Scope & Intent Contracts**: `r-contract` (forces the agent to declare an intended change contract before editing), `r-scope` (detects edits landing outside the declared file/symbol scope), `r-spec-drift`, and `r-code-drift` (flags divergence between code implementation and canonical specifications).
     *   **Engineering Governance**: `r-dod-present` (mandates a binary checkbox Definition of Done for every task/bugfix), `r-dod-complete` (blocks task completion unless all items are checked or formally explained), `r-ca` (mandates machine-parseable Change-Audit notes), and `r-fk` (enforces verified feature keys in commits).
     *   **Specification Guard**: `r-requirement` (monitors test signatures against locked requirements in autonomous modes).
@@ -210,7 +211,7 @@ graph TD
 
     subgraph LocalRunner ["Local Execution Runner (Golang CLI)"]
         Runner["Go-Runner Daemon<br/>• Process Lifecycle & State Machine<br/>• Node Isolation (Silent-Deny)"]
-        FlowGate["Flow Gate Engine<br/>• r-tests & r-reg (Oracle Rule)<br/>• r-reproduce (Red-Test Gate)<br/>• r-dod, r-scope, r-ca"]
+        FlowGate["Flow Gate Engine<br/>• r-tests & r-reg (Oracle Rule)<br/>• r-reproduce & r-signature-lock<br/>• r-dod, r-scope, r-ca"]
         ContextEng["Context Engine<br/>• Living Knowledge (.flowpilot/knowledge/)<br/>• GitNexus Call-Graph & Blast Radius<br/>• Budget Packer"]
         LSPDaemon["LSP Runtime Daemon<br/>• Embedded JSON-RPC Client<br/>• Sub-200ms Compiler Feedback"]
         Arbiter["Tournament Arbiter<br/>• Multi-Candidate Scoring<br/>• Worktree Isolation Manager"]
@@ -257,6 +258,7 @@ graph TD
 | **Cross-Device Continuity** | Chat text only | None | ❌ Lost when changing PCs | ✅ **Full Memory & Workspace Bindings** |
 | **The Oracle Rule (Test Guard)** | ❌ Modifies tests | ❌ Modifies tests | ⚠️ Soft warning in prompt | ✅ **Hard-Block Infrastructure Gate** |
 | **Reproduce-First Defect Engine** | ❌ None | ❌ None | ❌ None | ✅ **Mandatory Red Test Gate (`r-reproduce`)** |
+| **Contract-First Scaffold TDD** | ❌ None | ❌ None | ❌ Confirmation bias | ✅ **Scaffold Stubs + Signature Lock (`r-signature-lock`)** |
 | **Two-Tier Code Intelligence** | ❌ None | ⚠️ Single file | ⚠️ Grep / ctags | ✅ **Macro Graph + Micro LSP (<200ms)** |
 | **Living Knowledge Base** | ❌ None | ❌ None | ❌ Blind file exploration | ✅ **Distilled Execution Flows (`knowledge.flow`)** |
 | **Multi-Candidate Tournament** | ❌ None | ❌ None | ❌ None | ✅ **Parallel Rollout + Deterministic Arbiter** |
