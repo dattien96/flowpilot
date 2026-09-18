@@ -249,7 +249,7 @@ func runCypher(ctx context.Context, repoDir, query string) ([][]string, error) {
 // GFM table: first two pipe-lines are header + separator, the rest are data.
 func parseCypherTable(output string) ([][]string, error) {
 	output = strings.TrimSpace(output)
-	if output == "" {
+	if output == "" || output == "[]" {
 		return nil, nil
 	}
 	var env struct {
