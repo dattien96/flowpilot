@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -44,7 +45,21 @@ func writeConventions(t *testing.T, home, workspace, userBody, wsBody, agentsBod
 
 func fetchConventions(t *testing.T, home, workspace string) FlowContextSection {
 	t.Helper()
-	t.Setenv("HOME", home) // isolate the user layer per test
+	homeEnv := "HOME"
+	switch runtime.GOOS {
+	case "windows":
+		homeEnv = "USERPROFILE"
+	case "plan9":
+		homeEnv = "home"
+	}
+	t.Setenv(homeEnv, home)
+	resolvedHome, err := os.UserHomeDir()
+	if err != nil || resolvedHome == "" {
+		t.Skipf("user home unavailable on %s: %v", runtime.GOOS, err)
+	}
+	if filepath.Clean(resolvedHome) != filepath.Clean(home) {
+		t.Fatalf("user home = %q, want isolated fixture %q", resolvedHome, home)
+	}
 	src := &conventionsSource{priority: 0}
 	section, err := src.Fetch(context.Background(), FlowContextHints{Workspace: workspace})
 	if err != nil {

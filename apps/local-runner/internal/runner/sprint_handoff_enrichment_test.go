@@ -3,6 +3,7 @@ package runner
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -154,7 +155,7 @@ func TestHandoffEnrichment_EmitAtPinnedIndex(t *testing.T) {
 	if path == "" {
 		t.Fatalf("handoff not written")
 	}
-	want := cwd + "/requirements/.flowpilot/vibe/handoffs/handoff-sprint-2.yaml"
+	want := filepath.Join(cwd, "requirements", ".flowpilot", "vibe", "handoffs", "handoff-sprint-2.yaml")
 	if path != want {
 		t.Fatalf("path = %q, want %q (pinned sprint 2)", path, want)
 	}
