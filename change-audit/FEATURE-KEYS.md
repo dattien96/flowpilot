@@ -50,3 +50,5 @@ Source of truth for stable `feature_key` values used by:
 - reproduce-first-gate — CP-64 Reproduce-first TDD gate (r-reproduce): enforce executable red test before code mutation in bug and refactor flows
 - tournament-harness — CP-65 Multi-candidate tournament harness & PDR escalation fallback for hard bugs and stalled debates
 - living-knowledge-base — CP-66 Living knowledge base & execution flow context source (knowledge.flow) distilled from GitNexus and LSP
+- contract-first-tdd — CP-67 Contract-First Scaffold TDD, AST Signature Lock (r-signature-lock), and batch renegotiation via Main Agent
+- skill-anchored-init — CP-68 Skill-Anchored Project Scaffolding & AI-Guided Init Engine

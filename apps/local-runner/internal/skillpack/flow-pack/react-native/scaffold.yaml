@@ -1,0 +1,16 @@
+platform: react-native
+version: 1
+enabled: true
+description: "React Native & Expo Monorepo Scaffold Recipe (Turborepo + Expo SDK 51 + 7 Shared Core Packages)"
+
+# Danh sách skill bắt buộc runner phải tự động gắn (attach) vào AI Turn
+scaffold_skills:
+  - react-native-scaffold-bootstrap
+  - react-native-mobile-plumbing
+  - react-native-core-ui-tokens
+
+# Chốt chặn kiểm định biên dịch bắt buộc (Compiler Verification Gate)
+verification_gate:
+  command: "pnpm install && pnpm tsc --noEmit"
+  timeout_seconds: 300
+  cap: 3
