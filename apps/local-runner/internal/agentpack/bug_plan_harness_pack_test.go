@@ -60,6 +60,19 @@ func TestBugPlanHarnessPack(t *testing.T) {
 	}
 	taskNodes := byID(task.Nodes)
 	for _, b := range bug.Nodes {
+		// CP-64 (reproduce-first-gate): the bug flows' TDD step is the
+		// reproduce-first node; task-harness keeps the legacy empty-signature
+		// node under the old id. Assert the CP-64 shape directly instead of
+		// comparing it field-by-field against task-harness's test_signatures.
+		if b.ID == "reproduce_test" {
+			if b.Behavior != "agent.reproduce" || b.Agent != "agents/reproducer.md" || b.PromptTemplate != "prompts/reproduce-failing-test.md" {
+				t.Fatalf("bug-plan-harness reproduce_test shape drifted: %+v", b)
+			}
+			if _, ok := taskNodes["test_signatures"]; !ok {
+				t.Fatal("task-harness lost its legacy test_signatures node — CP-64 must not touch new-feature flows")
+			}
+			continue
+		}
 		r, ok := taskNodes[b.ID]
 		if !ok {
 			t.Fatalf("bug-plan-harness node %q has no task-harness counterpart", b.ID)
@@ -74,8 +87,8 @@ func TestBugPlanHarnessPack(t *testing.T) {
 			}
 		}
 	}
-	if !reflect.DeepEqual(bug.Edges, task.Edges) {
-		t.Fatalf("bug-plan-harness edges differ from task-harness:\nbug: %+v\ntask: %+v", bug.Edges, task.Edges)
+	if !reflect.DeepEqual(renameReproduceEdgeEndpoints(bug.Edges), task.Edges) {
+		t.Fatalf("bug-plan-harness edges differ from task-harness beyond the CP-64 rename:\nbug: %+v\ntask: %+v", bug.Edges, task.Edges)
 	}
 	if !reflect.DeepEqual(bug.AcceptanceNodes, task.AcceptanceNodes) {
 		t.Fatalf("bug-plan-harness acceptance_nodes = %v, task-harness = %v, want identical",

@@ -145,7 +145,7 @@ type FlowNode struct {
 	// enforced at the shared approval bridge (turnBridge.RequestApproval) so
 	// every provider is gated identically. Engine stays domain-free (SD-19
 	// BR-1): no role strings, just the declared posture value.
-	Posture         string
+	Posture string
 	// ContextSources is this node's own enabled context-source ids (CP-44 P-7
 	// / Task-196), the step-definition-level equivalent of
 	// FlowContextBinding.Sources. Empty means "fall back to the flow-level
@@ -165,6 +165,11 @@ type FlowNode struct {
 	// resolves its context candidate set + token budget from. Empty means
 	// "no profile — the pre-Task-341 source precedence applies unchanged".
 	ContextProfile string
+	// Config is the CP-65 P-3 (Task-370) free-form node config map (root YAML
+	// key `config`): tournament nodes declare candidates/auto_pick/
+	// max_attempts/serial here. Nil for every pre-CP-65 flow — additive only,
+	// absent key parses to nil and changes nothing downstream.
+	Config map[string]any
 }
 
 // FlowArtifactBinding is one resolved typed-artifact binding for a
@@ -282,6 +287,20 @@ var behaviorAliases = map[string]string{
 	// interchangeable synonym like "coding"/"code".
 	"agent.code":      "agent.code",
 	"contract.freeze": "contract.freeze",
+	// CP-64 P-2 (Task-365): the reproduce-first node behavior. Self-mapped plus
+	// two documented aliases (behaviors/registry.yaml lists the same set).
+	// Like agent.code, agent.reproduce is a graph-topology marker, not an
+	// interchangeable synonym of agent.delegate: the runner's gate hook
+	// activates the r-reproduce rule on this behavior, so an alias must never
+	// resolve onto it from an unrelated id.
+	"agent.reproduce":  "agent.reproduce",
+	"reproduce":        "agent.reproduce",
+	"reproducing_test": "agent.reproduce",
+	// CP-65 P-3 (Task-370): tournament inline behaviors. Self-mapped; the
+	// runtime contract lives in runner/tournament_behavior.go and the
+	// reference docs in behaviors/registry.yaml.
+	"tournament.arbiter": "tournament.arbiter",
+	"tournament.merge":   "tournament.merge",
 }
 
 // NormalizeBehaviorID maps known aliases onto canonical behavior IDs.
@@ -817,6 +836,11 @@ func flowNodeFromMap(m map[string]any) (FlowNode, error) {
 		ContextProfile: strings.TrimSpace(stringField(m, "contextProfile")),
 		DependsOn:      stringSliceField(m, "dependsOn"),
 		ContextSources: stringSliceField(m, "contextSources"),
+	}
+	// CP-65 P-3 (Task-370): free-form node config for tournament nodes.
+	// Absent key leaves Config nil (every pre-CP-65 flow unaffected).
+	if config, ok := mapField(m, "config"); ok {
+		node.Config = config
 	}
 	// CP-58 Task-307: pack-level typed artifact bindings. The FS loader never
 	// parsed these before (only the Supabase mirror path populated them via

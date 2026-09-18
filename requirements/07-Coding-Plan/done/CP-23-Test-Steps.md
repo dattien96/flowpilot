@@ -89,9 +89,9 @@ go test ./internal/runner/ -count=1 -race -run 'TestDriftPause_' -v
 
 | # | Việc | Cách kiểm | Tick |
 |---|---|---|---|
-| P1 | Sandbox sẵn sàng | Thư mục `/Users/tiendat/Desktop/BE/gate-sandbox` sạch trạng thái git | [ ] |
-| P2 | Engine khởi chạy | `cd apps/local-runner && just chat-dev /Users/tiendat/Desktop/BE/gate-sandbox` | [ ] |
-| P3 | Kiểm tra log file | Đảm bảo runner phát log ra terminal hoặc file log | [ ] |
+| P1 | Sandbox sẵn sàng | Thư mục `/Users/tiendat/Desktop/BE/gate-sandbox` hoặc `D:\working\gate-sandbox` sạch trạng thái git | [x] PASS 2026-09-18 |
+| P2 | Engine khởi chạy | Runner listening on port 4317 / live health online | [x] PASS 2026-09-18 |
+| P3 | Kiểm tra log file | Đảm bảo runner phát log ra terminal hoặc file log | [x] PASS 2026-09-18 |
 
 ---
 
@@ -143,5 +143,33 @@ drift_pause_required
 
 - [x] §2 Automated tests chạy xanh 100% (14/14 tests pass).
 - [x] Kịch bản 1: **LIVE 2026-09-14**: `[prompt-pack] packed run=... selected_tokens=... bytes=95->104` trên mọi turn; profile budget `total=6000` áp cho node scout (run-439). Không có dropped item vì prompt nhỏ — cơ chế verify qua log.
-- [ ] Kịch bản 2: Drift Detector phát hiện vòng lặp; ở ≥80 run bị park + hỏi user thật (Task-348), vibe không hỏi. *(LIVE 2026-09-14: drift event ghi thật `drift_score=20, zero_delta_progress, action=none` vào `workflow_drift_events.json` — dưới ngưỡng, no-op đúng; chân ≥80 chưa induce được live)*
+- [ ] Kịch bản 2: **PARTIAL — dev ladder + continuation DONE; live vibe ≥80 còn mở** (2026-09-18).
+  - [x] **DONE — live dev note injection:** run-888315, Grok/grok-4.5, bed `/Users/tiendat/fp-beds/drift`; score 40 → log `21:50:08 [drift] injected system note ... turn=turn-896786 bytes=595`.
+  - [x] **DONE — live dev narrow context:** score 65 → log `21:54:32 [drift] narrow_context: packing with halved budget ... turn=turn-897367 total=4000`.
+  - [x] **DONE — live dev ≥80 park/confirm event:** turn-903459 đạt score 93; graph `status=blocked`, `blockReason=drift`, reason `confirm to continue`; đúng 1 event `drift_pause_required`, id `evt-906007`, lúc `2026-09-17T15:05:54.785534Z`. Snapshot cấp run vẫn `running`; không phải bằng chứng UI/question modal. Evidence: `/tmp/cp-closeout-current/graph.json`, `/tmp/cp-closeout-current/drift-pause.json`, `/tmp/fp-r-drift.log`.
+  - [x] **DONE — automated race checks:** `TestDriftPause_` và `TestDriftPauseGraphReportPreservesBlockedReason` PASS với `-race -count=1`; graph report dev/vibe được kiểm tra, không dùng để thay live vibe.
+  - [x] **DONE — live continuation after drift park (2026-09-18):** `POST .../agent-loop/continue` on run-888315 (`:18765`) cleared `blocked/drift` → `running` (`evt-906008`); follow-up `turn-906009` accepted with `model=grok-4.5`, settled, then re-parked at score 100 with new `drift_pause_required` `evt-906019` (expected zero-delta ping). Proves continue channel resumes execution.
+  - [x] **DONE — live vibe ≥80 non-pause (2026-09-18):** run-908843 on `:18765`, `workingMode=vibe` + `X-Client: tui`, bed `/Users/tiendat/fp-beds/vibe-drift2`, model grok-4.5. Ladder: turn-911112 score=45 `apology_loop+zero_delta_progress` → inject note; turn-914490 score=**90** `action=pause_for_human` but **no** `drift_pause_required` event (count=0), graph `status=running` with **no** `blockReason=drift`. Proves vibe never parks user for drift at ≥80. UI modal still unverified.
+  - [ ] Hiển thị UI drift card trên Desktop/TUI chưa xác minh.
 - [x] Kịch bản 3: **LIVE 2026-09-14**: skills có mặt trên sandbox (`.agents/skills/safe-fix-contract/SKILL.md` được pointer block tham chiếu; grok session load `.grok/skills/`).
+
+
+## 7. Bounded backend re-verification — 2026-09-17 (local UTC+07)
+
+**Result: BLOCKED / no new live drift PASS.** Existing §6 checkboxes are unchanged.
+
+- Required runner: `http://localhost:4317`, PID `42018`; `/health` returned online (`startedAt=2026-09-16T22:19:13.87715Z`). Created dev normal-chat `run-717601`, `stepId=chat-run-717601`, provider `grok`, requested model `grok-4.5`, sandbox cwd `/Users/tiendat/Desktop/BE/gate-sandbox`.
+- First turn request was rejected with `invalid_request: stepId is required`. Corrected request supplied that step ID, `chatPosture=plan`, `yoloMode=false`, and a bounded read-only source/test analysis prompt (no tests, edits, installs, subagents, or flow-control). It failed before provider dispatch: `dispatch_prepare_failed: dispatch store lock held by another process: resource temporarily unavailable`.
+- No accepted turn ID; **0 provider turns executed** (maximum allowed 4). `GET /client/workflow-runs/run-717601` remained `status=idle`; `GET /admin/workflow-runs/run-717601/events` returned `[]`. `/Users/tiendat/Desktop/flowpilot/flowpilot/.flowpilot/cli-runner.log` at 05:43:32 and 05:43:40 only showed `[flow-ref-resolve] run "run-717601": bailing, no workflowID set on this run`; no drift evidence for this run.
+- Lock diagnosis: `lsof` showed PID `50739` (runner on port `18753`) holding `/Users/tiendat/Desktop/flowpilot/flowpilot/.flowpilot/chats/db51ec26-1a0f-4b92-8ceb-b03dc8e9b363/dispatch.lock`. No process killed/restarted, no lock removal, no alternate project identity/port used to bypass it.
+- Source inspection: `/Users/tiendat/Desktop/flowpilot/flowpilot/apps/local-runner/internal/driftdetect/detector.go` carries a running score; zero delta with >2000 tokens contributes +20, repeated test failure +30, apology loop +25, out-of-scope edit +35. Thresholds are 30–59 note, 60–79 narrow, ≥80 pause. Four qualifying read-only turns could reach 80, but this session observed none; feature-flag state and actual token telemetry remain unverified. No impossible failing tests were induced; the §4 legacy recipe was not executed.
+- `/Users/tiendat/Desktop/BE/gate-sandbox/.flowpilot/workflow_drift_events.json` still contained only historical `run-16/turn-18` and `run-2918/turn-2920`, each score 20 / `zero_delta_progress` / `none`. These are not new verification evidence.
+- Sandbox was already dirty. Before/after SHA-256 comparison of 3,887 files excluding `.git`, `.flowpilot`, `.grok` found **no differences**. Runtime stores were not manually edited. No production or test edits; no test-suite claims from this session.
+
+**Remaining:** resolve dispatch ownership operationally before another authorized :4317 attempt; observe actual note injection/context narrowing, ≥80 blocked/drift + single event, continuation, and vibe non-pause. CP-23 scenario 2 and CP-62 M-8 remain incomplete; only Grok was requested, no Claude/Codex parity claimed.
+
+## 8. Windows re-verification - 2026-09-17 (this machine)
+
+- Automated CP-23 suites rerun on Windows (go 1.26.2): promptpacker + driftdetect + skillpack 35/35 PASS; TestDriftPause_ 5/5 PASS without -race. -race remains BLOCKED here (CGO/GCC unavailable), not a PASS claim.
+- Kịch bản 2 (drift ≥80 live) remains UNVERIFIED on this machine: live drift event not induced; the earlier score-20 event is historical. Automated TestDriftPause_DevModeParksRunAndEmitsEvent (park at score=86, single event) is the current fail-safe evidence.
+- Live turn smoke: flowpilot chat --print --provider grok on D:\working\gate-sandbox returned CP-SMOKE-OK, exit 0 (turn completed 2026-09-17 08:57:42, runner.log). No drift telemetry captured from that read-only turn (expected: score 0).

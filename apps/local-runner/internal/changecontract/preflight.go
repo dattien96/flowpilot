@@ -70,7 +70,15 @@ type FrozenContractRecord struct {
 	BaseSHA           string            `json:"base_sha,omitempty"`
 	BaselineWorktree  map[string]string `json:"baseline_worktree,omitempty"`
 	Supersedes        string            `json:"supersedes,omitempty"`
-	DeclaredAt        time.Time         `json:"declared_at"`
+	// ReadOnlyPaths are workspace-relative paths this step's agent is FORBIDDEN
+	// to write, enforced as a silent deny at the shared approval bridge
+	// (turnBridge.RequestApproval) for every provider (CP-64 P-3, Task-366).
+	// Populated by LockReproduceTestPaths after the reproduce-first gate passes,
+	// so the coder cannot weaken the reproduction test that proves the bug.
+	// Zero-value compatible: a record frozen without it stays byte-identical in
+	// JSON (omitempty) and every pre-CP-64 flow keeps its exact behavior.
+	ReadOnlyPaths []string  `json:"read_only_paths,omitempty"`
+	DeclaredAt    time.Time `json:"declared_at"`
 }
 
 // ContractStatusEvent is one append-only lifecycle transition for a frozen

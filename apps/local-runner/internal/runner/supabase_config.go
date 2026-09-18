@@ -315,7 +315,13 @@ func (r *Runner) ValidateSupabaseWorkspaceConfig(input SupabaseWorkspaceConfigRe
 }
 
 func (r *Runner) loadSupabaseWorkspaceConfig() (SupabaseWorkspaceConfig, error) {
-	raw, err := os.ReadFile(r.supabaseWorkspaceConfigPath())
+	primaryPath := r.supabaseWorkspaceConfigPath()
+	raw, err := os.ReadFile(primaryPath)
+	if err != nil && errors.Is(err, os.ErrNotExist) {
+		if fallbackPath := globalSupabaseConfigPath(); fallbackPath != "" && fallbackPath != primaryPath {
+			raw, err = os.ReadFile(fallbackPath)
+		}
+	}
 	if err != nil {
 		return SupabaseWorkspaceConfig{}, err
 	}
@@ -337,7 +343,25 @@ func (r *Runner) persistSupabaseWorkspaceConfig(config SupabaseWorkspaceConfig) 
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, raw, 0o644)
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		return err
+	}
+
+	// Also mirror to global user settings for cross-workspace standalone usage
+	if globalPath := globalSupabaseConfigPath(); globalPath != "" && globalPath != path {
+		_ = os.MkdirAll(filepath.Dir(globalPath), 0o755)
+		_ = os.WriteFile(globalPath, raw, 0o644)
+	}
+
+	return nil
+}
+
+func globalSupabaseConfigPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return ""
+	}
+	return filepath.Join(home, ".flowpilot", "settings", "supabase-config.json")
 }
 
 func (r *Runner) supabaseWorkspaceConfigPath() string {

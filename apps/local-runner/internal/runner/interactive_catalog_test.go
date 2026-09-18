@@ -128,3 +128,36 @@ func TestProviderHomeSkillDirsUnknownProviderReturnsNil(t *testing.T) {
 		t.Errorf("providerHomeSkillDirs(unknown) = %v, want nil", got)
 	}
 }
+
+func TestInteractiveCatalogCreateProject(t *testing.T) {
+	cat := newInteractiveCatalog()
+	initialList, err := cat.ListProjects(nil)
+	if err != nil {
+		t.Fatalf("ListProjects error: %v", err)
+	}
+	initialLen := len(initialList)
+
+	newProj, err := cat.CreateProject(nil, CreateProjectInput{
+		Name:          "Gate Sandbox",
+		DirectoryPath: "D:\\working\\gate-sandbox",
+		Platform:      "golang",
+		DefaultModel:  "gemini-2.5-flash",
+	})
+	if err != nil {
+		t.Fatalf("CreateProject error: %v", err)
+	}
+	if newProj.Name != "Gate Sandbox" {
+		t.Fatalf("project name = %q, want 'Gate Sandbox'", newProj.Name)
+	}
+	if newProj.Platform != "golang" {
+		t.Fatalf("project platform = %q, want 'golang'", newProj.Platform)
+	}
+
+	afterList, err := cat.ListProjects(nil)
+	if err != nil {
+		t.Fatalf("ListProjects after error: %v", err)
+	}
+	if len(afterList) != initialLen+1 {
+		t.Fatalf("expected project count %d, got %d", initialLen+1, len(afterList))
+	}
+}

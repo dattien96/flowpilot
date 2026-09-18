@@ -174,3 +174,15 @@ func SyncDesktopAuthSession() (string, error) {
 	}
 	return src, nil
 }
+
+// SaveSupabaseConfigRequest holds connection parameters to save.
+type SaveSupabaseConfigRequest struct {
+	APIURL         string `json:"apiUrl"`
+	AnonKey        string `json:"anonKey"`
+	ServiceRoleKey string `json:"serviceRoleKey,omitempty"`
+}
+
+// SaveSupabaseConfig calls PUT /supabase-config.
+func (c *Client) SaveSupabaseConfig(ctx context.Context, cfg SaveSupabaseConfigRequest) error {
+	return c.putJSON(ctx, "/supabase-config", cfg, nil)
+}

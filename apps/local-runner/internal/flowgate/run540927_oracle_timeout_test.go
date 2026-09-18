@@ -57,6 +57,9 @@ func Test540927OracleGroupKillReturnsDespitePipeHoldingChild(t *testing.T) {
 // and refuses to die must yield an EnvError within the kill grace — the
 // executor never blocks indefinitely on cmd.Wait.
 func Test540927OracleSigtermIgnoringSuiteBounded(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("direct .sh execution is unix-only (same guard as GraceAbandon test below)")
+	}
 	dir := t.TempDir()
 	script := filepath.Join(dir, "stubborn_suite.sh")
 	if err := os.WriteFile(script, []byte("#!/bin/sh\ntrap '' TERM\nsleep 30\n"), 0o755); err != nil {
@@ -139,6 +142,9 @@ func Test540927OracleGraceAbandonWhenKillMissesPipeHolder(t *testing.T) {
 // break the happy path — a green suite still reports SuitePassed with no
 // EnvError and parsed test names.
 func Test540927OracleCleanSuiteStillPasses(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("direct .sh execution is unix-only (same guard as GraceAbandon test above)")
+	}
 	dir := t.TempDir()
 	script := filepath.Join(dir, "green_suite.sh")
 	if err := os.WriteFile(script, []byte("#!/bin/sh\necho '--- PASS: TestFoo'\nexit 0\n"), 0o755); err != nil {

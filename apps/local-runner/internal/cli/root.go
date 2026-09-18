@@ -53,6 +53,7 @@ func NewRootCommand() *cobra.Command {
 	rootCmd.AddCommand(newSkillsCommand(cfg))
 	rootCmd.AddCommand(newFlowsCommand(cfg))
 	rootCmd.AddCommand(newChatCommand(cfg))
+	rootCmd.AddCommand(newDoctorCommand(cfg))
 
 	return rootCmd
 }

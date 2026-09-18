@@ -34,6 +34,19 @@ const (
 	// CP-55 slice (P-8), not P-1.
 	BehaviorAgentCode      BehaviorID = "agent.code"
 	BehaviorContractFreeze BehaviorID = "contract.freeze"
+	// BehaviorAgentReproduce (CP-64 P-1/P-2) marks the reproduce-first node: a
+	// delegate whose write scope is the new reproduction test file only. It
+	// reuses behaviorAgentDelegate verbatim (T-2), but it is deliberately NOT
+	// an IsCodeWritingBehavior id — the reproduce node is not a frozen
+	// preflight writer and must not be treated as one by topology/gate code.
+	BehaviorAgentReproduce BehaviorID = "agent.reproduce"
+	// BehaviorTournamentArbiter / BehaviorTournamentMerge (CP-65 P-3) are the
+	// deterministic inline behaviors of the tournament-harness flow: scoring
+	// + verdict (arbiter) and winner merge + cleanup (merge). Handler
+	// implementations live in tournament_behavior.go; they never call a
+	// provider (Case-1 agnostic glue over the tournament package).
+	BehaviorTournamentArbiter BehaviorID = "tournament.arbiter"
+	BehaviorTournamentMerge   BehaviorID = "tournament.merge"
 )
 
 // IsCodeWritingBehavior reports whether id is the CP-55 explicit

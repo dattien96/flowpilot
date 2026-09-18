@@ -171,6 +171,16 @@ func remediationFor(v Violation) string {
 			"3. Fix production code so old + new tests pass. " +
 			"4. If an old test is truly wrong vs AC: stop and ask the user — do not silent-edit. " +
 			"Do NOT edit change-audit solely to dismiss this rule."
+	case "reproduce_not_demonstrated":
+		// CP-64 P-1: reproduce-first remediation. The Detail already states
+		// which failure shape was seen (compile error / green suite / no run).
+		return "• Reproduce-first gate: " + v.Detail + ". " +
+			"Write (or fix) ONE new test file that reproduces the reported bug " +
+			"and run the test suite yourself before finishing this turn. " +
+			"The gate only passes when the suite COMPILES and the new test FAILS " +
+			"on its assertion (expected X, got Y). " +
+			"Do not touch production code yet, do not weaken or edit existing tests, " +
+			"and do not delete the failing assertion to make the suite green."
 	default:
 		return "• " + v.Detail
 	}

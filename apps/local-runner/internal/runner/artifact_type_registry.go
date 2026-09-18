@@ -739,7 +739,10 @@ func composeFlowNodeAgentPrompt(workspaceCwd, prompt string, node agentpack.Flow
 // prompt. Missing/undeclared templates are silently ignored so a node with a
 // stale ref degrades to the base prompt instead of blocking the flow.
 func appendStaticNodePrompt(prompt string, node agentpack.FlowNode) string {
-	rel := strings.TrimSpace(node.PromptTemplate)
+	// CP-64 (Task-366 T-6): a reproduce node resolves its prompt through
+	// resolveReproducePrompt so the flag-off path renders the legacy
+	// empty-signature prompt without a second flow definition.
+	rel := strings.TrimSpace(resolveReproducePrompt(ReproduceGateEnabled(), node))
 	if rel == "" {
 		return prompt
 	}

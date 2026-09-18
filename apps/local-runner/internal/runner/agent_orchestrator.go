@@ -559,8 +559,8 @@ func (o *AgentOrchestrator) transition(parentRunID, kind string) AgentGraphSnaps
 			// context and F-0 hub_stalled could fire 2m later (rejected is not
 			// treated as parked). Never overwrite an awaiting-user / terminal loop.
 			switch st.Status {
-			case "blocked", "stopped", "done", "paused":
-				// keep status + gateReason (escalate/cap/stall card)
+			case "blocked", "stopped", "done", "paused", LoopStatusTournamentEscalation:
+				// keep status + gateReason (escalate/cap/stall/tournament card)
 			default:
 				st.Status = "rejected"
 				st.GateReason = "rejected"

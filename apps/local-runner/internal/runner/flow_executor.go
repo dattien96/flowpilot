@@ -314,7 +314,6 @@ func (s *InteractiveService) markForwardDonePredecessorsSkipped(ctx context.Cont
 	}
 }
 
-
 // resolveWorkflowFlowRef bridges a Flow-Mode workflow-picker launch to the flow
 // executor (BUG-174). A workflow-picker run carries a workflowID but no flowRef
 // (the desktop only sends flowRef for the chat "bug" sub-mode), so its selected
@@ -1242,8 +1241,8 @@ func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID
 			return false
 		}
 		canonical, ok := agentpack.NormalizeBehaviorID(node.Behavior)
-		if !ok || (canonical != "agent.delegate" && canonical != "agent.code") {
-			s.flowDiagLog(parentRunID, "flow_advance_target_not_spawnable", "target node is not a spawnable delegate or frozen writer",
+		if !ok || (canonical != "agent.delegate" && canonical != "agent.code" && canonical != "agent.reproduce") {
+			s.flowDiagLog(parentRunID, "flow_advance_target_not_spawnable", "target node is not a spawnable delegate, frozen writer, or reproduce node",
 				"completed_node_id", completedNodeID,
 				"target_node_id", node.ID,
 				"behavior", node.Behavior,
@@ -1646,7 +1645,9 @@ func entryDelegateNodes(def agentpack.FlowDefinition) []agentpack.FlowNode {
 // basenames are the catalog names Task-174 wired in (see
 // agent_catalog_pack.go / flow-pack/agents/*.md).
 func flowNodeAgentName(node agentpack.FlowNode) string {
-	return agentNameFromRef(node.Agent)
+	// CP-64 (Task-366 T-6): flag off degrades a reproduce node to the legacy
+	// tester role; flag on spawns the reproducer persona.
+	return agentNameFromRef(resolveReproduceAgent(ReproduceGateEnabled(), node))
 }
 
 // agentNameFromRef derives the agent catalog name from an agent file

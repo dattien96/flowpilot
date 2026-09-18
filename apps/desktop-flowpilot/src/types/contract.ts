@@ -29,6 +29,17 @@ export interface Workflow {
   yoloMode?: boolean;
 }
 
+/** LSP server presence for a workspace (GET /client/lsp-status). */
+export interface LSPStatus {
+  platform: string;
+  binary: string;
+  installed: boolean;
+  installHint?: string;
+  /** True when the platform is registered but the binary is missing. */
+  warn: boolean;
+  notice?: string;
+}
+
 export interface Step {
   id: string;
   workflowId?: string;
@@ -805,6 +816,12 @@ export interface RunnerClient {
   listSkills(provider: string, cwd?: string): Promise<ProviderSkill[]>;
   /** Workspace paths for the @file picker. Optional so older mocks stay valid. */
   listWorkspaceFiles?(cwd: string, query?: string): Promise<string[]>;
+  /**
+   * LSP server presence for a workspace (CP-63 follow-up): whether the
+   * project platform's language server binary is installed, plus the
+   * install hint. Optional so older mocks stay valid.
+   */
+  getLSPStatus?(cwd: string): Promise<LSPStatus>;
   /**
    * List built-in Chat Mode orchestration flow options for subMode (CP-42/
    * Task-177), e.g. "Review Loop" for subMode="bug". Optional so existing

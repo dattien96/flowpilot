@@ -46,6 +46,20 @@ func NewDefaultBehaviorRegistry() *BehaviorRegistry {
 	// lives outside this handler. contract.freeze gets a fail-closed
 	// placeholder; the real validation+persistence handler is CP-55 P-3.
 	mustRegister(r, BehaviorSpec{ID: BehaviorAgentCode, Scope: BehaviorScopeDelegate, Handler: behaviorAgentDelegate})
+	// CP-64 P-2: agent.reproduce reuses behaviorAgentDelegate verbatim (T-2 —
+	// same handler, same delegate scope, no new spawn path). Registering the
+	// canonical id is what lets a flow node select it and lets the pack
+	// validator's NormalizeBehaviorID check resolve; the reproduce-specific
+	// gate/scope treatment lives in the runner's gate hook, not in this
+	// handler.
+	mustRegister(r, BehaviorSpec{ID: BehaviorAgentReproduce, Scope: BehaviorScopeDelegate, Handler: behaviorAgentDelegate})
+	// CP-65 P-3 (Task-370): tournament inline behaviors. Deterministic
+	// runner-owned logic (score/decide/merge/cleanup) with no provider call —
+	// same inline scope as command.validate/validation.summarize. Registering
+	// the canonical ids lets tournament-harness nodes select them and lets
+	// the pack validator's NormalizeBehaviorID check resolve.
+	mustRegister(r, BehaviorSpec{ID: BehaviorTournamentArbiter, Scope: BehaviorScopeInline, Handler: behaviorTournamentArbiter})
+	mustRegister(r, BehaviorSpec{ID: BehaviorTournamentMerge, Scope: BehaviorScopeInline, Handler: behaviorTournamentMerge})
 	mustRegister(r, BehaviorSpec{ID: BehaviorContractFreeze, Scope: BehaviorScopeInline, Handler: behaviorContractFreezeNotImplemented})
 	return r
 }

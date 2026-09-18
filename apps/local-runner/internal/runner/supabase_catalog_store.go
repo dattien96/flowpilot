@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"strings"
@@ -25,6 +26,17 @@ type CatalogStore interface {
 
 type WorkflowStepCatalogStore interface {
 	ListWorkflowSteps(ctx context.Context, workflowID string) ([]Step, error)
+}
+
+type ProjectCreatorStore interface {
+	CreateProject(ctx context.Context, input CreateProjectInput) (Project, error)
+}
+
+type CreateProjectInput struct {
+	Name          string `json:"name"`
+	DirectoryPath string `json:"directoryPath"`
+	Platform      string `json:"platform,omitempty"`
+	DefaultModel  string `json:"defaultModel,omitempty"`
 }
 
 // CatalogStoreFor returns the live SupabaseCatalogStore when the runner has a
@@ -250,3 +262,88 @@ func (s *SupabaseCatalogStore) ListWorkflowSteps(ctx context.Context, workflowID
 	}
 	return out, nil
 }
+
+func (s *SupabaseCatalogStore) CreateProject(ctx context.Context, input CreateProjectInput) (Project, error) {
+	name := strings.TrimSpace(input.Name)
+	dir := strings.TrimSpace(input.DirectoryPath)
+	if name == "" {
+		return Project{}, fmt.Errorf("project name is required")
+	}
+	if dir == "" {
+		return Project{}, fmt.Errorf("directory path is required")
+	}
+	platform := strings.TrimSpace(input.Platform)
+	if platform == "" {
+		platform = "generic"
+	}
+	defaultModel := strings.TrimSpace(input.DefaultModel)
+
+	bodyMap := map[string]any{
+		"name":                        name,
+		"directory_path":              dir,
+		"platform":                    platform,
+		"status":                      "active",
+		"artifact_storage_preference": "supabase",
+	}
+	if defaultModel != "" {
+		bodyMap["default_model"] = defaultModel
+	}
+
+	bodyJSON, err := json.Marshal(bodyMap)
+	if err != nil {
+		return Project{}, err
+	}
+
+	headers := s.headers()
+	headers["Content-Type"] = "application/json"
+	headers["Prefer"] = "return=representation"
+
+	status, respBody, err := httpRequestFn(ctx, http.MethodPost, s.restURL+"/projects", headers, bodyJSON)
+	if err != nil {
+		return Project{}, fmt.Errorf("create project failed: %w", err)
+	}
+	if status < 200 || status >= 300 {
+		return Project{}, fmt.Errorf("create project failed: status %d: %s", status, string(respBody))
+	}
+
+	var created []struct {
+		ID            string  `json:"id"`
+		Name          string  `json:"name"`
+		DirectoryPath string  `json:"directory_path"`
+		DefaultModel  *string `json:"default_model"`
+		Platform      *string `json:"platform"`
+	}
+	if err := json.Unmarshal(respBody, &created); err != nil {
+		return Project{}, fmt.Errorf("parse created project response: %w", err)
+	}
+	if len(created) == 0 {
+		return Project{}, fmt.Errorf("create project response contained no project row (status %d)", status)
+	}
+
+	projectID := created[0].ID
+
+	// Save workspace binding for local path. A binding failure is NOT fatal —
+	// the project exists in Supabase and chat works this session — but it must
+	// never be silent: the TUI reports "created and bound", and a missing
+	// binding means the project will not match this path on future sessions.
+	bindingMap := map[string]any{
+		"project_id": projectID,
+		"local_path": dir,
+		"label":      "Primary",
+	}
+	bindingJSON, err := json.Marshal(bindingMap)
+	if err != nil {
+		log.Printf("[supabase] project %q created but binding payload marshal failed: %v", projectID, err)
+	} else if bindStatus, bindBody, bindErr := httpRequestFn(ctx, http.MethodPost, s.restURL+"/project_workspace_bindings", headers, bindingJSON); bindErr != nil || bindStatus < 200 || bindStatus >= 300 {
+		log.Printf("[supabase] project %q created but workspace binding failed (status=%d): %v %s", projectID, bindStatus, bindErr, string(bindBody))
+	}
+
+	return Project{
+		ID:       projectID,
+		Name:     name,
+		Path:     dir,
+		Model:    defaultModel,
+		Platform: platform,
+	}, nil
+}
+

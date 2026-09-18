@@ -82,6 +82,11 @@ type InteractiveService struct {
 	// gitnexusAnalyzeOnce tracks workspaces where an auto `gitnexus analyze`
 	// was already kicked off this process (see ensureGitNexusIndexAsync).
 	gitnexusAnalyzeOnce map[string]bool
+	// lspChecker serves live compiler diagnostics to the post-turn gate
+	// (CP-63 P-5 / Task-358). Nil means no LSP configured: the gate path
+	// treats it as "no diagnostics" with zero behavior change. Tests inject
+	// fakes here; production falls back to lsp.DefaultSet().
+	lspChecker lspChecker
 
 	// dispatchLogSyncMu guards dispatchLogSyncHash, kept separate from the main
 	// s.mu since a Drive upload is slow network I/O unrelated to run-state locking.
@@ -1654,6 +1659,16 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 			}
 			return st
 		})
+		if result.NextAction == "awaiting_user" && result.Status == "blocked" {
+			// CP-65 P-4 (Task-371): flag-gated tournament rescue for a review
+			// loop that just hit its round cap. Safe against the park further
+			// below: parkFlowForAwaitingUser only freezes orchestrator-tracked
+			// children, and the tournament child is deliberately untracked
+			// (see tournament_escalation.go), so its rescue intent survives.
+			// No-op when the flag is off: the old escalate-card path
+			// underneath runs byte-identical.
+			s.maybeEscalateCapToTournament(parentRunID, fmt.Sprintf("review cap %d reached with %d open issue(s)", result.Cap, result.OpenIssues))
+		}
 		if result.NextAction == "looping" {
 			// BUG-174: a new review round is starting — reset the downstream nodes
 			// to PENDING and re-run the re-entry node (e.g. "coder") on the step
@@ -5451,15 +5466,21 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 			s.agentOrchestrator.signalChild(rs.id, finalMsg, false, "", RunStatusCompleted)
 			s.settleFlowChildTurnCompletedLocked(rs, finalMsg, ev)
 		} else if !rs.turnStartedAfterLoopDone {
-			// Root: defer Completed until post-turn gate when the turn touched
-			// code. Plain chat previously published Completed immediately even
-			// when code changed, so dispatch settle saw Completed and returned
-			// allow:true before the gate queued its reprompt — UI stalled at
-			// one auto-reprompt line (run-208282). Arming the same pending gate
-			// contract as children/flow roots makes settle wait for the real
-			// disposition. Plain turns without code (e.g. "hi") still complete
-			// immediately to preserve the original 3-event shape.
-			hasCode := false
+		// Root: defer Completed until post-turn gate when the turn touched
+		// code. Plain chat previously published Completed immediately even
+		// when code changed, so dispatch settle saw Completed and returned
+		// allow:true before the gate queued its reprompt — UI stalled at
+		// one auto-reprompt line (run-208282). Arming the same pending gate
+		// contract as children/flow roots makes settle wait for the real
+		// disposition. Plain turns without code (e.g. "hi") still complete
+		// immediately to preserve the original 3-event shape.
+		// V10 residual (TestRootFlowEngineDefersCompletedUntilGate): a
+		// flow-engine-driven root defers even without code events — its
+		// completion fans out to flow children/siblings, so publishing
+		// Completed before the gate would release dependents early, the
+		// same race the children branch above closes. resumePendingFlowGate
+		// already handles roots (V10 P0), so the armed state is resumable.
+		hasCode := rs.flowEngineDriven
 			for _, e := range rs.events {
 				if e.Type == EventFileChanged && e.Path != "" && !flowgate.IsDocOrAuditFile(e.Path) {
 					hasCode = true
@@ -5848,6 +5869,27 @@ func (b *turnBridge) RequestApproval(details ApprovalDetails) (string, error) {
 				},
 			})
 		}
+		return decision, nil
+	}
+
+	// CP-64 P-3 (Task-366 T-2): reproduce-first read-only lock. The reproduction
+	// test file that proved the bug is frozen on the coder step's contract; a
+	// write/edit/mutating-command aimed at it is silent-denied here — the same
+	// provider-neutral choke point the posture uses, and likewise BEFORE YOLO so
+	// an auto-approve can never weaken the evidence the fix is judged against.
+	// Reads of the locked file are deliberately not handled (they fall through).
+	if decision, reason, handled := s.decideReproduceTestLock(b.rs, details); handled {
+		s.recordAutoApproval(b.rs, details, decision, reason)
+		b.Emit(ProviderEvent{
+			Type:     EventNodeIsolationWriteDenied,
+			ToolName: details.Reason,
+			Status:   "deny",
+			Input: map[string]string{
+				"posture": reason,
+				"command": details.Command,
+				"kind":    details.Kind,
+			},
+		})
 		return decision, nil
 	}
 

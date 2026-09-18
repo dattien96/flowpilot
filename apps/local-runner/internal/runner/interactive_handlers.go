@@ -22,6 +22,7 @@ import (
 func (s *InteractiveService) RegisterInteractiveRoutes(mux *http.ServeMux) {
 	// interactive (client)
 	mux.HandleFunc("GET /client/projects", s.handleListProjects)
+	mux.HandleFunc("POST /client/projects", s.handleCreateProject)
 	mux.HandleFunc("GET /client/workflows", s.handleListWorkflows)
 	mux.HandleFunc("GET /client/projects/{projectId}/workflows", s.handleListWorkflows)
 	mux.HandleFunc("GET /client/steps", s.handleListSteps)
@@ -76,6 +77,8 @@ func (s *InteractiveService) RegisterInteractiveRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /client/workflow-runs/{runId}/artifacts", s.handleListArtifacts)
 	mux.HandleFunc("GET /client/provider-skills", s.handleListSkills)
 	mux.HandleFunc("GET /client/workspace-files", s.handleListWorkspaceFiles)
+	// LSP server presence for a workspace (sidebar warning + install hint).
+	mux.HandleFunc("GET /client/lsp-status", s.handleLSPStatus)
 	mux.HandleFunc("GET /client/agents", s.handleListAgents)
 	mux.HandleFunc("GET /client/active-account", s.handleGetActiveAccount)
 	mux.HandleFunc("POST /client/active-account", s.handleSetActiveAccount)
@@ -133,6 +136,33 @@ func (s *InteractiveService) handleListProjects(w http.ResponseWriter, r *http.R
 		return
 	}
 	writeInteractiveJSON(w, http.StatusOK, projects)
+}
+
+func (s *InteractiveService) handleCreateProject(w http.ResponseWriter, r *http.Request) {
+	creator, ok := s.catalog.(ProjectCreatorStore)
+	if !ok {
+		writeInteractiveError(w, newAPIErr(http.StatusNotImplemented, "not_implemented", "current catalog store does not support creating projects"))
+		return
+	}
+	var input CreateProjectInput
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "invalid_body", fmt.Sprintf("invalid request body: %v", err)))
+		return
+	}
+	if strings.TrimSpace(input.Name) == "" {
+		writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "missing_name", "project name is required"))
+		return
+	}
+	if strings.TrimSpace(input.DirectoryPath) == "" {
+		writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "missing_directory", "directory path is required"))
+		return
+	}
+	project, err := creator.CreateProject(r.Context(), input)
+	if err != nil {
+		writeInteractiveError(w, newAPIErr(http.StatusInternalServerError, "create_project_failed", err.Error()))
+		return
+	}
+	writeInteractiveJSON(w, http.StatusCreated, project)
 }
 
 func (s *InteractiveService) handleListWorkflows(w http.ResponseWriter, r *http.Request) {
@@ -657,6 +687,9 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 	// HighSeverity and source.dependence can query real dependents. Runs once
 	// per process per workspace; non-blocking.
 	s.ensureGitNexusIndexAsync(in.Cwd)
+	// CP-66 P-1 (Task-373): distill the living knowledge base once per
+	// process in the background; non-blocking like the auto-index above.
+	s.ensureKnowledgeBaseForWorkspace(in.Cwd)
 
 	stepID := in.StepID
 	runKind := "workflow"
