@@ -1354,6 +1354,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.lspStatus = nil
 			cmds = append(cmds, m.cmdFetchLSPStatus(msg.Project.Path))
 		}
+		cmds = append(cmds, m.cmdInitEngine("all"))
 		return m, tea.Batch(cmds...)
 
 	case LSPStatusMsg:

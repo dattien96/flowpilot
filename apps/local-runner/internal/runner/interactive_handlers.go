@@ -162,6 +162,11 @@ func (s *InteractiveService) handleCreateProject(w http.ResponseWriter, r *http.
 		writeInteractiveError(w, newAPIErr(http.StatusInternalServerError, "create_project_failed", err.Error()))
 		return
 	}
+	// Auto-init project engine (scaffold requirements/, install skills, gate config, git hook)
+	// when the project directory path is accessible locally on the runner host.
+	if dir, resolveErr := s.resolveEngineWorkingDirectory(input.DirectoryPath); resolveErr == nil && dir != "" {
+		s.runEngineInit(project.ID, dir, input.Platform, engineInitTriggerBind, "all")
+	}
 	writeInteractiveJSON(w, http.StatusCreated, project)
 }
 
