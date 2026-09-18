@@ -8,6 +8,7 @@ scaffold_skills:
   - react-native-scaffold-bootstrap
   - react-native-mobile-plumbing
   - react-native-core-ui-tokens
+  - react-native-screen-archetypes
 
 # Chốt chặn kiểm định biên dịch bắt buộc (Compiler Verification Gate)
 verification_gate:
