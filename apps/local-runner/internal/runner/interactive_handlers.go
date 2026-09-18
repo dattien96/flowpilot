@@ -77,6 +77,8 @@ func (s *InteractiveService) RegisterInteractiveRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /client/workflow-runs/{runId}/artifacts", s.handleListArtifacts)
 	mux.HandleFunc("GET /client/provider-skills", s.handleListSkills)
 	mux.HandleFunc("GET /client/workspace-files", s.handleListWorkspaceFiles)
+	// LSP server presence for a workspace (sidebar warning + install hint).
+	mux.HandleFunc("GET /client/lsp-status", s.handleLSPStatus)
 	mux.HandleFunc("GET /client/agents", s.handleListAgents)
 	mux.HandleFunc("GET /client/active-account", s.handleGetActiveAccount)
 	mux.HandleFunc("POST /client/active-account", s.handleSetActiveAccount)

@@ -82,6 +82,11 @@ type InteractiveService struct {
 	// gitnexusAnalyzeOnce tracks workspaces where an auto `gitnexus analyze`
 	// was already kicked off this process (see ensureGitNexusIndexAsync).
 	gitnexusAnalyzeOnce map[string]bool
+	// lspChecker serves live compiler diagnostics to the post-turn gate
+	// (CP-63 P-5 / Task-358). Nil means no LSP configured: the gate path
+	// treats it as "no diagnostics" with zero behavior change. Tests inject
+	// fakes here; production falls back to lsp.DefaultSet().
+	lspChecker lspChecker
 
 	// dispatchLogSyncMu guards dispatchLogSyncHash, kept separate from the main
 	// s.mu since a Drive upload is slow network I/O unrelated to run-state locking.

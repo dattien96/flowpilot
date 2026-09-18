@@ -357,6 +357,12 @@ func (s *InteractiveService) runFlowGateAtEpoch(
 	// No synthetic r-tamper warn — the rule itself (reprompt) owns the signal.
 
 	if len(violations) == 0 {
+		// CP-63 P-5 (Task-358): live compiler diagnostics ride the allow
+		// path — contract/scope violations keep their own reprompt; only a
+		// gate-clean turn consults LSP. Nil checker returns "" immediately.
+		if diagMsg := s.lspDiagnosticsForTurn(ctx, cwd, fin.ChangedFiles); diagMsg != "" {
+			return s.blockTurnForLSPDiagnostics(runID, epoch, turnID, diagMsg)
+		}
 		// V10R4 P0-03 / BUG-288 R16-P0: durable commit under s.mu (no TOCTOU).
 		// V9-02: only persist contract + canonical head after gate allows.
 		// CP-55 P-5: this is the root gate (Normal chat or a Flow's own hub
@@ -1201,6 +1207,11 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 
 	violations := flowgate.Evaluate(tr, only)
 	if len(violations) == 0 {
+		// CP-63 P-5 (Task-358): same live-diagnostics allow-path hook as the
+		// root gate above; nil checker returns "" immediately.
+		if diagMsg := s.lspDiagnosticsForTurn(ctx, cwd, fin.ChangedFiles); diagMsg != "" {
+			return s.blockTurnForLSPDiagnostics(runID, epoch, turnID, diagMsg)
+		}
 		// BUG-288 R16-P0: durable commit under s.mu (no TOCTOU with Stop).
 		if hasPreparedContract {
 			if !s.withGateEpochDurable(runID, epoch, func() error {
