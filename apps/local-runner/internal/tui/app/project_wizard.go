@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"flowpilot-runner/internal/lsp"
 	"flowpilot-runner/internal/tui/client"
 )
 
@@ -35,49 +36,10 @@ var wizardPlatformOptions = []string{
 }
 
 // detectProjectPlatform inspects the target folder to infer its technology stack.
+// The implementation lives in internal/lsp (Task-356) so the wizard and the
+// LSP layer can never disagree; this wrapper keeps existing callers intact.
 func detectProjectPlatform(dir string) string {
-	if dir == "" {
-		return "general"
-	}
-
-	// 1. Golang
-	if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-		return "golang"
-	}
-
-	// 2. Android
-	for _, f := range []string{"build.gradle", "settings.gradle", "build.gradle.kts", "settings.gradle.kts"} {
-		if _, err := os.Stat(filepath.Join(dir, f)); err == nil {
-			return "android"
-		}
-	}
-
-	// 3. Rust
-	if _, err := os.Stat(filepath.Join(dir, "Cargo.toml")); err == nil {
-		return "rust"
-	}
-
-	// 4. Python
-	for _, f := range []string{"requirements.txt", "pyproject.toml", "Pipfile", "setup.py"} {
-		if _, err := os.Stat(filepath.Join(dir, f)); err == nil {
-			return "python"
-		}
-	}
-
-	// 5. JavaScript / TypeScript
-	pkgPath := filepath.Join(dir, "package.json")
-	if data, err := os.ReadFile(pkgPath); err == nil {
-		s := strings.ToLower(string(data))
-		if strings.Contains(s, "\"next\"") {
-			return "nextjs"
-		}
-		if strings.Contains(s, "\"react\"") {
-			return "reactjs"
-		}
-		return "node"
-	}
-
-	return "general"
+	return lsp.DetectPlatform(dir)
 }
 
 func (m *AppModel) openProjectWizard(dir string) {
