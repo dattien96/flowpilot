@@ -143,6 +143,14 @@ type ServerSet struct {
 	registry Registry
 	servers  map[serverKey]*Server
 	cooldown map[serverKey]time.Time
+	// disabled remembers (root, platform) pairs whose crash budget was spent
+	// earlier in this session (CP-63 R-1): a later check must not respawn a
+	// fresh manager with a reset budget — the session degrades to build/test
+	// validation instead. Cleared only when the process exits.
+	disabled map[serverKey]bool
+	// disabledNotified remembers keys already logged as session-disabled so
+	// the per-turn hook does not spam the gate log.
+	disabledNotified map[serverKey]bool
 	// warned remembers binaries already reported missing so the gate log
 	// warns once per session instead of every turn.
 	warned map[string]bool
@@ -157,7 +165,7 @@ func NewServerSet(reg Registry) *ServerSet {
 	if reg == nil {
 		reg = DefaultRegistry()
 	}
-	return &ServerSet{registry: reg, servers: make(map[serverKey]*Server), cooldown: make(map[serverKey]time.Time), warned: make(map[string]bool)}
+	return &ServerSet{registry: reg, servers: make(map[serverKey]*Server), cooldown: make(map[serverKey]time.Time), disabled: make(map[serverKey]bool), disabledNotified: make(map[serverKey]bool), warned: make(map[string]bool)}
 }
 
 var defaultSet = NewServerSet(nil)
@@ -289,7 +297,20 @@ func (s *ServerSet) getOrStart(ctx context.Context, root string, cfg PlatformLSP
 			srv.lastUsed = time.Now()
 			return srv, nil
 		}
+		// CP-63 R-1: a manager whose crash budget was spent stays disabled
+		// for the whole session — record it so no later check respawns a
+		// fresh manager with a reset budget.
+		if srv.Manager.Disabled() {
+			s.disabled[key] = true
+		}
 		delete(s.servers, key)
+	}
+	if s.disabled[key] {
+		if !s.disabledNotified[key] {
+			s.disabledNotified[key] = true
+			log.Printf("[lsp] server for %s/%s disabled for this session (crash budget spent earlier); build/test validation remains the backstop", root, cfg.Platform)
+		}
+		return nil, fmt.Errorf("lsp: server for %s/%s disabled for this session", root, cfg.Platform)
 	}
 	if until, ok := s.cooldown[key]; ok {
 		if time.Now().Before(until) {
@@ -358,6 +379,11 @@ func (s *ServerSet) stopIdle(maxIdle time.Duration) {
 	for key, srv := range s.servers {
 		if now.Sub(srv.lastUsed) > maxIdle {
 			_ = srv.Manager.Stop()
+			// Preserve an exhausted crash budget even when another workspace's
+			// check reaps this server before its next getOrStart call.
+			if srv.Manager.Disabled() {
+				s.disabled[key] = true
+			}
 			delete(s.servers, key)
 			log.Printf("[lsp] lsp.idle_stop root=%q platform=%q", srv.Root, srv.Config.Platform)
 		}

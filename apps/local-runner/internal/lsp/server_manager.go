@@ -222,6 +222,14 @@ func (m *ServerManager) Restarts() int {
 	return m.restarts
 }
 
+// Disabled reports whether the crash budget was spent and this manager
+// disabled itself (CP-63 R-1 mitigation). Explicit Start revives it.
+func (m *ServerManager) Disabled() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.disabled
+}
+
 // WaitReady blocks until the initialize handshake with the running server
 // completes or timeout elapses.
 func (m *ServerManager) WaitReady(ctx context.Context, timeout time.Duration) error {
