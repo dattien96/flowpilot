@@ -178,3 +178,34 @@ func TestScaffoldYAMLIsNotTreatedAsSkill(t *testing.T) {
 		}
 	}
 }
+
+func TestHasScaffoldCapability_BlankSkillNamesAreNotCapable(t *testing.T) {
+	// CP-68 scaffold review (S4): a recipe whose scaffold_skills contains only
+	// blank entries (e.g. scaffold_skills: [""]) declares NO usable skill and
+	// must not be considered scaffold-capable.
+	blankOnly := &ScaffoldRecipe{
+		Platform:       "react-native",
+		Enabled:        true,
+		ScaffoldSkills: []string{""},
+	}
+	if scaffoldCapable(blankOnly) {
+		t.Fatal("scaffoldCapable = true for scaffold_skills [\"\"], want false")
+	}
+	blankOnly.ScaffoldSkills = []string{"", "   "}
+	if scaffoldCapable(blankOnly) {
+		t.Fatal("scaffoldCapable = true for whitespace-only skill names, want false")
+	}
+	if scaffoldCapable(&ScaffoldRecipe{Platform: "react-native", Enabled: true}) {
+		t.Fatal("scaffoldCapable = true for an empty skill list, want false")
+	}
+
+	// Near-miss: one blank entry alongside a real, shipped skill stays capable.
+	mixed := &ScaffoldRecipe{
+		Platform:       "react-native",
+		Enabled:        true,
+		ScaffoldSkills: []string{"", "react-native-scaffold-bootstrap"},
+	}
+	if !scaffoldCapable(mixed) {
+		t.Fatal("scaffoldCapable = false for a blank entry mixed with a real skill, want true")
+	}
+}

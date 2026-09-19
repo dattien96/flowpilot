@@ -103,17 +103,36 @@ func VerifyRecipeSkills(recipe *ScaffoldRecipe) (missing []string, ok bool) {
 }
 
 // HasScaffoldCapability reports whether AI scaffolding is fully supported for the
-// platform: the recipe manifest exists, is enabled, declares at least one skill,
-// and every declared skill is present in the pack.
+// platform: the recipe manifest exists, is enabled, declares at least one
+// non-empty skill name, and every declared skill is present in the pack.
 //
 // Any failure mode degrades to false so callers can "graceful ignore" the
 // scaffold branch (CP-68 single-command design) instead of erroring.
 func HasScaffoldCapability(platform string) bool {
 	recipe, found, _ := LoadScaffoldRecipe(platform)
-	if !found || recipe == nil || !recipe.Enabled {
+	if !found {
 		return false
 	}
-	if len(recipe.ScaffoldSkills) == 0 {
+	return scaffoldCapable(recipe)
+}
+
+// scaffoldCapable is the recipe-level half of HasScaffoldCapability, split out
+// so the blank-skill-name guard can be exercised directly in tests without
+// touching the embedded pack.
+func scaffoldCapable(recipe *ScaffoldRecipe) bool {
+	if recipe == nil || !recipe.Enabled {
+		return false
+	}
+	// At least one declared skill must be a non-empty name: a recipe that only
+	// declares blank entries (e.g. scaffold_skills: [""]) is not capable.
+	hasSkill := false
+	for _, skill := range recipe.ScaffoldSkills {
+		if strings.TrimSpace(skill) != "" {
+			hasSkill = true
+			break
+		}
+	}
+	if !hasSkill {
 		return false
 	}
 	_, skillsOK := VerifyRecipeSkills(recipe)

@@ -149,6 +149,13 @@ func (d *ScaffoldDispatcher) Dispatch(ctx context.Context, req ScaffoldRequest) 
 		result.Message = "scaffold: working directory is outside the runner workspace boundary"
 		return result, nil
 	}
+	// Existence check: a workspace that does not exist (or is a file) can never
+	// be scaffolded — reject before the recipe/replay checks and any AI call.
+	if info, statErr := os.Stat(workspace); statErr != nil || !info.IsDir() {
+		result.Status = ScaffoldStatusError
+		result.Message = fmt.Sprintf("scaffold: working directory is not a directory: %s", workspace)
+		return result, nil
+	}
 
 	// Tier 1 + Tier 2 (Task-383): recipe discovery and skill integrity. Anything
 	// short of "fully verified recipe" means graceful ignore — zero AI calls, and
@@ -175,11 +182,11 @@ func (d *ScaffoldDispatcher) Dispatch(ctx context.Context, req ScaffoldRequest) 
 	// CP-68 §6 replay guard: a previously completed scaffold for the same platform
 	// is not re-run (the generated files are the user's now, not ours).
 	if !req.Force {
-		if existing, ok := readScaffoldStatus(workspace); ok &&
+		if existing, ok := LoadScaffoldStatusFile(workspace); ok &&
 			existing.Status == ScaffoldStatusDone &&
 			strings.EqualFold(existing.Platform, result.Platform) {
 			result.Message = "scaffold: skipped (already scaffolded)"
-			result.StatusPath = scaffoldStatusPath(workspace)
+			result.StatusPath = ScaffoldStatusPath(workspace)
 			return result, nil
 		}
 	}
@@ -441,8 +448,6 @@ func ScaffoldStatusPath(workspace string) string {
 	return filepath.Join(strings.TrimSpace(workspace), ".flowpilot", scaffoldStatusFileName)
 }
 
-func scaffoldStatusPath(workspace string) string { return ScaffoldStatusPath(workspace) }
-
 // LoadScaffoldStatusFile reads .flowpilot/scaffold-status.json. A missing or
 // unreadable file is reported as not-found, never as an error: the file is an
 // optimization, not a contract.
@@ -459,10 +464,6 @@ func LoadScaffoldStatusFile(workspace string) (*ScaffoldStatusFile, bool) {
 		return nil, false
 	}
 	return &status, true
-}
-
-func readScaffoldStatus(workspace string) (*ScaffoldStatusFile, bool) {
-	return LoadScaffoldStatusFile(workspace)
 }
 
 // persistStatus writes the replay guard after a passing gate. Best-effort: a

@@ -680,3 +680,32 @@ func TestScaffoldDispatcher_RelativeTraversalIsScopedToRequestDir(t *testing.T) 
 		t.Fatalf("CompilerGate = %+v, want the chdir failure marked as an environment error", result.CompilerGate)
 	}
 }
+
+func TestScaffoldDispatcher_RejectsNonexistentAbsoluteWorkspace(t *testing.T) {
+	// CP-68 scaffold review (S2): a workspace that does not exist (or is not a
+	// directory) is rejected after path resolution and BEFORE any recipe/replay
+	// check or AI call — a missing dir can never be scaffolded.
+	executor := &recordingScaffoldExecutor{}
+	dispatcher := dispatcherForRecipe(executor, realScaffoldRecipe(t, "true"))
+	workspace := filepath.Join(t.TempDir(), "missing-workspace")
+
+	result, err := dispatcher.Dispatch(context.Background(), ScaffoldRequest{
+		ProjectID:    "proj-rn",
+		WorkspaceDir: workspace,
+		Platform:     "react-native",
+		ProviderKey:  "claude",
+	})
+	if err != nil {
+		t.Fatalf("Dispatch() error = %v", err)
+	}
+	if result.Status != ScaffoldStatusError {
+		t.Fatalf("Status = %q (%s), want error for a nonexistent workspace", result.Status, result.Message)
+	}
+	if !strings.Contains(result.Message, "not a directory") || !strings.Contains(result.Message, workspace) {
+		t.Fatalf("Message = %q, want the not-a-directory rejection naming %q", result.Message, workspace)
+	}
+	if executor.count() != 0 {
+		t.Fatalf("executor calls = %d, want 0 — reject before any AI call", executor.count())
+	}
+}
+

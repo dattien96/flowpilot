@@ -195,14 +195,17 @@ func (s *InteractiveService) resolveEngineWorkingDirectory(value string) (string
 		return "", newAPIErr(http.StatusBadRequest, "invalid_working_directory", "workingDirectory could not be resolved")
 	}
 
+	resolved = strings.TrimSpace(filepath.Clean(resolved))
+	// The boundary check runs BEFORE existence: an escaping relative path is
+	// rejected as out-of-boundary even when the target does not exist, so the
+	// "where may we write?" verdict never depends on what happens to be on disk.
+	if !filepath.IsAbs(strings.TrimSpace(value)) && escapesProcessCwd(resolved) {
+		return "", newAPIErr(http.StatusBadRequest, "working_directory_outside_boundary", "workingDirectory escapes the runner workspace boundary")
+	}
+
 	info, err := os.Stat(resolved)
 	if err != nil || !info.IsDir() {
 		return "", newAPIErr(http.StatusBadRequest, "working_directory_unavailable", "workingDirectory must point to an existing directory")
-	}
-
-	resolved = strings.TrimSpace(filepath.Clean(resolved))
-	if !filepath.IsAbs(strings.TrimSpace(value)) && escapesProcessCwd(resolved) {
-		return "", newAPIErr(http.StatusBadRequest, "working_directory_outside_boundary", "workingDirectory escapes the runner workspace boundary")
 	}
 	return resolved, nil
 }
@@ -210,22 +213,15 @@ func (s *InteractiveService) resolveEngineWorkingDirectory(value string) (string
 // escapesProcessCwd reports whether an already-absolute, cleaned path points
 // outside the process working directory. It only applies to originally-relative
 // inputs: a relative path containing ".." can climb out of wherever the runner
-// happens to run, while absolute paths are explicit operator intent.
-
-// escapesProcessCwd reports whether an absolute, cleaned path escapes the
-// process working directory. The check uses the same ".."-prefix semantics as
-// isSameOrWithinPath below; it exists so the scaffold dispatcher and the engine
-// init endpoints reject relative workspaces that climb out before executing.
+// happens to run, while absolute paths are explicit operator intent. It
+// delegates to isSameOrWithinPath below so the containment predicate lives in
+// exactly one place.
 func escapesProcessCwd(absolute string) bool {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return false
 	}
-	rel, err := filepath.Rel(strings.TrimSpace(filepath.Clean(cwd)), absolute)
-	if err != nil {
-		return false
-	}
-	return rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator))
+	return !isSameOrWithinPath(absolute, cwd)
 }
 
 func (s *InteractiveService) buildEngineStatusResponse(

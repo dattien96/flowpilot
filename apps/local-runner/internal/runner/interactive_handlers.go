@@ -170,11 +170,19 @@ func (s *InteractiveService) handleCreateProject(w http.ResponseWriter, r *http.
 	// CP-68: passive Desktop scaffold trigger + boundary gate. A relative
 	// directory that climbs out of the runner's visible tree is rejected with the
 	// same 400 the engine endpoints use — the project row exists (created above),
-	// but neither engine init nor any AI turn touches the escaped path. A crafted
-	// platform that names a nonexistent recipe can never authorize writes
-	// elsewhere: the recipe gate requires a verified scaffold.yaml, and the
-	// dispatcher itself rejects out-of-boundary workspaces before any prompt.
+	// but neither engine init nor any AI turn touches the escaped path. Every
+	// OTHER resolve failure (nonexistent directory, runner unavailable, …) keeps
+	// the CA-890 soft-skip semantics: the project still returns 201 and engine
+	// init is simply skipped, exactly as before CP-68. A crafted platform that
+	// names a nonexistent recipe can never authorize writes elsewhere: the recipe
+	// gate requires a verified scaffold.yaml, and the dispatcher itself rejects
+	// out-of-boundary workspaces before any prompt.
 	dir, resolveErr := s.resolveEngineWorkingDirectory(input.DirectoryPath)
+	if resolveErr != nil && resolveErr.code != "working_directory_outside_boundary" {
+		// Soft skip (CA-890): project creation succeeds, init is skipped.
+		resolveErr = nil
+		dir = ""
+	}
 	if resolveErr == nil && dir != "" {
 		// Auto-init project engine (scaffold requirements/, install skills, gate config, git hook)
 		// when the project directory path is accessible locally on the runner host.

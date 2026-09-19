@@ -13,9 +13,10 @@ import (
 	"flowpilot-runner/internal/skillpack"
 )
 
-// scaffoldAPITimeout bounds one HTTP-triggered scaffold dispatch: a 30-minute AI
-// turn plus up to cap × gate-timeout of compiler verification (CP-68 recipe:
-// 3 × 300s), with headroom. Long by design — the TUI client mirrors it.
+// scaffoldAPITimeout bounds one HTTP-triggered scaffold dispatch: the AI turn
+// budget plus the recipe's compiler-verification budget (attempt cap × per-gate
+// timeout from the recipe's verification_gate), with headroom. Long by design —
+// the TUI client mirrors it.
 const scaffoldAPITimeout = 60 * time.Minute
 
 // ScaffoldStatusResponse is the GET .../scaffold/status body. Desktop uses
@@ -200,12 +201,30 @@ func (s *InteractiveService) autoTriggerScaffold(projectID, workspaceDir, platfo
 		return
 	}
 
+	// One in-flight auto-trigger per project: concurrent create/bind flows for
+	// the same project must not stack duplicate background AI turns.
+	s.mu.Lock()
+	if s.scaffoldInFlight == nil {
+		s.scaffoldInFlight = map[string]bool{}
+	}
+	if s.scaffoldInFlight[projectID] {
+		s.mu.Unlock()
+		log.Printf("[scaffold] project=%s platform=%q skipped (already in flight)", projectID, platform)
+		return
+	}
+	s.scaffoldInFlight[projectID] = true
+	s.mu.Unlock()
+
 	go func() {
-		// Background work must never take the whole runner process down.
+		// Background work must never take the whole runner process down, and the
+		// in-flight claim must always be released when the turn finishes.
 		defer func() {
 			if recovered := recover(); recovered != nil {
 				log.Printf("[scaffold] project=%s panicked: %v", projectID, recovered)
 			}
+			s.mu.Lock()
+			delete(s.scaffoldInFlight, projectID)
+			s.mu.Unlock()
 		}()
 
 		ctx, cancel := context.WithTimeout(context.Background(), scaffoldAPITimeout)
