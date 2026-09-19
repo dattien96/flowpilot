@@ -10,7 +10,7 @@
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-09-01`
-- Last Updated: `2026-09-08`
+- Last Updated: `2026-09-19` (cập nhật tdd node semantics cho CP-67 Contract-First Scaffold TDD)
 - Parent Documents: [SS-18: Vibe Working Mode](../05-System-Specs/SS-18-Vibe-Working-Mode.md)
 - Child Documents: [CP-60: Vibe Working Mode](../07-Coding-Plan/done/CP-60-Vibe-Working-Mode.md)
 - Related Documents: [SD-19: Agent Flow Engine](./SD-19-Agent-Flow-Engine.md), [SD-20: Flow Gate Rule Semantics](./SD-20-Flow-Gate-Rule-Semantics.md), [SD-16: Agent Spawn And Tool-Calling Design](./SD-16-Agent-Spawn-And-Tool-Calling-Design.md), [SS-13: AI-Followable Document Contract](../05-System-Specs/SS-13-AI-Followable-Document-Contract.md), [SS-08: Approve Gate](../05-System-Specs/SS-08-Approve-Gate.md)
@@ -98,14 +98,18 @@ Provide a tech design that makes `SS-18` implementable as a thin policy layer ov
   nodes:
     preflight_contract_plan    {run: delegate, lifecycle: once,    behavior: agent.delegate,  agent: agents/contract-planner.md}
     preflight_contract_freeze  {run: inline,   lifecycle: once,    behavior: contract.freeze}
-    tdd                        {run: delegate, lifecycle: reinvoke, behavior: agent.delegate,  agent: agents/tester.md}
+    tdd                        {run: delegate, lifecycle: reinvoke, behavior: agent.scaffold, agent: agents/scaffold-architect.md}
     coder                      {run: delegate, lifecycle: reinvoke, behavior: agent.code,      agent: agents/coder.md, join: all}
+    synthesis_negotiation       {run: inline,   lifecycle: reinvoke, behavior: hub.inline,      agent: agents/synthesizer.md, join: all}
     synthesis                  {run: inline,   lifecycle: reinvoke, behavior: hub.inline,      agent: agents/synthesizer.md, join: all}
   edges:
     plan → freeze (when: done, kind: forward)
     freeze → tdd (when: done, kind: forward)
     tdd → coder (when: done, kind: forward)
     coder → synthesis (when: done, kind: forward)
+    coder → synthesis_negotiation (when: continue, payload batch)
+    synthesis_negotiation → tdd (when: continue, kind: back)
+    synthesis_negotiation → synthesis (when: done, kind: forward)
     synthesis → coder (when: continue, kind: back)
     synthesis → done  (when: done,    kind: forward)
     synthesis → ask_user (when: escalate, kind: forward)
@@ -234,7 +238,7 @@ Why chosen: every decision stays declarative (FlowDefinition + agent + pack), th
 
 - **Per sprint (`vibe-sprint`, bounded retry, synthesis owns drift):**
   1. `preflight_contract_plan` builds the frozen preflight draft for the slice; `preflight_contract_freeze` freezes it (`contract.freeze`). Every subsequent writer path is dominated by this freeze (`D-5`).
-  2. `tdd` (`agents/tester.md`) writes **signature-only** tests from the frozen SS slice (`SS-04 §3.5.8`, `prompts/test-signatures.md`). No production code.
+  2. `tdd` (`agents/scaffold-architect.md` với behavior `agent.scaffold`) viết **full Production Stubs + Executable RED Tests** từ frozen SS slice (`CP-67 Contract-First Scaffold TDD`, `prompts/scaffold-contract-tdd.md`). Không viết production code. Enforced bởi `r-scaffold-red` gate.
   3. `coder` (`agents/coder.md`, `agent.code`) implements to make the TDD signatures green. Tool scope is `Read/Edit/Write/Bash/Grep/Glob` per that agent, gated by `change-contract` (`CP-43`); `git commit` remains denied on coding children (`SD-20 D-7`).
   4. On `coder.done`, the gate hook — **before** any child `block → parent escalate` — computes `RequirementDrift` from the hub's 1:1 signature↔SS advisory plus green+`TamperedTestPaths` (weaken), feeds it into `flowgate.Evaluate` (enabled-filter hides `r-requirement` when `dev`), and the resolver (§6) decides: `r-requirement ∈ violations → requirement card` (no Owners), else `vibe → start vibe-owner-debate`, else Dev card.
   5. `synthesis` (`hub.inline`) is the hub that, after the resolver's decision, emits `flow_control`: if `r-requirement` held it already escalated; if non-requirement, the resolver has started `vibe-owner-debate` whose `debate_synthesis` will loop (`continue` back to `debate_trigger`, cap 5) before the sprint hub resumes. `synthesis` ultimately emits `done` (sprint is green + requirement-aligned) → Workflow advances to the next sprint slice; `continue` routes back to `coder` via the single `back` edge; `escalate` routes to `ask_user`.

@@ -21,7 +21,7 @@
 
 ### Summary
 
-- Slice 4 của CP-67: tạo prompt `prompts/implement-scaffold-body.md` thay thế `implement-complete-tests.md` trong các flow áp dụng Contract-First TDD — Coder chỉ được phép fill body code, tuyệt đối cấm sửa test (đã khóa ReadOnly) và cấm sửa signature trực tiếp (bị gate `r-signature-lock` chặn).
+- Slice 4 của CP-67 (P-4): tạo prompt `prompts/implement-scaffold-body.md` thay thế `implement-complete-tests.md` trong các flow áp dụng Contract-First TDD — Coder chỉ được phép fill body code, tuyệt đối cấm sửa test (đã khóa ReadOnly), cấm sửa signature trực tiếp (bị gate `r-signature-lock` chặn), **và cấm thêm/xóa function** (post-review B-8.1: mọi thay đổi contract phải qua batch renegotiation).
 - Hướng dẫn quy tắc "Accumulate & Batch": khi phát hiện signature cần đổi, Coder KHÔNG dừng lẻ tẻ mà nhớ lại, tiếp tục implement tối đa các phần khác, cuối turn gom toàn bộ thành 1 BATCH REQUEST duy nhất qua `submit_coder_outcome` với status `renegotiate_signatures`.
 - Nếu hoàn thành xong, Coder gọi `submit_coder_outcome` với status `completed`.
 - Slice này chưa wire vào flow nào (P-5 lo); chỉ bảo đảm prompt render được khi pack load.
@@ -32,7 +32,12 @@
 
 ### Key Decisions
 
-- `T-1` Prompt `implement-scaffold-body.md` đối xứng với `implement-complete-tests.md` nhưng khác cơ bản: (a) KHÔNG yêu cầu "fill test signatures" (test đã viết sẵn ĐỎ từ TDD); (b) Yêu cầu Coder chỉ viết logic bên trong `{ }` của các hàm stub; (c) Mô tả rõ quy tắc Accumulate & Batch; (d) Kết thúc turn bằng `submit_coder_outcome`.
+- `T-1` Prompt `implement-scaffold-body.md` đối xứng với `implement-complete-tests.md` nhưng khác cơ bản:
+  - (a) KHÔNG yêu cầu "fill test signatures" (test đã viết sẵn ĐỎ từ TDD).
+  - (b) Yêu cầu Coder chỉ viết logic bên trong `{ }` của các hàm stub.
+  - (c) Mô tả rõ quy tắc Accumulate & Batch.
+  - (d) **4 lệnh cấm (post-review B-8.1)**: cấm sửa file test (ReadOnly), cấm sửa signature (gate `r-signature-lock`), cấm viết thêm test mới, **cấm thêm/xóa function**.
+  - (e) Kết thúc turn bằng `submit_coder_outcome`.
 - `T-2` Prompt PHẢI ghi rõ 3 lệnh cấm: (a) Cấm sửa file test (đã khóa ReadOnlyPaths); (b) Cấm sửa signature trực tiếp (gate `r-signature-lock` sẽ chặn); (c) Cấm viết test mới (test đã hoàn chỉnh từ TDD, chỉ cần làm cho nó XANH).
 - `T-3` Mô tả quy trình batch: nếu phát hiện signature bất cập (ví dụ cần thêm tham số, sai return type) → (a) ghi nhận vào danh sách tạm; (b) tiếp tục code tối đa phần còn lại; (c) nếu có thêm lỗi signature khác tiếp tục gom; (d) cuối turn gọi `submit_coder_outcome` với `renegotiate_signatures` kèm mảng `batch_signature_requests`.
 - `T-4` Mục tiêu duy nhất của Coder: "Viết logic nghiệp vụ vào ruột hàm sao cho test suite chuyển từ ĐỎ sang XANH."
@@ -86,7 +91,7 @@ P-1/P-2/P-3 đã có schema, gate rule, và TDD prompt. Slice này tạo prompt 
 ## 6. Acceptance Check
 
 - [ ] AC-1: Prompt template render được khi pack load.
-- [ ] AC-2: Prompt chứa 3 lệnh cấm rõ ràng (cấm sửa test, cấm sửa signature, cấm viết test mới).
+- [ ] AC-2 (post-review B-8.1): Prompt chứa **4 lệnh cấm** rõ ràng (cấm sửa test, cấm sửa signature, cấm viết test mới, **cấm thêm/xóa function**).
 - [ ] AC-3: Prompt chứa quy trình Accumulate & Batch đầy đủ 4 bước.
 - [ ] AC-4: Prompt reference đúng tên tool `submit_coder_outcome` với 2 status (`completed`, `renegotiate_signatures`).
 - [ ] AC-5: `implement-complete-tests.md` không đổi.
@@ -106,3 +111,4 @@ P-1/P-2/P-3 đã có schema, gate rule, và TDD prompt. Slice này tạo prompt 
 - result: `todo`
 - follow-ups: consumed by Task-382.
 - upstream docs updated: `todo`
+- **Post-review notes (B-8.1)**: prompt cập nhật 4 lệnh cấm, bao gồm "cấm thêm/xóa function".

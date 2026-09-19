@@ -9,7 +9,7 @@
 - Owner: `Claude Sonnet MAX`
 - Reviewers: `Claude agent review`
 - Created: `2026-09-18`
-- Last Updated: `2026-09-18`
+- Last Updated: `2026-09-19`
 - Parent Documents: [CP-67 P-1](../../07-Coding-Plan/todo/CP-67-Contract-First-Scaffold-TDD-And-Signature-Lock.md)
 - Child Documents: `None`
 - Related Documents: [SP-06](../../04-System-Principle/SP-06-Oracle-Rule-And-Schema-First-Gate.md), [CP-64](../../07-Coding-Plan/done/CP-64-Reproduce-First-TDD-Gate.md), [Task-379](./Task-379-Signature-Lock-Rule-AST-Extractor.md)
@@ -21,21 +21,23 @@
 
 ### Summary
 
-- Slice đầu tiên của CP-67: tạo 2 Declared Face Tool Schemas (`submit_scaffold_outcome` và `submit_coder_outcome`) đảm bảo mọi kết quả trả về của TDD và Coder đều là typed JSON, không bao giờ parse prose text tự do (SP-06 Tier 1).
+- Slice đầu tiên của CP-67 (P-1): tạo 2 Declared Face Tool Schemas (`submit_scaffold_outcome` và `submit_coder_outcome`) đảm bảo mọi kết quả trả về của TDD và Coder đều là typed JSON, không bao giờ parse prose text tự do (SP-06 Tier 1).
 - `submit_scaffold_outcome`: TDD Agent bàn giao danh sách stubs đã tạo, file test suite, danh sách test cases đang ĐỎ, loại lỗi (not_implemented / assertion_failure).
 - `submit_coder_outcome`: Coder Agent báo hoàn thành (`completed`), yêu cầu đàm phán lại signature (`renegotiate_signatures` kèm mảng batch requests), hoặc bị nghẽn (`blocked`).
+- **Quyết định post-review (B-1/B-2 resolve)**: 2 YAML face này là **harness-declared logical faces** — được đăng ký trong manifest, liệt kê trong flow tools, và **render vào prompt** làm hướng dẫn cho agent. Tuy nhiên, **không wire per-face constant vào 4 provider adapter** (Claude MCP, Codex, Grok, Opencode). Adapter-level exposure vẫn dùng existing `submit_review_outcome` tool + `SubmitFlowControl` bridge. Nếu sau này cần expose `submit_coder_outcome` tool riêng thì thêm slice sau.
 - Slice này chưa wire vào flow nào (P-5 lo); chỉ đảm bảo pack load/validate/render trọn vẹn và schema validation pass.
 
 ### Current Ask
 
-- Implement P-1 theo CP-67 §4: 2 file YAML tool face mới, cập nhật manifest, 2 test signatures phải xanh.
+- Implement P-1 theo CP-67 §4: 2 file YAML tool face mới, cập nhật manifest, **5 test signatures** phải xanh.
 
 ### Key Decisions
 
-- `T-1` Cả 2 tool faces dùng `kind: declared_face`, `mapsTo: flow.control`, `exposesTool: true` — tái sử dụng cơ sở hạ tầng `flow_control` primitive hiện có giống hệt `submit-review-outcome.yaml` (không viết handler mới).
+- `T-1` Cả 2 tool faces dùng `kind: declared_face`, `mapsTo: flow.control`, `exposesTool: true` — tái sử dụng cơ sở hạ tầng `flow_control` primitive hiện có giống hệt `submit-review-outcome.yaml` (không viết handler mới). **Lưu ý post-review**: `exposesTool: true` ở đây là harness-declared logical exposure (render trong prompt), không phải MCP tool constant mới trong adapter. Adapter code vẫn exposes chỉ `submit_review_outcome` (existing).
 - `T-2` `submit_scaffold_outcome` có `statusMap: { scaffold_ready: done, blocked: escalate }`. Payload chứa `stubs` (mảng các symbol khai báo theo file), `test_suite` (file test, danh sách red tests, loại failure). payloadMap forward `stubs` và `test_suite` nguyên dạng vào `payload.*` để hub đọc được structured.
 - `T-3` `submit_coder_outcome` có `statusMap: { completed: done, renegotiate_signatures: continue, blocked: escalate }`. Payload `batch_signature_requests` là mảng object (`symbol`, `file`, `current_signature`, `proposed_signature`, `rationale`) — hub dispatch back-edge khi status=continue. payloadMap forward `batch_signature_requests`, `summary`, `implementation_progress` vào payload.
 - `T-4` Schema validation: `stubs[].symbols[].kind` enum `[function, method, interface, struct, class]`; `test_suite.failure_type` enum `[not_implemented, assertion_failure]`; `batch_signature_requests[].rationale` required (cấm batch rỗng lý do).
+- `T-5` **Canonical term**: status đàm phán là `renegotiate_signatures` (KHÔNG dùng `renegotiate_requested`) — mọi doc/code/test dùng đúng term này; chỗ ghi `renegotiate_requested` trong CP-67 P-5 hiểu là stale alias của cùng concept.
 
 ### Constraints
 
@@ -85,11 +87,16 @@ CP-67 yêu cầu 100% kết quả chuyển giao giữa TDD và Coder phải đi 
   - `batch_signature_requests` (array of objects, required when renegotiate_signatures: `symbol` string required, `file` string required, `current_signature` string required, `proposed_signature` string required, `rationale` string required)
   - `implementation_progress` (string, optional)
   - statusMap: `completed: done`, `renegotiate_signatures: continue`, `blocked: escalate`
-  - payloadMap: `batch_signature_requests: payload.batch_signature_requests`, `summary: summary`, `implementation_progress: payload.implementation_progress`
+  - payloadMap: `batch_signature_requests: payload.batch_signature_requests`, `summary: payload.summary`, `implementation_progress: payload.implementation_progress`
 
 - `T-3` **`internal/agentpack/flow-pack/manifest.yaml`** (modified): thêm 2 file vào danh sách `tools`.
 
-- `T-4` **`internal/agentpack/scaffold_tool_face_test.go`** (new): 2 test signatures.
+- `T-4` **`internal/agentpack/scaffold_tool_face_test.go`** (new): **5 test signatures**:
+  - `TestSubmitScaffoldOutcomeSchemaValidation`
+  - `TestSubmitCoderOutcomeBatchSignatureValidation`
+  - `TestScaffoldOutcomeToolAdvertisedOnScaffoldNode`
+  - `TestCoderOutcomeToolAdvertisedOnImplementNode`
+  - `TestCoderOutcomeChildCallIsRecordOnlyAndBuffered`
 
 ## 5. Touched Areas
 
@@ -109,9 +116,12 @@ CP-67 yêu cầu 100% kết quả chuyển giao giữa TDD và Coder phải đi 
 - [ ] AC-3: `submit_coder_outcome` schema đúng contract: `status` enum 3 giá trị, `batch_signature_requests[].rationale` required.
 - [ ] AC-4: statusMap mapping đúng: `scaffold_ready→done`, `blocked→escalate`, `completed→done`, `renegotiate_signatures→continue`.
 - [ ] AC-5: Tool face hiện có (`submit-review-outcome`, `vibe-requirement-outcome`) không đổi — pre-existing flow không bị ảnh hưởng.
-- [ ] AC-6: 2 test signatures green:
+- [ ] AC-6: **5 test signatures** green:
   - `TestSubmitScaffoldOutcomeSchemaValidation`
   - `TestSubmitCoderOutcomeBatchSignatureValidation`
+  - `TestScaffoldOutcomeToolAdvertisedOnScaffoldNode`
+  - `TestCoderOutcomeToolAdvertisedOnImplementNode`
+  - `TestCoderOutcomeChildCallIsRecordOnlyAndBuffered`
 
 ## 7. Out of Scope
 
@@ -125,3 +135,4 @@ CP-67 yêu cầu 100% kết quả chuyển giao giữa TDD và Coder phải đi 
 - result: `todo`
 - follow-ups: consumed by Task-379/380/381/382.
 - upstream docs updated: `todo`
+- **Post-review notes (B-1/B-2)**: 2 YAML faces là harness-declared logical faces; adapter-level exposure dùng existing `submit_review_outcome` + `SubmitFlowControl` bridge, không wire per-face constant. Nếu sau này cần expose `submit_coder_outcome` tool riêng → thêm slice sau.

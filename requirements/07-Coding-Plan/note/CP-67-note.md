@@ -63,8 +63,9 @@ Sau khi cân nhắc, chúng ta đã thống nhất triển khai **Phương án 1
 
 ## 3. Bảy Trụ Cột Kỹ Thuật Chi Tiết
 
-### Trụ cột 1: Step TDD dùng Model Xịn ("Scaffold & Red Test")
-- Không dùng model rẻ/nhẹ cho TDD. TDD lúc này đóng vai trò là **API Contract Architect** (sử dụng Claude Sonnet 3.7 / Opus, Grok 4.6 Reasoning, Codex).
+### Trụ cột 1: Step TDD dùng Model Xịn ("Scaffold & Red Test") — model set qua flow YAML `model:`
+
+- Không dùng model rẻ/nhẹ cho TDD. TDD lúc này đóng vai trò là **API Contract Architect** (model mặc định là model high-reasoning, ví dụ `claude-sonnet-4-5` — set qua field `model:` trên node trong flow YAML: `task-harness.yaml`/`vibe-sprint.yaml`; admin vẫn có thể override qua `step_definitions` rows — `agentpack/pack.go:1020-1035`).
 - **Nhiệm vụ của TDD**:
   1. **Sinh bộ khung Production Stubs**: Tạo/bổ sung các file production với đầy đủ Struct, Interface, Function signatures (tên, tham số, kiểu trả về). Phần thân hàm bắt buộc là Stub rỗng:
      - *Kotlin / Android*: `fun doAction(param: String): Result = TODO("not implemented")`
@@ -72,19 +73,22 @@ Sau khi cân nhắc, chúng ta đã thống nhất triển khai **Phương án 1
      - *TypeScript*: `export function doAction(param: string): Result { throw new Error("not implemented"); }`
   2. **Sinh Test Suite Hoàn Chỉnh (Executable Red Tests)**: Viết các test cases với assertions đầy đủ gọi vào các hàm stub vừa tạo.
 - **Kết quả khi chạy test**:
-  - **Compile Check**: PASS 100% (Vì các symbol, method đã tồn tại trên đĩa, không bao giờ bị lỗi `undefined symbol`).
-  - **Runtime Test**: Phải CHẠY ĐỎ (RED) 100% do `TODO()` hoặc assertion fail.
+  - **Compile Check**: PASS 100% (do các symbol đã tồn tại trên đĩa, không bao giờ bị lỗi `undefined symbol`).
+  - **Runtime Test**: Phải CHẠY ĐỎ (RED) 100% — enforced vật lý bởi rule `r-scaffold-red` (sau này), không chỉ prompt.
+  - **Detect AI viết body logic thực tế**: Nếu AI tự tiện viết logic nghiệp vụ trong stub (thay vì trả về `nil`/TODO), test sẽ chạy **XANH (GREEN)** → `r-scaffold-red` sẽ fire reprompt yêu cầu AI quay lại viết stub rỗng. Nhờ cơ chế này, TDD step vật lý có thể detect và force AI chỉ giữ lại signature, không được implement body.
 
 ---
 
-### Trụ cột 2: Cổng Khóa Chữ Ký (`r-signature-lock`) bằng Canonical AST Hash
-Làm sao ngăn chặn Coder tự tiện đổi signature?
-- **Khái niệm**: Không băm nguyên cả file (vì Coder phải sửa thân hàm). Thay vào đó, băm **Chữ ký chuẩn hóa (Canonical AST Signatures)**.
+### Trụ cột 2: Cổng Khóa Chữ Ký (`r-signature-lock`) bằng Canonical AST Hash — Signature Hash (chỉ signature, không bao gồm body) (post-review B-8.1)
+
+Làm sao ngăn chặn Coder tự tiện đổi signature, thêm/xóa function?
+
+- **Khái niệm (đổi mới post-review B-8.1)**: Hash **CHỈ SIGNATURE** (function name, params, return types — không bao gồm body). Mọi thay đổi — sửa signature cũ, thêm function mới, xóa function — đều làm hash lệch và phải đi qua batch renegotiation. Không có khái niệm "additive change hợp lệ".
 - **Cơ chế**:
-  1. Runner dùng AST Parser (hoặc LSP Document Symbols từ CP-63) bóc tách toàn bộ khai báo: Function name, Receiver, Param names & types, Return types, Struct/Interface fields.
+  1. Runner dùng AST Parser (Go: `go/parser`; Kotlin/TS: LSP `DocumentSymbols` từ CP-63 — `lsp_client.go` thêm method `DocumentSymbols(filePath)`, fallback regex khi LSP off) bóc tách toàn bộ khai báo: Function name, Receiver, Param names & types, Return types, Struct/Interface fields.
   2. Loại bỏ hoàn toàn khối ruột `{ ... }`.
   3. Sắp xếp alphabet và tính `SHA256(canonical_signatures)` $\rightarrow$ lưu vào `FrozenContractRecord.SignatureHash`.
-- **Kiểm duyệt**: Sau turn của Coder, nếu `Hash_Coder != Hash_TDD` mà Coder không nộp kèm yêu cầu đàm phán hợp lệ $\rightarrow$ Gate `r-signature-lock` chặn đứng ngay lập tức!
+- **Kiểm duyệt**: Sau turn của Coder, nếu `Hash_Coder != Hash_TDD` mà Coder không nộp kèm yêu cầu đàm phán hợp lệ (`CoderRenegotiating=true`, từ payload `submit_coder_outcome.status == renegotiate_signatures` mà runner buffer được) $\rightarrow$ Gate `r-signature-lock` chặn đứng ngay lập tức! Nếu có batch → bypass rule, Main Agent mediate.
 
 ---
 
@@ -94,7 +98,7 @@ Làm sao ngăn chặn Coder tự tiện đổi signature?
   - Test suite đã viết sẵn và đang chạy ĐỎ.
   - File test đã bị khóa `ReadOnlyPaths` (không thể sửa hay weaken).
   - Chữ ký hàm đã bị khóa bởi `r-signature-lock`.
-- Nhiệm vụ duy nhất của Coder: Viết logic nghiệp vụ vào ruột các hàm `{ ... }` sao cho test từ **ĐỎ $\rightarrow$ XANH**.
+- Nhiệm vụ duy nhất của Coder: Viết logic nghiệp vụ vào ruột các hàm `{ ... }` sao cho test từ **ĐỎ $\rightarrow$ XANH**. **Tuyệt đối KHÔNG thêm function mới, KHÔNG xóa function, KHÔNG sửa signature** — mọi nhu cầu thay đổi contract phải đi qua batch renegotiation (Trụ cột 4).
 
 ---
 
@@ -141,10 +145,11 @@ Không bao giờ dùng regex parse văn bản tự do của AI để ra quyết 
 
 ---
 
-### Trụ cột 7: Ngân Sách An Toàn — `cap: 5`
-- Trong cấu hình policy của flow: `cap: 5` (và `onCap: escalate`).
+### Trụ cột 7: Ngân Sách An Toàn — `negotiationCap: 5` (phase-scoped, không dùng chung flow cap)
+
+- Trong cấu hình policy của flow: `policy.negotiationCap: 5` (không dùng chung `cap: 5` của review loop — B-10). Code fallback: 5 nếu không khai.
 - Nhờ cơ chế Gom Batch (Trụ cột 4), thông thường chỉ cần 1 đến 2 vòng đàm phán là giải quyết xong toàn bộ thay đổi kiến trúc.
-- `cap: 5` cung cấp dư địa rộng rãi cho các task phức tạp, đồng thời là chốt chặn chống tốn token nếu hai agent rơi vào vòng lặp bất đồng ý kiến.
+- `negotiationCap: 5` cung cấp dư địa rộng rãi cho các task phức tạp, đồng thời là chốt chặn chống tốn token nếu hai agent rơi vào vòng lặp bất đồng ý kiến. Không extend được (escalate khi vượt).
 
 ---
 
@@ -158,7 +163,7 @@ Không bao giờ dùng regex parse văn bản tự do của AI để ra quyết 
 | **Quyền sửa chữ ký** | Coder tự do đổi signature tùy tiện | **Khóa cứng qua `r-signature-lock` (AST Hash)** |
 | **Xử lý khi cần đổi chữ ký** | Coder tự sửa lén trong file | **Gom BATCH cuối turn gửi Main Agent duyệt** |
 | **Giao tiếp Agent** | Không rõ ràng hoặc text tự do | **100% Typed Tool Schemas qua Main Agent** |
-| **Ngân sách đàm phán** | Không kiểm soát | **Khóa cứng `cap: 5`** |
+| **Ngân sách đàm phán** | Không kiểm soát | **Khóa cứng `negotiationCap: 5` (phase-scoped, không dùng chung flow cap)** |
 
 ---
 
@@ -166,9 +171,46 @@ Không bao giờ dùng regex parse văn bản tự do của AI để ra quyết 
 Tài liệu kế hoạch chi tiết đã được lập tại:
 `requirements/07-Coding-Plan/todo/CP-67-Contract-First-Scaffold-TDD-And-Signature-Lock.md`
 
-Các slice công việc tiếp theo:
-- **P-1**: Xây dựng 2 tool faces `submit_scaffold_outcome` và `submit_coder_outcome`.
-- **P-2**: Viết bộ bóc tách chữ ký chuẩn hóa AST và gate `r-signature-lock`.
-- **P-3**: Viết Prompts và Agent Persona cho Scaffold Architect (TDD).
-- **P-4**: Cập nhật Coder Prompts với hợp đồng "Accumulate & Batch".
-- **P-5**: Cập nhật Topology `task-harness.yaml` và `vibe-sprint.yaml` với loop qua Main Agent (`cap: 5`).
+Các slice công việc tiếp theo (post-review sync B-1/B-2, B-3/B-5, B-4/B-8, B-6/B-7/B-9/B-10, B-8.1/B-8.4, D-1..D-6):
+- **P-1**: Xây dựng 2 tool faces `submit_scaffold_outcome` và `submit_coder_outcome` + đăng ký trong manifest; **wire face tới 4 provider adapter** (Claude MCP, Codex, Grok, Opencode) + expose cho child delegate node (B-1/B-2); harness uses existing `submit_review_outcome` + `SubmitFlowControl` bridge, không wire per-face constant vào adapter (B-2 resolve); 5 test signatures.
+- **P-2**: Viết rule `r-signature-lock` (signature hash (chỉ signature, không bao gồm body) — B-8.1: mọi thêm/xóa/sửa symbol đều fire) + rule `r-scaffold-red` (enforce compile OK + RED test, suppress r-tests/r-reg cho scaffold turn — B-4); `ast_signatures.go` + `DocumentSymbols` vào LSP client (B-8.4); `FrozenContractRecord` + `TurnResult` + `AgentLoopState` mở rộng field; `LockScaffoldArtifacts` single-write (B-8.3); 15 test signatures.
+- **P-2b** (B-11 / Task-383): Static stub-body whitelist + language adapters (Go native, React qua node, Kotlin LSP-anchored, C/C++ tree-sitter sau build tag) + caching + fail-open `Unverified`; land sau P-5; 15 test signatures. Chi tiết §6.
+- **P-3**: Viết Prompts (`scaffold-contract-tdd.md`) và Agent Persona (`scaffold-architect.md`) cho Scaffold Architect (TDD); behavior `agent.scaffold` đăng ký ở agentpack (alias `behaviorAliases`, safety topology writer classification) + runner (behavior_registry, spawnable target, writer classification); model-allowlist mở cho `agent.scaffold` (B-5); bỏ `context_profiles.go` reference (file không tồn tại); 3 test signatures.
+- **P-4**: Cập nhật Coder Prompts (`implement-scaffold-body.md`) với hợp đồng "Accumulate & Batch" + 3 lệnh cấm (không sửa test, không sửa signature, **không thêm/xóa function** — B-8.1); 2 test signatures.
+- **P-5**: Cập nhật Topology `task-harness.yaml` và `vibe-sprint.yaml`: **giữ nguyên node id** (`test_signatures`, `tdd`, `implement`, `coder` — B-7), thêm node `synthesis_negotiation` (B-6), edges negotiation đúng, `policy.negotiationCap: 5` (B-10); `NegotiationRound`/`NegotiationCap` trong loop state; 6 test signatures; `bug-harness`/`rag-harness`/`bug-plan-harness` không đổi.
+- **P-6** (mới): Doc-sync & verification & closeout: tạo `CP-67-Test-Steps.md` (toàn bộ test case + verification commands + live evidence — D-4), viết CA cho mỗi slice, sync upstream SS-14 (AC-21), SS-19 (AC-9, siết AC-2), SS-18, SD-24, SP-06 (precedence), SD-20 (§2.10 r-signature-lock, §2.11 r-scaffold-red, §7 precedence); cập nhật CP-64 doc (flag retire note). 46 test signatures tổng (B-11 — xem §6).
+
+---
+
+## 6. Amendment B-11: Static Stub-Body Whitelist (tín hiệu detect thứ 3)
+
+Post-design review phát hiện lỗ hổng của `r-scaffold-red`: tín hiệu ĐỎ là **necessary-but-not-sufficient** — AI viết body logic nhưng logic sai thì test vẫn ĐỎ → pass gate ("viết body nửa vời may mắn ĐỎ"). Ngoài ra rule `len(Tests.Failed) > 0` cho phép smuggle 90% implementation + 1 test đỏ. B-11 bổ sung:
+
+### 6.1 Ba tín hiệu detect body logic ở scaffold turn
+1. **GREEN** (hiện có): test chạy XANH → body đã implement.
+2. **COMPILE** (hiện có): code không compile.
+3. **STATIC (mới — B-11)**: stub-body whitelist — AST walk kiểm tra thân mọi symbol chỉ chứa dạng stub chuẩn; deterministic, không phụ thuộc kết quả test. Đóng cả lỗ hổng "viết body nửa vời/sai cho test ĐỎ" lẫn nhánh smuggle-90%-green (static bắt mọi body non-stub bất kể kết quả test).
+
+### 6.2 Ma trận adapter 4 nhóm ngôn ngữ (một lần walk → Signature + BodyShape)
+| Ngôn ngữ | Nguồn AST | Chính xác |
+|---|---|---|
+| Go | `go/parser` (stdlib) | Exact |
+| React (TS/TSX/JS/JSX) | `node` + TypeScript Compiler API (`jsx: true`) | Exact |
+| Android Kotlin | LSP `documentSymbol` + `foldingRange` (anchored text) | Near-exact |
+| C/C++ | tree-sitter-c/cpp (build tag `treesitter`); mặc định clangd LSP anchored | Exact syntax-level / Near-exact |
+
+Chain fallback chung: exact parser → LSP-anchored → structured regex → `Unverified` (fail-open + evidence).
+
+### 6.3 Stub convention mở rộng (bổ sung Trụ cột 1)
+- **C**: đúng 1 statement `return` zero-sentinel (`0`, `-1`, `NULL`, `0.0`, `false`) hoặc `assert(0 && "not implemented")`.
+- **C++**: `throw std::runtime_error("not implemented")` / `throw std::logic_error(...)` / `return nullptr` / `return {}`.
+- **React/TS**: `throw new Error("not implemented")` / `=> TODO()`.
+
+Nơi logic trốn (whitelist phải cover): Go (`var` initializer, `init()`); Kotlin (`init {}`, property initializer, default param, companion); TS/React (class field arrow, top-level `const`); C/C++ (macro đa-statement, global initializer, lambda, template body). Macro đa-statement trong DeclaredPaths → flag NonStub; thêm `#include` không tính là symbol change; decl ở `.h` + def ở `.c` dedupe về 1 symbol.
+
+### 6.4 Quyết định vận hành
+- **Caching** theo `(path, mtime, content hash)` — gate mỗi turn chỉ re-parse file đổi.
+- **Fail-open** khi parser không khả dụng: `body_unverified` + evidence, không chặn workflow; parse xong mà non-stub → luôn violation.
+- **Không cgo mặc định**: build `CGO_ENABLED=0` giữ binary tĩnh; build tag `treesitter` opt-in cho exact parser Kotlin/C/C++.
+- **Task split**: P-2a giữ Task-379 (2 rules + extractor interface + Go + LSP signature extraction); Task-383 mới (P-2b) lo static stub-body whitelist + adapters React/Kotlin/C/C++ + build tag + caching, land sau P-5.
+- Tổng test signatures: 28 → **46** (P-2: 15, P-2b: 15).

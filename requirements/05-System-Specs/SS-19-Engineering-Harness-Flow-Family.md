@@ -9,12 +9,12 @@
 - Owner: `FlowPilot`
 - Reviewers: `Operator, Engineering Team`
 - Created: `2026-09-15`
-- Last Updated: `2026-09-15` (added tournament-harness CP-65, reproduce-first CP-64, living-knowledge CP-66)
+- Last Updated: `2026-09-19` (added Contract-First Scaffold TDD CP-67, siết AC-2)
 - Parent Documents: [Product Vision](../01-Vision/Product-vision.md), [SP-02 Workflow-First](../04-System-Principle/SP-02-workflow-first.md), [SS-04 Workflow](./SS-04-Workflow.md), [SS-16 Agent Flow Engine](./SS-16-Agent-Flow-Engine.md)
-- Child Documents: [SD-19 Agent Flow Engine](../06-System-Tech-Design/SD-19-Agent-Flow-Engine.md), [SD-20 Flow Gate Rule Semantics](../06-System-Tech-Design/SD-20-Flow-Gate-Rule-Semantics.md), [CP-58 Bug/Task/CP Harness](../07-Coding-Plan/done/CP-58-Bug-Task-Cp-Harness-Plan-Review-Loop.md), [CP-62 Zcode Harness Parity](../07-Coding-Plan/done/CP-62-Zcode-Harness-Parity.md), [CP-64 Reproduce-First TDD Gate](../07-Coding-Plan/done/CP-64-Reproduce-First-TDD-Gate.md), [CP-65 Multi-Candidate Tournament Harness](../07-Coding-Plan/done/CP-65-Multi-Candidate-Tournament-Harness.md), [CP-66 Living Knowledge Base](../07-Coding-Plan/todo/CP-66-Living-Knowledge-Base-Context-Source.md)
+- Child Documents: [SD-19 Agent Flow Engine](../06-System-Tech-Design/SD-19-Agent-Flow-Engine.md), [SD-20 Flow Gate Rule Semantics](../06-System-Tech-Design/SD-20-Flow-Gate-Rule-Semantics.md), [CP-58 Bug/Task/CP Harness](../07-Coding-Plan/done/CP-58-Bug-Task-Cp-Harness-Plan-Review-Loop.md), [CP-62 Zcode Harness Parity](../07-Coding-Plan/done/CP-62-Zcode-Harness-Parity.md), [CP-64 Reproduce-First TDD Gate](../07-Coding-Plan/done/CP-64-Reproduce-First-TDD-Gate.md), [CP-65 Multi-Candidate Tournament Harness](../07-Coding-Plan/done/CP-65-Multi-Candidate-Tournament-Harness.md), [CP-66 Living Knowledge Base](../07-Coding-Plan/todo/CP-66-Living-Knowledge-Base-Context-Source.md), [CP-67 Contract-First Scaffold TDD & Signature Lock Gate](../07-Coding-Plan/todo/CP-67-Contract-First-Scaffold-TDD-And-Signature-Lock.md)
 - Related Documents: [SS-14 Code Context And Regression Safety](./SS-14-Code-Context-And-Regression-Safety.md), [SS-15 Agent Review Loop](./SS-15-Agent-Review-Loop-Until-Clean.md), [SS-18 Vibe Working Mode](./SS-18-Vibe-Working-Mode.md), [SP-06 Oracle Rule And Schema First Gate](../04-System-Principle/SP-06-Oracle-Rule-And-Schema-First-Gate.md)
 - Replaces: `None`
-- Tags: `harness, agent-flow, flow-definition, pipeline, tdd, review-loop, task-harness, tournament-harness, reproduce-first`
+- Tags: `harness, agent-flow, flow-definition, pipeline, tdd, review-loop, task-harness, tournament-harness, reproduce-first, contract-first-tdd`
 - Feature Keys: `agent-flow-engine, flowgate, zcode-parity, tournament-harness, reproduce-first-gate, living-knowledge-base`
 
 ## AI Quick View
@@ -35,7 +35,7 @@
 ### Key Decisions
 
 - `AC-1` **Closed Topology**: Every harness execution must pass through the mandatory verification and gate stages; steps cannot be skipped.
-- `AC-2` **TDD Mandatory**: Implementation code is never generated without prior test signatures or failing reproduction tests.
+- `AC-2` **TDD Mandatory (siết post-review)**: Implementation code is never generated without prior **full Production Stubs + Executable RED Tests** (compile OK, runtime RED) — not just "test signatures" or "empty test frames". For task-harness: `test_signatures` node generates stubs + red tests via `agent.scaffold` + `scaffold-contract-tdd.md`. For vibe-sprint: `tdd` node generates stubs + red tests similarly. Enforced by `r-scaffold-red` gate (`r-tests`/`r-reg` suppressed for scaffold turn). Legacy empty-signature TDD (`test-signatures.md` + `implement-complete-tests.md`) retained only for rollback/legacy.
 - `AC-3` **Audit Trail & Handoff**: The terminal stage (`audit`) must produce both the commit preparation and the `sprint_handoff.v1` artifact to seed context for subsequent runs.
 - `AC-6` **Reproduce-First Defect Gating**: In bugfix harness topologies, the tester stage must output an executable failing test (`r-reproduce`).
 - `AC-7` **Multi-Candidate Arbitration**: Complex bugs and review stalls resolve via parallel rollout across isolated worktrees scored deterministically by the tournament arbiter.
@@ -82,6 +82,7 @@ Ad-hoc AI coding (such as single-prompt code generation) frequently causes:
 - `AC-6` (Reproduce-First): For `bug-plan-harness`, the TDD stage must produce an executable test that compiles and asserts failure (`r-reproduce`), locking the test read-only during the coder turn.
 - `AC-7` (Tournament Flow & Escalation): `tournament-harness` executes parallel candidates in isolated worktrees. When standard review loops hit `review_cap_exceeded`, the engine automatically transitions to tournament escalation.
 - `AC-8` (Living Knowledge Flow): Planning nodes in all harness flows include `knowledge.flow` in their `contextProfile`.
+- `AC-9` (Contract-First Scaffold TDD, CP-67): For `task-harness` and `vibe-sprint`, the TDD stage (`test_signatures`/`tdd` node) generates full Production Stubs + Executable RED Tests via `agent.scaffold` behavior + `scaffold-contract-tdd.md` prompt. Coder stage (`implement`/`coder` node) fills only body code; signature lock (`r-signature-lock`, signature hash (chỉ signature, không bao gồm body)) + batch renegotiation via `synthesis_negotiation` hub enforced by `r-signature-lock` rule. Ngân sách negotiation: `policy.negotiationCap: 5` (phase-scoped). 100% outcomes use typed tool schemas (`submit_scaffold_outcome`, `submit_coder_outcome`).
 
 ## 6. Definition of Done
 

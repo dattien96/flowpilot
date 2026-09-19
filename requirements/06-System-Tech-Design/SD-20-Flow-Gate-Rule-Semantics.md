@@ -220,6 +220,30 @@ Provider stream (Claude/Codex)
 
 - The `[feature]` contract is now enforced by the runner gate signal as well as the soft `git-commit-format` skill; the ledger's `feature_key` accuracy (and therefore the history-context value, `SS-14 AC-3`) depends on the AI following it. Task-157 promotes it to a runner gate signal (the runner is the source of truth, `SS-14 BR-6`) and feeds a `featurecatalog.SuggestKey` candidate into the reprompt.
 
+
+### 2.10 `r-signature-lock` — signature lock gate (CP-67)
+
+`r-signature-lock` enforces Contract-First Scaffold TDD's signature lock: the coder turn's signature hash (AST, chỉ signature) must match the frozen `SignatureHash` from the TDD stage (`FrozenContractRecord.SignatureHash`).
+
+- **Trigger**: `signature_modified` — computed by the runner as `SignatureHashBefore != SignatureHashAfter`.
+- **Action**: `reprompt` — the coder is reprompted with the diff of signatures that changed.
+- **Bypass**: `CoderRenegotiating=true` — when the coder submits `submit_coder_outcome` with `status=renegotiate_signatures` (batch renegotiation), the violation does NOT fire. The renegotiation is mediated by the `synthesis_negotiation` hub node.
+- **Scope**: applies only to coder turns in `task-harness` / `vibe-sprint` flows where the preceding TDD stage (`test_signatures`/`tdd` node) set `SignatureHash`.
+- **Signature-Only Strict Hash (post-review B-8.1)**: hash computed from canonical **signatures only** (function name, params, return types) of ALL symbols (functions, methods, interfaces, structs, classes) — extracted via full-file AST scan but **excluding all function bodies `{ ... }`**. Any addition, deletion, or modification of ANY symbol's signature triggers the rule. No "additive change" exception.
+- **Provider-path agnostic**: the rule reads `TurnResult` signals, not provider-specific data.
+
+### 2.11 `r-scaffold-red` — scaffold TDD red-test gate (CP-67)
+
+`r-scaffold-red` enforces that the scaffold/TDD turn produces a compile-OK + runtime-RED test suite.
+
+- **Trigger**: `scaffold_not_red` — computed when `Tests.Ran && !ScaffoldCompileFailed && len(Tests.Failed) == 0` (all-green) OR `ScaffoldCompileFailed` (compile error).
+- **Action**: `reprompt` — the TDD agent is reprompted to produce a RED test (assertion failure or not-implemented panic).
+- **Suppression**: `r-tests` and `r-reg` are suppressed for the scaffold turn (pattern identical to `r-reproduce`'s `SuppressTestRules`) — the TDD turn's RED test is expected, so ordinary test-failure rules must not fire.
+- **Evidence**: when the gate passes, the red test names are recorded from `test_suite.red_tests` (submitted via `submit_scaffold_outcome` tool face).
+- **Provider-path agnostic**: the rule reads `TurnResult` signals (`Tests`, `ScaffoldCompileFailed`, `ScaffoldExpected`), not provider-specific data.
+
+**Relationship to `r-reproduce`**: both suppress `r-tests`/`r-reg` for their respective turns, both require compile OK, but `r-reproduce` is for bugfix (existing code, reproduce bug) while `r-scaffold-red` is for feature/Task (new code, scaffold + red test from scratch).
+
 ## 3. Enforcement resolution & UX
 
 `Enforce` (`enforce.go`) collapses all violations into one result:
@@ -289,6 +313,8 @@ Until one of these lands, treat per-turn full-suite execution as a known cost, d
 - `SD-17 D-12` (pre-existing tests always block) → `D-2`, §2.3/§2.4.
 - `SS-14 AC-6` (oracle integrity) → §2.4, §3 (no test-weakening), §2.8.
 - `SS-14 AC-11` (force required outputs) → §2, §3.
+- `SS-14 AC-21` (Contract-First Scaffold TDD, CP-67) → §2.10 (`r-signature-lock`), §2.11 (`r-scaffold-red`).
+- `SS-19 AC-9` (Contract-First Scaffold TDD) → §2.10, §2.11.
 - New: regression performance trade-off → §5 (`D-6`, `Q-1`).
 - Planned hardening: `Task-155` (regression decision card) → `D-3`, §2.4, §3; `Task-156` (polyglot signal + baseline cost) → `D-4`, `D-6`, §2.3, §2.4, §4, §5, `Q-1`, `Q-2`; `Task-157` (feature-key gate) → §2.9, `Q-4`.
 
@@ -299,6 +325,8 @@ Four systems share the prompt/loop — the flowgate rules (§2), the CP-23 drift
 | Tier | Signal | Route | Notes |
 |---|---|---|---|
 | 1 | Requirement-class (`r-requirement` / signature drift) | `user` — user-only block | Never owner-resolved (`SS-18 BR-4`); wins even over drift 80+. |
+| 1b | `r-scaffold-red` (CP-67) | `reprompt` | Scaffold/TDD turn must produce compile-OK + RED test; suppresses `r-tests`/`r-reg`. |
+| 1c | `r-signature-lock` (CP-67) | `reprompt` | Coder turn signature hash must match frozen `SignatureHash`; bypass on renegotiation (`CoderRenegotiating=true`). |
 | 2 | Drift score ≥ 80 on a `working_mode=vibe` run | `owner_debate` | Fires even on a clean gate; never the deferred dev pause path. Dev mode: unchanged (Task-335 ladder owns it). |
 | 3 | `r-dod-complete` (block-or-explained) | settled first in evaluation order | On a shared turn, the DOD checklist settles before the requirement block lands; requirement still wins the final route. |
 | 4 | Other block/reprompt rules in vibe | `owner_debate` | Today's semantics, now explicit. Warn-only results stay passthrough. |
