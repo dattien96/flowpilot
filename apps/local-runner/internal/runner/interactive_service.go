@@ -88,6 +88,12 @@ type InteractiveService struct {
 	// fakes here; production falls back to lsp.DefaultSet().
 	lspChecker lspChecker
 
+	// scaffoldDispatcherFactory overrides scaffold-dispatcher construction
+	// (CP-68 / Task-385). Nil means the production wiring,
+	// NewScaffoldDispatcher(s.runner); tests inject a dispatcher backed by a fake
+	// prompt executor so no real provider CLI is ever spawned.
+	scaffoldDispatcherFactory func() *ScaffoldDispatcher
+
 	// dispatchLogSyncMu guards dispatchLogSyncHash, kept separate from the main
 	// s.mu since a Drive upload is slow network I/O unrelated to run-state locking.
 	// dispatchLogSyncHash caches the sha256 of the last successfully-uploaded
@@ -5466,21 +5472,21 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 			s.agentOrchestrator.signalChild(rs.id, finalMsg, false, "", RunStatusCompleted)
 			s.settleFlowChildTurnCompletedLocked(rs, finalMsg, ev)
 		} else if !rs.turnStartedAfterLoopDone {
-		// Root: defer Completed until post-turn gate when the turn touched
-		// code. Plain chat previously published Completed immediately even
-		// when code changed, so dispatch settle saw Completed and returned
-		// allow:true before the gate queued its reprompt — UI stalled at
-		// one auto-reprompt line (run-208282). Arming the same pending gate
-		// contract as children/flow roots makes settle wait for the real
-		// disposition. Plain turns without code (e.g. "hi") still complete
-		// immediately to preserve the original 3-event shape.
-		// V10 residual (TestRootFlowEngineDefersCompletedUntilGate): a
-		// flow-engine-driven root defers even without code events — its
-		// completion fans out to flow children/siblings, so publishing
-		// Completed before the gate would release dependents early, the
-		// same race the children branch above closes. resumePendingFlowGate
-		// already handles roots (V10 P0), so the armed state is resumable.
-		hasCode := rs.flowEngineDriven
+			// Root: defer Completed until post-turn gate when the turn touched
+			// code. Plain chat previously published Completed immediately even
+			// when code changed, so dispatch settle saw Completed and returned
+			// allow:true before the gate queued its reprompt — UI stalled at
+			// one auto-reprompt line (run-208282). Arming the same pending gate
+			// contract as children/flow roots makes settle wait for the real
+			// disposition. Plain turns without code (e.g. "hi") still complete
+			// immediately to preserve the original 3-event shape.
+			// V10 residual (TestRootFlowEngineDefersCompletedUntilGate): a
+			// flow-engine-driven root defers even without code events — its
+			// completion fans out to flow children/siblings, so publishing
+			// Completed before the gate would release dependents early, the
+			// same race the children branch above closes. resumePendingFlowGate
+			// already handles roots (V10 P0), so the armed state is resumable.
+			hasCode := rs.flowEngineDriven
 			for _, e := range rs.events {
 				if e.Type == EventFileChanged && e.Path != "" && !flowgate.IsDocOrAuditFile(e.Path) {
 					hasCode = true

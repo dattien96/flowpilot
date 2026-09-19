@@ -5,12 +5,12 @@
 - Document ID: `Task-385`
 - Title: `TUI Single-Command Init & Desktop UI Adaptive Scaffold Trigger`
 - Phase: `task`
-- Status: `todo`
+- Status: `done`
 - Owner: `FlowPilot Architecture`
 - Reviewers: `Operator, Claude Sonnet MAX`
 - Created: `2026-09-18`
 - Last Updated: `2026-09-19`
-- Parent Documents: [CP-68 P-3](../../07-Coding-Plan/todo/CP-68-Skill-Anchored-Scaffold-And-AI-Guided-Init.md)
+- Parent Documents: [CP-68 P-3](../../07-Coding-Plan/done/CP-68-Skill-Anchored-Scaffold-And-AI-Guided-Init.md)
 - Child Documents: `None`
 - Related Documents: [Task-383](../todo/Task-383-Platform-Scaffold-Recipe-Discovery-And-Skill-Integrity-Validator.md), [Task-384](../todo/Task-384-Runner-Scaffold-Dispatcher-And-AI-Turn-Orchestration.md), [Task-386](../todo/Task-386-Compiler-Verification-Gate-And-Self-Healing-Loop.md)
 - Replaces: `None`
@@ -133,6 +133,8 @@ User chỉ cần gõ `/init` trong TUI để chạy init (tự kèm AI Scaffold 
 
 ## 8. Completion Notes
 
-- result: pending
-- follow-ups: Task-386
-- upstream docs updated: None
+- result: Implemented per the single-command design. `init_suggestions.go` untouched (picker stays `skill` | `all`); `init_engine.go` auto-triggers the scaffold after a successful `/init` with kind `all` (bare `/init` normalizes to `all`), logging exactly `scaffold: skipped (no verified recipe)` when not capable; `/init skill` never calls AI. Runner: `scaffold_handler.go` with `GET /client/projects/{projectId}/scaffold/status` (`{projectId, platform, capable, recipe, missingSkills, verificationCommand, scaffoldStatus}` — Desktop hides the option entirely when `capable:false`) and `POST /client/projects/{projectId}/scaffold` (200 for done/skipped/error; 4xx/5xx only for malformed requests / unavailable runner; provider defaults from the registry, platform defaults from the catalog). Desktop passive trigger: `handleCreateProject` → `autoTriggerScaffold` (async, non-blocking, no-op for non-capable platforms) layered on the CA-890 hook. TUI client: `DispatchScaffold` (60-minute budget — longer than InitEngine's 5 minutes) + `ScaffoldStatus`.
+- tests: `scaffold_handler_test.go` — 7 additive tests (capability surface, catalog fallback, replay-status readout, dispatch done/skip/provider-defaults/400/failure-as-payload, create-project auto-trigger + vuejs skip); `init_engine_test.go` (TUI) — 5 additive tests (no `scaffold` picker row, auto-trigger for react-native, graceful skip for vuejs, `/init skill` never calls AI, failure rendering, bare-`/init` normalization).
+- note: two pre-existing `internal/tui/app` failures (`TestPostDoneFollowUp_StepsPollInSendGapDoesNotSettle`, `TestApprovalBarAndStopAreClickable`) reproduce identically on the clean base commit (verified via a throwaway worktree at 0555a8d5) and are unrelated to this change; left untouched per the additive-tests-only contract.
+- follow-ups: None (Task-386 landed in the same commit).
+- upstream docs updated: `CA-892`.

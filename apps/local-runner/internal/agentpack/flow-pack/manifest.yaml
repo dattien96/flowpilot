@@ -114,6 +114,8 @@ prompts:
   - prompts/vibe-ss-validate.md
   - prompts/vibe-cp-from-ss.md
   - prompts/vibe-cp-validate.md
+  # CP-68 (Task-384 T-1): Zero-Prompt Injection template for the AI Scaffold Turn.
+  - prompts/scaffold-step0-bootstrap.md
 compatibility:
   minRunnerVersion: TBD
   fallbackToGoBuiltins: true

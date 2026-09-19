@@ -39,6 +39,11 @@ func (s *InteractiveService) RegisterInteractiveRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /client/engine/tooling/install/libretranslate", s.handleInstallLibreTranslate)
 	mux.HandleFunc("GET /client/projects/{projectId}/engine/status", s.handleGetEngineStatus)
 	mux.HandleFunc("POST /client/projects/{projectId}/engine/init", s.handleInitEngine)
+	// CP-68 (Task-385 T-3): Single-command init's AI Scaffold surfaces. Status is
+	// read by Desktop to hide the option entirely when the platform is not
+	// capable; dispatch runs the recipe-gated scaffold turn.
+	mux.HandleFunc("GET /client/projects/{projectId}/scaffold/status", s.handleScaffoldStatus)
+	mux.HandleFunc("POST /client/projects/{projectId}/scaffold", s.handleDispatchScaffold)
 	mux.HandleFunc("GET /client/projects/{projectId}/engine/gate-config", s.handleGetEngineGateConfig)
 	mux.HandleFunc("POST /client/projects/{projectId}/engine/gate-config", s.handleSetEngineGateConfig)
 	mux.HandleFunc("GET /client/projects/{projectId}/engine/approval-allowlist", s.handleGetApprovalAllowlist)
@@ -162,10 +167,25 @@ func (s *InteractiveService) handleCreateProject(w http.ResponseWriter, r *http.
 		writeInteractiveError(w, newAPIErr(http.StatusInternalServerError, "create_project_failed", err.Error()))
 		return
 	}
-	// Auto-init project engine (scaffold requirements/, install skills, gate config, git hook)
-	// when the project directory path is accessible locally on the runner host.
-	if dir, resolveErr := s.resolveEngineWorkingDirectory(input.DirectoryPath); resolveErr == nil && dir != "" {
+	// CP-68: passive Desktop scaffold trigger + boundary gate. A relative
+	// directory that climbs out of the runner's visible tree is rejected with the
+	// same 400 the engine endpoints use — the project row exists (created above),
+	// but neither engine init nor any AI turn touches the escaped path. A crafted
+	// platform that names a nonexistent recipe can never authorize writes
+	// elsewhere: the recipe gate requires a verified scaffold.yaml, and the
+	// dispatcher itself rejects out-of-boundary workspaces before any prompt.
+	dir, resolveErr := s.resolveEngineWorkingDirectory(input.DirectoryPath)
+	if resolveErr == nil && dir != "" {
+		// Auto-init project engine (scaffold requirements/, install skills, gate config, git hook)
+		// when the project directory path is accessible locally on the runner host.
 		s.runEngineInit(project.ID, dir, input.Platform, engineInitTriggerBind, "all")
+		// Async — project creation must not block on an AI turn plus a package install —
+		// and a platform without a verified recipe is skipped without any AI call.
+		s.autoTriggerScaffold(project.ID, dir, input.Platform, input.DefaultModel)
+	}
+	if resolveErr != nil {
+		writeInteractiveError(w, resolveErr)
+		return
 	}
 	writeInteractiveJSON(w, http.StatusCreated, project)
 }

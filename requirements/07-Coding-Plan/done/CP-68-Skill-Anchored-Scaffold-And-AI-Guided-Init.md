@@ -5,13 +5,13 @@
 - Document ID: `CP-68`
 - Title: `Skill-Anchored Project Scaffolding & AI-Guided Init Engine`
 - Phase: `coding_plan`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot Architecture`
 - Reviewers: `Claude Sonnet MAX, Operator`
 - Created: `2026-09-18`
 - Last Updated: `2026-09-19`
 - Parent Documents: [SS-14: Code Context And Regression Safety](../../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md), [SD-17: Context And Regression Engine](../../06-System-Tech-Design/SD-17-Context-And-Regression-Engine.md), [SS-20: Definition Of Done Gate Contract](../../05-System-Specs/SS-20-Definition-Of-Done-Gate-Contract.md)
-- Child Documents: [Task-383: Platform Scaffold Recipe Discovery & Skill Integrity Validator](../../08-Task/todo/Task-383-Platform-Scaffold-Recipe-Discovery-And-Skill-Integrity-Validator.md) (P-1), [Task-384: Runner Scaffold Dispatcher & AI Turn Orchestration](../../08-Task/todo/Task-384-Runner-Scaffold-Dispatcher-And-AI-Turn-Orchestration.md) (P-2), [Task-385: TUI Single-Command Init & Desktop UI Adaptive Scaffold Trigger](../../08-Task/todo/Task-385-TUI-Subcommand-And-Desktop-UI-Adaptive-Scaffold-Trigger.md) (P-3), [Task-386: Compiler Verification Gate & Self-Healing Loop](../../08-Task/todo/Task-386-Compiler-Verification-Gate-And-Self-Healing-Loop.md) (P-4)
+- Child Documents: [Task-383: Platform Scaffold Recipe Discovery & Skill Integrity Validator](../../08-Task/done/Task-383-Platform-Scaffold-Recipe-Discovery-And-Skill-Integrity-Validator.md) (P-1), [Task-384: Runner Scaffold Dispatcher & AI Turn Orchestration](../../08-Task/done/Task-384-Runner-Scaffold-Dispatcher-And-AI-Turn-Orchestration.md) (P-2), [Task-385: TUI Single-Command Init & Desktop UI Adaptive Scaffold Trigger](../../08-Task/done/Task-385-TUI-Subcommand-And-Desktop-UI-Adaptive-Scaffold-Trigger.md) (P-3), [Task-386: Compiler Verification Gate & Self-Healing Loop](../../08-Task/done/Task-386-Compiler-Verification-Gate-And-Self-Healing-Loop.md) (P-4)
 - Related Documents: [CP-34: Init / Setup Tool](../done/CP-34-Init-tool.md), [CP-60: Vibe Working Mode](../done/CP-60-Vibe-Working-Mode.md), [CP-67: Contract-First Scaffold TDD & Signature Lock Gate](./CP-67-Contract-First-Scaffold-TDD-And-Signature-Lock.md)
 - Replaces: `None`
 - Tags: `init, scaffold, skillpack, template, react-native, compiler-gate, local-runner, tui, desktop`
@@ -235,9 +235,9 @@ Chuyển đổi lệnh `init` của FlowPilot từ một tác vụ sao chép fil
 
 ## 10. Definition of Done
 
-- [ ] 4 Skill nền tảng (`scaffold-bootstrap`, `mobile-plumbing`, `core-ui-tokens`, `screen-archetypes`) được nhúng và đồng bộ trong `flow-pack/react-native/` (Đã hoàn thành ở bước trước).
-- [ ] Runner có endpoint hoặc handler nội bộ tiếp nhận lệnh Scaffold Turn và gắn kèm skill tự động.
-- [ ] Single `/init`: lệnh `/init` (bare / `/init all`) chạy luồng init hiện có rồi tự trigger Scaffold Turn khi platform capable; Tab completion giữ nguyên `skill`/`all`, KHÔNG có subcommand `scaffold` mới.
-- [ ] Auto-run áp dụng cho cả TUI và Desktop; platform không capable (thiếu manifest hoặc thiếu skill) thì bỏ qua nhánh scaffold an toàn.
-- [ ] Compiler Verification Gate xác thực thành công mã nguồn được sinh ra với `pnpm tsc --noEmit`.
-- [ ] Toàn bộ unit test liên quan trong `local-runner` đều PASS.
+- [x] 4 Skill nền tảng (`scaffold-bootstrap`, `mobile-plumbing`, `core-ui-tokens`, `screen-archetypes`) được nhúng và đồng bộ trong `flow-pack/react-native/` (Đã hoàn thành ở bước trước).
+- [x] Runner có endpoint hoặc handler nội bộ tiếp nhận lệnh Scaffold Turn và gắn kèm skill tự động.
+- [x] Single `/init`: lệnh `/init` (bare / `/init all`) chạy luồng init hiện có rồi tự trigger Scaffold Turn khi platform capable; Tab completion giữ nguyên `skill`/`all`, KHÔNG có subcommand `scaffold` mới.
+- [x] Auto-run áp dụng cho cả TUI và Desktop; platform không capable (thiếu manifest hoặc thiếu skill) thì bỏ qua nhánh scaffold an toàn.
+- [x] Compiler Verification Gate xác thực thành công mã nguồn được sinh ra với `pnpm tsc --noEmit`.
+- [x] Toàn bộ unit test liên quan trong `local-runner` đều PASS.

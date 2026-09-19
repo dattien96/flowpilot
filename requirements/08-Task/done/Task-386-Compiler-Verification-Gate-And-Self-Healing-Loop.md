@@ -5,12 +5,12 @@
 - Document ID: `Task-386`
 - Title: `Compiler Verification Gate & Self-Healing Loop`
 - Phase: `task`
-- Status: `todo`
+- Status: `done`
 - Owner: `FlowPilot Architecture`
 - Reviewers: `Operator, Claude Sonnet MAX`
 - Created: `2026-09-18`
-- Last Updated: `2026-09-18`
-- Parent Documents: [CP-68 P-4](../../07-Coding-Plan/todo/CP-68-Skill-Anchored-Scaffold-And-AI-Guided-Init.md)
+- Last Updated: `2026-09-19`
+- Parent Documents: [CP-68 P-4](../../07-Coding-Plan/done/CP-68-Skill-Anchored-Scaffold-And-AI-Guided-Init.md)
 - Child Documents: `None`
 - Related Documents: [Task-383](../todo/Task-383-Platform-Scaffold-Recipe-Discovery-And-Skill-Integrity-Validator.md), [Task-384](../todo/Task-384-Runner-Scaffold-Dispatcher-And-AI-Turn-Orchestration.md), [Task-385](../todo/Task-385-TUI-Subcommand-And-Desktop-UI-Adaptive-Scaffold-Trigger.md)
 - Replaces: `None`
@@ -150,6 +150,8 @@ Mã nguồn do AI sinh ra ở Step 0 cần có một "quan tòa khách quan" (Or
 
 ## 8. Completion Notes
 
-- result: pending
-- follow-ups: None (Hoàn tất chuỗi 4 tasks của CP-68)
-- upstream docs updated: None
+- result: Implemented. `internal/runner/compiler_gate.go` runs the recipe command through `sh -c` (`cmd /c` on Windows) pinned to the workspace with the parent env inherited, a per-attempt timeout (recipe `timeout_seconds`, default 300s) and a `WaitDelay` guard against hung grandchildren. Fail-closed: `Passed` is true only on exit 0; timeout and "cannot start" are surfaced as non-healable results so a stalled `pnpm install` never burns AI repair turns. `parseCompilerErrors` extracts bounded, de-duplicated `file:line` + `error TSxxxx` diagnostics (rune-safe truncation). Integrated at the end of `ScaffoldDispatcher.Dispatch` (Task-384): pass ⇒ write `.flowpilot/scaffold-status.json` (replay guard, CP-68 §6); fail ⇒ structured `[Compiler Gate Thất Bại]` feedback turn with the same attached skills, at most `cap` gate attempts; over cap ⇒ error result with the full log for human intervention.
+- tests: `compiler_gate_test.go` — 7 additive tests (success, failing chain with TS2307 extraction + noise filtering, timeout cancellation, working-dir + env inheritance, empty-command config error, parse filter/dedupe, rune-safe line cap); plus the heal/cap/timeout dispatch scenarios in `scaffold_dispatcher_test.go`.
+- note: `cap` is the number of gate attempts (1 initial scaffold turn + cap−1 repair turns), so no repair turn is wasted after the final failed verification.
+- follow-ups: None (CP-68 complete).
+- upstream docs updated: `CA-892`.

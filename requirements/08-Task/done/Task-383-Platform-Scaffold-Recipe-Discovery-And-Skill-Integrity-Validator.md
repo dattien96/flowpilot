@@ -5,11 +5,11 @@
 - Document ID: `Task-383`
 - Title: `Platform Scaffold Recipe Discovery & Skill Integrity Validator`
 - Phase: `task`
-- Status: `todo`
+- Status: `done`
 - Owner: `FlowPilot Architecture`
 - Reviewers: `Operator, Claude Sonnet MAX`
 - Created: `2026-09-18`
-- Last Updated: `2026-09-18`
+- Last Updated: `2026-09-19`
 - Parent Documents: [CP-68 P-1](../../07-Coding-Plan/todo/CP-68-Skill-Anchored-Scaffold-And-AI-Guided-Init.md)
 - Child Documents: `None`
 - Related Documents: [Task-384](../todo/Task-384-Runner-Scaffold-Dispatcher-And-AI-Turn-Orchestration.md), [Task-385](../todo/Task-385-TUI-Subcommand-And-Desktop-UI-Adaptive-Scaffold-Trigger.md), [Task-386](../todo/Task-386-Compiler-Verification-Gate-And-Self-Healing-Loop.md)
@@ -137,6 +137,8 @@ Cần một cơ chế độc lập trong tầng Skillpack để Runner và UI c�
 
 ## 8. Completion Notes
 
-- result: pending
-- follow-ups: Task-384
-- upstream docs updated: None
+- result: Implemented. `internal/skillpack/scaffold_recipe.go` ships `ScaffoldRecipe`/`VerificationGateConfig` (yaml+json tags), `LoadScaffoldRecipe` (reads `flowPackFS`, graceful `(nil,false,nil)` on missing/malformed manifest), `VerifyRecipeSkills` (platform-scoped `SKILL.md` integrity check) and `HasScaffoldCapability`. `skillsForPlatform` untouched; `scaffold.yaml` is never treated as a skill (react-native stays 23 skills).
+- tests: `scaffold_recipe_test.go` — 8 additive tests (react-native recipe contract incl. 4 skills + gate `pnpm install && pnpm tsc --noEmit`/300s/cap 3, missing-platform matrix vuejs/ruby/unknown/empty/none, normalization, integrity pass, missing-skill near-miss, cross-platform guard, capability boolean matrix, install-path regression). `go test ./internal/skillpack/...` PASS (21 tests).
+- deps: `gopkg.in/yaml.v3 v3.0.1` promoted from go.sum to a direct `go.mod` require (module cache only, no network).
+- follow-ups: Task-384 (implemented in the same commit).
+- upstream docs updated: `CA-892`.

@@ -201,7 +201,31 @@ func (s *InteractiveService) resolveEngineWorkingDirectory(value string) (string
 	}
 
 	resolved = strings.TrimSpace(filepath.Clean(resolved))
+	if !filepath.IsAbs(strings.TrimSpace(value)) && escapesProcessCwd(resolved) {
+		return "", newAPIErr(http.StatusBadRequest, "working_directory_outside_boundary", "workingDirectory escapes the runner workspace boundary")
+	}
 	return resolved, nil
+}
+
+// escapesProcessCwd reports whether an already-absolute, cleaned path points
+// outside the process working directory. It only applies to originally-relative
+// inputs: a relative path containing ".." can climb out of wherever the runner
+// happens to run, while absolute paths are explicit operator intent.
+
+// escapesProcessCwd reports whether an absolute, cleaned path escapes the
+// process working directory. The check uses the same ".."-prefix semantics as
+// isSameOrWithinPath below; it exists so the scaffold dispatcher and the engine
+// init endpoints reject relative workspaces that climb out before executing.
+func escapesProcessCwd(absolute string) bool {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(strings.TrimSpace(filepath.Clean(cwd)), absolute)
+	if err != nil {
+		return false
+	}
+	return rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 func (s *InteractiveService) buildEngineStatusResponse(

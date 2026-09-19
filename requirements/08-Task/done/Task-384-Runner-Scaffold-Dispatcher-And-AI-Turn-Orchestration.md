@@ -5,12 +5,12 @@
 - Document ID: `Task-384`
 - Title: `Runner Scaffold Dispatcher & AI Turn Orchestration`
 - Phase: `task`
-- Status: `todo`
+- Status: `done`
 - Owner: `FlowPilot Architecture`
 - Reviewers: `Operator, Claude Sonnet MAX`
 - Created: `2026-09-18`
-- Last Updated: `2026-09-18`
-- Parent Documents: [CP-68 P-2](../../07-Coding-Plan/todo/CP-68-Skill-Anchored-Scaffold-And-AI-Guided-Init.md)
+- Last Updated: `2026-09-19`
+- Parent Documents: [CP-68 P-2](../../07-Coding-Plan/done/CP-68-Skill-Anchored-Scaffold-And-AI-Guided-Init.md)
 - Child Documents: `None`
 - Related Documents: [Task-383](../todo/Task-383-Platform-Scaffold-Recipe-Discovery-And-Skill-Integrity-Validator.md), [Task-385](../todo/Task-385-TUI-Subcommand-And-Desktop-UI-Adaptive-Scaffold-Trigger.md), [Task-386](../todo/Task-386-Compiler-Verification-Gate-And-Self-Healing-Loop.md)
 - Replaces: `None`
@@ -137,6 +137,8 @@ Cần một tầng trung gian giữa lệnh kích hoạt (TUI/Desktop) và LLM R
 
 ## 8. Completion Notes
 
-- result: pending
-- follow-ups: Task-385, Task-386
-- upstream docs updated: None
+- result: Implemented. `internal/runner/scaffold_dispatcher.go` ships `ScaffoldDispatcher.Dispatch` with an injectable `ScaffoldPromptExecutor` seam (production: `Runner.ExecutePrompt` — one-shot, synchronous, provider-agnostic across claude/codex/gemini/grok/opencode via `resolvePromptExecutionAdapter`; the recipe's `SkillIds` resolve to the skills init installed in `<workspace>/.agents/skills`, giving the Context Profile for free). Graceful ignore is preserved: no recipe / disabled / missing skills / already scaffolded ⇒ `Status:"skipped"` with **zero AI calls**. Prompt: `prompts/scaffold-step0-bootstrap.md` (registered in `flow-pack/manifest.yaml`), rendered via `text/template` with platform/workspace/skills/gate-command.
+- posture: write-enabled + YOLO by construction (`AllowWrite: true, YoloMode: true`, 30-minute turn budget) — scaffold turns are generation turns; the compiler gate (Task-386) is the safety net, not a permission prompt.
+- tests: `scaffold_dispatcher_test.go` — 14 additive tests incl. the real recipe + real prompt template with a recording executor (no real LLM), `injectSkillContent` Context Profile resolution, heal/cap/timeout matrix, replay guard, nil-runner and missing-template degradation.
+- follow-ups: Task-385, Task-386 (implemented in the same commit).
+- upstream docs updated: `CA-892`.
