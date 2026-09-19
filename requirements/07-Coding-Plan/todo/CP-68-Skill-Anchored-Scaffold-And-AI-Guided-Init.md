@@ -9,9 +9,9 @@
 - Owner: `FlowPilot Architecture`
 - Reviewers: `Claude Sonnet MAX, Operator`
 - Created: `2026-09-18`
-- Last Updated: `2026-09-18`
+- Last Updated: `2026-09-19`
 - Parent Documents: [SS-14: Code Context And Regression Safety](../../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md), [SD-17: Context And Regression Engine](../../06-System-Tech-Design/SD-17-Context-And-Regression-Engine.md), [SS-20: Definition Of Done Gate Contract](../../05-System-Specs/SS-20-Definition-Of-Done-Gate-Contract.md)
-- Child Documents: [Task-383: Platform Scaffold Recipe Discovery & Skill Integrity Validator](../../08-Task/todo/Task-383-Platform-Scaffold-Recipe-Discovery-And-Skill-Integrity-Validator.md) (P-1), [Task-384: Runner Scaffold Dispatcher & AI Turn Orchestration](../../08-Task/todo/Task-384-Runner-Scaffold-Dispatcher-And-AI-Turn-Orchestration.md) (P-2), [Task-385: TUI Subcommand & Desktop UI Adaptive Scaffold Trigger](../../08-Task/todo/Task-385-TUI-Subcommand-And-Desktop-UI-Adaptive-Scaffold-Trigger.md) (P-3), [Task-386: Compiler Verification Gate & Self-Healing Loop](../../08-Task/todo/Task-386-Compiler-Verification-Gate-And-Self-Healing-Loop.md) (P-4)
+- Child Documents: [Task-383: Platform Scaffold Recipe Discovery & Skill Integrity Validator](../../08-Task/todo/Task-383-Platform-Scaffold-Recipe-Discovery-And-Skill-Integrity-Validator.md) (P-1), [Task-384: Runner Scaffold Dispatcher & AI Turn Orchestration](../../08-Task/todo/Task-384-Runner-Scaffold-Dispatcher-And-AI-Turn-Orchestration.md) (P-2), [Task-385: TUI Single-Command Init & Desktop UI Adaptive Scaffold Trigger](../../08-Task/todo/Task-385-TUI-Subcommand-And-Desktop-UI-Adaptive-Scaffold-Trigger.md) (P-3), [Task-386: Compiler Verification Gate & Self-Healing Loop](../../08-Task/todo/Task-386-Compiler-Verification-Gate-And-Self-Healing-Loop.md) (P-4)
 - Related Documents: [CP-34: Init / Setup Tool](../done/CP-34-Init-tool.md), [CP-60: Vibe Working Mode](../done/CP-60-Vibe-Working-Mode.md), [CP-67: Contract-First Scaffold TDD & Signature Lock Gate](./CP-67-Contract-First-Scaffold-TDD-And-Signature-Lock.md)
 - Replaces: `None`
 - Tags: `init, scaffold, skillpack, template, react-native, compiler-gate, local-runner, tui, desktop`
@@ -24,8 +24,9 @@
 ### Summary
 
 - Trước đây, lệnh `/init` (CP-34) chỉ thực hiện sao chép tĩnh các file skill từ embedded `flow-pack` sang thư mục `.agents/skills` của project mục tiêu, không có khả năng sinh mã nguồn hoặc dựng khung dự án (Step 0) thực tế.
-- CP-68 nâng cấp toàn diện luồng `init` (chạy cả chủ động qua TUI `/init` và bị động khi tạo project mới trên Desktop) thành **Skill-Anchored AI Scaffold Flow**: Runner tự động nhận diện `platform`, cài đặt bộ kỹ năng chuyên dụng (`react-native-scaffold-bootstrap`, `react-native-mobile-plumbing`, `react-native-core-ui-tokens`), và tự động kích hoạt một lượt AI Turn chuyên trách nhiệm dựng khung.
+- CP-68 nâng cấp toàn diện luồng `init` (chạy cả chủ động qua TUI `/init` và bị động khi tạo project mới trên Desktop) thành **Skill-Anchored AI Scaffold Flow**: Runner tự động nhận diện `platform`, cài đặt bộ kỹ năng chuyên dụng (`react-native-scaffold-bootstrap`, `react-native-mobile-plumbing`, `react-native-core-ui-tokens`, `react-native-screen-archetypes`), và tự động kích hoạt một lượt AI Turn chuyên trách nhiệm dựng khung.
 - Runner tự động đính kèm (auto-attach) các skills nền tảng vào lượt gọi AI mà **người dùng không cần phải gõ `@mention` hay chỉ dẫn thủ công**.
+- **Một lệnh `/init` duy nhất (Single Command):** Không thêm subcommand `scaffold` — `/init` (bare / `/init all`) chạy nguyên luồng init hiện có (cài skill, ledger, catalog) rồi tự kiểm tra manifest `flow-pack/<platform>/scaffold.yaml` + tính đầy đủ của `scaffold_skills` để quyết định trigger AI Scaffold Turn trên **cả TUI và Desktop**; thiếu manifest hoặc thiếu skill → bỏ qua an toàn nhánh scaffold.
 - Thiết lập **Compiler Verification Gate** (`pnpm tsc --noEmit`, `go vet`, `./gradlew check`) làm chốt chặn Oracle bắt buộc: project sinh ra phải đạt trạng thái biên dịch sạch 100% (Zero Compile Error) mới được coi là `init` hoàn tất và sẵn sàng bước vào `vibe-sprint`.
 
 ### Current Ask
@@ -33,7 +34,7 @@
 - Xây dựng 4 lát cắt kỹ thuật (P-1 đến P-4) để chuyển hóa lệnh `init`:
   - `P-1`: Bổ sung và đồng bộ các Blueprint Skills vào catalog `flow-pack` của từng platform (bắt đầu với React Native).
   - `P-2`: Xây dựng Runner Scaffold Orchestrator (`InitScaffoldDispatch`) chịu trách nhiệm chuẩn bị ngữ cảnh và khởi tạo AI Turn.
-  - `P-3`: Tích hợp trải nghiệm người dùng trên TUI (`/init scaffold` / `/init all`) và Desktop UI (khi bấm Create Project).
+  - `P-3`: Tích hợp trải nghiệm người dùng trên TUI (một lệnh `/init` duy nhất, không thêm subcommand) và Desktop UI (khi bấm Create Project).
   - `P-4`: Thiết lập Compiler Verification Gate và vòng lặp tự sửa lỗi (Self-Healing Loop) cho Step 0.
 
 ### Key Decisions
@@ -44,9 +45,11 @@
   - *Tầng 2 (Skill Integrity):* Runner kiểm tra toàn bộ các skill được liệt kê trong `scaffold_skills` có thực sự hiện diện trong pack hay không trước khi gọi AI.
   - *Tầng 3 (Tooling Preflight):* Runner đối chiếu tooling máy khách (Node, pnpm, Go...) trước khi cho phép AI sinh mã.
 - `P-3` Runner tự động sinh Prompt chuyên trách cho lượt Scaffold Turn, trích xuất hướng dẫn từ các skill đã cài đặt và đưa vào Context Profile, loại bỏ hoàn toàn sự phụ thuộc vào trí nhớ hay thao tác gõ prompt của người dùng.
-- `P-4` Lệnh `init` hỗ trợ đầy đủ 2 kịch bản:
-  - **Chủ động (Active):** User gõ `/init scaffold` trên TUI để yêu cầu AI sinh mã nguồn khởi tạo ngay trong thư mục làm việc hiện tại.
-  - **Bị động (Passive):** Khi tạo project mới qua Desktop UI, sau khi lưu project bindings, Desktop tự động trigger endpoint `POST /client/projects/{projectId}/scaffold`.
+- `P-4` Một lệnh init duy nhất (Single `/init` Command): TUI không bổ sung subcommand `scaffold`. Lệnh `/init` (bare, mặc định tương đương `/init all`) chạy trọn luồng init hiện có của CP-34/CP-63 (skillpack + ledger + catalog), sau đó Runner tự đánh giá năng lực scaffold:
+  - Nếu `flow-pack/<platform>/scaffold.yaml` tồn tại (enabled) **và** toàn bộ `scaffold_skills` khai báo đều hiện diện trên đĩa (đủ skill) → tự động trigger AI Scaffold Turn ngay sau bước cài skill.
+  - Nếu thiếu manifest, `enabled: false` hoặc thiếu skill → bỏ qua an toàn nhánh scaffold (chỉ log `scaffold: skipped (no verified recipe)`), giữ nguyên kết quả init tĩnh.
+  - `/init skill` giữ nguyên như lối thoát chỉ cài skill tĩnh, không bao giờ gọi AI.
+  - **Bị động (Passive/Desktop):** Khi tạo project mới qua Desktop UI, sau khi lưu project bindings, Desktop tự động trigger endpoint `POST /client/projects/{projectId}/scaffold` (chỉ khi platform capable).
 - `P-5` Compiler Gate hoạt động theo nguyên tắc "Fail-Closed": AI chỉ được coi là hoàn thành Step 0 khi lệnh kiểm tra kiểu (`tsc`) hoặc build trả về Exit Code 0. Nếu fail, Runner tự động đẩy log lỗi compiler vào context để AI vá lỗi tối đa 3 vòng lặp (`cap: 3`).
 
 ### Constraints
@@ -60,7 +63,7 @@
 - `Q-1`: Đối với project mới hoàn toàn, khi nào Runner nên kích hoạt `pnpm install`? 
   $\rightarrow$ *Quyết định:* Runner sẽ chạy `pnpm install` tự động ngay sau khi AI sinh xong các file cấu hình `package.json` và `pnpm-workspace.yaml`, trước khi kích hoạt `pnpm tsc --noEmit`.
 - `Q-2`: Nếu một platform mới chỉ có skill bình thường mà chưa có `scaffold.yaml` thì UI hiển thị ra sao?
-  $\rightarrow$ *Quyết định:* **ẨN HOÀN TOÀN (Hide).** UI truy vấn danh mục scaffold capabilities từ Runner; nếu platform không có `scaffold.yaml` (hoặc `enabled: false`), Desktop UI sẽ **ẩn hoàn toàn** checkbox/tùy chọn "AI Scaffold", và TUI sẽ **không gợi ý** subcommand `/init scaffold` khi nhấn Tab (chỉ gợi ý `/init skill`). Điều này giúp giao diện gọn gàng, trực quan và loại bỏ hoàn toàn khả năng người dùng bấm nhầm vào tính năng chưa sẵn sàng.
+  $\rightarrow$ *Quyết định:* Với TUI, thiết kế single-command khiến không tồn tại subcommand `scaffold` để hiển thị hay ẩn — picker `/init` giữ nguyên `skill` và `all`; platform không capable thì nhánh scaffold tự bị bỏ qua trong luồng `/init`. Trên Desktop UI, nếu platform không có `scaffold.yaml` (hoặc `enabled: false`) thì checkbox/tùy chọn "AI Scaffold" vẫn **ẨN HOÀN TOÀN**, loại bỏ hoàn toàn khả năng người dùng bấm nhầm vào tính năng chưa sẵn sàng.
 
 ### Source Refs
 
@@ -103,7 +106,7 @@ Chuyển đổi lệnh `init` của FlowPilot từ một tác vụ sao chép fil
 ```text
 [User / Desktop Trigger]
    │
-   ├── TUI: /init scaffold (Chủ động)
+   ├── TUI: /init (Chủ động — một lệnh duy nhất)
    └── Desktop: Create Project (Bị động)
    │
    ▼
@@ -145,11 +148,13 @@ Chuyển đổi lệnh `init` của FlowPilot từ một tác vụ sao chép fil
 ## 4. Work Breakdown
 
 ### P-1: Hoàn Thiện Bộ Blueprint Skills Cho Nền Tảng (Core Skillpack)
-- Nhúng 3 skill mới vào `apps/local-runner/internal/skillpack/flow-pack/react-native/`:
-  - `react-native-scaffold-bootstrap/SKILL.md` (Version 6)
-  - `react-native-mobile-plumbing/SKILL.md` (Version 6)
-  - `react-native-core-ui-tokens/SKILL.md` (Version 6)
-- Đảm bảo bộ test `TestInstall_*` trong `internal/skillpack/skillpack_test.go` nhận diện đầy đủ 9 skills cho platform `react-native`.
+- Nhúng 4 skill scaffold vào `apps/local-runner/internal/skillpack/flow-pack/react-native/` (đã có trên nhánh hiện tại):
+  - `react-native-scaffold-bootstrap/SKILL.md`
+  - `react-native-mobile-plumbing/SKILL.md`
+  - `react-native-core-ui-tokens/SKILL.md`
+  - `react-native-screen-archetypes/SKILL.md`
+- Cùng manifest `scaffold.yaml` khai báo đúng 4 `scaffold_skills` trên và `verification_gate.command`.
+- Đảm bảo bộ test `TestInstall_*` trong `internal/skillpack/skillpack_test.go` nhận diện đầy đủ 23 skills cho platform `react-native` (13 common + 10 react-native), gồm đủ 4 `scaffold_skills`.
 
 ### P-2: Xây Dựng Runner Scaffold Dispatcher (`internal/runner/scaffold.go`)
 - Tạo hàm điều phối `DispatchScaffoldTurn(ctx, projectID, workspaceDir, platform)`:
@@ -159,11 +164,10 @@ Chuyển đổi lệnh `init` của FlowPilot từ một tác vụ sao chép fil
 
 ### P-3: Nâng Cấp Giao Diện Điều Khiển TUI & Desktop
 - **Trong TUI (`apps/local-runner/internal/tui/app/`):**
-  - Mở rộng subcommands của `/init`:
-    - `/init skill`: Cài đặt skillpack tĩnh (hành vi cũ của CP-34, luôn hiển thị cho mọi platform).
-    - `/init scaffold`: Cài đặt skillpack VÀ kích hoạt AI Scaffold Turn để sinh code (chỉ hiển thị gợi ý khi platform có `scaffold.yaml` enabled; tự động **ẨN** đối với platform chưa hỗ trợ).
-    - `/init all`: Chạy toàn bộ luồng kiểm tra tooling + skillpack + scaffold (nếu có).
-  - Cập nhật suggestion picker và xử lý sự kiện `EngineInitMsg`.
+  - Giữ nguyên mặt lệnh hiện có, KHÔNG thêm subcommand `scaffold`:
+    - `/init` (bare, mặc định `all`) và `/init all`: chạy luồng engine init hiện có (skillpack + ledger + catalog) rồi tự kiểm tra `skillpack.HasScaffoldCapability(platform)`; nếu capable → trigger AI Scaffold Turn ngay sau khi cài skill; không capable → bỏ qua nhánh scaffold (log `scaffold: skipped (no verified recipe)`).
+    - `/init skill`: hành vi cũ CP-34, chỉ cài skillpack tĩnh (không gọi AI).
+  - Cập nhật suggestion picker (không thêm dòng `scaffold`) và xử lý sự kiện `EngineInitMsg` để hiển thị tiến trình Scaffold Turn + Compiler Gate.
 - **Trong Desktop UI:**
   - Khi hoàn thành wizard tạo project, kiểm tra platform:
     - Nếu platform có `scaffold.yaml`: Hiển thị checkbox `[x] Tự động dựng khung dự án (AI Scaffold Step 0)`.
@@ -184,7 +188,7 @@ Chuyển đổi lệnh `init` của FlowPilot từ một tác vụ sao chép fil
 - **`apps/local-runner/internal/skillpack/flow-pack/react-native/`**: Thêm 3 thư mục skill (`scaffold-bootstrap`, `mobile-plumbing`, `core-ui-tokens`).
 - **`apps/local-runner/internal/runner/scaffold.go`**: Logic điều phối lượt Scaffold Turn.
 - **`apps/local-runner/internal/runner/compiler_gate.go`**: Trình chốt chặn kiểm tra biên dịch.
-- **`apps/local-runner/internal/tui/app/init_suggestions.go`**: Bổ sung gợi ý `/init scaffold`.
+- **`apps/local-runner/internal/tui/app/init_suggestions.go`**: Giữ nguyên picker `skill`/`all` — không thêm gợi ý `/init scaffold`.
 - **`apps/local-runner/internal/tui/app/init_engine.go`**: Xử lý dispatch lệnh scaffold và hiển thị tiến trình.
 
 ---
@@ -199,14 +203,14 @@ Chuyển đổi lệnh `init` của FlowPilot từ một tác vụ sao chép fil
 ## 7. Validation Plan
 
 ### 7.1 Automated Unit Tests
-- `TestSkillpack_ReactNativeIncludesScaffoldSkills`: Đảm bảo `skillsForPlatform("react-native")` trả về đầy đủ 9 skills.
+- `TestSkillpack_ReactNativeIncludesScaffoldSkills`: Đảm bảo `skillsForPlatform("react-native")` trả về đầy đủ 23 skills (13 common + 10 react-native), bao gồm đủ 4 `scaffold_skills` khai báo trong `scaffold.yaml`.
 - `TestScaffoldDispatcher_ContextProfileContainsSkills`: Kiểm tra Scaffold Turn được nhúng đúng nội dung 3 blueprint skills vào prompt context.
 - `TestCompilerGate_CatchesTypeScriptErrors`: Mock lỗi typecheck và đảm bảo Compiler Gate trả về mã lỗi chính xác.
 - `TestCompilerGate_PassesCleanProject`: Đảm bảo dự án chuẩn trả về `ok = true`.
 
 ### 7.2 Manual Verification Steps
 1. Mở TUI trong một thư mục rỗng, bind project loại `react-native`.
-2. Gõ `/init scaffold`.
+2. Gõ `/init`.
 3. Quan sát AI tự sinh các file cấu hình và packages.
 4. Kiểm tra file `package.json`, `turbo.json`, `packages/core-*` và `apps/_template` xuất hiện đầy đủ.
 5. Kiểm tra TUI hiển thị trạng thái `Compiler Gate: PASS` và terminal báo exit code 0.
@@ -215,7 +219,7 @@ Chuyển đổi lệnh `init` của FlowPilot từ một tác vụ sao chép fil
 
 ## 8. Rollout and Fallback
 
-- **Rollout:** Triển khai độc lập trong `apps/local-runner`. Người dùng có thể sử dụng song song `/init skill` cũ và `/init scaffold` mới.
+- **Rollout:** Triển khai độc lập trong `apps/local-runner`. Người dùng dùng `/init` đầy đủ (auto scaffold khi capable) hoặc `/init skill` cũ (chỉ cài skill tĩnh).
 - **Fallback:** Nếu lượt AI Scaffold Turn thất bại hoặc gặp sự cố mạng, trạng thái project vẫn giữ nguyên các file skill đã cài đặt; người dùng có thể kích hoạt lại lệnh hoặc tự code thủ công mà không bị hỏng cấu hình runner.
 
 ---
@@ -231,8 +235,9 @@ Chuyển đổi lệnh `init` của FlowPilot từ một tác vụ sao chép fil
 
 ## 10. Definition of Done
 
-- [ ] 3 Skill nền tảng (`scaffold-bootstrap`, `mobile-plumbing`, `core-ui-tokens`) được nhúng và đồng bộ trong `flow-pack/react-native/` (Đã hoàn thành ở bước trước).
+- [ ] 4 Skill nền tảng (`scaffold-bootstrap`, `mobile-plumbing`, `core-ui-tokens`, `screen-archetypes`) được nhúng và đồng bộ trong `flow-pack/react-native/` (Đã hoàn thành ở bước trước).
 - [ ] Runner có endpoint hoặc handler nội bộ tiếp nhận lệnh Scaffold Turn và gắn kèm skill tự động.
-- [ ] Lệnh `/init scaffold` xuất hiện trong Tab completion của TUI và hoạt động trơn tru.
+- [ ] Single `/init`: lệnh `/init` (bare / `/init all`) chạy luồng init hiện có rồi tự trigger Scaffold Turn khi platform capable; Tab completion giữ nguyên `skill`/`all`, KHÔNG có subcommand `scaffold` mới.
+- [ ] Auto-run áp dụng cho cả TUI và Desktop; platform không capable (thiếu manifest hoặc thiếu skill) thì bỏ qua nhánh scaffold an toàn.
 - [ ] Compiler Verification Gate xác thực thành công mã nguồn được sinh ra với `pnpm tsc --noEmit`.
 - [ ] Toàn bộ unit test liên quan trong `local-runner` đều PASS.

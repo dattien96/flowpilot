@@ -44,7 +44,7 @@
 
 ### Constraints
 
-- Không cho phép bỏ qua (bypass) Compiler Gate khi chạy ở chế độ `/init scaffold`.
+- Không cho phép bỏ qua (bypass) Compiler Gate khi Scaffold Turn chạy tự động trong luồng `/init` (TUI) hoặc auto-trigger từ Desktop.
 - Đảm bảo xử lý graceful nếu máy người dùng bị ngắt mạng trong lúc chạy `pnpm install`.
 
 ### Open Questions
