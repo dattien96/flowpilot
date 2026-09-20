@@ -364,7 +364,10 @@ func ClassifySuiteOutput(testCmd, output string) bool {
 	case strings.Contains(cmd, "go test"):
 		for _, sig := range []string{
 			"[build failed]",
+			"[setup failed]",
 			"syntax error:",
+			"missing ','",
+			"expected 'package'",
 			"undefined:",
 			"cannot use ",
 			"declared and not used",
@@ -409,7 +412,7 @@ func ClassifySuiteOutput(testCmd, output string) bool {
 		return compileErrorRegex.MatchString(trimmed)
 	default:
 		// Unknown runner: only the unambiguous cross-toolchain markers.
-		if strings.Contains(trimmed, "[build failed]") {
+		if strings.Contains(trimmed, "[build failed]") || strings.Contains(trimmed, "[setup failed]") {
 			return true
 		}
 		return compileErrorRegex.MatchString(trimmed)
