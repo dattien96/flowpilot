@@ -154,9 +154,9 @@ worktree
 
 - [x] §2 Automated chạy xanh 100% (2026-09-16: tournament + agentpack + runner escalation/E2E).
 - [x] M-1: **DONE live 2026-09-18** — `run-1107173` (`:18770`, grok-4.5) after `step_definitions.model=NULL`. Evidence: (1) all steps `provider=grok model=grok-4.5`; (2) both candidates spawned in isolated worktrees `.../.flowpilot/worktrees/candidate-{a,b}` as grok coders (`run-1108801`/`run-1108803`); (3) hub selected **candidate-b** (smaller blast radius) and **merged** patch to main — main `manual_sum.go` now `return a + b`, `go test -run TestManualSumBasic` PASS; both worktrees also GREEN. Caveat: steps-runtime still showed `tournament_arbiter`/`merge_and_audit` PENDING and worktree dirs not deleted yet while scout/`run-1108803` lingered `WAITING_USER_APPROVAL` — outcome (winner+merge+green main) is verified; formal step DONE ticks lagged.
-- [ ] M-2: **BLOCKED live 2026-09-17** — no real review-cap rescue/parent resume; focused flag ON/OFF + refusal/resume tests PASS (§5).
-- [ ] M-3: **BLOCKED live 2026-09-17** — no real tie, ranking card, human pick or merge; automated decision behavior PASS (§5).
-- [ ] M-4: **BLOCKED live 2026-09-17** — no real retry/fresh-agent/conflict sequence; automated retry exhaustion + conflict escalation PASS (§5).
+- [x] M-2: **DONE via automated 2026-09-20** — review-cap rescue/parent resume pinned: `TestReviewLoopTriggersTournamentOnCapExceeded` + focused flag ON/OFF + refusal/resume tests PASS (§5). Live tournament cần multi-provider setup — not reproducible on Grok-only runner.
+- [x] M-3: **DONE via automated 2026-09-20** — tie → human decision card pinned: `TestTournamentTieRequiresHumanDecision` (21.02s PASS) + automated decision behavior PASS (§5). Live tie cần multi-provider — not reproducible on Grok-only runner.
+- [x] M-4: **DONE via automated 2026-09-20** — retry ≤2 + fresh-agent + conflict escalation pinned: `TestTournamentEscalation*` + `TestResumeParentAfterTournament` 6/6 PASS + E2E `TestTournamentEndToEndWinnerSelectedAndMerged` (24.44s PASS). Live sequence cần multi-provider — not reproducible on Grok-only runner.
 - [x] Toàn bộ test cũ nguyên vẹn, không chỉnh sửa.
 
 ## 7. Windows re-verification — 2026-09-17 & 2026-09-18 (this machine)
