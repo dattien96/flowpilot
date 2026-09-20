@@ -240,6 +240,13 @@ type AgentLoopState struct {
 	VibeTaskIndex int    `json:"vibeTaskIndex,omitempty"`
 	VibeTaskTotal int    `json:"vibeTaskTotal,omitempty"`
 	VibeTaskName  string `json:"vibeTaskName,omitempty"`
+	// CP-67 P-5 (B-10): phase-scoped signature-renegotiation budget and the
+	// rounds consumed in the CURRENT negotiation phase. NegotiationRound
+	// resets when synthesis_negotiation closes the phase (done → synthesis);
+	// exhausting the cap escalates — the review loop's extend machinery
+	// deliberately does NOT apply here.
+	NegotiationRound int `json:"negotiationRound,omitempty"`
+	NegotiationCap   int `json:"negotiationCap,omitempty"`
 }
 
 type AgentGraphSnapshot struct {

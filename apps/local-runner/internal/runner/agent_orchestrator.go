@@ -720,9 +720,10 @@ func reviewOutcomeFace() FlowControlFace {
 	return FlowControlFace{
 		Tool: "submit_review_outcome",
 		Map: map[string]string{
-			"approved":          "done",
-			"changes_requested": "continue",
-			"blocked":           "escalate",
+			"approved":               "done",
+			"changes_requested":      "continue",
+			"blocked":                "escalate",
+			"renegotiate_signatures": "continue", // CP-67 P-1 (Task-378)
 		},
 	}
 }
@@ -752,6 +753,19 @@ func effectiveCap(st AgentLoopState) int {
 		return st.RoundCap
 	}
 	return 3
+}
+
+// NegotiationCapDefault is the CP-67 P-5 (B-10) renegotiation-loop budget
+// when the flow policy declares none.
+const NegotiationCapDefault = 5
+
+// effectiveNegotiationCap returns the phase-scoped renegotiation budget:
+// the flow's declared policy.negotiationCap when set, else the default 5.
+func effectiveNegotiationCap(st AgentLoopState) int {
+	if st.NegotiationCap > 0 {
+		return st.NegotiationCap
+	}
+	return NegotiationCapDefault
 }
 
 // effectiveExtendBy returns st's configured cap-extension step (seeded from
@@ -810,6 +824,10 @@ type ReviewOutcomeInput struct {
 	// AC list is enforced by ValidateReviewOutcomeVerdicts where the expected
 	// set is known.
 	Verdicts []VerdictRow `json:"verdicts,omitempty"`
+	// BatchSignatureRequests is the coder's Accumulate & Batch renegotiation
+	// set (CP-67 P-1, Task-378). Only valid with status=renegotiate_signatures;
+	// schema mirrors the submit-coder-outcome.yaml declared face.
+	BatchSignatureRequests []CoderBatchSignatureRequest `json:"batch_signature_requests,omitempty"`
 }
 
 // ReviewOutcomeResult is the tool call result: mirrors FlowControlResult with open count.
@@ -822,6 +840,10 @@ var reviewOutcomeStatuses = map[string]bool{
 	"approved":          true,
 	"changes_requested": true,
 	"blocked":           true,
+	// CP-67 P-1 (Task-378, B-1/B-2): the signature-locked coder's batched
+	// renegotiation rides this transport tool; the canonical face is
+	// submit-coder-outcome.yaml (renegotiate_signatures → continue).
+	"renegotiate_signatures": true,
 }
 
 // parseReviewOutcomeInput validates and extracts ReviewOutcomeInput from a tool-call args map.
@@ -842,11 +864,24 @@ func parseReviewOutcomeInput(args map[string]any) (ReviewOutcomeInput, error) {
 		boardPath = true
 	}
 	if !reviewOutcomeStatuses[in.Status] {
-		return in, fmt.Errorf("submit_review_outcome: status must be approved|changes_requested|blocked, got %q", in.Status)
+		return in, fmt.Errorf("submit_review_outcome: status must be approved|changes_requested|blocked|renegotiate_signatures, got %q", in.Status)
 	}
 	in.Feedback, _ = args["feedback"].(string)
 	if !boardPath && in.Status == "changes_requested" && strings.TrimSpace(in.Feedback) == "" {
 		return in, fmt.Errorf("submit_review_outcome: feedback is required when status=changes_requested")
+	}
+	// CP-67 P-1 (Task-378 T-3/T-4): a renegotiation signal is meaningless
+	// without its batch — reject early so the coder retries in-turn with the
+	// full {symbol,file,current_signature,proposed_signature,rationale} rows.
+	if _, present := args["batch_signature_requests"]; present {
+		reqs, err := parseCoderBatchSignatureRequests(args)
+		if err != nil {
+			return in, err
+		}
+		in.BatchSignatureRequests = reqs
+	}
+	if !boardPath && in.Status == "renegotiate_signatures" && len(in.BatchSignatureRequests) == 0 {
+		return in, fmt.Errorf("submit_review_outcome: batch_signature_requests is required when status=renegotiate_signatures")
 	}
 	if raw, ok := args["issues"].([]any); ok {
 		for _, item := range raw {
@@ -945,6 +980,12 @@ func reviewOutcomeToFlowControl(in ReviewOutcomeInput) (FlowControlInput, error)
 		// CP-62 P-2 T-3: raw verdict rows ride the payload verbatim — the
 		// back-edge re-entry prompt receives the reviewer's rows unparaphrased.
 		"verdicts": in.Verdicts,
+	}
+	// CP-67 P-1 (Task-378): the renegotiation batch rides the payload
+	// verbatim — turnBridge.SubmitFlowControl buffers it record-only for the
+	// synthesis_negotiation hub before any routing.
+	if len(in.BatchSignatureRequests) > 0 {
+		payload["batch_signature_requests"] = in.BatchSignatureRequests
 	}
 	return FlowControlInput{
 		Status:              generic,
