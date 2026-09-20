@@ -846,65 +846,105 @@ Mỗi slice cần 1 CA note (pattern CA-881..CA-884 của CP-66). Đã tạo:
 
 ## 11. Manual / Live Verification Runbook
 
-Automated evidence (§8) covers the unit/integration matrix. This section is the **operator runbook** for live provider verification — run once per provider before claiming end-to-end parity. Record results in §11.4; do not mark a row `pass` without a captured run ID.
+Automated evidence (§8) covers the unit/integration matrix. This section is the **live runbook** — real provider turns (grok first), real workspace, real HTTP API. Record results in §11.6; do not mark a row `pass` without a captured run ID + artifact path.
 
-### 11.1 Environment & setup
+### 11.1 Environment & preflight
 
-1. Build + start the local runner:
-   ```bash
-   cd apps/local-runner
-   go build ./cmd/flowpilot
-   ./flowpilot runner serve --port <port>
-   ```
-2. Configure one provider account (codex / claude / grok) — credentials live in provider-accounts config, **never** in docs or fixtures.
-3. Create a fixture workspace (a throwaway git repo) with a tiny Go module:
-   ```
-   fixture/
-     go.mod
-     calc/calc.go        # will be overwritten by scaffold stubs
-   ```
-   Do **not** pre-create test files — the scaffold architect must generate them.
+| # | Check | Command / observation | Expected |
+|---|-------|-----------------------|----------|
+| S1 | Runner builds | `cd apps/local-runner && go build -o /tmp/flowpilot ./cmd/flowpilot` | clean build |
+| S2 | Runner serves | `/tmp/flowpilot runner serve --port 4317` (cwd = repo root) | health endpoint answers |
+| S3 | Provider | `grok` account connected in `provider-accounts.json` (slot 0/3/4) | `auth_status: connected` |
+| S4 | Workspace | target = `/Users/tiendat/Desktop/BE/gate-sandbox` — must be readable/writable by the runner process | `ls`/`stat` OK; if EPERM, grant the terminal host Desktop folder access |
+| S5 | Diag logging | `export FLOWPILOT_FLOW_DIAG_DIR=<workspace>/.flowpilot/logs/features/agent-flow-engine` (or leave default) | `<runID>.ndjson` appears on first event |
 
-### 11.2 Scenario A — contract-first happy path (task-harness)
+Start a live run:
 
-Start a `task-harness` run against the fixture with a small feature brief (e.g. "Add(a,b) returns sum"). Verify in order:
+```bash
+curl -s -X POST localhost:4317/client/workflow-runs \
+  -H 'content-type: application/json' -d '{
+    "projectId": "gate-sandbox",
+    "flowRef": "task-harness",
+    "providerKey": "grok",
+    "model": "grok-4-5",
+    "workingMode": "dev",
+    "cwd": "/Users/tiendat/Desktop/BE/gate-sandbox"
+  }' | tee /tmp/cp67-run.json        # capture runId
+curl -s -X POST localhost:4317/client/workflow-runs/$RUN/turns \
+  -H 'content-type: application/json' -d '{
+    "stepId": "test_signatures",
+    "prompt": "<feature brief — see scenario>"
+  }'
+```
 
-| # | Checkpoint | Expected |
-|---|-----------|----------|
-| A1 | `test_signatures` (scaffold) node executes | Scaffold Architect turn runs; `calc/scaffold_test.go` created; `calc/calc.go` bodies are `not implemented` stubs |
-| A2 | Scaffold gate | Suite compiles, ≥1 RED test (`not implemented` / assertion failure); gate passes |
-| A3 | Lock artifacts | `calc/scaffold_test.go` becomes read-only in `FrozenContractRecord.ReadOnlyPaths`; `SignatureHash` + `LockedSignatures` stored (inspect `.flowpilot` contract store / dispatch log) |
-| A4 | Coder turn | `implement` node receives body-only prompt (`implement-scaffold-body.md`); coder edits `calc/calc.go` bodies only — test file edits rejected |
-| A5 | Signature lock | Any signature drift in coder output → `r-signature-lock` violation; unchanged signatures + green tests → pass |
-| A6 | Review loop intact | `changes_requested` from `synthesis` re-enters `implement` (NOT `test_signatures`) — regression pin for the back-edge shadowing fix |
+Watch artifacts live:
 
-### 11.3 Scenario B — renegotiation loop (task-harness or vibe-sprint)
+```bash
+tail -f .flowpilot/logs/features/agent-flow-engine/$RUN.ndjson   # flow_diag events
+tail -f .flowpilot/gate-metrics.ndjson                            # gate results
+cat  .flowpilot/contracts/frozen_contracts.ndjson | jq            # SignatureHash / LockedSignatures / ReadOnlyPaths
+```
 
-Force a signature mismatch (brief asks for behavior the frozen signature cannot express, e.g. needs an extra return value):
+### 11.2 Scenario L-A — contract-first happy path (`task-harness`)
 
-| # | Checkpoint | Expected |
-|---|-----------|----------|
-| B1 | Coder submits `renegotiate_signatures` | Via `submit_review_outcome` with `batch_signature_requests`; response is record-only (`renegotiation_recorded`) — flow does NOT advance |
-| B2 | Coder node completes | `synthesis_negotiation` hub dispatched; batch rows appear verbatim in its prompt |
-| B3 | Hub adjudication | `continue` → back-edge re-enters `test_signatures` for re-scaffold; `NegotiationRound` increments (visible in loop state) |
-| B4 | Repeat rounds | Each new coder batch re-buffers → re-dispatches hub; round counter climbs |
-| B5 | Cap | Round 5 `continue` → `blocked` / escalate — never an unbounded loop |
-| B6 | Phase close | Hub `done` → `NegotiationRound` resets to 0; flow proceeds to `synthesis` |
-| B7 | vibe-sprint parity | Same B1–B6 behavior under `vibe-sprint` topology (`coder` → `synthesis_negotiation`) |
+Brief: *"Implement a `calc` package: `Add(a, b int) (int, error)` returns the sum; error on overflow."*
 
-### 11.4 Provider parity matrix — record results here
+| # | Checkpoint | How to observe | Expected |
+|---|-----------|----------------|----------|
+| A1 | scaffold node runs | diag `flow_node_*` / agent-graph `test_signatures` active | Scaffold Architect (grok) turn, `calc/scaffold_test.go` + stub `calc/calc.go` written |
+| A2 | suite is compile-OK + RED | `cd <ws> && go test ./calc/` during/after scaffold turn | ≥1 failing test (`not implemented` / assertion) |
+| A3 | artifacts locked | `frozen_contracts.ndjson` entry for step | `signature_hash` non-empty, `locked_signatures` rows, `read_only_paths` contains the test file |
+| A4 | coder gets body-only prompt | turn prompt in dispatch log / rollout | `implement-scaffold-body.md` text; no test-authoring instructions |
+| A5 | signature lock holds | gate-metrics + `go test ./calc/` after coder | green suite; any signature drift → `r-signature-lock` reprompt |
+| A6 | review back-edge intact | diag `flow_advance_*` after a `changes_requested` | re-enters `implement`, never `test_signatures` |
 
-Repeat Scenario A (and B if practical) once per provider. Transport is provider-agnostic by construction (shared `turnBridge.SubmitFlowControl`, no per-provider tool wiring — `TestCoderOutcomeTransportProviderParity` pins this), but live confirmation is still required for closeout.
+### 11.3 Scenario L-B — gate rejections (negative cases)
 
-| Provider | Flow | Run ID | A1–A6 | B1–B7 | Evidence location | Status |
-|----------|------|--------|-------|-------|-------------------|--------|
-| codex | task-harness | | | | | pending |
-| claude | task-harness | | | | | pending |
-| grok | task-harness | | | | | pending |
-| codex | vibe-sprint | | | | | pending |
-| claude | vibe-sprint | | | | | pending |
-| grok | vibe-sprint | | | | | pending |
+| # | Case | Trigger | Expected |
+|---|------|---------|----------|
+| B1 | scaffold writes real logic | brief nudges "implement it fully" | `r-scaffold-red` signal 3 / stub whitelist → reprompt, not pass |
+| B2 | scaffold suite all-green | brief asks for trivially-true tests | `r-scaffold-red` rejects: needs ≥1 RED |
+| B3 | scaffold suite won't compile | malformed scaffold output | rejected as compile failure, not RED credit |
+| B4 | coder edits test file | (manual: attempt edit to read-only test) | rejected — ReadOnlyPaths enforcement |
+| B5 | coder drifts a signature | brief incompatible with frozen sig (e.g. extra return) without renegotiation | `r-signature-lock` violation → reprompt |
+| B6 | coder adds a new function | brief requires helper beyond frozen sig | additive change → `r-signature-lock` violation |
 
-### 11.5 Known limitation to observe if a restart occurs mid-run
+### 11.4 Scenario L-C — renegotiation loop
 
-If the runner service restarts between a coder's `renegotiate_signatures` submission and the coder node completing, the in-memory batch buffer (`pendingBatchSignatureByStep`) is lost — coder completion then advances on the normal `done` edge (no negotiation). Expected graceful degradation, not a crash. If observed, record the run ID here; if the contract is later amended to require restart durability, persist the buffer into `ProviderSessionState` and re-run this row.
+Brief deliberately under-specified so the coder must renegotiate (e.g. frozen `Add(a,b int) error` but feature needs the sum returned):
+
+| # | Checkpoint | How to observe | Expected |
+|---|-----------|----------------|----------|
+| C1 | coder submits `renegotiate_signatures` | POST flow-control response / turn tool result | `renegotiation_recorded`; loop state unchanged (record-only) |
+| C2 | batch buffered | `snapshotCoderBatchSignatures` via diag/`flow_advance_*` | rows present pre-completion |
+| C3 | hub dispatch on coder done | diag `flow_advance_negotiation_hub` | `completed_node_id=implement`, `batch_rows>0` |
+| C4 | batch in hub prompt | hub turn prompt in rollout/dispatch | symbol/file/current/proposed rows verbatim |
+| C5 | round increments | `GET .../agent-graph` loop state after hub `continue` | `NegotiationRound=1`, `Round` unchanged |
+| C6 | cap at 5 | keep failing adjudication | round-5 `continue` → `blocked`/escalate, never extend |
+| C7 | phase close | hub `done` | `NegotiationRound` resets 0; proceeds to `synthesis` |
+| C8 | vibe-sprint parity | same flow on `vibe-sprint` | identical behavior via `coder`→`synthesis_negotiation` |
+
+### 11.5 Scenario L-D — regression + edge cases
+
+| # | Case | Expected |
+|---|------|----------|
+| D1 | `bug-harness`/`bug-plan-harness` run unaffected | legacy reproduce flow intact (no scaffold nodes) |
+| D2 | `normal_chat` run unaffected | no gates/locks applied |
+| D3 | delegate child bare `done`/`continue` | rejected — cannot settle/loop parent |
+| D4 | `renegotiate_signatures` without batch | 400 — `batch_signature_requests` required |
+| D5 | flow-control to unknown run | 404 |
+| D6 | restart mid-negotiation | batch buffer lost → coder completion advances normally (known in-memory limitation, §8.2) — graceful, no hang |
+
+### 11.6 Live results matrix
+
+| Case | Provider | Flow | Run ID | Result | Evidence (log/artifact path) | Status |
+|------|----------|------|--------|--------|------------------------------|--------|
+| L-A1..A6 | grok | task-harness | | | | pending |
+| L-B1..B6 | grok | task-harness | | | | pending |
+| L-C1..C7 | grok | task-harness | | | | pending |
+| L-C8 | grok | vibe-sprint | | | | pending |
+| L-D1..D6 | grok | mixed | | | | pending |
+| L-A spot | codex | task-harness | | | | pending |
+| L-A spot | claude | task-harness | | | | pending |
+
+**Live run status (2026-09-20):** runner build verified; grok accounts present (slots 0/3/4 connected). Target workspace `/Users/tiendat/Desktop/BE/gate-sandbox` is currently EPERM-blocked to the agent/terminal process (readdir denied at OS level — needs Desktop folder permission for the host process). Runs pending until access is granted or an alternate workspace is confirmed.

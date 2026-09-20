@@ -82,11 +82,6 @@ func (s *InteractiveService) recordScaffoldArtifactsLock(cwd, parentRunID string
 	if strings.TrimSpace(cwd) == "" || strings.TrimSpace(parentRunID) == "" {
 		return
 	}
-	testPaths := scaffoldTestFiles(written)
-	prodSignatures, lockedSignatures := s.scaffoldSignatureSnapshot(cwd, written)
-	if len(testPaths) == 0 && len(prodSignatures) == 0 {
-		return
-	}
 	writerID := s.flowWriterNodeIDForRun(parentRunID)
 	if writerID == "" {
 		log.Printf("[gate] scaffold: no agent.code/scaffold writer node in run %q; skipping artifact lock", parentRunID)
@@ -105,6 +100,21 @@ func (s *InteractiveService) recordScaffoldArtifactsLock(cwd, parentRunID string
 	if !ok {
 		log.Printf("[gate] scaffold: no active frozen contract for step %q; skipping lock", writerID)
 		return
+	}
+	testPaths := scaffoldTestFiles(written)
+	prodSignatures, lockedSignatures := s.scaffoldSignatureSnapshot(cwd, written)
+	if len(testPaths) == 0 && len(prodSignatures) == 0 {
+		// Live finding (run-2870): a scaffold turn that is blocked once (e.g.
+		// scope drift) and re-invoked writes nothing on the passing turn — the
+		// files already exist. Derive the lock surface from the frozen
+		// contract's DeclaredPaths instead of this turn's writes, or the
+		// signature/read-only locks silently never arm.
+		declared := append([]string(nil), existing.DeclaredPaths...)
+		testPaths = scaffoldTestFiles(declared)
+		prodSignatures, lockedSignatures = s.scaffoldSignatureSnapshot(cwd, declared)
+		if len(testPaths) == 0 && len(prodSignatures) == 0 {
+			return
+		}
 	}
 	rec, err := changecontract.LockScaffoldArtifacts(store, existing, testPaths, prodSignatures, lockedSignatures, time.Now().UTC())
 	if err != nil {

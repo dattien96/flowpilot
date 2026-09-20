@@ -559,3 +559,100 @@ func TestIsSignatureLockedCoderChild(t *testing.T) {
 		t.Fatal("a non-agent.code node must not get the coder outcome tool")
 	}
 }
+
+// TestSharedReviewOutcomeSchemaAdvertisesCohortAndCoderFields is the live-run
+// regression pin for the CP-67/CP-62 discoverability bug found on run-6 /
+// run-2870: grok's tools/list exposed only {status,issues,feedback}, so a
+// schema-following model could not express verdicts rows or a signature batch.
+// The advertised schema must carry every field the runner-side parser accepts.
+func TestSharedReviewOutcomeSchemaAdvertisesCohortAndCoderFields(t *testing.T) {
+	sch := sharedReviewOutcomeSchema()
+	props, ok := sch["properties"].(map[string]any)
+	if !ok {
+		t.Fatal("schema.properties missing")
+	}
+	status, ok := props["status"].(map[string]any)
+	if !ok {
+		t.Fatal("schema.properties.status missing")
+	}
+	enum, _ := status["enum"].([]any)
+	var hasReneg bool
+	for _, v := range enum {
+		if v == "renegotiate_signatures" {
+			hasReneg = true
+		}
+	}
+	if !hasReneg {
+		t.Fatal("status enum must advertise renegotiate_signatures (coder batch transport)")
+	}
+	for _, field := range []string{"verdicts", "batch_signature_requests"} {
+		if _, ok := props[field]; !ok {
+			t.Fatalf("schema must advertise %q — runner accepts it but providers cannot discover it", field)
+		}
+	}
+	batch := props["batch_signature_requests"].(map[string]any)["items"].(map[string]any)
+	req, _ := batch["required"].([]any)
+	if len(req) != 5 {
+		t.Fatalf("batch_signature_requests rows must require all 5 fields, got %v", req)
+	}
+}
+
+// TestLateLandingReviewerVerdictIsCreditedAtHubCheck reproduces the live run-4655
+// race: grok's deferred use_tool delivers submit_review_outcome AFTER the
+// member's turn settle already consumed pendingReviewVerdictByLabel, so the
+// verdict sits in the pending map while the cohort entry shows no machine
+// verdict. The hub check must still credit it (recorded = real verdict).
+func TestLateLandingReviewerVerdictIsCreditedAtHubCheck(t *testing.T) {
+	svc, _ := newTestServer(t)
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	svc.mu.Lock()
+	prs := svc.runs[parent.RunID]
+	prs.activeFlowNodes = []agentpack.FlowNode{{ID: "plan_reviewer", Cohort: "plan"}}
+	prs.pendingReviewVerdictByLabel = map[string]string{"plan_reviewer": "approved"}
+	prs.lastReviewCohortVerdicts = map[string]string{}
+	svc.mu.Unlock()
+
+	if err := svc.hubDoneVerdictError(parent.RunID, "plan_synthesis"); err != nil {
+		t.Fatalf("late-landing verdict must be credited at hub check: %v", err)
+	}
+	svc.mu.Lock()
+	if _, ok := svc.runs[parent.RunID].pendingReviewVerdictByLabel["plan_reviewer"]; ok {
+		t.Fatal("credited verdict must be consumed so it cannot leak into a later round")
+	}
+	svc.mu.Unlock()
+}
+
+// TestScaffoldLockFallsBackToDeclaredPathsOnReinvoke reproduces the live
+// run-2870 gap: a scaffold turn blocked on scope drift writes the files, then
+// the post-amend re-invocation writes NOTHING (files already exist) — the
+// passing turn's WrittenPaths is empty. The lock must still arm from the
+// frozen contract's DeclaredPaths, or the coder phase runs unlocked.
+func TestScaffoldLockFallsBackToDeclaredPathsOnReinvoke(t *testing.T) {
+	dir, head := newContractFreezeTestRepo(t)
+	svc, parentID := newReproduceFixture(t, dir)
+	freezeP4Contract(t, dir, parentID, "implement", head, []string{"calc/calc.go", "calc/calc_test.go"})
+
+	writeRepoFile(t, dir, "calc/calc.go", "package calc\n\nimport \"errors\"\n\nfunc Add(a, b int) error {\n\treturn errors.New(\"not implemented\")\n}\n")
+	writeRepoFile(t, dir, "calc/calc_test.go", "package calc\n\nimport \"testing\"\n\nfunc TestRed(t *testing.T) { if err := Add(1,2); err == nil { t.Fatal() } }\n")
+
+	// The re-invoked scaffold turn wrote nothing — WrittenPaths is empty.
+	svc.recordScaffoldArtifactsLock(dir, parentID, nil)
+
+	store, storeErr := changecontract.NewFrozenStore(dir)
+	if storeErr != nil {
+		t.Fatal(storeErr)
+	}
+	rec, ok, gerr := store.GetFrozenForStep(parentID, "implement")
+	if gerr != nil || !ok {
+		t.Fatalf("fixture contract missing: ok=%v err=%v", ok, gerr)
+	}
+	if rec.SignatureHash == "" {
+		t.Fatal("signature lock must arm from DeclaredPaths when the passing turn wrote nothing")
+	}
+	if len(rec.LockedSignatures) == 0 {
+		t.Fatal("LockedSignatures must be populated from the on-disk stubs")
+	}
+}

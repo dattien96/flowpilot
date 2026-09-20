@@ -352,7 +352,7 @@ func claudeMCPToolDefs(allowReviewOutcome bool) []any {
 	if allowReviewOutcome {
 		defs = append(defs, map[string]any{
 			"name":        "submit_review_outcome",
-			"description": "Submit a code-review verdict. Use approved when the code is ready, changes_requested when issues were found (feedback required), or blocked when the review cannot proceed. This is the only flow-control tool — do not use flow_control directly.",
+			"description": "Submit a code-review or coder outcome. Reviewer cohort members: approved|changes_requested|blocked plus a verdicts row per AC. Signature-locked coder: renegotiate_signatures plus batch_signature_requests, or blocked to escalate. This is the only flow-control tool — do not use flow_control directly.",
 			"inputSchema": sharedReviewOutcomeSchema(),
 		})
 	}
@@ -386,8 +386,8 @@ func sharedReviewOutcomeSchema() map[string]any {
 		"properties": map[string]any{
 			"status": map[string]any{
 				"type":        "string",
-				"enum":        []any{"approved", "changes_requested", "blocked"},
-				"description": "Review verdict.",
+				"enum":        []any{"approved", "changes_requested", "blocked", "renegotiate_signatures"},
+				"description": "Review verdict. Use renegotiate_signatures (with batch_signature_requests) when a locked signature cannot satisfy the spec.",
 			},
 			"issues": map[string]any{
 				"type":        "array",
@@ -406,6 +406,46 @@ func sharedReviewOutcomeSchema() map[string]any {
 			"feedback": map[string]any{
 				"type":        "string",
 				"description": "Required when status=changes_requested. Actionable instructions for the coder.",
+			},
+			"verdicts": map[string]any{
+				"type":        "array",
+				"description": "Per-acceptance-criterion machine verdicts — one row per AC in the governing task artifact (required for reviewer cohort members).",
+				"items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"ac_id":   map[string]any{"type": "string", "description": "Acceptance criterion id, e.g. AC-1."},
+						"verdict": map[string]any{"type": "string", "enum": []any{"pass", "fail", "blocked"}},
+						"note":    map[string]any{"type": "string"},
+						"evidence": map[string]any{
+							"type": "array",
+							"items": map[string]any{
+								"type": "object",
+								"properties": map[string]any{
+									"path":    map[string]any{"type": "string"},
+									"line":    map[string]any{"type": "integer"},
+									"excerpt": map[string]any{"type": "string"},
+								},
+								"required": []any{"path"},
+							},
+						},
+					},
+					"required": []any{"ac_id", "verdict"},
+				},
+			},
+			"batch_signature_requests": map[string]any{
+				"type":        "array",
+				"description": "Required when status=renegotiate_signatures. One row per signature that cannot satisfy the spec; record-only — the Main Agent adjudicates the batch.",
+				"items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"symbol":             map[string]any{"type": "string"},
+						"file":               map[string]any{"type": "string"},
+						"current_signature":  map[string]any{"type": "string"},
+						"proposed_signature": map[string]any{"type": "string"},
+						"rationale":          map[string]any{"type": "string"},
+					},
+					"required": []any{"symbol", "file", "current_signature", "proposed_signature", "rationale"},
+				},
 			},
 		},
 		"required": []any{"status"},

@@ -17,6 +17,12 @@ When the flow exposes `submit_review_outcome` on your turn, call it with
 `status=approved|changes_requested|blocked` to record a machine-checkable verdict
 before you finish. The hub synthesizer cannot reach done without these verdicts.
 
+CRITICAL ordering: invoke the tool FIRST and wait for its result BEFORE writing
+your final message. On deferred-tool transports (e.g. Grok's `use_tool`), a tool
+call attached to — or issued after — the final answer text is cancelled in
+flight and the verdict is silently lost; the flow then blocks on a missing
+verdict and you are re-spawned for another round.
+
 CP-62 P-2: your `submit_review_outcome` call MUST include a `verdicts` array
 with exactly one row per acceptance criterion (`AC-N`) named in the artifact you
 were given — `{"ac_id": "AC-1", "verdict": "pass|fail|blocked", "evidence":
