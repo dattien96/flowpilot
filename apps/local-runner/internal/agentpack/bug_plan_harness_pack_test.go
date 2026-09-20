@@ -48,8 +48,10 @@ func TestBugPlanHarnessPack(t *testing.T) {
 		t.Fatal("bug-plan-harness must not be chatBaseline")
 	}
 
-	if len(bug.Nodes) != 12 || len(task.Nodes) != 12 {
-		t.Fatalf("bug-plan node count = %d, task-harness = %d, want 12/12", len(bug.Nodes), len(task.Nodes))
+	// CP-67 supersession: task-harness grew synthesis_negotiation (13 nodes);
+	// bug-plan-harness stays at its 12-node CP-64 shape.
+	if len(bug.Nodes) != 12 || len(task.Nodes) != 13 {
+		t.Fatalf("bug-plan node count = %d, task-harness = %d, want 12/13", len(bug.Nodes), len(task.Nodes))
 	}
 	byID := func(nodes []FlowNode) map[string]FlowNode {
 		m := make(map[string]FlowNode, len(nodes))
@@ -69,7 +71,17 @@ func TestBugPlanHarnessPack(t *testing.T) {
 				t.Fatalf("bug-plan-harness reproduce_test shape drifted: %+v", b)
 			}
 			if _, ok := taskNodes["test_signatures"]; !ok {
-				t.Fatal("task-harness lost its legacy test_signatures node — CP-64 must not touch new-feature flows")
+				t.Fatal("task-harness lost its test_signatures node")
+			}
+			continue
+		}
+		// CP-67 supersession: task-harness's code-phase nodes (test_signatures
+		// scaffold wiring, implement fill-body prompt) were deliberately
+		// re-specified — bug-plan-harness keeps its CP-64 shapes and is no
+		// longer DeepEqual against those two nodes.
+		if b.ID == "test_signatures" || b.ID == "implement" {
+			if _, ok := taskNodes[b.ID]; !ok {
+				t.Fatalf("task-harness lost node %q", b.ID)
 			}
 			continue
 		}
@@ -87,7 +99,11 @@ func TestBugPlanHarnessPack(t *testing.T) {
 			}
 		}
 	}
-	if !reflect.DeepEqual(renameReproduceEdgeEndpoints(bug.Edges), task.Edges) {
+	// CP-67 supersession: the three signature-renegotiation edges
+	// (synthesis→synthesis_negotiation, its back-edge to test_signatures, its
+	// done forward to synthesis) exist only in task-harness — strip them
+	// before the structural comparison.
+	if !reflect.DeepEqual(renameReproduceEdgeEndpoints(bug.Edges), dropNegotiationEdges(task.Edges)) {
 		t.Fatalf("bug-plan-harness edges differ from task-harness beyond the CP-64 rename:\nbug: %+v\ntask: %+v", bug.Edges, task.Edges)
 	}
 	if !reflect.DeepEqual(bug.AcceptanceNodes, task.AcceptanceNodes) {
@@ -129,4 +145,17 @@ func TestBugPlanHarnessPack(t *testing.T) {
 			t.Fatalf("%s missing %s plan_md binding", tc.nodeID, tc.direction)
 		}
 	}
+}
+
+// dropNegotiationEdges removes the CP-67 signature-renegotiation edges from a
+// task-harness edge list (bug-plan-harness deliberately has none).
+func dropNegotiationEdges(edges []FlowEdge) []FlowEdge {
+	out := make([]FlowEdge, 0, len(edges))
+	for _, e := range edges {
+		if e.From == "synthesis_negotiation" || e.To == "synthesis_negotiation" {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
 }

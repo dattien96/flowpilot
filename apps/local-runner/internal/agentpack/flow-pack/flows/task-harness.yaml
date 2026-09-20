@@ -34,6 +34,9 @@ policy:
   onCap: escalate
   extendBy: 2
   extendMax: 2
+  # CP-67 P-5 (B-10): phase-scoped signature-renegotiation budget — never
+  # shared with the review-loop cap; escalate when exhausted (no extend).
+  negotiationCap: 5
 contexts:
   main_context:
     ref: contexts/flow-context-package.yaml
@@ -62,6 +65,9 @@ contextProfiles:
     maxTokens: 24000
 tools:
   - tools/submit-review-outcome.yaml
+  # CP-67 P-5 (Task-378): Contract-First TDD handover faces.
+  - tools/submit-scaffold-outcome.yaml
+  - tools/submit-coder-outcome.yaml
 acceptance_nodes:
   - plan_synthesis
   - validate
@@ -145,16 +151,22 @@ nodes:
   # --- Code phase (identical shape to rag-harness) ---
   - id: test_signatures
     run: delegate
-    lifecycle: once
-    behavior: agent.code
-    agent: agents/tester.md
-    promptTemplate: prompts/test-signatures.md
+    # CP-67 P-5 (B-7): node id UNCHANGED. Behavior/agent/prompt switch to the
+    # Contract-First Scaffold TDD wiring; lifecycle becomes reinvoke so the
+    # negotiation loop can re-enter this node for stub+test revision.
+    lifecycle: reinvoke
+    behavior: agent.scaffold
+    agent: agents/scaffold-architect.md
+    promptTemplate: prompts/scaffold-contract-tdd.md
+    # CP-67 P-3 (B-5): the contract architect is a High-Reasoning tier node.
+    model: claude-sonnet-4-5
   - id: implement
     run: delegate
     lifecycle: reinvoke
     behavior: agent.code
     agent: agents/coder.md
-    promptTemplate: prompts/implement-complete-tests.md
+    # CP-67 P-5 (Task-381): fill-body-only contract with Accumulate & Batch.
+    promptTemplate: prompts/implement-scaffold-body.md
     # CP-62 P-5 (Task-341): coder needs the full dependence chain.
     contextProfile: coder
   - id: validate
@@ -177,6 +189,16 @@ nodes:
     cohort: review
     join: all
   - id: synthesis
+    run: inline
+    lifecycle: reinvoke
+    behavior: hub.inline
+    agent: agents/synthesizer.md
+    join: all
+  # CP-67 P-5 (B-6): the signature-renegotiation hub. The coder's batched
+  # renegotiate_signatures continue lands here; the hub adjudicates the batch
+  # and routes scaffold revision (back to test_signatures) or closure (forward
+  # to synthesis). Inline hub — no spawnable-target change needed.
+  - id: synthesis_negotiation
     run: inline
     lifecycle: reinvoke
     behavior: hub.inline
@@ -252,6 +274,23 @@ edges:
   - from: synthesis
     to: ask_user
     when: escalate
+    kind: forward
+  # CP-67 P-5 (B-6): signature-renegotiation loop. A coder batch (continue
+  # with batch_signature_requests) routes to the negotiation hub; the hub
+  # sends approved batches back to the scaffold node (continue/back) and
+  # closes a finished negotiation forward to synthesis (done). The old
+  # review-loop edges are untouched.
+  - from: synthesis
+    to: synthesis_negotiation
+    when: continue
+    kind: forward
+  - from: synthesis_negotiation
+    to: test_signatures
+    when: continue
+    kind: back
+  - from: synthesis_negotiation
+    to: synthesis
+    when: done
     kind: forward
   - from: audit
     to: done

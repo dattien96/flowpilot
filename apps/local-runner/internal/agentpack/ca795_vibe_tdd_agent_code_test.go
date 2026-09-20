@@ -2,14 +2,15 @@ package agentpack
 
 import "testing"
 
-// CA-795: vibe-sprint tdd is agent.code like harness test_signatures so
-// freeze binds tdd first, then coder. New file — do not edit CA-785 tests.
+// CA-795 baseline, SUPERSEDED by CP-67 P-5 (Task-382): tdd is now
+// agent.scaffold — still a freeze-bound writer (scaffold joins the writer
+// set per B-3), with the scaffold-architect persona instead of agent.code.
 
-func TestPack_VibeSprintTddIsAgentCode(t *testing.T) {
+func TestPack_VibeSprintTddIsScaffoldWriter(t *testing.T) {
 	def := loadVibeSprint(t)
 	tdd := nodeByID(def, "tdd")
-	if tdd.Behavior != "agent.code" {
-		t.Fatalf("tdd behavior=%q, want agent.code", tdd.Behavior)
+	if tdd.Behavior != "agent.scaffold" {
+		t.Fatalf("tdd behavior=%q, want agent.scaffold", tdd.Behavior)
 	}
 	coder := nodeByID(def, "coder")
 	if coder.Behavior != "agent.code" {

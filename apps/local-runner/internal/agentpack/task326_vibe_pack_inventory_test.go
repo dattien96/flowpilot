@@ -4,11 +4,10 @@ import (
 	"testing"
 )
 
-// Scenario: builtin pack count after Task-321, CP-64 and CP-65 P-3.
+// Scenario: builtin pack count after Task-321, CP-64, CP-65 P-3 and CP-67.
 // Input: LoadBuiltinPack()
-// Expect: len(Flows)==13 (CP-65 P-3 adds tournament-harness, authorized
-// inventory change); len(Agents)==9 (CP-64 added agents/reproducer.md;
-// CP-65 reuses agents/coder.md, no new agent).
+// Expect: len(Flows)==13; len(Agents)==10 (CP-67 P-3 added
+// agents/scaffold-architect.md — authorized inventory change).
 func TestPack_InventoryUnchanged(t *testing.T) {
 	pack, err := LoadBuiltinPack()
 	if err != nil {
@@ -17,8 +16,8 @@ func TestPack_InventoryUnchanged(t *testing.T) {
 	if len(pack.Flows) != 13 {
 		t.Fatalf("flows=%d, want 13", len(pack.Flows))
 	}
-	if len(pack.Agents) != 9 {
-		t.Fatalf("agents=%d, want 9 (%v)", len(pack.Agents), SortedAgentNames(pack.Agents))
+	if len(pack.Agents) != 10 {
+		t.Fatalf("agents=%d, want 10 (%v)", len(pack.Agents), SortedAgentNames(pack.Agents))
 	}
 }
 

@@ -57,8 +57,11 @@ func TestHarnessCodeWritersStayOnCoder(t *testing.T) {
 			if n.ID == "implement" && n.Agent != "agents/coder.md" {
 				t.Fatalf("%s implement agent = %q, want agents/coder.md (real code writer)", def.ID, n.Agent)
 			}
-			if n.ID == "test_signatures" && n.Agent != "agents/tester.md" {
-				t.Fatalf("%s test_signatures agent = %q, want agents/tester.md", def.ID, n.Agent)
+			// CP-67 supersession: task-harness's test_signatures is the
+			// scaffold architect node; cp-harness-smoke keeps the legacy
+			// tester wiring (CP-67 does not touch the smoke flow).
+			if def.ID == "task-harness" && n.ID == "test_signatures" && n.Agent != "agents/scaffold-architect.md" {
+				t.Fatalf("%s test_signatures agent = %q, want agents/scaffold-architect.md", def.ID, n.Agent)
 			}
 		}
 	}
