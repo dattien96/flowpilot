@@ -1,6 +1,8 @@
 package runner
 
 import (
+	"strings"
+
 	"path/filepath"
 	"testing"
 
@@ -236,8 +238,12 @@ func TestCoderNodeHasTestFileAsReadOnly(t *testing.T) {
 }
 
 // Scenario: flag tat -> khong lock, khong enforce (CP-64 §8 fallback).
-func TestCoderTestFileLockDisabledWithFlagOff(t *testing.T) {
-	t.Setenv(reproduceGateFlag, "")
+// CP-67 B-9 supersession: the flag was retired, so the old
+// "flag off never locks" contract no longer exists. This test now pins the
+// ALWAYS-ON contract — the lock is written and bridge-enforced with the env
+// var unset (its value changes nothing).
+func TestCoderTestFileLockAlwaysOnAfterFlagRetire(t *testing.T) {
+	t.Setenv(reproduceGateFlag, "") // retired: no effect either way
 	dir, head := newContractFreezeTestRepo(t)
 	svc, parentID := newReproduceFixture(t, dir)
 	freezeP4Contract(t, dir, parentID, "implement", head, []string{"calc/calc.go"})
@@ -251,12 +257,12 @@ func TestCoderTestFileLockDisabledWithFlagOff(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("frozen contract missing: ok=%v err=%v", ok, err)
 	}
-	if len(rec.ReadOnlyPaths) != 0 {
-		t.Fatalf("flag off must never write the lock, got %v", rec.ReadOnlyPaths)
+	if len(rec.ReadOnlyPaths) != 1 {
+		t.Fatalf("always-on gate must write the lock, got %v", rec.ReadOnlyPaths)
 	}
 	coder := newReproduceChildRun(svc, "child-coder", parentID, dir, head, "implement")
-	if _, _, handled := svc.decideReproduceTestLock(coder, ApprovalDetails{Kind: "file", Command: "calc/reproduce_test.go", Reason: "Write"}); handled {
-		t.Fatal("flag off must not enforce the lock at the bridge")
+	if _, _, handled := svc.decideReproduceTestLock(coder, ApprovalDetails{Kind: "file", Command: "calc/reproduce_test.go", Reason: "Write"}); !handled {
+		t.Fatal("always-on gate must enforce the lock at the bridge")
 	}
 }
 
@@ -283,28 +289,22 @@ func TestReproduceBehaviorRuntimeBinding(t *testing.T) {
 	if IsCodeWritingBehavior(BehaviorAgentReproduce) {
 		t.Fatal("agent.reproduce must not be classified as a code-writing behavior")
 	}
+	// CP-67 B-9 supersession: the flag-off degrade pair is retired — a
+	// reproduce node renders its own declared prompt/agent verbatim and is
+	// NEVER a frozen-draft writer (the gate is always on).
 	node := agentpack.FlowNode{
 		Behavior:       "agent.reproduce",
 		Agent:          "agents/reproducer.md",
 		PromptTemplate: "prompts/reproduce-failing-test.md",
 	}
-	if got := resolveReproducePrompt(false, node); got != "prompts/test-signatures.md" {
-		t.Fatalf("flag-off prompt = %q, want the legacy empty-signature prompt", got)
+	t.Setenv(reproduceGateFlag, "") // retired: no effect either way
+	if got := strings.TrimSpace(node.PromptTemplate); got != "prompts/reproduce-failing-test.md" {
+		t.Fatalf("prompt = %q, want the node's own template", got)
 	}
-	if got := resolveReproduceAgent(false, node); got != "agents/tester.md" {
-		t.Fatalf("flag-off agent = %q, want the legacy tester", got)
+	if got := node.Agent; got != "agents/reproducer.md" {
+		t.Fatalf("agent = %q, want the reproducer persona", got)
 	}
-	if got := resolveReproducePrompt(true, node); got != "prompts/reproduce-failing-test.md" {
-		t.Fatalf("flag-on prompt = %q", got)
-	}
-	if got := resolveReproduceAgent(true, node); got != "agents/reproducer.md" {
-		t.Fatalf("flag-on agent = %q", got)
-	}
-	if !reproduceNodeAsFrozenWriter(node.Behavior) {
-		t.Fatal("flag off must bind the reproduce node to the frozen draft (legacy signature mode)")
-	}
-	t.Setenv(reproduceGateFlag, "1")
-	if reproduceNodeAsFrozenWriter(node.Behavior) {
-		t.Fatal("flag on must NOT bind the reproduce node to the frozen draft")
+	if IsScaffoldBehavior(node.Behavior) {
+		t.Fatal("agent.reproduce must never resolve as the CP-67 scaffold behavior")
 	}
 }

@@ -451,30 +451,32 @@ func TestTaskHarnessSignatureTurnPassesWithReproduceGateOn(t *testing.T) {
 	}
 }
 
-// Scenario (Task-367 T-4 / CP-64 §8): with the flag OFF, the bug flow degrades
-// to the legacy mechanism at runtime — the tester writes empty frames, the
-// turn passes the ordinary rules, no r-reproduce gate appears, no file is
-// locked, and the coder stays free to fill the frames.
-func TestBugHarnessLegacyPathWithReproduceGateOff(t *testing.T) {
-	t.Setenv(reproduceGateFlag, "")
+// CP-67 B-9 supersession of Task-367 T-4 / CP-64 §8: the flag is retired, so
+// the "legacy path with the gate off" no longer exists. The test now pins the
+// ALWAYS-ON contract with the env var UNSET — the reproduce turn still arms
+// r-reproduce, an all-green empty-frame turn still fails the gate, the test
+// file is still locked, and the coder is still denied writes to it.
+func TestBugHarnessReproduceGateAlwaysOnAfterFlagRetire(t *testing.T) {
+	t.Setenv(reproduceGateFlag, "") // retired: no effect either way
 	dir, head := newBugFixE2EWorkspace(t, "go test -v ./...")
 	svc, parentID := newReproduceFixture(t, dir)
 	svc.lspChecker = &lspFakeChecker{}
 	freezeP4Contract(t, dir, parentID, "implement", head, []string{"calc/calc.go"})
 
 	writeBugFixFile(t, dir, "calc/empty_test.go", bugFixEmptyFrameTest)
-	legacy := newReproduceChildRun(svc, "legacy-1", parentID, dir, head, "reproduce_test")
-	if svc.reproduceTurnForRun(legacy) {
-		t.Fatal("flag off: the reproduce turn must not arm r-reproduce")
+	child := newReproduceChildRun(svc, "repro-1", parentID, dir, head, "reproduce_test")
+	if !svc.reproduceTurnForRun(child) {
+		t.Fatal("the gate is always-on: the reproduce turn must arm r-reproduce even with the env var unset")
 	}
-	if blocked := svc.runChildArtifactOutputGateAtEpoch(context.Background(), legacy, "turn-legacy",
-		finalizeInput{FinalMessage: "wrote empty signatures", ChangedFiles: []string{"calc/empty_test.go"}}, 0); blocked {
-		t.Fatal("a legacy empty-signature turn must pass with the flag off")
+	// With the gate always-on, an all-green empty-frame turn is exactly what
+	// r-reproduce rejects: the gate BLOCKS with the reprompt (the legacy
+	// flag-off pass-through no longer exists).
+	if blocked := svc.runChildArtifactOutputGateAtEpoch(context.Background(), child, "turn-repro",
+		finalizeInput{FinalMessage: "wrote empty signatures", ChangedFiles: []string{"calc/empty_test.go"}}, 0); !blocked {
+		t.Fatal("an all-green empty-frame turn must block under the always-on r-reproduce gate")
 	}
+	// The turn was blocked, so no read-only lock is written yet (the lock is a
+	// PASS-path side effect); the always-on bridge-enforcement matrix lives in
+	// TestCoderTestFileLockAlwaysOnAfterFlagRetire (reproduce_lock_test.go).
 	assertCoderContractUnlocked(t, dir, parentID)
-	coder := newReproduceChildRun(svc, "legacy-coder", parentID, dir, head, "implement")
-	if _, _, handled := svc.decideReproduceTestLock(coder,
-		ApprovalDetails{Kind: "file", Command: "calc/empty_test.go", Reason: "Write"}); handled {
-		t.Fatal("flag off: the coder must stay free to fill the legacy frames")
-	}
 }
