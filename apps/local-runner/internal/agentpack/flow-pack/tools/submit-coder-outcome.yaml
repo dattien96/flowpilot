@@ -1,0 +1,53 @@
+id: submit_coder_outcome
+kind: declared_face
+version: 1
+description: CP-67 P-1 coder face for the generic flow_control primitive — the coder reports completion, or hands the Main Agent one batched signature-renegotiation request set.
+exposesTool: true
+mapsTo: flow.control
+input:
+  type: object
+  required:
+    - status
+  properties:
+    status:
+      type: string
+      enum:
+        - completed
+        - renegotiate_signatures
+        - blocked
+    summary:
+      type: string
+    # CP-67 P-1 T-3: Accumulate & Batch — every signature change need the coder
+    # discovered during the turn rides here as ONE batch at end of turn; each
+    # row must carry a rationale (T-4) so the Main Agent can adjudicate it.
+    batch_signature_requests:
+      type: array
+      items:
+        type: object
+        required:
+          - symbol
+          - file
+          - current_signature
+          - proposed_signature
+          - rationale
+        properties:
+          symbol:
+            type: string
+          file:
+            type: string
+          current_signature:
+            type: string
+          proposed_signature:
+            type: string
+          rationale:
+            type: string
+    implementation_progress:
+      type: string
+statusMap:
+  completed: done
+  renegotiate_signatures: continue
+  blocked: escalate
+payloadMap:
+  batch_signature_requests: payload.batch_signature_requests
+  summary: payload.summary
+  implementation_progress: payload.implementation_progress

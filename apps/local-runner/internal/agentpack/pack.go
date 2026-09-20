@@ -101,6 +101,12 @@ type FlowPolicy struct {
 	// Zero means "use runner default" (10 minutes). Additive — packs without
 	// the field keep pre-Task-241 behavior via the default.
 	StallTimeoutSec int
+	// NegotiationCap is the CP-67 P-5 (B-10) phase-scoped budget for the
+	// Contract-First TDD signature-renegotiation loop (coder batch → hub
+	// mediation → scaffold revise → coder re-entry). Phase-scoped on purpose:
+	// it never shares the review loop's cap. Zero means "runner default (5)";
+	// declared values are validated to 1..20.
+	NegotiationCap int
 }
 
 type FlowContextBinding struct {
@@ -296,6 +302,15 @@ var behaviorAliases = map[string]string{
 	"agent.reproduce":  "agent.reproduce",
 	"reproduce":        "agent.reproduce",
 	"reproducing_test": "agent.reproduce",
+	// CP-67 P-3 (Task-380/B-3): the Contract-First Scaffold TDD node
+	// behavior. Self-mapped plus two documented aliases (behaviors/
+	// registry.yaml lists the same set). Like agent.code/agent.reproduce,
+	// agent.scaffold is a graph-topology marker — the runner's gate hook
+	// arms r-scaffold-red and snapshots signatures on this behavior, so an
+	// unrelated id must never alias onto it.
+	"agent.scaffold": "agent.scaffold",
+	"scaffold":       "agent.scaffold",
+	"scaffold_tdd":   "agent.scaffold",
 	// CP-65 P-3 (Task-370): tournament inline behaviors. Self-mapped; the
 	// runtime contract lives in runner/tournament_behavior.go and the
 	// reference docs in behaviors/registry.yaml.
@@ -753,6 +768,7 @@ func flowFromMap(m map[string]any) (FlowDefinition, error) {
 			ExtendBy:        intField(policy, "extendBy"),
 			ExtendMax:       intField(policy, "extendMax"),
 			StallTimeoutSec: intField(policy, "stallTimeoutSec"),
+			NegotiationCap:  intField(policy, "negotiationCap"),
 		}
 	}
 	if contexts, ok := mapField(m, "contexts"); ok {
@@ -997,6 +1013,12 @@ func ValidateFlowDefinition(def FlowDefinition) error {
 		}
 	}
 	nodeIDs := make(map[string]struct{}, len(def.Nodes))
+	// CP-67 P-5 (B-10): the renegotiation loop budget is phase-scoped and
+	// bounded — an unbounded or zero/negative declared cap would either
+	// disable the guard or loop forever, so it fails closed at load.
+	if def.Policy.NegotiationCap != 0 && (def.Policy.NegotiationCap < 1 || def.Policy.NegotiationCap > 20) {
+		return fmt.Errorf("flow %q policy.negotiationCap = %d, want 1..20 (0 = runner default 5)", def.ID, def.Policy.NegotiationCap)
+	}
 	for _, node := range def.Nodes {
 		if node.ID == "" {
 			return fmt.Errorf("flow %q has a node without id", def.ID)
@@ -1022,9 +1044,14 @@ func ValidateFlowDefinition(def FlowDefinition) error {
 		// any other behavior would be silently ignored, so it fails fast here.
 		// A delegate model that maps to no known provider is a typo that would
 		// otherwise inherit-and-confuse, so it fails fast too.
+		// CP-67 P-3 (B-5): agent.scaffold nodes are scaffold-architect
+		// delegate children (the runtime handler is behaviorAgentDelegate),
+		// so their High-Reasoning `model:` tier is consumed the same way;
+		// agent.code is accepted for parity so a pack author can pin the
+		// coder tier without tripping the load check.
 		if strings.TrimSpace(node.Model) != "" {
 			canonical, ok := NormalizeBehaviorID(node.Behavior)
-			if !ok || canonical != "agent.delegate" {
+			if !ok || (canonical != "agent.delegate" && canonical != "agent.scaffold" && canonical != "agent.code") {
 				return fmt.Errorf("flow %q node %q declares model %q but behavior %q never consumes a model (only agent.delegate does)", def.ID, node.ID, node.Model, node.Behavior)
 			}
 			if _, ok := ModelProviderKey(node.Model); !ok {

@@ -1,0 +1,72 @@
+id: submit_scaffold_outcome
+kind: declared_face
+version: 1
+description: CP-67 P-1 scaffold face for the generic flow_control primitive — the TDD step hands over production stubs plus a fully executable RED test suite.
+exposesTool: true
+mapsTo: flow.control
+input:
+  type: object
+  required:
+    - status
+  properties:
+    status:
+      type: string
+      enum:
+        - scaffold_ready
+        - blocked
+    # CP-67 P-1 T-2: the scaffold handover is typed, never prose — the hub and
+    # the gate read the stub symbols and the red suite straight from these rows.
+    stubs:
+      type: array
+      items:
+        type: object
+        required:
+          - file
+          - symbols
+        properties:
+          file:
+            type: string
+          symbols:
+            type: array
+            items:
+              type: object
+              required:
+                - name
+                - kind
+                - signature
+              properties:
+                name:
+                  type: string
+                kind:
+                  type: string
+                  enum:
+                    - function
+                    - method
+                    - interface
+                    - struct
+                    - class
+                signature:
+                  type: string
+    test_suite:
+      type: object
+      required:
+        - test_file
+        - red_tests
+      properties:
+        test_file:
+          type: string
+        red_tests:
+          type: array
+          items:
+            type: string
+        failure_type:
+          type: string
+          enum:
+            - not_implemented
+            - assertion_failure
+statusMap:
+  scaffold_ready: done
+  blocked: escalate
+payloadMap:
+  stubs: payload.stubs
+  test_suite: payload.test_suite

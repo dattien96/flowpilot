@@ -15,6 +15,11 @@ input:
         - approved
         - changes_requested
         - blocked
+        # CP-67 P-1 (Task-378, B-1/B-2): the signature-locked coder's
+        # batched renegotiation signal rides THIS tool (no per-face adapter
+        # constant). Maps to generic continue; the batch is buffered
+        # record-only for the synthesis_negotiation hub.
+        - renegotiate_signatures
     feedback:
       type: string
     # CP-62 P-2 (Task-338): per-AC machine-checkable verdict rows with
@@ -53,6 +58,30 @@ input:
                   type: string
           note:
             type: string
+    # CP-67 P-1 (Task-378 T-3/T-4): the coder's Accumulate & Batch
+    # renegotiation set. Schema is declared canonically on the logical face
+    # submit-coder-outcome.yaml; it rides this transport tool verbatim.
+    batch_signature_requests:
+      type: array
+      items:
+        type: object
+        required:
+          - symbol
+          - file
+          - current_signature
+          - proposed_signature
+          - rationale
+        properties:
+          symbol:
+            type: string
+          file:
+            type: string
+          current_signature:
+            type: string
+          proposed_signature:
+            type: string
+          rationale:
+            type: string
     issues:
       type: array
       items:
@@ -70,9 +99,15 @@ statusMap:
   approved: done
   changes_requested: continue
   blocked: escalate
+  # CP-67: renegotiation never terminates the loop on its own — it routes
+  # through the synthesis_negotiation hub as a generic continue.
+  renegotiate_signatures: continue
 payloadMap:
   issues: payload.issues
   feedback: summary
+  # CP-67 P-1: the coder's batch rides the payload verbatim so the bridge
+  # can buffer it record-only for the synthesis_negotiation hub.
+  batch_signature_requests: payload.batch_signature_requests
   # CP-62 P-2 T-3: raw verdict rows ride the payload to the hub verbatim —
   # the synthesizer forwards them on the back-edge without paraphrasing.
   verdicts: payload.verdicts
