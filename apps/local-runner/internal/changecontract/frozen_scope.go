@@ -534,6 +534,85 @@ func LockReproduceTestPathsOn(store *FrozenStore, existing FrozenContractRecord,
 	return locked, nil
 }
 
+// LockScaffoldArtifacts locks the Contract-First scaffold handover in ONE
+// version bump (CP-67 P-2 B-8.3 / Task-379): the scaffold architect's test
+// files join ReadOnlyPaths AND the canonical SignatureHash + LockedSignatures
+// snapshot lands in the coder step's frozen record together — two separate
+// writes would mint two versions and leave a crash window where tests are
+// locked but signatures are not yet pinned (or vice versa).
+//
+// Same save-before-supersede ordering as LockReproduceTestPathsOn (CA-427
+// Finding 4). A no-op when everything is already recorded, so repeated
+// scaffold turns never mint pointless versions.
+func LockScaffoldArtifacts(store *FrozenStore, existing FrozenContractRecord, testPaths []string, signatureHash string, lockedSignatures []string, now time.Time) (FrozenContractRecord, error) {
+	unionPaths := uniqueNormalizedPaths(append(append([]string(nil), existing.ReadOnlyPaths...), testPaths...))
+	unionSigs := uniqueNormalizedPaths(lockedSignatures)
+	hash := strings.TrimSpace(signatureHash)
+
+	pathsSame := sameStringSet(unionPaths, uniqueNormalizedPaths(existing.ReadOnlyPaths))
+	sigsSame := sameStringSet(unionSigs, uniqueNormalizedPaths(existing.LockedSignatures))
+	hashSame := (hash == existing.SignatureHash)
+	if pathsSame && sigsSame && hashSame {
+		return existing, nil
+	}
+
+	draft := PreflightContractDraft{
+		FeatureKey:    existing.FeatureKey,
+		Intent:        existing.Intent,
+		DeclaredPaths: existing.DeclaredPaths,
+		SourceDocID:   existing.SourceDocID,
+	}
+	id := ComputeContractID(existing.RunID, existing.CoderStepID, existing.Version+1, draft, existing.BaseSHA, existing.BaselineWorktree)
+	locked := FrozenContractRecord{
+		ContractID:        id,
+		Version:           existing.Version + 1,
+		RunID:             existing.RunID,
+		PlannerStepID:     existing.PlannerStepID,
+		CoderStepID:       existing.CoderStepID,
+		FeatureKey:        existing.FeatureKey,
+		Intent:            existing.Intent,
+		DeclaredPaths:     uniqueNormalizedPaths(existing.DeclaredPaths),
+		AllowedExtraPaths: uniqueNormalizedPaths(existing.AllowedExtraPaths),
+		ReadOnlyPaths:     unionPaths,
+		SourceDocID:       existing.SourceDocID,
+		BaseSHA:           existing.BaseSHA,
+		BaselineWorktree:  existing.BaselineWorktree,
+		SignatureHash:     hash,
+		LockedSignatures:  unionSigs,
+		Supersedes:        existing.ContractID,
+		DeclaredAt:        now,
+	}
+	if err := store.SaveFrozen(locked); err != nil {
+		return FrozenContractRecord{}, err
+	}
+	if err := store.AppendStatus(existing.ContractID, ContractStatusSuperseded, "contract-first TDD: scaffold artifacts locked (tests read-only + signature hash pinned)", now); err != nil {
+		return FrozenContractRecord{}, err
+	}
+	return locked, nil
+}
+
+// LockScaffoldArtifactsForStep opens the workspace's frozen-contract store
+// and applies LockScaffoldArtifacts to the active contract bound to
+// (runID, coderStepID) — the same open-and-lock shape LockReproduceTestPaths
+// gives the reproduce gate (CP-67 P-2).
+func LockScaffoldArtifactsForStep(workspace, runID, coderStepID string, testPaths []string, signatureHash string, lockedSignatures []string, now time.Time) (FrozenContractRecord, error) {
+	if len(normalizeScopePaths(testPaths)) == 0 && strings.TrimSpace(signatureHash) == "" {
+		return FrozenContractRecord{}, nil
+	}
+	store, err := NewFrozenStore(workspace)
+	if err != nil {
+		return FrozenContractRecord{}, err
+	}
+	existing, ok, err := store.GetFrozenForStep(runID, coderStepID)
+	if err != nil {
+		return FrozenContractRecord{}, err
+	}
+	if !ok {
+		return FrozenContractRecord{}, fmt.Errorf("changecontract: no active frozen contract for step %q in run %q to lock scaffold artifacts on", coderStepID, runID)
+	}
+	return LockScaffoldArtifacts(store, existing, testPaths, signatureHash, lockedSignatures, now)
+}
+
 // IsReadOnlyLockedPath reports whether candidate matches one of the record's
 // ReadOnlyPaths after the same normalization FrozenContractScopeDrift applies.
 // Pure and workspace-free: a caller holding an absolute candidate must make it

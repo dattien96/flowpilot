@@ -99,6 +99,17 @@ func checkRule(rule Rule, tr TurnResult) *Violation {
 		// this turn as a reproduce turn (TurnResult.ReproduceExpected).
 		return checkReproduceRule(rule, tr)
 
+	case "scaffold_not_red":
+		// CP-67 P-2 (Task-379 B-4): r-scaffold-red. Opt-in via
+		// TurnResult.ScaffoldExpected — compile OK plus a genuinely RED suite
+		// plus (B-11) bodies inside the static stub whitelist.
+		return checkScaffoldRedRule(rule, tr)
+
+	case "signature_modified":
+		// CP-67 P-2 (Task-379): r-signature-lock. Opt-in via both hash
+		// signals being populated; the renegotiation batch is the only bypass.
+		return checkSignatureLockRule(rule, tr)
+
 	case "tests_failed":
 		// Ordinary suite failures only (V9-27) — not regression names.
 		if tr.Tests.Ran && len(tr.Tests.Failed) > 0 {

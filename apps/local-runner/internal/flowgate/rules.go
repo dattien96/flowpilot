@@ -139,6 +139,33 @@ type TurnResult struct {
 	// phrase/section heuristics stay as the backward-compatible fallback
 	// during the transition (hasValidDodExplanation).
 	DodExplanation *DodExplanation `json:"dod_explanation,omitempty"`
+	// CP-67 P-2 (Task-379): Contract-First Scaffold TDD signals,
+	// caller-computed like the Reproduce* fields above — flowgate stays
+	// I/O-free; the runner's gate hook reads the frozen contract, extracts
+	// the canonical hashes and populates these before Evaluate runs.
+	//
+	// SignatureHashBefore/After pin the scaffold architect's API contract
+	// around a coder turn (CanonicalSignatureHash over signature-only
+	// declarations, B-8.1). SignatureDrift lists the drifted declarations
+	// for the reprompt detail (empty when the caller skipped the diff).
+	SignatureHashBefore string   `json:"signature_hash_before,omitempty"`
+	SignatureHashAfter  string   `json:"signature_hash_after,omitempty"`
+	SignatureDrift      []string `json:"signature_drift,omitempty"`
+	// CoderRenegotiating marks a coder turn that ended with a batched
+	// renegotiation (submit_coder_outcome status=renegotiate_signatures,
+	// buffered record-only) — the ONLY legal bypass of r-signature-lock;
+	// the Main Agent mediates the batch.
+	CoderRenegotiating bool `json:"coder_renegotiating,omitempty"`
+	// ScaffoldExpected arms r-scaffold-red for a scaffold turn;
+	// ScaffoldCompileFailed carries the suite-output classification.
+	ScaffoldExpected       bool `json:"scaffold_expected,omitempty"`
+	ScaffoldCompileFailed  bool `json:"scaffold_compile_failed,omitempty"`
+	// CP-67 P-2b (Task-383, B-11): static stub-body whitelist signals.
+	// ScaffoldBodyNonStub is true when any declared symbol's body sits
+	// outside the stub whitelist; NonStubSymbols names them as
+	// "symbol:line" for the reprompt.
+	ScaffoldBodyNonStub bool     `json:"scaffold_body_non_stub,omitempty"`
+	NonStubSymbols      []string `json:"non_stub_symbols,omitempty"`
 }
 
 // DodExplanation is the schema'd or-explained payload for r-dod-complete

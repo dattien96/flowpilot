@@ -78,7 +78,15 @@ type FrozenContractRecord struct {
 	// Zero-value compatible: a record frozen without it stays byte-identical in
 	// JSON (omitempty) and every pre-CP-64 flow keeps its exact behavior.
 	ReadOnlyPaths []string  `json:"read_only_paths,omitempty"`
-	DeclaredAt    time.Time `json:"declared_at"`
+	// SignatureHash is the CP-67 P-2 (Task-379) canonical SHA256 over the
+	// scaffold architect's signature-only declarations (B-8.1) snapshotted
+	// after a passing scaffold gate. LockedSignatures lists the
+	// human-readable signatures so a drift reprompt can name them.
+	// Zero-value compatible: pre-CP-67 records marshal byte-identical
+	// (omitempty) and the gate skips the lock check when empty.
+	SignatureHash   string    `json:"signature_hash,omitempty"`
+	LockedSignatures []string `json:"locked_signatures,omitempty"`
+	DeclaredAt      time.Time `json:"declared_at"`
 }
 
 // ContractStatusEvent is one append-only lifecycle transition for a frozen

@@ -85,6 +85,25 @@ type Diagnostic struct {
 	Message  string             `json:"message"`
 }
 
+// DocumentSymbolParams is the body of a textDocument/documentSymbol request
+// (CP-67 P-2, Task-379 B-8.4): the scaffold gate's Kotlin/C++ signature
+// extraction anchors on the server's symbol ranges.
+type DocumentSymbolParams struct {
+	TextDocument TextDocumentIdentifier `json:"textDocument"`
+}
+
+// DocumentSymbolResultItem is one textDocument/documentSymbol result row —
+// the flat DocumentSymbol[] shape (kind as the LSP SymbolKind number). Range
+// covers the whole declaration INCLUDING its body; selectionRange points at
+// the identifier.
+type DocumentSymbolResultItem struct {
+	Name           string `json:"name"`
+	Kind           int    `json:"kind"`
+	Detail         string `json:"detail,omitempty"`
+	Range          Range  `json:"range"`
+	SelectionRange Range  `json:"selectionRange"`
+}
+
 // PublishDiagnosticsParams is the body of a textDocument/publishDiagnostics
 // notification pushed by the server.
 type PublishDiagnosticsParams struct {
