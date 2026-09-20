@@ -99,10 +99,14 @@ func (s *InteractiveService) startResolvedFlowFromNode(ctx context.Context, pare
 		rs.flowStartWorktreeFingerprint = baselineWorktreeFingerprint(rs.workspaceCwd)
 	}
 	s.mu.Unlock()
+	negotiationCap := record.Definition.Policy.NegotiationCap
 	s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
 		st.Cap = cap
 		st.RoundCap = cap
 		st.ExtendBy = extendBy
+		// CP-67 P-5 (B-10): phase-scoped renegotiation budget; 0 = runner
+		// default 5 (effectiveNegotiationCap).
+		st.NegotiationCap = negotiationCap
 		return st
 	})
 
@@ -1009,6 +1013,34 @@ func (s *InteractiveService) workspaceCwdFor(runID string) string {
 //   - (c) first-match fallback, which reproduces the pre-Task-304 behavior
 //     exactly when from is omitted (every pre-existing call site and every
 //     single-loop built-in flow).
+// negotiationHubNodeFor finds the declared CP-67 negotiation hub: a
+// hub.inline node that is the target of ANOTHER hub.inline node's
+// (when:continue, kind:forward) edge. Edge-declared, not activeHubNodeID-
+// derived — the active hub may be stale (e.g. task-harness's earlier
+// plan_synthesis hub) when the coder completes.
+func negotiationHubNodeFor(edges []agentpack.FlowEdge, nodes []agentpack.FlowNode) (agentpack.FlowNode, bool) {
+	isHubInline := func(id string) bool {
+		n, ok := findFlowNode(nodes, id)
+		if !ok {
+			return false
+		}
+		canonical, ok := agentpack.NormalizeBehaviorID(n.Behavior)
+		return ok && canonical == "hub.inline"
+	}
+	for _, e := range edges {
+		if !strings.EqualFold(strings.TrimSpace(e.Kind), "forward") ||
+			!strings.EqualFold(strings.TrimSpace(e.When), "continue") {
+			continue
+		}
+		if isHubInline(e.From) && isHubInline(e.To) {
+			if n, ok := findFlowNode(nodes, e.To); ok {
+				return n, true
+			}
+		}
+	}
+	return agentpack.FlowNode{}, false
+}
+
 func resolveContinueBackEdgeTarget(edges []agentpack.FlowEdge, from ...string) (string, bool) {
 	fromID := ""
 	if len(from) > 0 {
@@ -1020,9 +1052,27 @@ func resolveContinueBackEdgeTarget(edges []agentpack.FlowEdge, from ...string) (
 				return edge.To, true
 			}
 		}
+		// CP-67 P-5 (B-6): a phase hub is ENTERED via a when:continue forward
+		// edge (synthesis -> synthesis_negotiation). Its own back-edge
+		// (synthesis_negotiation -> test_signatures) anchors that phase's loop
+		// only — it must not serve as another node's re-entry anchor, or it
+		// shadows the real writer edge at a shorter forward distance
+		// (task-harness: dist 1 via synthesis_negotiation->synthesis vs
+		// validate->reviewer->synthesis dist 2).
+		phaseHubs := map[string]bool{}
+		for _, e := range edges {
+			if strings.EqualFold(strings.TrimSpace(e.Kind), "forward") &&
+				strings.EqualFold(strings.TrimSpace(e.When), "continue") &&
+				strings.TrimSpace(e.To) != "" {
+				phaseHubs[strings.TrimSpace(e.To)] = true
+			}
+		}
 		bestTarget, bestDist := "", -1
 		for _, edge := range edges {
 			if !isContinueBackEdge(edge) || edge.To == "" || strings.TrimSpace(edge.From) == fromID {
+				continue
+			}
+			if phaseHubs[strings.TrimSpace(edge.From)] {
 				continue
 			}
 			if dist := forwardDistance(edges, strings.TrimSpace(edge.From), fromID); dist >= 0 && (bestDist < 0 || dist < bestDist) {
@@ -1033,8 +1083,18 @@ func resolveContinueBackEdgeTarget(edges []agentpack.FlowEdge, from ...string) (
 			return bestTarget, true
 		}
 	}
+	// CP-67 P-5 (B-6): same phase-hub exclusion for the unscoped fallback —
+	// a negotiation-phase back-edge is never a valid generic re-entry.
+	phaseHubs := map[string]bool{}
+	for _, e := range edges {
+		if strings.EqualFold(strings.TrimSpace(e.Kind), "forward") &&
+			strings.EqualFold(strings.TrimSpace(e.When), "continue") &&
+			strings.TrimSpace(e.To) != "" {
+			phaseHubs[strings.TrimSpace(e.To)] = true
+		}
+	}
 	for _, edge := range edges {
-		if isContinueBackEdge(edge) && edge.To != "" {
+		if isContinueBackEdge(edge) && edge.To != "" && !phaseHubs[strings.TrimSpace(edge.From)] {
 			return edge.To, true
 		}
 	}
@@ -1181,6 +1241,34 @@ func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID
 	nodes := parent.activeFlowNodes
 	s.mu.Unlock()
 	round := s.agentOrchestrator.loopStateFor(parentRunID).Round
+
+	// CP-67 P-5 (B-6): a coder node completing with a pending renegotiation
+	// batch routes to the signature-negotiation hub — the hub.inline node
+	// that is the target of another hub.inline's (when:continue,
+	// kind:forward) edge — instead of the coder's normal done-successor.
+	// The batch is consumed into the hub's prompt so the Main Agent
+	// adjudicates it (never coder↔architect peer-to-peer).
+	if s.coderRenegotiatingForRun(parentRunID) {
+		if completed, ok := findFlowNode(nodes, completedNodeID); ok {
+			if canonical, ok2 := agentpack.NormalizeBehaviorID(completed.Behavior); ok2 && canonical == "agent.code" {
+				if hubNode, ok3 := negotiationHubNodeFor(edges, nodes); ok3 {
+					if s.isFlowEngineDriven(parentRunID) {
+						s.setFlowStepStatus(context.Background(), parentRunID, completedNodeID, StepStatusDone)
+					}
+					batch := s.consumeCoderBatchSignatures(parentRunID)
+					s.dispatchHubNotifyNodeWithPrompt(parentRunID, hubNode, composeHubNotifyPrompt(hubNode)+renderNegotiationBatchPrompt(batch))
+					s.flowDiagLog(parentRunID, "flow_advance_negotiation_hub", "coder batch pending — routing to negotiation hub",
+						"completed_node_id", completedNodeID,
+						"batch_rows", len(batch),
+					)
+					return true
+				}
+			}
+		}
+		// No declared negotiation hub (or the completed node is not the
+		// coder) — fall through to the normal done-successor advance; the
+		// batch stays buffered and is never silently dropped.
+	}
 
 	targetIDs := forwardDoneTargets(edges, completedNodeID)
 	if len(targetIDs) == 0 {
@@ -1645,9 +1733,9 @@ func entryDelegateNodes(def agentpack.FlowDefinition) []agentpack.FlowNode {
 // basenames are the catalog names Task-174 wired in (see
 // agent_catalog_pack.go / flow-pack/agents/*.md).
 func flowNodeAgentName(node agentpack.FlowNode) string {
-	// CP-64 (Task-366 T-6): flag off degrades a reproduce node to the legacy
-	// tester role; flag on spawns the reproducer persona.
-	return agentNameFromRef(resolveReproduceAgent(ReproduceGateEnabled(), node))
+	// B-9 retire: no flag-off degrade any more — the node's declared agent
+	// ref spawns verbatim (reproduce nodes carry agents/reproducer.md).
+	return agentNameFromRef(node.Agent)
 }
 
 // agentNameFromRef derives the agent catalog name from an agent file
