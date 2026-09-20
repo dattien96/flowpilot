@@ -40,6 +40,13 @@ const (
 	// an IsCodeWritingBehavior id — the reproduce node is not a frozen
 	// preflight writer and must not be treated as one by topology/gate code.
 	BehaviorAgentReproduce BehaviorID = "agent.reproduce"
+	// BehaviorAgentScaffold (CP-67 P-3) marks the Contract-First Scaffold TDD
+	// node: a frozen-contract writer that produces signature-only production
+	// stubs plus the executable RED suite. It reuses behaviorAgentDelegate
+	// verbatim (T-2) and — unlike agent.reproduce — IS a writer id: its
+	// stub/test writes live inside the freeze-dominated declared scope, and
+	// the gate arms r-scaffold-red on this behavior.
+	BehaviorAgentScaffold BehaviorID = "agent.scaffold"
 	// BehaviorTournamentArbiter / BehaviorTournamentMerge (CP-65 P-3) are the
 	// deterministic inline behaviors of the tournament-harness flow: scoring
 	// + verdict (arbiter) and winner merge + cleanup (merge). Handler
@@ -55,6 +62,15 @@ const (
 // can never be misclassified as safe.
 func IsCodeWritingBehavior(id BehaviorID) bool {
 	return id == BehaviorAgentCode
+}
+
+// IsScaffoldBehavior reports whether a node's declared behavior resolves to
+// the CP-67 Contract-First Scaffold TDD behavior (aliases included) — the
+// activation signal for r-scaffold-red, the signature snapshot, and the
+// post-pass LockScaffoldArtifacts write.
+func IsScaffoldBehavior(behavior string) bool {
+	canonical, ok := agentpack.NormalizeBehaviorID(behavior)
+	return ok && canonical == "agent.scaffold"
 }
 
 // BehaviorScope classifies how a behavior is allowed to act. Pack data never

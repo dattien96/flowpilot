@@ -222,7 +222,7 @@ func (s *InteractiveService) runContextProduceNode(ctx context.Context, parentRu
 		return escalate("forward target " + targets[0] + " missing from flow nodes")
 	}
 	canonical, ok := agentpack.NormalizeBehaviorID(target.Behavior)
-	if !ok || (canonical != "agent.delegate" && canonical != "agent.code" && !IsReproduceBehavior(target.Behavior)) {
+	if !ok || (canonical != "agent.delegate" && canonical != "agent.code" && !IsReproduceBehavior(target.Behavior) && !IsScaffoldBehavior(target.Behavior)) {
 		return escalate("forward target " + target.ID + " is not a spawnable delegate/writer (behavior " + target.Behavior + ")")
 	}
 	agentName := flowNodeAgentName(target)
@@ -1622,7 +1622,9 @@ func resolveFreezeWriterTarget(edges []agentpack.FlowEdge, nodes []agentpack.Flo
 			path = append(path, target)
 			current = target.ID
 			continue
-		case "agent.code":
+		case "agent.code", "agent.scaffold":
+			// CP-67: the scaffold node is a frozen writer just like
+			// agent.code — its stubs/test files land in the declared scope.
 			return target, path, true
 		default:
 			return agentpack.FlowNode{}, nil, false
@@ -2196,7 +2198,7 @@ func flowAgentCodeWriterNodes(nodes []agentpack.FlowNode) []agentpack.FlowNode {
 		// bound to the same frozen draft scope. With the gate ON it is NOT a
 		// frozen writer (it writes a brand-new test file governed by
 		// r-reproduce instead).
-		if canonical != "agent.code" && !reproduceNodeAsFrozenWriter(n.Behavior) {
+		if canonical != "agent.code" && !IsScaffoldBehavior(n.Behavior) {
 			continue
 		}
 		out = append(out, n)

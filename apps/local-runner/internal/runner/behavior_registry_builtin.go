@@ -53,6 +53,10 @@ func NewDefaultBehaviorRegistry() *BehaviorRegistry {
 	// gate/scope treatment lives in the runner's gate hook, not in this
 	// handler.
 	mustRegister(r, BehaviorSpec{ID: BehaviorAgentReproduce, Scope: BehaviorScopeDelegate, Handler: behaviorAgentDelegate})
+	// CP-67 P-3 (Task-380 T-2): agent.scaffold reuses behaviorAgentDelegate
+	// verbatim — the scaffold architect is a provider-backed delegate whose
+	// write scope is the declared stub paths plus the new test files.
+	mustRegister(r, BehaviorSpec{ID: BehaviorAgentScaffold, Scope: BehaviorScopeDelegate, Handler: behaviorAgentDelegate})
 	// CP-65 P-3 (Task-370): tournament inline behaviors. Deterministic
 	// runner-owned logic (score/decide/merge/cleanup) with no provider call —
 	// same inline scope as command.validate/validation.summarize. Registering
