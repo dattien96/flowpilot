@@ -239,6 +239,33 @@ Mở Desktop App ➔ **Settings** ➔ **AI Providers**.
 
 ---
 
+## R. Live Verification trên `gate-sandbox` — HTTP-driven (convention CP-64/CP-68)
+
+> **Giường thử (Manual Bed):** `/Users/tiendat/Desktop/BE/gate-sandbox` (projectId `db51ec26-1a0f-4b92-8ceb-b03dc8e9b363`). Không đặt bed dưới `/tmp` — macOS symlink `/tmp→/private/tmp` trip `changecontract: declared path resolves outside workspace via symlink` (bài học CP-64); nếu cần bed phụ dùng `/Users/tiendat/fp-beds/`.
+>
+> **Phương thức drive:** `just chat-dev` TUI stall với interactive input → drive bằng **raw HTTP** giống CP-64/68:
+> - `POST /client/workflow-runs` — body `{projectId, providerKey:"devin", model:"devin/swe-2-high", chatMode:"normal_chat", workingMode:"dev", cwd:"/Users/tiendat/Desktop/BE/gate-sandbox", yoloMode:<bool>}` → nhận `runId`.
+> - `POST /client/workflow-runs/{runId}/turns` — body `{stepId, prompt, ...}`; với flow test thêm `flowRef:"bug-harness"`, `subMode:"bug"`, `changeType:"bugfix"`.
+> - Đọc trạng thái/events qua `GET /client/workflow-runs/{runId}` (hoặc stream endpoint hiện hữu); health qua `GET /health`.
+> - Provider Devin cần flag `FLOWPILOT_DEVIN_AGENT=1` lúc runner boot (P3).
+
+| # | Kịch bản live | Cách drive & Kết quả mong đợi | Ref |
+|---|---|---|---|
+| **R1** | Chat turn đầu tiên qua Devin | `POST /client/workflow-runs` (providerKey=`devin`, model=`devin/swe-2-high`, yoloMode=true) → `POST .../turns` prompt `"Reply with exactly: DEVIN_LIVE_OK"` | Run hoàn tất `stopReason=end_turn`, reply chứa `DEVIN_LIVE_OK`; log runner có spawn `devin acp` + `initialize → authenticate → session/new → session/prompt` | C1 |
+| **R2** | Tool call + file write (YOLO) | turn prompt `"Tạo file devin-e2e.txt nội dung ok"` | `tool_call{kind:"execute"}`/`tool_call_update` stream về; file thật tồn tại trong gate-sandbox; không treo turn | C3, E4 |
+| **R3** | Midchat model switch | Trong cùng run: turn1 `"nhớ số 77"` → đổi model sang `devin/adaptive` → turn2 `"số tôi vừa bảo?"` | Trả `77` đúng — `session/set_config_option{configId:"model"}` giữ session, không `session/new` mới (BUG-329, F-20) | D1 |
+| **R4** | Approval gate (yoloMode=false) | Run mới `yoloMode:false` → prompt `"Tạo file deny-test.txt"` → `POST /client/questions/{qId}/answer` trả deny → rồi approve | `permission_required` phát ra trước khi write; deny → file không tồn tại + turn kết thúc sạch (CA-712); approve → file tồn tại | E1–E3 |
+| **R5** | Session resume sau restart runner | Ghi `runId` + Devin `sessionId` (slug `adjective-noun`) → kill runner → start lại → mở lại run → turn mới | `session/load` thành công với sessionId cũ (F-24); context được giữ | I2, I3 |
+| **R6** | Flow gate trên Devin | `POST /client/workflow-runs` với `flowRef:"bug-harness"`, `subMode:"bug"`, `changeType:"bugfix"` trên gate-sandbox | Flow nodes chạy qua Devin; `r-reproduce`/`r-ca` gate vẫn enforce; repair prompt đi qua Devin (K1–K2) | K1, K2 |
+| **R7** | spawn_agent child isolation | turn yêu cầu `spawn_agent` (nếu Task-403 T-2 đã ship stdio shim) | Child run trên `account|child:<runId>` riêng; sau xong `ps aux \| grep "devin acp"` không còn process zombie (BUG-334). Nếu defer → đánh N/A | F1, F4 |
+| **R8** | Cancel giữa chừng | turn với prompt dài → `POST .../cancel` (hoặc tương đương) trong khi đang stream | Runner gửi `session/cancel`; turn → cancelled <1s, không treo (C8) | C8 |
+| **R9** | Regression cùng bed | Lặp R1 với `providerKey:"grok"` + `model:"grok-4.5"` trên cùng gate-sandbox | Grok vẫn hoạt động bình thường — Devin code không ảnh hưởng provider cũ (DV-BR) | N2 |
+| **R10** | Usage/accounting | Sau ≥3 turns, đọc `usage` trong turn result / account panel | `usage_update` + `result.usage{totalTokens,inputTokens,outputTokens,cachedReadTokens}` (F-23) hiển thị đúng, không NaN | C2, P1 |
+
+**Ghi bằng chứng:** mỗi R* ghi `run-XXXXXX`, Devin sessionId slug, và log line chứng minh (vd `spawn devin acp`, `authenticate ok`, `session/load <slug>`) — theo convention CP-64 §6.
+
+---
+
 ## Bảng Tổng Kết Kết Quả Nghiệm Thu (DOD Verification Sign-off)
 
 Ghi lại mã phiên chạy thật (Run ID) và ngày kiểm thử:
@@ -265,3 +292,4 @@ Ghi lại mã phiên chạy thật (Run ID) và ngày kiểm thử:
   - [⬜] Quota & Timeout Guard (Mục O): **PASS** (Đã kiểm tra BUG-361, CA-759)
   - [⬜] Account Usage (Mục P): **PASS** (Đã kiểm tra CA-683)
   - [⬜] Chuyển Giao Ngữ Cảnh (Handoff) (Mục Q): **PASS** (Đã kiểm tra E2E-14, E2E-15)
+  - [⬜] Live Verification gate-sandbox HTTP (Mục R): **PASS** (R1..R10 có runId + sessionId slug + log evidence)
