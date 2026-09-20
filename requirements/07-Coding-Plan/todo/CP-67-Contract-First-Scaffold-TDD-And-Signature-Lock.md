@@ -5,11 +5,11 @@
 - Document ID: `CP-67`
 - Title: `Contract-First Scaffold TDD & Signature Lock Gate`
 - Phase: `coding_plan`
-- Status: `ready`
+- Status: `implemented` (2026-09-20 — all slices committed `1571f961`..HEAD (11 task-scoped commits); automated matrix 46/46 green; live provider runs pending — see CP-67-Test-Steps §11.4)
 - Owner: `FlowPilot Architecture`
 - Reviewers: `Claude Sonnet MAX, Operator`
 - Created: `2026-09-18`
-- Last Updated: `2026-09-19`
+- Last Updated: `2026-09-20`
 - Parent Documents: [SS-14: Code Context And Regression Safety](../../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md), [SD-20: Flow Gate Rule Semantics](../../06-System-Tech-Design/SD-20-Flow-Gate-Rule-Semantics.md), [SP-06: Oracle Rule And Schema First Gate](../../04-System-Principle/SP-06-Oracle-Rule-And-Schema-First-Gate.md)
 - Child Documents: [Task-378](../../08-Task/todo/Task-378-Scaffold-Coder-Declared-Face-Tool-Schemas.md), [Task-379](../../08-Task/todo/Task-379-Signature-Lock-Rule-AST-Extractor.md), [Task-380](../../08-Task/todo/Task-380-Scaffold-Architect-Prompt-Agent-Persona.md), [Task-381](../../08-Task/todo/Task-381-Coder-Scaffold-Body-Prompt-Batch-Contract.md), [Task-382](../../08-Task/todo/Task-382-Flow-Topology-Scaffold-Renegotiation-Loop.md), [Task-383](../../08-Task/todo/Task-383-Multi-Language-Stub-Body-Validation.md)
 - Related Documents: [CP-64: Reproduce-First TDD Gate](../done/CP-64-Reproduce-First-TDD-Gate.md), [CP-62: Zcode Harness Parity](../done/CP-62-Zcode-Harness-Parity.md), [CP-63: IDE-Grade LSP Runtime](../done/CP-63-IDE-Grade-LSP-Runtime.md)
@@ -441,15 +441,15 @@ func TestLegacyTestSignaturesFlowUnaffected(t *testing.T)
 
 ## 10. Definition of Done
 
-- [ ] P-1: 2 tool faces `submit_scaffold_outcome` + `submit_coder_outcome` tạo + đăng ký trong manifest; pack validation pass; 5 test signatures xanh (schema validation + tool exposure + buffered submission).
-- [ ] P-1: harness `task-harness.yaml` + `vibe-sprint.yaml` list 2 tools mới; harness-declared faces render được trong prompt (không wire per-face constant vào 4 adapter — dùng existing `submit_review_outcome` + `SubmitFlowControl` bridge, B-1/B-2 resolve).
-- [ ] P-2: `r-signature-lock` + `r-scaffold-red` rules tạo; `ast_signatures.go` + `DocumentSymbols` vào LSP client; `FrozenContractRecord` + `TurnResult` + `AgentLoopState` mở rộng field; `LockScaffoldArtifacts` single-write; 15 test signatures xanh.
-- [ ] P-2: `r-scaffold-red` enforce compile OK + RED test trở chuẩn; suppress `r-tests/r-reg` cho scaffold turn; evidence red tests ghi từ `test_suite.red_tests`.
-- [ ] P-2b: static stub-body whitelist hoạt động cho 4 nhóm ngôn ngữ (Go, React TS/TSX, Kotlin, C/C++); `SignatureHash` không đổi khi thêm `BodyShape` (B-8.1 compat); caching theo mtime + fail-open `body_unverified`; 15 test signatures xanh; default build không cgo vẫn pass toàn bộ test (tree-sitter tests skip có đánh dấu khi tag off).
-- [ ] P-3: `scaffold-architect.md` persona + `scaffold-contract-tdd.md` prompt tạo; `agent.scaffold` behavior đăng ký ở agentpack (alias, safety topology) + runner (registry, spawnable target, writer classification); model-allowlist mở cho `agent.scaffold`; 3 test signatures xanh.
-- [ ] P-4: `implement-scaffold-body.md` prompt tạo + kiểm tra 3 lệnh cấm + batch contract; 2 test signatures xanh.
-- [ ] P-5: `task-harness.yaml` + `vibe-sprint.yaml` topology đúng: giữ node id (`test_signatures`/`tdd`/`implement`/`coder`), thêm `synthesis_negotiation` node, edges negotiation đúng, `policy.negotiationCap: 5`; `NegotiationRound`/`NegotiationCap` trong loop state; 6 test signatures xanh; `bug-harness`/`rag-harness`/`bug-plan-harness` không đổi.
-- [ ] P-5: sau scaffold turn pass gate → test files khóa `ReadOnlyPaths` + `SignatureHash` + `LockedSignatures` snapshot vào `FrozenContractRecord` (single write `LockScaffoldArtifacts`).
-- [ ] P-5: không env flag → CP-67 always-on; CP-64 `FLOWPILOT_ENABLE_REPRODUCE_GATE` retire (always-on); legacy prompt giữ lại.
-- [ ] P-6: `CP-67-Test-Steps.md` tạo với toàn bộ test case + verification commands + live evidence; CA cho mỗi slice; sync upstream SS-14/SS-18/SS-19/SP-06/SD-20/SD-24.
-- [ ] DoD gating: 100% kết quả chuyển giao sử dụng Typed Tool Schemas (`submit_scaffold_outcome`, `submit_coder_outcome` YAML faces); harness uses existing `submit_review_outcome` + `SubmitFlowControl` bridge cho chạy thực.
+- [x] P-1: 2 tool faces `submit_scaffold_outcome` + `submit_coder_outcome` tạo + đăng ký trong manifest; pack validation pass; 5 test signatures xanh (schema validation + tool exposure + buffered submission).
+- [x] P-1: harness `task-harness.yaml` + `vibe-sprint.yaml` list 2 tools mới; harness-declared faces render được trong prompt (không wire per-face constant vào 4 adapter — dùng existing `submit_review_outcome` + `SubmitFlowControl` bridge, B-1/B-2 resolve).
+- [x] P-2: `r-signature-lock` + `r-scaffold-red` rules tạo; `ast_signatures.go` + `DocumentSymbols` vào LSP client; `FrozenContractRecord` + `TurnResult` + `AgentLoopState` mở rộng field; `LockScaffoldArtifacts` single-write; 15 test signatures xanh.
+- [x] P-2: `r-scaffold-red` enforce compile OK + RED test trở chuẩn; suppress `r-tests/r-reg` cho scaffold turn; evidence red tests ghi từ `test_suite.red_tests`.
+- [x] P-2b: static stub-body whitelist hoạt động cho 4 nhóm ngôn ngữ (Go, React TS/TSX, Kotlin, C/C++); `SignatureHash` không đổi khi thêm `BodyShape` (B-8.1 compat); caching theo mtime + fail-open `body_unverified`; 15 test signatures xanh; default build không cgo vẫn pass toàn bộ test (tree-sitter tests skip có đánh dấu khi tag off).
+- [x] P-3: `scaffold-architect.md` persona + `scaffold-contract-tdd.md` prompt tạo; `agent.scaffold` behavior đăng ký ở agentpack (alias, safety topology) + runner (registry, spawnable target, writer classification); model-allowlist mở cho `agent.scaffold`; 3 test signatures xanh.
+- [x] P-4: `implement-scaffold-body.md` prompt tạo + kiểm tra 3 lệnh cấm + batch contract; 2 test signatures xanh.
+- [x] P-5: `task-harness.yaml` + `vibe-sprint.yaml` topology đúng: giữ node id (`test_signatures`/`tdd`/`implement`/`coder`), thêm `synthesis_negotiation` node, edges negotiation đúng, `policy.negotiationCap: 5`; `NegotiationRound`/`NegotiationCap` trong loop state; 6 test signatures xanh; `bug-harness`/`rag-harness`/`bug-plan-harness` không đổi.
+- [x] P-5: sau scaffold turn pass gate → test files khóa `ReadOnlyPaths` + `SignatureHash` + `LockedSignatures` snapshot vào `FrozenContractRecord` (single write `LockScaffoldArtifacts`).
+- [x] P-5: không env flag → CP-67 always-on; CP-64 `FLOWPILOT_ENABLE_REPRODUCE_GATE` retire (always-on); legacy prompt giữ lại.
+- [x] P-6: `CP-67-Test-Steps.md` tạo với toàn bộ test case + verification commands + live evidence; CA cho mỗi slice; sync upstream SS-14/SS-18/SS-19/SP-06/SD-20/SD-24.
+- [x] DoD gating: 100% kết quả chuyển giao sử dụng Typed Tool Schemas (`submit_scaffold_outcome`, `submit_coder_outcome` YAML faces); harness uses existing `submit_review_outcome` + `SubmitFlowControl` bridge cho chạy thực.

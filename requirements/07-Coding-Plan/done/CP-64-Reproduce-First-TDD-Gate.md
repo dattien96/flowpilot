@@ -208,6 +208,7 @@ func TestBugFixFailsClosedWhenBugNotReproduced(t *testing.T)
 
 - Rollout: P-1 $\rightarrow$ P-2 $\rightarrow$ P-3 $\rightarrow$ P-4.
 - Fallback: Nếu tắt cờ `FLOWPILOT_ENABLE_REPRODUCE_GATE`, flow tự động fallback về cơ chế signature rỗng cũ.
+- **Retired (CP-67, B-9):** cờ `FLOWPILOT_ENABLE_REPRODUCE_GATE` không còn tác dụng — reproduce-first gate luôn bật (`ReproduceGateEnabled()` luôn trả `true`). Rollback path là revert commit, không phải flag flip. Xem [CP-67](../todo/CP-67-Contract-First-Scaffold-TDD-And-Signature-Lock.md) / CA-896.
 
 ## 9. Risks
 
