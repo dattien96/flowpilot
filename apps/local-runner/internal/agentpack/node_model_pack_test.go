@@ -38,6 +38,26 @@ func TestModelProviderKeyPrefixes(t *testing.T) {
 
 // modelValidationFlow builds a minimal valid flow with one node carrying the
 // given behavior/model for ValidateFlowDefinition model-tier checks.
+// modelValidationWriterFlow builds the freeze-dominated shape a writer
+// behavior requires (CP-55): freeze -> writer -> audit with acceptance_nodes.
+func modelValidationWriterFlow(behavior, model string) FlowDefinition {
+	return FlowDefinition{
+		ID:   "model-tier-check-writer",
+		Mode: "flow",
+		Nodes: []FlowNode{
+			{ID: "freeze", Run: "inline", Lifecycle: "once", Behavior: "contract.freeze"},
+			{ID: "entry", Run: "delegate", Lifecycle: "once", Behavior: behavior, Agent: "agents/coder.md", Model: model},
+			{ID: "audit", Run: "inline", Lifecycle: "once", Behavior: "artifact.audit_draft"},
+		},
+		Edges: []FlowEdge{
+			{From: "freeze", To: "entry", When: "done", Kind: "forward"},
+			{From: "entry", To: "audit", When: "done", Kind: "forward"},
+			{From: "audit", To: "done", When: "done", Kind: "forward"},
+		},
+		AcceptanceNodes: []string{"audit"},
+	}
+}
+
 func modelValidationFlow(behavior, model string) FlowDefinition {
 	return FlowDefinition{
 		ID:   "model-tier-check",
@@ -53,8 +73,10 @@ func modelValidationFlow(behavior, model string) FlowDefinition {
 	}
 }
 
-// TestFlowNodeModelValidation (Task-320 T-3) pins fail-closed pack validation:
-// only agent.delegate may declare model, and the model must map to a known
+// TestFlowNodeModelValidation (Task-320 T-3, CP-67 B-5 supersession) pins
+// fail-closed pack validation: agent.delegate AND the CP-67 writer behaviors
+// (agent.scaffold — the High-Reasoning contract architect; agent.code for
+// coder-tier parity) may declare model, and the model must map to a known
 // provider — anything else breaks the load instead of silently inheriting.
 func TestFlowNodeModelValidation(t *testing.T) {
 	if err := ValidateFlowDefinition(modelValidationFlow("agent.delegate", "grok-4-5")); err != nil {
@@ -63,7 +85,12 @@ func TestFlowNodeModelValidation(t *testing.T) {
 	if err := ValidateFlowDefinition(modelValidationFlow("agent.delegate", "")); err != nil {
 		t.Fatalf("delegate without model must validate, got %v", err)
 	}
-	for _, behavior := range []string{"agent.code", "hub.inline", "contract.freeze", "context.produce", "command.validate", "artifact.audit_draft", ""} {
+	// Writers (agent.scaffold included, CP-67 B-3/B-5) need the freeze-
+	// dominated shape, so the positive writer case uses the writer flow.
+	if err := ValidateFlowDefinition(modelValidationWriterFlow("agent.scaffold", "claude-sonnet-4-5")); err != nil {
+		t.Fatalf("agent.scaffold + known model must validate (CP-67 B-5), got %v", err)
+	}
+	for _, behavior := range []string{"hub.inline", "contract.freeze", "context.produce", "command.validate", "artifact.audit_draft", ""} {
 		err := ValidateFlowDefinition(modelValidationFlow(behavior, "grok-4-5"))
 		if err == nil || !strings.Contains(err.Error(), "never consumes a model") {
 			t.Errorf("behavior %q + model must fail with never-consumes-a-model, got %v", behavior, err)
