@@ -1037,6 +1037,21 @@ func resolvePromptExecutionAdapter(request PromptExecutionRequest, outputPath, w
 		if request.ReasoningEffort != "" {
 			args = append(args, "--effort", strings.ToLower(strings.TrimSpace(request.ReasoningEffort)))
 		}
+		// One-shot `-p` has NO session/request_permission channel to the
+		// runner (unlike `grok agent stdio`, where BUG-343 forbids the flag
+		// because it would bypass the runner's decision layer). Here the
+		// runner cannot answer a permission request at all, so a caller that
+		// explicitly opted into writes (AllowWrite) or full autonomy
+		// (YoloMode) — e.g. the scaffold dispatcher — can only be honored by
+		// --always-approve; without it every write tool call ends the turn
+		// with stopReason="cancelled" (live-verified CP-68 M-1 run:
+		// grok-4.5 scaffold turns all cancelled, zero files written). When
+		// neither flag is set (summarizer, provider-driven MCP) the flag is
+		// omitted and Grok keeps its default/config posture — read tools
+		// still work, writes still cancel.
+		if request.AllowWrite || request.YoloMode {
+			args = append(args, "--always-approve")
+		}
 		return grokBinaryName(), args, resolvedProvider, nil
 	case "opencode":
 		// Appended last (CP-57 P-0/Task-303 T-1): one-shot `opencode run --format json`

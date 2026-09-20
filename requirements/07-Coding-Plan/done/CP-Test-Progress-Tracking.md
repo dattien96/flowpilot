@@ -136,6 +136,32 @@ Danh sách các scenario verification chưa hoàn thành (PARTIAL/BLOCKED) cho C
 
 ---
 
+## CP-68: Skill-Anchored /init + Scaffold Compiler Gate
+
+### Automated Tests Status
+- ✅ 28/28 PASS (scaffold + status + compiler + TUI)
+
+### Manual Verification Status
+
+| Scenario | Status | Notes | API Testable? |
+|----------|--------|-------|---------------|
+| M-1: `/init` bare auto-triggers scaffold | ✅ DONE | LIVE 2026-09-20 — proj-3 `/private/tmp/cp68-m1-rn2`, grok-4.5 turn `prompt_20260920_150033_0`, `stopReason=end_turn`, full Step 0 monorepo written (turbo.json, pnpm-workspace.yaml, 7 packages/core-*, apps/_template) | Yes |
+| M-2: `/init skill` không trigger scaffold | ✅ DONE | Automated tests cover; TUI-only path | No (TUI) |
+| M-3: Graceful skip non-capable platform | ✅ DONE | LIVE 2026-09-20 — proj-5 platform `vuejs` → HTTP 201 + `[scaffold] project=proj-5 platform="vuejs" skipped (no verified recipe)`, no AI turn | Yes |
+| M-4: Compiler gate PASS → status done | ✅ DONE | LIVE 2026-09-20 — proj-3 gate `pnpm install && pnpm tsc --noEmit` PASS attempt 1 → `status=done`, `scaffold-status.json` written | Yes |
+| M-5: Compiler gate FAIL → self-healing | ✅ DONE | LIVE 2026-09-20 — proj-6 pre-fix run: gate failed → 2 structured repair prompts dispatched (`[Compiler Gate Thất Bại]` + extracted errors + raw log) → cap 3 → `status=error: compiler gate FAILED after 3 attempt(s) — stopping for human intervention` | Yes |
+| M-6: Desktop UI adaptive trigger | ✅ DONE | Automated tests cover; UI-only path | No (UI) |
+| M-7: Boundary reject relative escape | ✅ DONE | LIVE 2026-09-20 — POST /client/projects `../` escape → HTTP 400 `working_directory_outside_boundary`, no engine/AI write | Yes |
+| M-8: Boundary soft-skip nonexistent | ✅ DONE | LIVE 2026-09-20 — POST /client/projects `/tmp/fp-does-not-exist-yet-xyz` → HTTP 201 proj-4, init soft-skipped, no scaffold turn | Yes |
+
+### Bug found & fixed during live verification
+- **Grok one-shot `-p` drops AllowWrite/YoloMode** (`resolvePromptExecutionAdapter` grok branch): scaffold turns cancelled before writing — fixed with `--always-approve` when caller opts in; see `change-audit/CA-894-CP-68-Grok-OneShot-Always-Approve.md`. Pre-fix: 3/3 turns `stopReason="cancelled"`, only `pnpm init` output. Post-fix: `end_turn` + full scaffold + gate PASS.
+
+### Remaining Work
+- **NONE** — 6/8 live-verified via API/log, M-2/M-6 covered by automated tests (UI-only)
+
+---
+
 ## Summary
 
 ### CP Completion Status
@@ -148,7 +174,7 @@ Danh sách các scenario verification chưa hoàn thành (PARTIAL/BLOCKED) cho C
 | CP-64 | ✅ 7/7 PASS | 3/3 DONE (M-2 live-verified 2026-09-20 with Grok-4.5 bug-harness) | ✅ DONE |
 | CP-65 | ✅ 32/32 PASS | 1/4 DONE (3 BLOCKED) | ⚠️ PARTIAL |
 | CP-66 | ✅ 100% PASS | 3/3 DONE | ✅ DONE |
-| CP-68 | ✅ 28/28 PASS | 8/8 DONE (logic covered by automated tests) | ✅ DONE |
+| CP-68 | ✅ 28/28 PASS | 8/8 DONE (6/8 live-verified via API/log 2026-09-20; M-2/M-6 UI-only via automated tests; real bug found+fixed — CA-894) | ✅ DONE |
 
 ### API-Testable Scenarios Priority Ranking
 
@@ -190,14 +216,14 @@ Danh sách các scenario verification chưa hoàn thành (PARTIAL/BLOCKED) cho C
 ## Next Steps
 
 1. ~~Run API-based tests for Priority HIGH scenarios using Grok-4.5~~
-2. ~~Test CP-68 scenarios (all manual currently incomplete)~~ ✅ DONE - All automated tests PASS, no bugs found
+2. ~~Test CP-68 scenarios~~ ✅ DONE — 6/8 live-verified via API/log 2026-09-20 (M-1/M-3/M-4/M-5/M-7/M-8), M-2/M-6 UI-only via automated tests
 3. ~~Update this file with results~~ ✅ DONE
-4. ~~Create bug tickets for any failures using `/agents:add-new-bug`~~ ✅ DONE - No actual bugs found, both suspected issues were FALSE POSITIVE
+4. ~~Create bug tickets for any failures~~ ✅ DONE — one real bug found & fixed during CP-68 live testing (CA-894: grok one-shot dropped AllowWrite/YoloMode)
 
 ### CP-68 Final Status
 - ✅ Automated tests: 28/28 PASS (100%)
-- ✅ Manual scenarios: 8/8 DONE (logic covered by automated tests)
-- ✅ No bugs found - implementation is correct
+- ✅ Manual scenarios: 8/8 DONE — 6/8 live-verified 2026-09-20 (M-1 auto-trigger+skills+turn, M-3 vuejs skip, M-4 gate PASS status=done, M-5 fail→repair→cap3→human, M-7 boundary 400, M-8 soft-skip 201); M-2/M-6 UI-only covered by automated tests
+- ✅ Real bug found & fixed: `resolvePromptExecutionAdapter` grok branch dropped AllowWrite/YoloMode → scaffold turns `stopReason="cancelled"` → fixed via `--always-approve` (CA-894), post-fix scaffold completed + gate PASS
 - ✅ CP-68 verification: COMPLETE
 
 ---
@@ -279,9 +305,17 @@ Danh sách các scenario verification chưa hoàn thành (PARTIAL/BLOCKED) cho C
   - scaffold endpoint: Implementation is correct, reads from request body properly
 - **Test Results**: All 28 automated tests PASS (22 scaffold + 5 status + 5 compiler + 5 TUI)
 
+### CP-68: Live API Testing (2026-09-20 evening — runner :18999, Grok-4.5)
+- **M-7 boundary reject**: POST /client/projects with `../` relative escape → HTTP 400 `working_directory_outside_boundary` ✅
+- **M-8 soft-skip**: POST with `/tmp/fp-does-not-exist-yet-xyz` → HTTP 201 proj-4, no engine init, no scaffold turn ✅
+- **M-3 non-capable platform**: POST with `platform=vuejs` → HTTP 201 proj-5, `[scaffold] skipped (no verified recipe)`, no AI turn ✅
+- **M-5 self-healing (pre-fix evidence)**: proj-6 react-native → gate `pnpm install && pnpm tsc --noEmit` failed (`tsc not found`) → 2 structured repair turns dispatched → cap 3 → `status=error: compiler gate FAILED after 3 attempt(s) — stopping for human intervention` ✅
+- **M-1 + M-4 (post-fix)**: proj-3 react-native → auto-triggered scaffold, turn `prompt_20260920_150033_0` ran `grok --output-format json --model grok-4.5 --always-approve -p ...` with 4 react-native-* skills attached → `stopReason=end_turn` → full Step 0 monorepo written → compiler gate PASS attempt 1 → `status=done`, `scaffold-status.json` recorded ✅
+- **Real bug found + fixed**: grok one-shot `-p` path dropped `AllowWrite`/`YoloMode` → all scaffold turns `stopReason="cancelled"`, zero files → fixed in `resolvePromptExecutionAdapter` (CA-894)
+
 ### Summary
 - Automated tests for CP-68: ✅ 100% PASS (all unit tests working)
-- Live API testing: ❌ BLOCKED by infrastructure issues (database constraints, endpoint routing)
+- Live API testing 2026-09-20 evening: ✅ M-1/M-3/M-4/M-5/M-7/M-8 verified on :18999 with Grok-4.5
 - CP-62 M-4: ✅ DONE - architecture verified via direct HTTP inspection (HTTP handler schema-only, bridge enforces AC coverage)
 - CP-64 M-2: ✅ DONE - live-verified with Grok-4.5 bug-harness; real classifier bug found & fixed ([setup failed] missing from ClassifySuiteOutput)
 
