@@ -325,6 +325,9 @@ func seedLocalChatRun(t *testing.T, store *localFileSessionStore, accountHome, w
 	if err := os.WriteFile(sessionPath, fileBody, 0o644); err != nil {
 		t.Fatalf("write session file: %v", err)
 	}
+	// Timestamps must stay inside sessionStoreMaxAge (90d) or loadFromDisk prunes
+	// the row on "restart" — a fixed date turns every seed into a time bomb.
+	now := time.Now().UTC()
 	state := ProviderSessionState{
 		RunID:             runID,
 		ProjectID:         "project-1",
@@ -335,8 +338,8 @@ func seedLocalChatRun(t *testing.T, store *localFileSessionStore, accountHome, w
 		Status:            RunStatusCompleted,
 		LastPrompt:        "summarize the branch",
 		LastMessage:       "done",
-		StartedAt:         "2026-06-17T10:00:00Z",
-		UpdatedAt:         "2026-06-17T10:05:00Z",
+		StartedAt:         now.Add(-time.Hour).Format(time.RFC3339Nano),
+		UpdatedAt:         now.Format(time.RFC3339Nano),
 		RunKind:           "chat",
 	}
 	if err := store.UpsertProviderSession(context.Background(), state); err != nil {
