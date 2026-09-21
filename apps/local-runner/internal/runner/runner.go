@@ -1903,6 +1903,13 @@ func detectProvider(ctx context.Context, spec providerSpec) Provider {
 	}
 
 	binaryPath, err := lookPathFn(spec.BinaryName)
+	if err != nil && spec.Key == string(ProviderKeyDevin) {
+		// The Windows setup.ps1 install lives at %LOCALAPPDATA%\devin\cli\bin
+		// without a PATH entry — a bare LookPath miss is not proof of absence.
+		if resolved := resolveDevinBinaryPath(); resolved != "" {
+			binaryPath, err = resolved, nil
+		}
+	}
 	if err != nil {
 		notFound := fmt.Sprintf("%s binary was not found on PATH", spec.Label)
 		provider.LastError = &notFound

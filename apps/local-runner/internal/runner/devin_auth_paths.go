@@ -78,3 +78,64 @@ func devinAmbientAuthCandidates(homePath string) []authCandidate {
 	}
 	return candidates
 }
+
+// devinWellKnownBinaryPaths returns the install locations the official Devin
+// CLI setup scripts use (F-12): Windows `irm static.devin.ai/cli/setup.ps1`
+// lands at %LOCALAPPDATA%\devin\cli\bin\devin.exe and does NOT add the dir to
+// PATH, so a healthy install still fails bare LookPath("devin"). The unix
+// install.sh drops a ~/.local/bin/devin symlink pointing at
+// _versions/current/bin/devin — both are candidates because ~/.local/bin is
+// not universally on PATH either.
+func devinWellKnownBinaryPaths() []string {
+	var paths []string
+	if runtime.GOOS == "windows" {
+		if localAppData := strings.TrimSpace(os.Getenv("LOCALAPPDATA")); localAppData != "" {
+			paths = append(paths, filepath.Join(localAppData, "devin", "cli", "bin", "devin.exe"))
+		}
+		if profile := strings.TrimSpace(os.Getenv("USERPROFILE")); profile != "" {
+			paths = append(paths, filepath.Join(profile, "AppData", "Local", "devin", "cli", "bin", "devin.exe"))
+		}
+		return dedupeFilePaths(paths)
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		paths = append(paths,
+			filepath.Join(home, ".local", "bin", "devin"),
+			filepath.Join(home, ".local", "share", "devin", "_versions", "current", "bin", "devin"),
+		)
+	}
+	return dedupeFilePaths(paths)
+}
+
+// resolveDevinBinaryPath locates the devin binary for detect/spawn/probe:
+// FLOWPILOT_DEVIN_BIN (via devinBinaryName) when it is an existing path,
+// PATH lookup next, then the well-known install locations. Returns "" when
+// nothing is found so callers can report NOT_INSTALLED instead of spawning a
+// guaranteed-to-fail command.
+func resolveDevinBinaryPath() string {
+	name := devinBinaryName()
+	if filepath.IsAbs(name) || strings.ContainsRune(name, os.PathSeparator) {
+		if st, err := os.Stat(name); err == nil && !st.IsDir() {
+			return name
+		}
+		return ""
+	}
+	if p, err := lookPathFn(name); err == nil && p != "" {
+		return p
+	}
+	for _, candidate := range devinWellKnownBinaryPaths() {
+		if st, err := os.Stat(candidate); err == nil && !st.IsDir() {
+			return candidate
+		}
+	}
+	return ""
+}
+
+// devinSpawnBinary is resolveDevinBinaryPath with the configured name as the
+// last resort so exec surfaces its standard not-found error when nothing is
+// installed.
+func devinSpawnBinary() string {
+	if p := resolveDevinBinaryPath(); p != "" {
+		return p
+	}
+	return devinBinaryName()
+}

@@ -482,7 +482,7 @@ func (r *Runner) ensureDevinProcessSegmented(ctx context.Context, scopeBase, sco
 
 	// `devin acp` takes no launch flags for model/mode — both are per-session
 	// config options applied via session/set_config_option (live-verified).
-	cmd := commandContextFn(ctx, devinBinaryName(), "acp")
+	cmd := commandContextFn(ctx, devinSpawnBinary(), "acp")
 	cmd.Env = devinProcessEnv(extraEnv)
 	if strings.TrimSpace(cwd) != "" {
 		cmd.Dir = cwd

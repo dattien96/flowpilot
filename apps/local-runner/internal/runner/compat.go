@@ -141,7 +141,7 @@ func (r *Runner) CompatLoadInfo(ctx context.Context) CompatVersionInfo {
 		TestedOpencodeVersion:    config.TestedOpencodeVersion,
 		InstalledOpencodeVersion: compatRunVersion(ctx, opencodeBinaryName()),
 		TestedDevinVersion:       config.TestedDevinVersion,
-		InstalledDevinVersion:    compatRunVersion(ctx, devinBinaryName()),
+		InstalledDevinVersion:    compatRunVersion(ctx, devinSpawnBinary()),
 	}
 }
 
