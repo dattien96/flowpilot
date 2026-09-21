@@ -939,12 +939,43 @@ Brief deliberately under-specified so the coder must renegotiate (e.g. frozen `A
 
 | Case | Provider | Flow | Run ID | Result | Evidence (log/artifact path) | Status |
 |------|----------|------|--------|--------|------------------------------|--------|
-| L-A1..A6 | grok | task-harness | | | | pending |
-| L-B1..B6 | grok | task-harness | | | | pending |
-| L-C1..C7 | grok | task-harness | | | | pending |
-| L-C8 | grok | vibe-sprint | | | | pending |
-| L-D1..D6 | grok | mixed | | | | pending |
-| L-A spot | codex | task-harness | | | | pending |
-| L-A spot | claude | task-harness | | | | pending |
+| L-A1 contract frozen before scaffold | grok | task-harness | run-13173 | pass — `flow_contract_frozen` 06:16:18 / reuse path 06:54:50 | `fp-beds/cp67-evidence/diag/run-13173.ndjson`; `.flowpilot/contracts/frozen_contracts.ndjson` | pass |
+| L-A2 scaffold stubs + RED suite | grok | task-harness | run-13173 | pass — `textkit.go` panic-stub + `textkit_test.go` table tests written 06:36; suite RED by design | workspace `textkit/`; diag `step_status_transition test_signatures DONE` 23:55:17 | pass |
+| L-A3 signature lock pinned | grok | task-harness | run-13173 | pass — contract v2 `signature_hash=3c7c71fa…`, `locked_signatures=["func Repeat(s string, n int) string"]`, `read_only_paths=["textkit/textkit_test.go"]` | `.flowpilot/contracts/frozen_contracts.ndjson` v2 | pass |
+| L-A4 coder body-only fill | grok | task-harness | run-13173 | pass — `implement` DONE 23:55:49; body filled, signature unchanged (`strings.Repeat` impl) | `textkit/textkit.go` final content | pass |
+| L-A5 validate green | grok | task-harness | run-13173 | pass — `validate` DONE 00:00:56; `go test ./textkit/ -count=1` ok | workspace `go test` output | pass |
+| L-A6 audit + completion | grok | task-harness | run-13173 | pass — tier3 blocked once (missing CA + DoD), looped to implement, `audit` DONE, `flow_run_complete_done` 07:02:08 | diag `flow_audit_tier3_block` → `flow_run_complete_done`; `change-audit/CA-003-textkit-repeat.md` | pass |
+| L-B gate rejections (observed) | grok | task-harness | run-9968, run-13173 | pass — scope-drift block + planner-readonly + gate_blind all escalated to operator (real blocks observed; three were false-positive classes now fixed, see §11.7) | diag `flow_control_escalate` events | pass |
+| L-C1 record-only batch | grok | task-harness | run-2870 | pass — coder `renegotiate_signatures` batch recorded; `flow_advance_negotiation_hub` fired | diag run-2870 | pass |
+| L-C2 hub dispatch + adjudication | grok | task-harness | run-2870 | pass — synthesis_negotiation hub REJECTED `(q,r,err)` proposal (not required by frozen contract), coder resumed with locked `(int, error)` | diag `flow_advance_negotiation_hub`; calc/ artifacts | pass |
+| L-C3..C7 cap/reset/multi-round | — | — | — | covered by unit tests (`TestNegotiationMultiRoundRedispatchesHub`, cap-5, reset) — live multi-round not exercised (coder proposed once) | `cp67_coder_transport_test.go` | partial |
+| L-C8 vibe-sprint topology | grok | vibe-sprint | run-4655 | blocked pre-fix by missing reviewer verdicts (same defect class as B); post-fix not re-run | diag run-4655 | pending |
+| L-D1/D2 legacy flows unaffected | — | — | — | covered by suite (task_harness/cp_harness pack tests green; no scaffold nodes touched) | `go test ./internal/runner` | pass (test-level) |
+| L-D3 delegate bare done/continue rejected | grok | task-harness | run-2870, run-8112 | pass — coder/delegate outcomes routed via typed bridge only | diag + `TestSubmitFlowControlCoderBatchIsRecordOnly` | pass |
+| L-D4 renegotiate without batch → 400 | grok | HTTP | run-13173 era | pass — `submit_review_outcome` validation rejects missing `batch_signature_requests` | `TestHandleSubmitFlowControlCoderOutcomeHTTP` | pass |
+| L-D5 unknown run → 404 | grok | HTTP | smoke | pass — `POST flow-control` on unknown run returns `run_not_found` | observed live (resume needed after restart) | pass |
+| L-D6 restart mid-flow | grok | task-harness | run-8112, run-9968, run-13173 | pass — 3 runner restarts mid-flow; `POST resume` + `continue` recovered every time; verdict-reprompt survived restart | runner-stdout-*.log sequence | pass |
+| L-A spot codex | codex | task-harness | — | pending | — | pending |
+| L-A spot claude | claude | task-harness | — | pending | — | pending |
 
-**Live run status (2026-09-20):** runner build verified; grok accounts present (slots 0/3/4 connected). Target workspace `/Users/tiendat/Desktop/BE/gate-sandbox` is currently EPERM-blocked to the agent/terminal process (readdir denied at OS level — needs Desktop folder permission for the host process). Runs pending until access is granted or an alternate workspace is confirmed.
+### 11.7 Live-found defects (2026-09-21, Grok 4.5 on `~/fp-beds/cp67-live`)
+
+The live run surfaced **five real defects** — all fixed and regression-tested:
+
+| # | Defect | Evidence | Fix | Test |
+|---|--------|----------|-----|------|
+| F-1 | Signature lock skipped when scaffold turn reports empty `WrittenPaths` (drift-blocked reinvoke) | run-2870 contract had `signature_hash:null` | `scaffold_gate.go`: fall back to contract `DeclaredPaths` | `scaffold_lock_test.go` |
+| F-2 | `submit_review_outcome` tool schema omitted `verdicts[]`/`batch_signature_requests` for all 3 providers — reviewers could not submit per-AC verdicts | run-6086/6572/7359/7990 `verdicts[].ac_id is required` | `claude_mcp_server.go` shared schema extended | `cp67_coder_transport_test.go` |
+| F-3 | Reviewer verdict recorded after member settle was never credited to the cohort entry | run-6572 `review_verdict_recorded` yet `machine_verdict:None` | `mergePendingReviewVerdictsLocked` folds late verdicts into hub checks | `review_done_verdict.go` + tests |
+| F-4 | Grok `use_tool` cancelled in flight when model emits final text + tool call together → verdict never reaches bridge → hub parks `missing_review_verdict` forever | run-8853 `user_cancel` ×4 rounds | `settleFlowChildTurnCompletedLocked` reprompts cohort child (cap 2) + reviewer prompt ordering directive | `review_verdict_reprompt_test.go` |
+| F-5 | Scope-drift gate counted the runner's own `.flowpilot/chats/**` bookkeeping as coder drift | run-9968 parked on `run-*-turns.ndjson`, `dispatch.ndjson`, `sessions.ndjson` | `IsRunnerChatBookkeepingPath` exemption (narrow prefix, CA-427-safe) | `runner_chat_paths_test.go` |
+| F-6 | Freeze's planner-readonly check re-fired on re-drive, flagging the prior round's scaffold output as planner mutations | run-13173 `planner changed 2 file(s)` loop | `runContractFreezeNode`: existing-frozen-contract reuse moved BEFORE the mutation check (freeze is idempotent) | freeze tests green |
+| F-7 | `gate_blind (red_at_capture)` blocked scaffold/coder turns — a red baseline is the *designed* intermediate of contract-first TDD and can never refresh while the tree stays dirty | run-13173 gate-metrics `red_at_capture` | `gateBlindBlocksTurn`: red_at_capture downgraded to warn when a frozen contract exists for the run | gate_blind warn-path |
+
+**Operator notes (run semantics learned live):**
+- `POST turns` body field is `prompt` (not `input`) — an empty-prompt turn reaches the flow and surfaces as a `user_question_required` planner clarification (run-8112).
+- On a parked flow: `continue` resumes the loop; `done` settles the ENTIRE run terminal (`markFlowRunComplete` — pending steps → SKIPPED). Plan approval is `continue`, not `done` (run-9968 ended early via `done`).
+- Runner restart drops in-memory run state: `POST …/resume` then `flow-control continue` recovers (verified 3×).
+- Deferred-tool race remains grok-side: ~100% of reviewer turns need exactly one reprompt before the verdict lands; cap-2 covers it (observed every round: reprompt → verdict → join → hub proceeds).
+
+**Target-workspace note (unchanged):** `/Users/tiendat/Desktop/BE/gate-sandbox` remains EPERM-blocked to the agent process (macOS TCC — Desktop folder permission). All evidence above is from the substitute workspace `~/fp-beds/cp67-live` + `~/fp-beds/cp67-evidence/diag/`. Re-run L-A/L-C on gate-sandbox once TCC access is granted to the host terminal.

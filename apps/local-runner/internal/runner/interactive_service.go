@@ -5241,6 +5241,27 @@ func (s *InteractiveService) settleFlowChildTurnCompletedLocked(rs *interactiveR
 				if stepID == "" {
 					stepID = "verdict-reprompt-" + rs.id
 				}
+				// Flip the child back to running (same pattern as the retry
+				// activation path in flow_executor.go) so the reprompt turn is
+				// admitted and the agent card reflects the retry.
+				rs.activationSeq++
+				rs.status = RunStatusRunning
+				rs.agentStatus = string(RunStatusRunning)
+				s.agentOrchestrator.upsertSummary(rs.parentRunID, AgentRunSummary{
+					RunID:         rs.id,
+					AgentName:     rs.agentName,
+					Label:         rs.label,
+					Role:          rs.role,
+					Status:        rs.status,
+					ParentRunID:   rs.parentRunID,
+					CreatedAt:     rs.createdAt,
+					DependsOn:     append([]string(nil), rs.dependsOn...),
+					AgentStatus:   rs.agentStatus,
+					ProviderKey:   string(rs.providerKey),
+					ModelName:     rs.modelName,
+					WaitForResult: rs.waitForResult,
+					ActivationSeq: rs.activationSeq,
+				})
 				s.flowDiagLog(rs.parentRunID, "cohort_member_verdict_reprompt",
 					"cohort member completed without a machine verdict; reprompting",
 					"child_run_id", rs.id,
