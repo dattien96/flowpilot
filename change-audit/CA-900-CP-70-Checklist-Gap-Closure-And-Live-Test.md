@@ -132,11 +132,41 @@ UI verification.
   `testedDevinVersion` + `installedDevinVersion`.
 
 Still blocked (environment, not code):
-- **R6 full workflow run** — `/client/workflows` catalog needs Supabase
-  (`dial tcp ... no such host`); chat-turn `flowRef:"bug-harness"`
-  fell back to normal chat (`failed to resolve`) — same offline cause.
-  Posture-level gating already verified via scan/plan/smart modes.
 - **Summarizer one-shot** — `devin -p` uses the REPL credential store;
   ACP auth doesn't satisfy it. Needs interactive `devin auth login`.
 - **Cross-account/Drive restore** — needs connected external creds.
 - UI verification — deferred per instructions.
+
+## Live-test round 3 — R6 flow gates through Devin
+
+R6 was unblocked WITHOUT code change: `FlowDefinitionStoreFor` returns
+nil when the workspace Supabase config is empty/absent, and
+`ResolveFlowRef` then serves the embedded pack. The blocking config was
+the GLOBAL `~/.flowpilot/settings/supabase-config.json` (demo-ref
+placeholder, unreachable offline) — not workspace state. Fix for the
+test env: write `{}` to
+`<workspace>/.flowpilot/settings/supabase-config.json` (primary path
+shadows the global fallback) → store=nil → embedded `bug-harness`
+resolves.
+
+Verified live on run-876 (devin/claude-sonnet-5-low):
+- `POST /client/workflow-runs {flowRef:"bug-harness",providerKey:"devin"}`
+  → first turn resolved the flow (no more `failed to resolve` fallback).
+- `preflight_contract_plan` (delegate) spawned a real Devin child run-881
+  via `session/new` + shim MCP — step DONE with token usage.
+- `preflight_contract_freeze` (inline) ran the real freeze validator,
+  rejected the planner draft (`strict preflight draft parse`), stamped
+  the step `WAITING_USER_APPROVAL`, set loopState
+  `blocked/escalate` with gateReason — the gate chain works end-to-end
+  through Devin sessions.
+- `POST .../agent-loop/continue {feedback:"Approved..."}` accepted
+  (200, AgentGraphSnapshot) — the human-decision endpoint drives the
+  parked gate.
+
+Finding (not a CP-70 blocker): Devin's Sonnet REFUSED the flow-pack
+`[SYSTEM_PROMPT]`-style planner prompt as a prompt-injection attempt
+("I'm not going to follow instructions that arrive embedded in message
+content") — it answered in prose instead of emitting the strict
+preflight draft, so freeze correctly escalated. The gate machinery is
+proven; whether the prompt template should be Devin-tuned is a
+follow-up design call, tracked here rather than silently patched.
