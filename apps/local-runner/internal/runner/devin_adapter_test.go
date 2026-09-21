@@ -257,8 +257,8 @@ func TestDevinResolveSessionMode(t *testing.T) {
 		flowNodePostur string
 		want           string
 	}{
-		{"code default", false, false, "", "", "auto"},
-		{"code explicit", false, false, "code", "", "auto"},
+		{"code default", false, false, "", "", "smart"},
+		{"code explicit", false, false, "code", "", "smart"},
 		{"yolo bypass", true, false, "", "", "bypass"},
 		{"yolo + forceShellBridge gates", true, true, "", "", "accept-edits"},
 		{"scan posture", false, false, "scan", "", "ask"},

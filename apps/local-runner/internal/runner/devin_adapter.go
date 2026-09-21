@@ -716,12 +716,15 @@ func devinModelIDForACP(model string) string {
 //   - plan  → "plan"  (plan-only mode)
 //   - gated flow node (read_only/verdict_only) → "ask"
 //   - YOLO on, ungated → "bypass" (auto-approve all tool calls)
-//   - YOLO on + forceShellBridge, or YOLO off → "accept-edits" — normal Code
-//     mode where session/request_permission still reaches the bridge, so the
+//   - YOLO on + forceShellBridge → "accept-edits" — workspace edits
+//     auto-approved, exec still raises session/request_permission so the
 //     commit denylist / approval card / read-only posture can all fire.
 // resolveDevinSessionMode maps FlowPilot posture to Devin's session "mode"
-// config option (live-verified values: auto/accept-edits/smart/ask/plan/
-// bypass — 3000.10.31). Mirrors resolveYoloPostureForFlowNode semantics:
+// config option (live-verified values: accept-edits/smart/ask/plan/bypass —
+// 3000.10.31 configOptions; "auto" is a CLI --permission-mode value, NOT a
+// session mode, and is silently coerced to accept-edits which auto-approves
+// everything — live probe 2026-09-21). Mirrors resolveYoloPostureForFlowNode
+// semantics:
 //
 //	read-only chat posture (plan/scan)  → "plan"/"ask" (writes never requested)
 //	gated flow-node posture             → "ask"  (bridge decides everything)
@@ -730,8 +733,13 @@ func devinModelIDForACP(model string) string {
 //	                                      auto-approved, exec still raises
 //	                                      session/request_permission so the
 //	                                      git-commit denylist can fire
-//	default (non-yolo chat)             → "auto" — read-only tools auto,
-//	                                      writes/exec ask → approval bridge
+//	default (non-yolo chat)             → "smart" — safe ops auto-run;
+//	                                      dangerous ops raise
+//	                                      session/request_permission →
+//	                                      approval bridge (DV-04 ceiling:
+//	                                      routine writes are auto-approved
+//	                                      under smart; only provider-judged
+//	                                      dangerous actions prompt)
 //
 // Returning "" leaves the session's saved mode untouched.
 func resolveDevinSessionMode(yolo, forceShellBridge bool, chatPosture, flowNodePosture string) string {
@@ -750,7 +758,7 @@ func resolveDevinSessionMode(yolo, forceShellBridge bool, chatPosture, flowNodeP
 		}
 		return "bypass"
 	}
-	return "auto"
+	return "smart"
 }
 
 func (a *devinAdapter) emitTerminal(ctx context.Context, req TurnRequest, bridge TurnBridge, sessionID string, result map[string]any, lastText string) error {
