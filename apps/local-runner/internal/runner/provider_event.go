@@ -19,6 +19,9 @@ const (
 	// ProviderKeyOpencode is Opencode over ACP (CP-57). Appended last — existing
 	// cases/order are unchanged (CP-57 P-0).
 	ProviderKeyOpencode ProviderKey = "opencode"
+	// ProviderKeyDevin is Devin over ACP (CP-70). Appended last — existing
+	// cases/order are unchanged.
+	ProviderKeyDevin ProviderKey = "devin"
 )
 
 // RunStatus mirrors the client-facing RunStatus set (04-01) — the user-facing
@@ -240,6 +243,13 @@ type AgentLoopState struct {
 	VibeTaskIndex int    `json:"vibeTaskIndex,omitempty"`
 	VibeTaskTotal int    `json:"vibeTaskTotal,omitempty"`
 	VibeTaskName  string `json:"vibeTaskName,omitempty"`
+	// CP-67 P-5 (B-10): phase-scoped signature-renegotiation budget and the
+	// rounds consumed in the CURRENT negotiation phase. NegotiationRound
+	// resets when synthesis_negotiation closes the phase (done → synthesis);
+	// exhausting the cap escalates — the review loop's extend machinery
+	// deliberately does NOT apply here.
+	NegotiationRound int `json:"negotiationRound,omitempty"`
+	NegotiationCap   int `json:"negotiationCap,omitempty"`
 }
 
 type AgentGraphSnapshot struct {

@@ -1,0 +1,19 @@
+{
+ "jsonrpc": "2.0",
+ "method": "session/update",
+ "params": {
+  "sessionId": "working-pentagon",
+  "update": {
+   "sessionUpdate": "user_message_chunk",
+   "content": {
+    "type": "text",
+    "text": "Reply with exactly: PROBE_OK"
+   },
+   "_meta": {
+    "cognition.ai/clientMessageId": "a7b8d381-2e41-4f0d-876d-6829523f4f5f",
+    "cognition.ai/messageSubIndex": 0,
+    "cognition.ai/timestamp": "2026-09-20T17:08:31.282798+00:00"
+   }
+  }
+ }
+}

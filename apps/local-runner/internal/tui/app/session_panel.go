@@ -205,6 +205,7 @@ var stepProviderColors = map[string]string{
 	"grok":        "#79C0FF", // xAI light blue
 	"opencode":    "#A371F7", // opencode purple
 	"opencode-go": "#A371F7",
+	"devin":       "#4C9AFF", // devin blue (CP-70)
 }
 
 // stepProviderStyle returns the brand-hue style for a provider key

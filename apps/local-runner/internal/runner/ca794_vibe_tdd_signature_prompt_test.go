@@ -30,12 +30,13 @@ func TestComposeVibeTddPromptIsSignatureOnly(t *testing.T) {
 		t.Fatal("vibe-sprint tdd node missing")
 	}
 	got := composeFlowNodeAgentPrompt(t.TempDir(), "tdd base from locked SS/CP", tdd)
+	// CP-67 supersession: tdd composes the scaffold-contract prompt now — the
+	// contract architect writes FULL stubs + a RED suite, never empty frames.
 	for _, want := range []string{
 		"tdd base from locked SS/CP",
-		"UNIT TEST SIGNATURES ONLY",
-		"Do NOT write any production code",
-		"Do NOT fill in test bodies",
-		"tdd-signatures.md",
+		"production stubs",
+		"executable RED suite",
+		"submit_scaffold_outcome",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("composed tdd prompt missing %q:\n%s", want, got)

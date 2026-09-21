@@ -143,14 +143,14 @@ drift_pause_required
 
 - [x] §2 Automated tests chạy xanh 100% (14/14 tests pass).
 - [x] Kịch bản 1: **LIVE 2026-09-14**: `[prompt-pack] packed run=... selected_tokens=... bytes=95->104` trên mọi turn; profile budget `total=6000` áp cho node scout (run-439). Không có dropped item vì prompt nhỏ — cơ chế verify qua log.
-- [ ] Kịch bản 2: **PARTIAL — dev ladder + continuation DONE; live vibe ≥80 còn mở** (2026-09-18).
+- [x] Kịch bản 2: **DONE (backend/logic) — dev ladder + continuation + live vibe ≥80 non-pause verified** (2026-09-18). Chỉ còn sub-item UI drift card chờ user verify.
   - [x] **DONE — live dev note injection:** run-888315, Grok/grok-4.5, bed `/Users/tiendat/fp-beds/drift`; score 40 → log `21:50:08 [drift] injected system note ... turn=turn-896786 bytes=595`.
   - [x] **DONE — live dev narrow context:** score 65 → log `21:54:32 [drift] narrow_context: packing with halved budget ... turn=turn-897367 total=4000`.
   - [x] **DONE — live dev ≥80 park/confirm event:** turn-903459 đạt score 93; graph `status=blocked`, `blockReason=drift`, reason `confirm to continue`; đúng 1 event `drift_pause_required`, id `evt-906007`, lúc `2026-09-17T15:05:54.785534Z`. Snapshot cấp run vẫn `running`; không phải bằng chứng UI/question modal. Evidence: `/tmp/cp-closeout-current/graph.json`, `/tmp/cp-closeout-current/drift-pause.json`, `/tmp/fp-r-drift.log`.
   - [x] **DONE — automated race checks:** `TestDriftPause_` và `TestDriftPauseGraphReportPreservesBlockedReason` PASS với `-race -count=1`; graph report dev/vibe được kiểm tra, không dùng để thay live vibe.
   - [x] **DONE — live continuation after drift park (2026-09-18):** `POST .../agent-loop/continue` on run-888315 (`:18765`) cleared `blocked/drift` → `running` (`evt-906008`); follow-up `turn-906009` accepted with `model=grok-4.5`, settled, then re-parked at score 100 with new `drift_pause_required` `evt-906019` (expected zero-delta ping). Proves continue channel resumes execution.
   - [x] **DONE — live vibe ≥80 non-pause (2026-09-18):** run-908843 on `:18765`, `workingMode=vibe` + `X-Client: tui`, bed `/Users/tiendat/fp-beds/vibe-drift2`, model grok-4.5. Ladder: turn-911112 score=45 `apology_loop+zero_delta_progress` → inject note; turn-914490 score=**90** `action=pause_for_human` but **no** `drift_pause_required` event (count=0), graph `status=running` with **no** `blockReason=drift`. Proves vibe never parks user for drift at ≥80. UI modal still unverified.
-  - [ ] Hiển thị UI drift card trên Desktop/TUI chưa xác minh.
+  - [ ] ⏸ AWAITING USER (UI-only): hiển thị UI drift card trên Desktop/TUI — không test được qua API/log; cần user mở Desktop/TUI khi drift ≥80 dev mode.
 - [x] Kịch bản 3: **LIVE 2026-09-14**: skills có mặt trên sandbox (`.agents/skills/safe-fix-contract/SKILL.md` được pointer block tham chiếu; grok session load `.grok/skills/`).
 
 

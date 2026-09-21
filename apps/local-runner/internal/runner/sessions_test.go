@@ -977,6 +977,66 @@ func TestCleanupSessionsKillsActiveClaudeCommand(t *testing.T) {
 	}
 }
 
+// Provider processes spawned by the interactive layer live outside r.sessions
+// (ACP agents + pools) — CleanupSessions must tear them down or every runner
+// shutdown leaks orphans (observed: stray `devin acp`/`opencode acp` surviving
+// `just dev` teardown).
+func TestCleanupSessionsTearsDownProviderPools(t *testing.T) {
+	r, _ := New(t.TempDir())
+
+	devinKilled := false
+	r.devinProcesses = map[string]*devinProcessHandle{
+		"devin|chat": {scopeKey: "devin|chat", kill: func() { devinKilled = true }},
+	}
+	opencodeKilled := false
+	r.opencodeProcesses = map[string]*opencodeProcessHandle{
+		"opencode|chat": {scopeKey: "opencode|chat", kill: func() { opencodeKilled = true }},
+	}
+	grokKilled := false
+	r.grokProcesses = map[string]*grokProcessHandle{
+		"grok|chat": {scopeKey: "grok|chat", kill: func() { grokKilled = true }},
+	}
+	codexKilled := false
+	r.codexAppServer = &codexAppServerHandle{kill: func() { codexKilled = true }}
+
+	claudeProc := &claudeProcess{
+		key:    claudeProcKey{account: "acct", cwd: ".", session: "s"},
+		stream: newClaudeStream(io.Discard),
+		cmd:    testShellCommand(context.Background(), "sleep 5"),
+	}
+	if err := claudeProc.cmd.Start(); err != nil {
+		t.Fatalf("start claude probe proc: %v", err)
+	}
+	claudePid := claudeProc.cmd.Process.Pid
+	r.claudePool.mu.Lock()
+	r.claudePool.procs[claudeProc.key] = claudeProc
+	r.claudePool.mu.Unlock()
+
+	r.CleanupSessions()
+
+	for name, killed := range map[string]bool{
+		"devin": devinKilled, "opencode": opencodeKilled, "grok": grokKilled, "codexAppServer": codexKilled,
+	} {
+		if !killed {
+			t.Fatalf("%s process was not killed by CleanupSessions", name)
+		}
+	}
+	if len(r.devinProcesses) != 0 || len(r.opencodeProcesses) != 0 || len(r.grokProcesses) != 0 {
+		t.Fatal("provider process maps must be empty after CleanupSessions")
+	}
+	if r.codexAppServer != nil {
+		t.Fatal("codexAppServer must be cleared after CleanupSessions")
+	}
+	if r.claudePool.count() != 0 {
+		t.Fatal("claudePool must be empty after CleanupSessions")
+	}
+	// Wait() inside shutdown() populates ProcessState — the proc was reaped,
+	// not just removed from the map.
+	if claudeProc.cmd.ProcessState == nil || !claudeProc.cmd.ProcessState.Exited() {
+		t.Fatalf("claude pooled process pid %d not reaped after CleanupSessions", claudePid)
+	}
+}
+
 func TestCloseSessionMarksInFlightCodexBootstrapSessionTerminated(t *testing.T) {
 	originalCmdCtx := commandContextFn
 	originalLookPath := lookPathFn

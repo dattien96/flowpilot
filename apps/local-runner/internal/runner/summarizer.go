@@ -54,6 +54,11 @@ func summarizerModelFor(providerKey ProviderKey) string {
 	case ProviderKeyOpencode:
 		// Appended last (CP-57 P-0/Task-303 T-6): cheap tier via opencode/gpt-5.4-nano
 		return "opencode/gpt-5.4-nano"
+	case ProviderKeyDevin:
+		// Appended last (CP-70/Task-403): reasoning effort lives inside the
+		// model id itself (*-low/-high/-xhigh); empty lets `devin -p` use the
+		// account default rather than guessing an unverified cheap tier.
+		return ""
 	default:
 		return ""
 	}
@@ -77,7 +82,7 @@ func (r *Runner) SummarizeChatTranscript(ctx context.Context, transcript string,
 	if transcript == "" {
 		return "", errors.New("empty transcript")
 	}
-	if !supportsHandoffSource(providerKey) && providerKey != ProviderKeyGemini && providerKey != ProviderKeyGrok && providerKey != ProviderKeyOpencode {
+	if !supportsHandoffSource(providerKey) && providerKey != ProviderKeyGemini && providerKey != ProviderKeyGrok && providerKey != ProviderKeyOpencode && providerKey != ProviderKeyDevin {
 		// Only providers with a one-shot exec adapter can summarize. Grok
 		// summarizes via the same one-shot `grok -p` exec adapter as Gemini's
 		// `agy --print` (P-13 exception) despite not being a handoff SOURCE yet
@@ -119,9 +124,11 @@ func (r *Runner) SummarizeChatTranscript(ctx context.Context, transcript string,
 	prompt := summarizerInstruction + "\n\n<conversation>\n" + transcript + "\n</conversation>\n"
 	if providerKey == ProviderKeyGemini {
 		args = append(args, "--print", prompt)
-	} else if providerKey == ProviderKeyGrok || providerKey == ProviderKeyOpencode {
+	} else if providerKey == ProviderKeyGrok || providerKey == ProviderKeyOpencode || providerKey == ProviderKeyDevin {
 		// Appended last (CP-57 Task-303): opencode/grok one-shot use positional prompt arg
 		// (resolvePromptExecutionAdapter + ExecutePrompt usesPromptArg), not stdin.
+		// Devin `-p` takes the prompt as its inline value — args already end
+		// with "-p" (CP-70/Task-403).
 		args = append(args, prompt)
 	}
 
@@ -131,7 +138,7 @@ func (r *Runner) SummarizeChatTranscript(ctx context.Context, transcript string,
 	cmd := exec.CommandContext(execCtx, binary, args...)
 	cmd.Env = r.getEnvForExecution(string(providerKey), homePath, nil, "")
 	cmd.Dir = workspace
-	if providerKey != ProviderKeyGemini && providerKey != ProviderKeyGrok && providerKey != ProviderKeyOpencode {
+	if providerKey != ProviderKeyGemini && providerKey != ProviderKeyGrok && providerKey != ProviderKeyOpencode && providerKey != ProviderKeyDevin {
 		cmd.Stdin = strings.NewReader(prompt)
 	}
 

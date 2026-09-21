@@ -27,9 +27,10 @@ func TestPack_VibeSprintV2Topology(t *testing.T) {
 		got[n.ID] = n.Behavior
 		order = append(order, n.ID)
 	}
+	// CP-67 P-5: synthesis_negotiation joins the topology (B-6).
 	want := []string{
 		"preflight_contract_plan", "preflight_contract_freeze", "context",
-		"tdd", "coder", "validate", "synthesis", "audit",
+		"tdd", "coder", "validate", "synthesis", "synthesis_negotiation", "audit",
 	}
 	if len(order) != len(want) {
 		t.Fatalf("nodes=%v, want %v", order, want)
@@ -51,15 +52,24 @@ func TestPack_VibeSprintV2Topology(t *testing.T) {
 	if got["coder"] != "agent.code" {
 		t.Fatalf("coder behavior=%q", got["coder"])
 	}
+	// CP-67 supersession: tdd carries the scaffold architect.
 	tdd := nodeByID(def, "tdd")
-	if tdd.Agent != "agents/tester.md" {
-		t.Fatalf("tdd agent=%q", tdd.Agent)
+	if tdd.Agent != "agents/scaffold-architect.md" {
+		t.Fatalf("tdd agent=%q, want agents/scaffold-architect.md", tdd.Agent)
 	}
+	// CP-67 supersession: two continue back-edges now — the review-loop
+	// synthesis→coder edge (unchanged) plus the negotiation
+	// synthesis_negotiation→tdd edge (B-6).
 	back := 0
 	tddToCoder := false
+	negotiationBack := false
 	for _, e := range def.Edges {
 		if e.Kind == "back" && e.When == "continue" {
 			back++
+			if e.From == "synthesis_negotiation" && e.To == "tdd" {
+				negotiationBack = true
+				continue
+			}
 			if e.From != "synthesis" || e.To != "coder" {
 				t.Fatalf("continue back-edge %s → %s", e.From, e.To)
 			}
@@ -68,8 +78,11 @@ func TestPack_VibeSprintV2Topology(t *testing.T) {
 			tddToCoder = true
 		}
 	}
-	if back != 1 {
-		t.Fatalf("continue back-edges=%d, want 1", back)
+	if back != 2 {
+		t.Fatalf("continue back-edges=%d, want 2", back)
+	}
+	if !negotiationBack {
+		t.Fatal("missing synthesis_negotiation → tdd continue back-edge (CP-67 renegotiation loop)")
 	}
 	if !tddToCoder {
 		t.Fatal("missing tdd → coder done edge (bypass)")

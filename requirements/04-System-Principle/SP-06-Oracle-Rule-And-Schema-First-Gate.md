@@ -79,9 +79,11 @@ FlowPilot enforces permissions at the **Infrastructure Layer**:
 
 When multiple gate conditions are met in a single turn, the runner evaluates and resolves them according to the strict precedence contract:
 
-$$\text{r-reproduce} > \text{r-requirement} > \text{drift (wrong-way)} > \text{owner-debate} > \text{r-dod} > \text{r-ca}$$
+$$\text{r-reproduce} > \text{r-scaffold-red} > \text{r-requirement} > \text{drift (wrong-way)} > \text{owner-debate} > \text{r-dod} > \text{r-ca}$$
 
 - `r-reproduce` (verifiable defect reproduction) gates coder entry for bug fixes.
+- `r-scaffold-red` (Contract-First Scaffold TDD, CP-67): gates scaffold/TDD turn — test suite must compile OK + have at least 1 RED test (assertion failure or not-implemented). Suppresses `r-tests`/`r-reg` for scaffold turn. Enforced by `r-scaffold-red` rule.
+- `r-signature-lock` (Contract-First Scaffold TDD, CP-67): gates coder turn — signature hash (chỉ signature, không bao gồm body) must match frozen `SignatureHash` from TDD stage. Any signature change, addition, or deletion without batch renegotiation (`CoderRenegotiating=true`) triggers violation. Bypass only when `submit_coder_outcome.status == renegotiate_signatures`.
 - `r-requirement` (human-only spec protection) always supersedes automated debate.
 - Severe behavioral drift ($\ge 80$ points) pauses execution before running routine audit checks.
 

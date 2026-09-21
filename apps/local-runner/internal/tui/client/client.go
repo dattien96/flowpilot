@@ -1065,6 +1065,73 @@ func (c *Client) InitEngine(ctx context.Context, projectID, workingDirectory, pl
 	return &out, nil
 }
 
+// ScaffoldResult mirrors the runner's POST /client/projects/{id}/scaffold response
+// (CP-68 / Task-385). Status is authoritative: "done" | "skipped" | "error".
+type ScaffoldResult struct {
+	Status         string   `json:"status"`
+	Platform       string   `json:"platform"`
+	SkillsAttached []string `json:"skillsAttached"`
+	Message        string   `json:"message"`
+	RunID          string   `json:"runId,omitempty"`
+	ProviderKey    string   `json:"providerKey,omitempty"`
+	Attempts       int      `json:"attempts,omitempty"`
+	StatusPath     string   `json:"statusPath,omitempty"`
+	CompilerGate   *struct {
+		Passed   bool `json:"passed"`
+		ExitCode int  `json:"exitCode"`
+	} `json:"compilerGate,omitempty"`
+}
+
+// ScaffoldStatusResult mirrors GET /client/projects/{id}/scaffold/status.
+// Capable=false tells Desktop/TUI to hide the scaffold affordance entirely.
+type ScaffoldStatusResult struct {
+	ProjectID           string `json:"projectId"`
+	Platform            string `json:"platform"`
+	Capable             bool   `json:"capable"`
+	VerificationCommand string `json:"verificationCommand,omitempty"`
+}
+
+// DispatchScaffold calls POST /client/projects/{projectId}/scaffold. A scaffold
+// turn runs a real AI generation plus a compiler gate (pnpm install + tsc), so
+// the budget is far longer than InitEngine's 5 minutes.
+func (c *Client) DispatchScaffold(ctx context.Context, projectID, workingDirectory, platform string) (*ScaffoldResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, 60*time.Minute)
+	defer cancel()
+	var out ScaffoldResult
+	err := c.postJSON(ctx, "/client/projects/"+neturl.PathEscape(projectID)+"/scaffold", map[string]any{
+		"workingDirectory": workingDirectory,
+		"platform":         platform,
+		"trigger":          "init_all",
+	}, &out)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ScaffoldStatus calls GET /client/projects/{projectId}/scaffold/status to learn
+// whether the project's platform has a verified scaffold recipe.
+func (c *Client) ScaffoldStatus(ctx context.Context, projectID, workingDirectory, platform string) (*ScaffoldStatusResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	params := neturl.Values{}
+	if strings.TrimSpace(workingDirectory) != "" {
+		params.Set("workingDirectory", workingDirectory)
+	}
+	if strings.TrimSpace(platform) != "" {
+		params.Set("platform", platform)
+	}
+	path := "/client/projects/" + neturl.PathEscape(projectID) + "/scaffold/status"
+	if encoded := params.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	var out ScaffoldStatusResult
+	if err := c.getJSON(ctx, path, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // SubmitApproval sends POST /client/approvals/{approvalId}/decision (Desktop parity).
 func (c *Client) SubmitApproval(ctx context.Context, approvalID, decision string, forever bool) error {
 	return c.postJSON(ctx, "/client/approvals/"+neturl.PathEscape(approvalID)+"/decision", map[string]any{

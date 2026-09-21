@@ -1,0 +1,79 @@
+{
+ "jsonrpc": "2.0",
+ "method": "_cognition.ai/agent_stopped",
+ "params": {
+  "cause": "complete",
+  "stats": {
+   "toolCalls": 0,
+   "filesChanged": 0,
+   "commandsRun": 0,
+   "inputTokens": 13133,
+   "outputTokens": 29,
+   "ttftMs": 3771,
+   "tokensPerSec": 2900.0,
+   "totalTimeMs": 3781,
+   "requestId": "651020c9-6ad6-4a47-a250-a0bf9ff4f5ea",
+   "modelLabel": "SWE-2 Medium",
+   "responseDimensions": [
+    {
+     "uid": "agent_messages",
+     "groupTitle": "Response Statistics",
+     "label": "Agent messages",
+     "kind": {
+      "type": "cumulativeMetric",
+      "value": 1.0,
+      "prefix": "",
+      "tail": " message",
+      "pluralTail": " messages"
+     }
+    },
+    {
+     "uid": "model",
+     "groupTitle": "Response Statistics",
+     "label": "Model",
+     "kind": {
+      "type": "metric",
+      "value": "SWE-2 Medium"
+     }
+    },
+    {
+     "uid": "input_tokens",
+     "groupTitle": "Token Usage",
+     "label": "Input tokens",
+     "kind": {
+      "type": "cumulativeMetric",
+      "value": 13133.0,
+      "prefix": "",
+      "tail": " token",
+      "pluralTail": " tokens"
+     }
+    },
+    {
+     "uid": "output_tokens",
+     "groupTitle": "Token Usage",
+     "label": "Output tokens",
+     "kind": {
+      "type": "cumulativeMetric",
+      "value": 29.0,
+      "prefix": "",
+      "tail": " token",
+      "pluralTail": " tokens"
+     }
+    },
+    {
+     "uid": "cached_input_tokens",
+     "groupTitle": "Token Usage",
+     "label": "Cached input tokens",
+     "kind": {
+      "type": "cumulativeMetric",
+      "value": 0.0,
+      "prefix": "",
+      "tail": " token",
+      "pluralTail": " tokens"
+     }
+    }
+   ]
+  },
+  "sessionId": "working-pentagon"
+ }
+}

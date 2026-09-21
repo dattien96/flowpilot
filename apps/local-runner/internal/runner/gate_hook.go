@@ -703,6 +703,21 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 	// r-tests/r-reg (and it may pass with no artifact bindings at all, so the
 	// no-op early returns below must not swallow it).
 	reproduceTurn := ReproduceGateEnabled() && nodeOK && IsReproduceBehavior(node.Behavior)
+	// CP-67 P-2 (Task-379): Contract-First scaffold/coder classification.
+	// The scaffold node's turn arms r-scaffold-red (tests MEANT to be red +
+	// B-11 static body whitelist); an agent.code coder turn on a run whose
+	// frozen contract pins a SignatureHash arms r-signature-lock.
+	scaffoldTurn := nodeOK && IsScaffoldBehavior(node.Behavior)
+	coderSignaturesLocked := false
+	var coderFrozenRec changecontract.FrozenContractRecord
+	if nodeOK && !scaffoldTurn && parentID != "" {
+		if writerBehavior, okW := agentpack.NormalizeBehaviorID(node.Behavior); okW && writerBehavior == "agent.code" {
+			if rec, ok := s.frozenContractForRun(cwd, parentID); ok && strings.TrimSpace(rec.SignatureHash) != "" {
+				coderSignaturesLocked = true
+				coderFrozenRec = rec
+			}
+		}
+	}
 	isDelegate := false
 	if nodeOK {
 		if canonical, ok := agentpack.NormalizeBehaviorID(node.Behavior); ok && canonical == "agent.delegate" {
@@ -1087,14 +1102,24 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 	if reproduceTurn {
 		only = flowgate.SuppressTestRules(flowgate.EnabledReproduceRules(only, true))
 	}
-	if len(only) == 0 && !isCodingChild {
+	if scaffoldTurn {
+		// CP-67 P-2: r-scaffold-red armed in place of the suite rules for
+		// this one turn (the scaffold suite is MEANT to be red).
+		only = flowgate.EnabledScaffoldRules(only, true)
+	}
+	if coderSignaturesLocked {
+		// CP-67 P-2: r-signature-lock appended for a coder turn on a
+		// scaffold-pinned contract (renegotiation batch is the only bypass).
+		only = flowgate.EnabledSignatureLockRules(only, true)
+	}
+	if len(only) == 0 && !isCodingChild && !scaffoldTurn && !coderSignaturesLocked {
 		return false
 	}
 	// Artifact-only path with no bindings and no coding/doc rules selected â†’ no-op.
-	if len(required) == 0 && len(structured) == 0 && len(telegramSends) == 0 && !isCodingChild && !reproduceTurn {
+	if len(required) == 0 && len(structured) == 0 && len(telegramSends) == 0 && !isCodingChild && !reproduceTurn && !scaffoldTurn && !coderSignaturesLocked {
 		return false
 	}
-	if len(required) == 0 && len(structured) == 0 && len(telegramSends) == 0 && len(diff) == 0 && !isCodingChild && !reproduceTurn {
+	if len(required) == 0 && len(structured) == 0 && len(telegramSends) == 0 && len(diff) == 0 && !isCodingChild && !reproduceTurn && !scaffoldTurn && !coderSignaturesLocked {
 		return false
 	}
 
@@ -1130,7 +1155,7 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 	// Optional oracle for tier-2b when test rules are in `only`; ALWAYS for a
 	// reproduce turn, which needs the real suite verdict (failed tests +
 	// compile classification) to judge the reproduction (CP-64 P-1).
-	needsOracle := reproduceTurn
+	needsOracle := reproduceTurn || scaffoldTurn
 	baselineTestCmd := ""
 	for _, r := range only {
 		for _, id := range flowgate.TestRuleIDs() {
@@ -1217,11 +1242,33 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 		tr.ReproduceCompileFailed = flowgate.ClassifySuiteOutput(baselineTestCmd, oracle.Output)
 		tr.TamperedTestPaths = append([]string(nil), oracle.Tampered...)
 		s.setTamperedTestPaths(rs, oracle.Tampered)
+		if scaffoldTurn {
+			// CP-67 P-2: the compile/assertion split the scaffold gate
+			// consumes — a compile error is never a red suite.
+			tr.ScaffoldCompileFailed = flowgate.ClassifySuiteOutput(baselineTestCmd, oracle.Output)
+		}
 	}
 	// Task-335 (CP-23 Phase 2): drift telemetry on the child path — placed
 	// AFTER the optional oracle block so tr.Tests is populated (mirrors the
 	// root hook above and the applyDodSignals placement). No-op unless the
 	// FLOWPILOT_ENABLE_DRIFT_DETECTOR flag is set.
+	if scaffoldTurn {
+		tr.ScaffoldExpected = true
+		// CP-67 P-2b (B-11): static stub-body whitelist over the production
+		// (non-test) files written this turn — deterministic, independent of
+		// the suite's red/green outcome.
+		nonStub, syms := s.scaffoldStaticBodyViolations(cwd, tr.WrittenPaths)
+		tr.ScaffoldBodyNonStub = nonStub
+		tr.NonStubSymbols = syms
+	}
+	if coderSignaturesLocked {
+		tr.SignatureHashBefore = coderFrozenRec.SignatureHash
+		if after, drift := s.snapshotCoderSignatureHash(cwd, coderFrozenRec, tr.WrittenPaths); after != "" {
+			tr.SignatureHashAfter = after
+			tr.SignatureDrift = drift
+		}
+		tr.CoderRenegotiating = s.coderRenegotiatingForRun(parentID)
+	}
 	s.recordDriftTelemetry(rs, turnID, &tr)
 	only = prepareWorkingModeRules(rs.workingMode, only, &tr)
 	s.injectVibeSSDrift(rs, &tr)
@@ -1278,6 +1325,12 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 		// shared approval bridge for every provider).
 		if reproduceTurn {
 			s.recordReproduceTestLock(cwd, parentID, tr.WrittenPaths)
+		}
+		// CP-67 P-2 (B-8.3): a passed scaffold turn locks its test file(s)
+		// read-only AND snapshots SignatureHash + LockedSignatures in ONE
+		// version bump — the coder may only fill bodies afterwards.
+		if scaffoldTurn {
+			s.recordScaffoldArtifactsLock(cwd, parentID, tr.WrittenPaths)
 		}
 		// CP-63 P-5 (Task-358): same live-diagnostics allow-path hook as the
 		// root gate above; nil checker returns "" immediately.

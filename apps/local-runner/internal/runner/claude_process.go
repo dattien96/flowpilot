@@ -175,6 +175,22 @@ func (p *claudeProcessPool) dropAccount(account string) {
 	}
 }
 
+// closeAll tears down every pooled process at runner shutdown (mirrors
+// dropAccount but unscoped — the pool key is irrelevant when the whole
+// runner is going away).
+func (p *claudeProcessPool) closeAll() {
+	p.mu.Lock()
+	victims := make([]*claudeProcess, 0, len(p.procs))
+	for k, proc := range p.procs {
+		victims = append(victims, proc)
+		delete(p.procs, k)
+	}
+	p.mu.Unlock()
+	for _, proc := range victims {
+		proc.shutdown()
+	}
+}
+
 func (p *claudeProcessPool) count() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()

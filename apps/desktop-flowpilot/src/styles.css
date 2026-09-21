@@ -27,6 +27,7 @@
   --gemini-brand: #7c6ff0;
   --grok-brand: #ff6b4a;
   --opencode-brand: #5cc8ff;
+  --devin-brand: #4c9aff;
   --role-main: #4c8dff;
   --role-coder: #3fb950;
   --role-reviewer: #b07cff;
@@ -2476,6 +2477,10 @@ input {
 .account-pin-label,
 .account-detail-title {
   font-weight: 600;
+  /* Emails/display labels are single tokens — break inside them instead of
+     overflowing the sidebar. */
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .account-pin-sub,
 .account-detail-sub,
@@ -2511,6 +2516,10 @@ input {
   gap: 6px;
   font-size: 9px;
   color: var(--text-dim);
+}
+.account-bar-meta > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .meter {
   width: 100%;
@@ -3148,6 +3157,8 @@ input {
   margin-top: 12px;
   font-size: 10px;
   color: var(--text-dim);
+  /* Auth-store/exec paths are long unbroken tokens on Windows. */
+  overflow-wrap: anywhere;
 }
 .account-detail-actions {
   display: flex;
@@ -3977,6 +3988,12 @@ input {
   background: rgba(92, 200, 255, 0.09);
 }
 .provider-chip-opencode.provider-chip-selected .provider-chip-name { color: var(--opencode-brand); }
+.provider-chip-devin .provider-chip-icon { color: var(--devin-brand); }
+.provider-chip-devin.provider-chip-selected {
+  border-color: var(--devin-brand);
+  background: rgba(76, 154, 255, 0.09);
+}
+.provider-chip-devin.provider-chip-selected .provider-chip-name { color: var(--devin-brand); }
 .chat-controller-switch {
   align-content: start;
 }
@@ -4403,6 +4420,12 @@ input {
      text) — without its own scroll the cards below the fold were unreachable. */
   height: 100%;
   overflow-y: auto;
+  /* Long unbroken tokens (account emails) must never force an h-scrollbar. */
+  overflow-x: hidden;
+}
+
+.right-sidebar-stack > * {
+  min-width: 0;
 }
 
 /* LSP missing-server notice (CP-63 follow-up): pinned first in the stack so
@@ -6375,6 +6398,10 @@ body.is-resizing-sidebar {
 .prov-opencode {
   color: var(--opencode-brand);
   border-color: #2a4a5a;
+}
+.prov-devin {
+  color: var(--devin-brand);
+  border-color: #2a4a6a;
 }
 .node button {
   margin-top: 10px;

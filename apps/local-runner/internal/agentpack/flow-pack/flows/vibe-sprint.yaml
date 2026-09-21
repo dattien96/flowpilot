@@ -14,8 +14,14 @@ policy:
   onCap: escalate
   extendBy: 2
   extendMax: 2
+  # CP-67 P-5 (B-10): phase-scoped signature-renegotiation budget — never
+  # shared with the review-loop cap; escalate when exhausted (no extend).
+  negotiationCap: 5
 tools:
   - tools/vibe-requirement-outcome.yaml
+  # CP-67 P-5 (Task-378): Contract-First TDD handover faces.
+  - tools/submit-scaffold-outcome.yaml
+  - tools/submit-coder-outcome.yaml
 # CP-62 P-5 (Task-341): vibe-sprint profiles — tdd/coder see the SS slice +
 # dependence; the previous sprint's handoff (P-6) rides the pack when present.
 contextProfiles:
@@ -51,11 +57,15 @@ nodes:
     behavior: context.produce
   - id: tdd
     run: delegate
+    # CP-67 P-5 (B-7): node id UNCHANGED. Contract-First Scaffold TDD wiring;
+    # lifecycle stays reinvoke for negotiation re-entry.
     lifecycle: reinvoke
-    behavior: agent.code
-    agent: agents/tester.md
-    promptTemplate: prompts/test-signatures.md
+    behavior: agent.scaffold
+    agent: agents/scaffold-architect.md
+    promptTemplate: prompts/scaffold-contract-tdd.md
     join: all
+    # CP-67 P-3 (B-5): the contract architect is a High-Reasoning tier node.
+    model: claude-sonnet-4-5
     contextProfile: tdd
     artifactBindings:
       - direction: output
@@ -71,7 +81,8 @@ nodes:
     lifecycle: reinvoke
     behavior: agent.code
     agent: agents/coder.md
-    promptTemplate: prompts/implement-complete-tests.md
+    # CP-67 P-5 (Task-381): fill-body-only contract with Accumulate & Batch.
+    promptTemplate: prompts/implement-scaffold-body.md
     join: all
     contextProfile: coder
   - id: validate
@@ -79,6 +90,14 @@ nodes:
     lifecycle: once
     behavior: command.validate
   - id: synthesis
+    run: inline
+    lifecycle: reinvoke
+    behavior: hub.inline
+    agent: agents/synthesizer.md
+    join: all
+  # CP-67 P-5 (B-6): the signature-renegotiation hub — adjudicates the
+  # coder's batch, routes scaffold revision or closure. Inline hub.
+  - id: synthesis_negotiation
     run: inline
     lifecycle: reinvoke
     behavior: hub.inline
@@ -121,6 +140,20 @@ edges:
     to: coder
     when: continue
     kind: back
+  # CP-67 P-5 (B-6): review-loop edge synthesis -> coder (continue/back) is
+  # UNCHANGED; renegotiation routes through synthesis_negotiation instead.
+  - from: synthesis
+    to: synthesis_negotiation
+    when: continue
+    kind: forward
+  - from: synthesis_negotiation
+    to: tdd
+    when: continue
+    kind: back
+  - from: synthesis_negotiation
+    to: synthesis
+    when: done
+    kind: forward
   - from: synthesis
     to: audit
     when: done

@@ -19,7 +19,7 @@ interface RunnerProviderAccount {
   is_active: boolean;
 }
 
-const PROVIDER_LABELS: Record<string, string> = { codex: "Codex", gemini: "Gemini", claude: "Claude", grok: "Grok", opencode: "OpenCode" };
+const PROVIDER_LABELS: Record<string, string> = { codex: "Codex", gemini: "Gemini", claude: "Claude", grok: "Grok", opencode: "OpenCode", devin: "Devin" };
 
 interface McpProviderConfigResult {
   providerKey: string;

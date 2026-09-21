@@ -22,16 +22,15 @@ func taskHarnessDefinition(t *testing.T) FlowDefinition {
 	return FlowDefinition{}
 }
 
-// TestTaskHarnessPackTopology (Task-305 T-6) pins the 12-node topology: two
-// continue/back edges anchored at different nodes (plan loop + code loop),
-// acceptance boundary including plan_synthesis, the plan_reviewer cohort
-// shape, exactly two hub.inline nodes, and the plan loop wiring from Scout
-// through draft context to the freeze scope lock.
+// TestTaskHarnessPackTopology (Task-305 T-6, CP-67 P-5 supersession) pins
+// the 13-node topology: the CP-67 synthesis_negotiation hub joins, so there
+// are three hub.inline nodes and three continue/back edges (plan loop + code
+// loop + signature-renegotiation loop), all anchored at different nodes.
 func TestTaskHarnessPackTopology(t *testing.T) {
 	def := taskHarnessDefinition(t)
 
-	if len(def.Nodes) != 12 {
-		t.Fatalf("task-harness node count = %d, want 12", len(def.Nodes))
+	if len(def.Nodes) != 13 {
+		t.Fatalf("task-harness node count = %d, want 13", len(def.Nodes))
 	}
 
 	var continueBack []FlowEdge
@@ -41,18 +40,15 @@ func TestTaskHarnessPackTopology(t *testing.T) {
 			continueBack = append(continueBack, e)
 		}
 	}
-	if len(continueBack) != 2 {
-		t.Fatalf("task-harness continue/back edge count = %d (%+v), want 2", len(continueBack), continueBack)
+	if len(continueBack) != 3 {
+		t.Fatalf("task-harness continue/back edge count = %d (%+v), want 3", len(continueBack), continueBack)
 	}
 	froms := map[string]bool{}
 	for _, e := range continueBack {
 		froms[e.From] = true
 	}
-	if !froms["plan_synthesis"] || !froms["validate"] {
-		t.Fatalf("continue/back anchors = %v, want plan_synthesis and validate", froms)
-	}
-	if continueBack[0].From == continueBack[1].From {
-		t.Fatal("both continue/back edges anchor the same node; the plan and code loops must stay independent")
+	if !froms["plan_synthesis"] || !froms["validate"] || !froms["synthesis_negotiation"] {
+		t.Fatalf("continue/back anchors = %v, want plan_synthesis, validate and synthesis_negotiation", froms)
 	}
 
 	for _, want := range []string{"plan_synthesis", "validate", "synthesis", "audit"} {
@@ -91,8 +87,8 @@ func TestTaskHarnessPackTopology(t *testing.T) {
 			hubIDs[n.ID] = true
 		}
 	}
-	if hubCount != 2 || !hubIDs["plan_synthesis"] || !hubIDs["synthesis"] {
-		t.Fatalf("hub.inline nodes = %d %v, want exactly plan_synthesis + synthesis", hubCount, hubIDs)
+	if hubCount != 3 || !hubIDs["plan_synthesis"] || !hubIDs["synthesis"] || !hubIDs["synthesis_negotiation"] {
+		t.Fatalf("hub.inline nodes = %d %v, want exactly plan_synthesis + synthesis + synthesis_negotiation", hubCount, hubIDs)
 	}
 
 	// Plan loop wiring: scout -> context (draft) -> plan_writer -> plan_reviewer

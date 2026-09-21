@@ -39,6 +39,11 @@ func (s *InteractiveService) RegisterInteractiveRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /client/engine/tooling/install/libretranslate", s.handleInstallLibreTranslate)
 	mux.HandleFunc("GET /client/projects/{projectId}/engine/status", s.handleGetEngineStatus)
 	mux.HandleFunc("POST /client/projects/{projectId}/engine/init", s.handleInitEngine)
+	// CP-68 (Task-385 T-3): Single-command init's AI Scaffold surfaces. Status is
+	// read by Desktop to hide the option entirely when the platform is not
+	// capable; dispatch runs the recipe-gated scaffold turn.
+	mux.HandleFunc("GET /client/projects/{projectId}/scaffold/status", s.handleScaffoldStatus)
+	mux.HandleFunc("POST /client/projects/{projectId}/scaffold", s.handleDispatchScaffold)
 	mux.HandleFunc("GET /client/projects/{projectId}/engine/gate-config", s.handleGetEngineGateConfig)
 	mux.HandleFunc("POST /client/projects/{projectId}/engine/gate-config", s.handleSetEngineGateConfig)
 	mux.HandleFunc("GET /client/projects/{projectId}/engine/approval-allowlist", s.handleGetApprovalAllowlist)
@@ -162,10 +167,33 @@ func (s *InteractiveService) handleCreateProject(w http.ResponseWriter, r *http.
 		writeInteractiveError(w, newAPIErr(http.StatusInternalServerError, "create_project_failed", err.Error()))
 		return
 	}
-	// Auto-init project engine (scaffold requirements/, install skills, gate config, git hook)
-	// when the project directory path is accessible locally on the runner host.
-	if dir, resolveErr := s.resolveEngineWorkingDirectory(input.DirectoryPath); resolveErr == nil && dir != "" {
+	// CP-68: passive Desktop scaffold trigger + boundary gate. A relative
+	// directory that climbs out of the runner's visible tree is rejected with the
+	// same 400 the engine endpoints use — the project row exists (created above),
+	// but neither engine init nor any AI turn touches the escaped path. Every
+	// OTHER resolve failure (nonexistent directory, runner unavailable, …) keeps
+	// the CA-890 soft-skip semantics: the project still returns 201 and engine
+	// init is simply skipped, exactly as before CP-68. A crafted platform that
+	// names a nonexistent recipe can never authorize writes elsewhere: the recipe
+	// gate requires a verified scaffold.yaml, and the dispatcher itself rejects
+	// out-of-boundary workspaces before any prompt.
+	dir, resolveErr := s.resolveEngineWorkingDirectory(input.DirectoryPath)
+	if resolveErr != nil && resolveErr.code != "working_directory_outside_boundary" {
+		// Soft skip (CA-890): project creation succeeds, init is skipped.
+		resolveErr = nil
+		dir = ""
+	}
+	if resolveErr == nil && dir != "" {
+		// Auto-init project engine (scaffold requirements/, install skills, gate config, git hook)
+		// when the project directory path is accessible locally on the runner host.
 		s.runEngineInit(project.ID, dir, input.Platform, engineInitTriggerBind, "all")
+		// Async — project creation must not block on an AI turn plus a package install —
+		// and a platform without a verified recipe is skipped without any AI call.
+		s.autoTriggerScaffold(project.ID, dir, input.Platform, input.DefaultModel)
+	}
+	if resolveErr != nil {
+		writeInteractiveError(w, resolveErr)
+		return
 	}
 	writeInteractiveJSON(w, http.StatusCreated, project)
 }
@@ -1603,6 +1631,7 @@ func (s *InteractiveService) handleSubmitFlowControl(w http.ResponseWriter, r *h
 		return
 	}
 	var in FlowControlInput
+	var coderBatch []CoderBatchSignatureRequest
 	// BUG-NOTE-CP42 #32: ReviewOutcomeInput's canonical wire field is "status"
 	// (json:"status" on the Go struct; "outcome" is only the board/legacy
 	// alias parseReviewOutcomeInput also accepts). Routing purely on presence
@@ -1613,6 +1642,7 @@ func (s *InteractiveService) handleSubmitFlowControl(w http.ResponseWriter, r *h
 	// parser whenever either shape is present.
 	_, hasOutcome := body["outcome"]
 	statusVal, _ := body["status"].(string)
+	runID := r.PathValue("runId")
 	if hasOutcome || reviewOutcomeStatuses[statusVal] {
 		// Declared face: ReviewOutcomeInput → FlowControlInput via the face registry.
 		roi, err := parseReviewOutcomeInput(body)
@@ -1626,6 +1656,29 @@ func (s *InteractiveService) handleSubmitFlowControl(w http.ResponseWriter, r *h
 			writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "invalid_outcome", mapErr.Error()))
 			return
 		}
+	} else if looksLikeCoderOutcome(statusVal) {
+		// CP-67 P-1: the coder face rides the same flow-control transport.
+		// Map the domain status through the declared face BEFORE anything
+		// else — renegotiate_signatures→continue, completed→done,
+		// blocked→escalate (the generic parser only knows continue|done|
+		// escalate). The body rides in.Payload verbatim so the batch reaches
+		// the same buffer the bridge path feeds.
+		generic, ok := resolveFaceStatus(coderOutcomeFace(), statusVal)
+		if !ok {
+			writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "invalid_status", "unknown coder outcome status "+strconv.Quote(statusVal)))
+			return
+		}
+		var batchErr error
+		coderBatch, batchErr = parseCoderBatchSignatureRequests(body)
+		if batchErr != nil {
+			writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "invalid_outcome", batchErr.Error()))
+			return
+		}
+		in = FlowControlInput{Status: generic, Payload: body}
+		in.Summary, _ = body["summary"].(string)
+		if strings.TrimSpace(in.Summary) == "" {
+			in.Summary, _ = body["implementation_progress"].(string)
+		}
 	} else {
 		var err error
 		in, err = parseFlowControlInput(body)
@@ -1634,13 +1687,30 @@ func (s *InteractiveService) handleSubmitFlowControl(w http.ResponseWriter, r *h
 			return
 		}
 	}
-	runID := r.PathValue("runId")
 	s.mu.Lock()
 	_, runExists := s.runs[runID]
 	s.mu.Unlock()
 	if !runExists {
 		writeInteractiveError(w, newAPIErr(http.StatusNotFound, "run_not_found", "workflow run not found"))
 		return
+	}
+	// CP-67 P-1: the coder's batch is buffered record-only for the
+	// synthesis_negotiation hub. A continue carrying a batch never advances
+	// routing — the batch is consumed when the coder node's completion
+	// dispatches the negotiation hub; done/escalate still proceed. The batch
+	// may arrive via the coder-domain status branch (top-level body), the
+	// review face (payload after mapping), or a raw flow_control payload.
+	if len(coderBatch) == 0 && in.Payload != nil {
+		if reqs, err := parseCoderBatchSignatureRequests(in.Payload); err == nil {
+			coderBatch = reqs
+		}
+	}
+	if len(coderBatch) > 0 {
+		s.bufferCoderBatchSignatures(runID, coderBatch)
+		if in.Status == "continue" {
+			writeInteractiveJSON(w, http.StatusOK, s.agentGraphSnapshot(runID))
+			return
+		}
 	}
 	if _, err := s.applyFlowControl(runID, in); err != nil {
 		writeInteractiveError(w, newAPIErr(http.StatusUnprocessableEntity, "flow_control_failed", err.Error()))

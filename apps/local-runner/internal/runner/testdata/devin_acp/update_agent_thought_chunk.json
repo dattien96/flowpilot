@@ -1,0 +1,14 @@
+{
+ "jsonrpc": "2.0",
+ "method": "session/update",
+ "params": {
+  "sessionId": "working-pentagon",
+  "update": {
+   "sessionUpdate": "agent_thought_chunk",
+   "content": {
+    "type": "text",
+    "text": "The user wants a specific, exact reply: \"PROBE_OK\". I should just output that string."
+   }
+  }
+ }
+}

@@ -1097,6 +1097,23 @@ func (r *Runner) CleanupSessions() {
 			}
 		}
 	}
+
+	// Provider processes spawned by the interactive layer are tracked outside
+	// r.sessions — ACP agents (devin/opencode/grok), the claude pool, and the
+	// shared codex app-server. Skipping them leaks orphans on every shutdown
+	// (stray `devin acp`/`opencode acp` outliving `just dev` teardown).
+	r.closeAllDevinProcesses()
+	r.closeAllOpencodeProcesses()
+	r.closeAllGrokProcesses()
+	if r.claudePool != nil {
+		r.claudePool.closeAll()
+	}
+	r.codexAppServerMu.Lock()
+	if h := r.codexAppServer; h != nil {
+		r.codexAppServer = nil
+		h.close()
+	}
+	r.codexAppServerMu.Unlock()
 }
 
 func (r *Runner) StartIdleSweeper(ctx context.Context) {

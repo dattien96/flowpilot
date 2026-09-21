@@ -2,7 +2,6 @@ package runner
 
 import (
 	"log"
-	"os"
 	"path"
 	"path/filepath"
 	"strings"
@@ -22,32 +21,27 @@ import (
 // coder step's frozen contract, and the bridge enforcement that makes the lock
 // real for every provider.
 
-// ReproduceGateEnv is the CP-64 §8 rollout/fallback flag. Unset or false keeps
-// the pre-CP-64 behavior: the reproduce node degrades to the legacy
-// empty-signature tester step, r-reproduce is never appended, and no read-only
-// lock is ever written.
+// ReproduceGateEnv is RETIRED (CP-67 P-2, post-review B-9): the reproduce
+// gate is always-on and this env var no longer has any effect. The constant
+// survives only so old Setenv calls in tests keep compiling; setting it to
+// any value changes nothing.
 const ReproduceGateEnv = "FLOWPILOT_ENABLE_REPRODUCE_GATE"
 
-// Reproduce node assets (CP-64 P-2) and the legacy pair they degrade to when
-// the flag is off (Task-366 T-6: resolved at RUNTIME, one topology — never two
-// flow files).
+// Reproduce node assets (CP-64 P-2). The legacy degrade pair
+// (prompts/test-signatures.md + agents/tester.md) is retired with the flag
+// (CP-67 B-9) — the pack files remain only as rollback artifacts.
 const (
-	reproducePromptPath   = "prompts/reproduce-failing-test.md"
-	reproduceAgentRef     = "agents/reproducer.md"
-	legacyReproducePrompt = "prompts/test-signatures.md"
-	legacyReproduceAgent  = "agents/tester.md"
+	reproducePromptPath = "prompts/reproduce-failing-test.md"
+	reproduceAgentRef   = "agents/reproducer.md"
 )
 
-// ReproduceGateEnabled reports whether the reproduce-first gate is on. Only the
-// explicit truthy set enables it (mirrors driftDetectorEnabled's flag pattern);
-// every other value, including unset, leaves the flow on the legacy path.
+// ReproduceGateEnabled reports whether the reproduce-first gate is on. B-9
+// retire: it ALWAYS is — the CP-64 flag path no longer exists as a runtime
+// option (CP-67 P-2), so every workspace runs reproduce-first and
+// contract-first unconditionally; the fallback for a bad rollout is a revert
+// commit, not a flag flip.
 func ReproduceGateEnabled() bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv(ReproduceGateEnv))) {
-	case "1", "true", "yes", "on", "enable", "enabled":
-		return true
-	default:
-		return false
-	}
+	return true
 }
 
 // IsReproduceBehavior reports whether a node's declared behavior resolves to
@@ -55,39 +49,6 @@ func ReproduceGateEnabled() bool {
 func IsReproduceBehavior(behavior string) bool {
 	canonical, ok := agentpack.NormalizeBehaviorID(behavior)
 	return ok && canonical == "agent.reproduce"
-}
-
-// resolveReproducePrompt returns the static prompt path a node should render:
-// its own declared template normally, the legacy empty-signature prompt when
-// the node is a reproduce node and the gate flag is off (Task-366 T-6).
-func resolveReproducePrompt(flagOn bool, node agentpack.FlowNode) string {
-	if IsReproduceBehavior(node.Behavior) && !flagOn {
-		return legacyReproducePrompt
-	}
-	return strings.TrimSpace(node.PromptTemplate)
-}
-
-// resolveReproduceAgent returns the agent ref a node should spawn: its own
-// declared agent normally, the legacy tester when the node is a reproduce node
-// and the gate flag is off (Task-366 T-6).
-func resolveReproduceAgent(flagOn bool, node agentpack.FlowNode) string {
-	if IsReproduceBehavior(node.Behavior) && !flagOn {
-		return legacyReproduceAgent
-	}
-	return node.Agent
-}
-
-// reproduceNodeAsFrozenWriter reports whether a reproduce node must be bound to
-// the frozen preflight contract exactly like an agent.code writer.
-//
-// Only in legacy mode: with the gate OFF the reproduce node writes the empty
-// signature frames the coder later fills, so it must share the coder's frozen
-// declared-paths scope — literally what the old agent.code test_signatures node
-// did. With the gate ON it writes its OWN new test file, outside the frozen
-// draft and governed by r-reproduce instead, so binding it would immediately
-// read as scope drift.
-func reproduceNodeAsFrozenWriter(behavior string) bool {
-	return !ReproduceGateEnabled() && IsReproduceBehavior(behavior)
 }
 
 // flowWriterNodeIDForRun resolves the flow's agent.code writer step (the coder

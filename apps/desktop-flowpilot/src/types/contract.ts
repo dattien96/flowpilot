@@ -8,7 +8,7 @@
 // Keep this in sync with the Go runner's event DTOs.
 // ============================================================================
 
-export type ProviderKey = "codex" | "claude" | "gemini" | "grok" | "opencode";
+export type ProviderKey = "codex" | "claude" | "gemini" | "grok" | "opencode" | "devin";
 
 // ---- Domain (navigator) ----------------------------------------------------
 
@@ -536,6 +536,13 @@ export interface TurnInput {
    */
   subMode?: string;
   flowRef?: string;
+  /**
+   * Client-generated Idempotency-Key header value for POST /turns. Generated
+   * once per user send; retries after a connection-level failure ("Failed to
+   * fetch" while the runner was mid-restart) replay the same key so the
+   * runner dedupes to a single turn instead of minting duplicates.
+   */
+  idempotencyKey?: string;
 }
 
 /** One selectable built-in orchestration flow for a given chat subMode

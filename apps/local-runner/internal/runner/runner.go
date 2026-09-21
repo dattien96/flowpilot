@@ -189,6 +189,20 @@ type Runner struct {
 	// opencodeProcessKey respawns. Guarded by its own mu.
 	opencodeRunSessions *opencodeRunSessionIndex
 
+	// devinProcessMu guards devinProcesses (CP-70 Task-400, copy of the
+	// opencode model).
+	devinProcessMu sync.Mutex
+	// devinProcesses holds live `devin acp` processes keyed by
+	// scope+model+permissionMode (see devinProcessKey). Devin model/mode are
+	// per-session config options (session/set_config_option), so an exact-key
+	// miss reuses any live same-segment handle — sessions are resumable slugs
+	// in the account's SQLite store, not process-local. Only an account/scope
+	// change reclaims processes. nil until first ensure.
+	devinProcesses map[string]*devinProcessHandle
+	// devinRunSessions maps FlowPilot run id → Devin ACP session id across
+	// process respawns. Guarded by its own mu.
+	devinRunSessions *devinRunSessionIndex
+
 	// providersCache holds a short-TTL cache of DetectProviders results so
 	// repeated TUI opens do not re-spawn every provider CLI probe (CA-535).
 	// It is invalidated by any provider/account mutation. Guarded by its own mu.
@@ -976,6 +990,11 @@ func resolvePromptExecutionAdapter(request PromptExecutionRequest, outputPath, w
 	case strings.HasPrefix(lowerModel, "opencode/"), strings.HasPrefix(lowerModel, "opencode-go/"):
 		// Appended last (CP-57 P-0/Task-303 T-1): grok branch above unchanged.
 		resolvedProvider = "opencode"
+	case strings.HasPrefix(lowerModel, "devin/"):
+		// Appended last (CP-70 P-0/Task-402): opencode branch above unchanged.
+		// `devin/` prefix is mandatory — bare Devin model ids (swe-*, opus,
+		// codex, gpt aliases) collide with other providers' namespaces.
+		resolvedProvider = "devin"
 	case resolvedProvider == "":
 		return "", nil, "", errors.New("model or provider is required")
 	}
@@ -1037,6 +1056,21 @@ func resolvePromptExecutionAdapter(request PromptExecutionRequest, outputPath, w
 		if request.ReasoningEffort != "" {
 			args = append(args, "--effort", strings.ToLower(strings.TrimSpace(request.ReasoningEffort)))
 		}
+		// One-shot `-p` has NO session/request_permission channel to the
+		// runner (unlike `grok agent stdio`, where BUG-343 forbids the flag
+		// because it would bypass the runner's decision layer). Here the
+		// runner cannot answer a permission request at all, so a caller that
+		// explicitly opted into writes (AllowWrite) or full autonomy
+		// (YoloMode) — e.g. the scaffold dispatcher — can only be honored by
+		// --always-approve; without it every write tool call ends the turn
+		// with stopReason="cancelled" (live-verified CP-68 M-1 run:
+		// grok-4.5 scaffold turns all cancelled, zero files written). When
+		// neither flag is set (summarizer, provider-driven MCP) the flag is
+		// omitted and Grok keeps its default/config posture — read tools
+		// still work, writes still cancel.
+		if request.AllowWrite || request.YoloMode {
+			args = append(args, "--always-approve")
+		}
 		return grokBinaryName(), args, resolvedProvider, nil
 	case "opencode":
 		// Appended last (CP-57 P-0/Task-303 T-1): one-shot `opencode run --format json`
@@ -1054,6 +1088,27 @@ func resolvePromptExecutionAdapter(request PromptExecutionRequest, outputPath, w
 			args = append(args, "--auto")
 		}
 		return opencodeBinaryName(), args, resolvedProvider, nil
+	case "devin":
+		// Appended last (CP-70 P-0/Task-403): one-shot `devin -p` is the
+		// summarizer exception (mirrors the opencode P-1 exception). The
+		// interactive turn loop stays on `devin acp`; `-p` has no session /
+		// permission channel, so writes only happen when the caller opted in
+		// (AllowWrite → accept-edits, YoloMode → dangerous). Non-interactive
+		// mode fails in untrusted directories, so workspace trust is skipped
+		// explicitly (live-verified flag, devin --help 3000.10.31).
+		args := []string{"--respect-workspace-trust", "false"}
+		if modelName != "" {
+			args = append(args, "--model", devinModelIDForACP(modelName))
+		}
+		if request.YoloMode {
+			args = append(args, "--permission-mode", "dangerous")
+		} else if request.AllowWrite {
+			args = append(args, "--permission-mode", "accept-edits")
+		}
+		// -p stays last: it takes the prompt as its own inline value
+		// (devin -p "<prompt>"), appended by the caller like grok's -p.
+		args = append(args, "-p")
+		return devinBinaryName(), args, resolvedProvider, nil
 	default:
 		return "", nil, "", fmt.Errorf("provider %q is not supported", resolvedProvider)
 	}
@@ -1158,12 +1213,16 @@ func (r *Runner) ExecutePrompt(ctx context.Context, request PromptExecutionReque
 	if err != nil {
 		return PromptExecutionResult{}, err
 	}
-	usesPromptArg := resolvedProvider == string(ProviderKeyGemini) || resolvedProvider == string(ProviderKeyGrok) || resolvedProvider == string(ProviderKeyOpencode)
+	usesPromptArg := resolvedProvider == string(ProviderKeyGemini) || resolvedProvider == string(ProviderKeyGrok) || resolvedProvider == string(ProviderKeyOpencode) || resolvedProvider == string(ProviderKeyDevin)
 	if usesPromptArg {
 		if resolvedProvider == string(ProviderKeyGrok) {
 			// Appended last (CP-46 P-0/Task-212 T-3): -p/--single takes the
 			// prompt as its own value, unlike Gemini's --print <prompt>.
 			args = append(args, "-p", actualPrompt)
+		} else if resolvedProvider == string(ProviderKeyDevin) {
+			// Appended last (CP-70/Task-403): args already end with `-p`; the
+			// prompt is its inline value, same shape as grok's -p/--single.
+			args = append(args, actualPrompt)
 		} else if resolvedProvider == string(ProviderKeyOpencode) {
 			// Appended last (CP-57 P-0/Task-303 T-1): opencode run takes message as positional args.
 			args = append(args, actualPrompt)
@@ -1768,6 +1827,14 @@ func providerSpecs() []providerSpec {
 			InstallHint: "Install Opencode CLI (npm i -g opencode-ai@latest or https://opencode.ai/install), log in, and restart the runner.",
 			Models:      defaultOpencodeProviderModels(),
 		},
+		{
+			// Appended last (CP-70 P-0/Task-402): opencode spec above unchanged.
+			Key:         "devin",
+			Label:       "Devin",
+			BinaryName:  "devin",
+			InstallHint: "Install Devin CLI (curl -fsSL https://cli.devin.ai/install.sh | bash), run `devin auth login`, and restart the runner.",
+			Models:      defaultDevinProviderModels(),
+		},
 	}
 }
 
@@ -1775,6 +1842,19 @@ func defaultOpencodeProviderModels() []ProviderModel {
 	return []ProviderModel{
 		{ID: "opencode/muse-spark-1.2-contributor-free", DisplayName: "Opencode Muse Spark 1.2 Free", Source: "registry"},
 		{ID: "opencode/big-pickle", DisplayName: "Opencode Big Pickle", Source: "registry"},
+	}
+}
+
+// defaultDevinProviderModels are the static registry fallbacks (CP-70
+// Task-402). The live catalog (~380 entries, Devin CLI 3000.10.31) is served
+// per-session via ACP configOptions and cached by recordDevinModelCatalog —
+// resolveProviderModels prefers that cache. `devin/` prefix is required
+// because bare Devin ids (swe-*, claude-*, gpt-*) collide with other
+// providers' namespaces (F-9).
+func defaultDevinProviderModels() []ProviderModel {
+	return []ProviderModel{
+		{ID: "devin/swe-2-high", DisplayName: "Devin SWE-2 (High)", Source: "registry"},
+		{ID: "devin/adaptive", DisplayName: "Devin Adaptive", Source: "registry"},
 	}
 }
 
@@ -1823,6 +1903,13 @@ func detectProvider(ctx context.Context, spec providerSpec) Provider {
 	}
 
 	binaryPath, err := lookPathFn(spec.BinaryName)
+	if err != nil && spec.Key == string(ProviderKeyDevin) {
+		// The Windows setup.ps1 install lives at %LOCALAPPDATA%\devin\cli\bin
+		// without a PATH entry — a bare LookPath miss is not proof of absence.
+		if resolved := resolveDevinBinaryPath(); resolved != "" {
+			binaryPath, err = resolved, nil
+		}
+	}
 	if err != nil {
 		notFound := fmt.Sprintf("%s binary was not found on PATH", spec.Label)
 		provider.LastError = &notFound
@@ -1891,6 +1978,24 @@ func resolveProviderModels(ctx context.Context, spec providerSpec, binaryPath st
 		if models, err := detectOpencodeModels(ctx); err == nil && len(models) > 0 {
 			return models
 		}
+	}
+	if spec.Key == "devin" {
+		// Appended last (CP-70 P-0/Task-402): opencode branch above unchanged.
+		// `devin models list` needs the REPL credential store (a different
+		// store from ACP PKCE), so the authoritative catalog is the one ACP
+		// serves per session — read the cache written by recordDevinModelCatalog.
+		if models := readDevinModelsCache(); len(models) > 0 {
+			return devinPrefixedProviderModels(models)
+		}
+		// A stale catalog still beats the static two-model fallback — serve it
+		// and refresh in the background so the next detect sees the live list
+		// (the probe's initialize->authenticate->session/new handshake runs far
+		// beyond this endpoint's 8s budget).
+		if models := readDevinModelsCacheStale(true); len(models) > 0 {
+			warmDevinModelsCacheAsync()
+			return devinPrefixedProviderModels(models)
+		}
+		warmDevinModelsCacheAsync()
 	}
 
 	return spec.Models
@@ -2361,6 +2466,16 @@ func defaultAuthCandidates(providerKey, dir string) []authCandidate {
 			candidates = append(candidates, authCandidate{homePath: dir, authPath: authPath})
 		}
 		return candidates
+	case "devin":
+		// Appended last (CP-70 P-0/Task-402): opencode branch above unchanged.
+		// Probe ambient overrides first (XDG_DATA_HOME/XDG_CONFIG_HOME, Windows
+		// %APPDATA%/%LOCALAPPDATA% — the live store is
+		// %APPDATA%\devin\credentials.toml on 3000.10.31), then home-relative.
+		candidates := devinAmbientAuthCandidates(dir)
+		for _, authPath := range devinCredentialFilePaths(dir) {
+			candidates = append(candidates, authCandidate{homePath: dir, authPath: authPath})
+		}
+		return candidates
 	default:
 		return nil
 	}
@@ -2396,6 +2511,11 @@ func accountAuthPaths(providerKey, homePath string) []string {
 	case "opencode":
 		// Appended last (CP-57 P-0/Task-302 T-2): grok branch above unchanged.
 		return opencodeAuthFilePaths(homePath)
+	case "devin":
+		// Appended last (CP-70 P-0/Task-402): opencode branch above unchanged.
+		// Home-relative only — ambient env probing would make managed slots
+		// match the host's credential dirs.
+		return devinCredentialFilePaths(homePath)
 	default:
 		return nil
 	}
@@ -2467,6 +2587,11 @@ func hasValidProviderAuthFile(providerKey, path string) bool {
 		return strings.Contains(content, `"refresh_token"`) && strings.Contains(content, `"email"`)
 	case "opencode":
 		return opencodeAuthFileLooksValid(data)
+	case "devin":
+		// Appended last (CP-70 P-0/Task-402): credentials.toml is TOML with a
+		// windsurf_api_key field (live-verified) — substring match, no TOML
+		// parser dependency.
+		return strings.Contains(content, "api_key") || strings.Contains(content, "token")
 	default:
 		return false
 	}
@@ -2566,6 +2691,14 @@ func providerAuthStatus(spec providerSpec) string {
 		if hasAnyEnv("OPENCODE_API_KEY") || hasLocalAuth("opencode") {
 			return "READY"
 		}
+	case "devin":
+		// Appended last (CP-70 P-0/Task-402). ACP mode authenticates per
+		// process via PKCE (`authenticate` methodId devin-browser), but the
+		// REPL credential store (~/.local/share/devin/credentials.toml) is
+		// still the account marker for inventory/UI state.
+		if hasLocalAuth("devin") {
+			return "READY"
+		}
 	}
 
 	return "AUTH_REQUIRED"
@@ -2641,6 +2774,17 @@ func providerInstallCommand(spec providerSpec) (string, []string, error) {
 				return "npm", []string{"install", "-g", "opencode-ai@latest"}, nil
 			}
 			return "powershell", []string{"-NoProfile", "-Command", "irm https://opencode.ai/install | iex"}, nil
+		default:
+			return "", nil, fmt.Errorf("%s install is not supported on %s", spec.Label, runtime.GOOS)
+		}
+	case "devin":
+		// Appended last (CP-70 P-0/Task-402): opencode branch above unchanged.
+		// Live-verified install commands (cli.devin.ai docs, 3000.10.31).
+		switch runtime.GOOS {
+		case "darwin", "linux":
+			return "sh", []string{"-c", "curl -fsSL https://cli.devin.ai/install.sh | bash"}, nil
+		case "windows":
+			return "powershell", []string{"-NoProfile", "-Command", "irm https://static.devin.ai/cli/setup.ps1 | iex"}, nil
 		default:
 			return "", nil, fmt.Errorf("%s install is not supported on %s", spec.Label, runtime.GOOS)
 		}
@@ -4270,6 +4414,9 @@ func (r *Runner) AuthenticateProvider(ctx context.Context, providerName string) 
 	case "opencode":
 		// Appended last (CP-57 P-0/Task-302 T-3).
 		authCommand = "opencode auth login"
+	case "devin":
+		// Appended last (CP-70 P-0/Task-402).
+		authCommand = "devin auth login"
 	default:
 		return fmt.Errorf("no auth command configured for provider %q", providerName)
 	}
@@ -4362,7 +4509,7 @@ func (r *Runner) getEnvForExecution(
 			continue
 		}
 		key := parts[0]
-		if key == "HOME" || key == "USERPROFILE" || key == "APPDATA" || key == "LOCALAPPDATA" || key == "HOMEPATH" || key == "HOMEDRIVE" || key == "XDG_CONFIG_HOME" || key == "XDG_DATA_HOME" || key == "CODEX_HOME" || key == "GROK_HOME" || key == "OPENCODE_CONFIG" || key == "OPENCODE_HOME" || key == "OPENCODE_API_KEY" || key == "OPENCODE_AUTH_PATH" || key == "HTTP_PROXY" || key == "HTTPS_PROXY" {
+		if key == "HOME" || key == "USERPROFILE" || key == "APPDATA" || key == "LOCALAPPDATA" || key == "HOMEPATH" || key == "HOMEDRIVE" || key == "XDG_CONFIG_HOME" || key == "XDG_DATA_HOME" || key == "CODEX_HOME" || key == "GROK_HOME" || key == "OPENCODE_CONFIG" || key == "OPENCODE_HOME" || key == "OPENCODE_API_KEY" || key == "OPENCODE_AUTH_PATH" || key == "DEVIN_PERMISSION_MODE" || key == "DEVIN_MODEL" || key == "DEVIN_SANDBOX" || key == "HTTP_PROXY" || key == "HTTPS_PROXY" {
 			continue
 		}
 		if _, exists := customEnv[key]; exists {
@@ -4397,6 +4544,16 @@ func (r *Runner) getEnvForExecution(
 		if authPath := strings.TrimSpace(os.Getenv("OPENCODE_AUTH_PATH")); authPath != "" && opencodeAccountIsAmbientHome(trimmedAccountHomePath) {
 			newEnv = append(newEnv, fmt.Sprintf("OPENCODE_AUTH_PATH=%s", authPath))
 		}
+	case "devin":
+		// Appended last (CP-70 P-0/Task-402): opencode case above unchanged.
+		// Devin is pure XDG — credentials.toml + cli/sessions.db live under
+		// XDG_DATA_HOME, config.json + mcp_config.json under XDG_CONFIG_HOME.
+		// Pointing both at the managed home isolates the account fully.
+		_ = os.MkdirAll(filepath.Join(trimmedAccountHomePath, ".local", "share", "devin"), 0755)
+		_ = os.MkdirAll(filepath.Join(trimmedAccountHomePath, ".config", "devin"), 0755)
+		newEnv = append(newEnv, fmt.Sprintf("HOME=%s", trimmedAccountHomePath))
+		newEnv = append(newEnv, fmt.Sprintf("XDG_CONFIG_HOME=%s", filepath.Join(trimmedAccountHomePath, ".config")))
+		newEnv = append(newEnv, fmt.Sprintf("XDG_DATA_HOME=%s", filepath.Join(trimmedAccountHomePath, ".local", "share")))
 	default:
 		newEnv = append(newEnv, fmt.Sprintf("HOME=%s", trimmedAccountHomePath))
 		newEnv = append(newEnv, fmt.Sprintf("XDG_CONFIG_HOME=%s/.config", trimmedAccountHomePath))
@@ -4468,6 +4625,9 @@ func NextAccountHomePath(providerKey string, existing []string) (string, int, er
 	case "opencode":
 		// Appended last (CP-57 P-0/Task-302 T-2).
 		prefix = ".opencodeHome"
+	case "devin":
+		// Appended last (CP-70 P-0/Task-402).
+		prefix = ".devinHome"
 	default:
 		return "", 0, fmt.Errorf("unsupported provider %q", providerKey)
 	}
@@ -4530,6 +4690,10 @@ func (r *Runner) StartInteractiveAuth(providerKey string, accountHomePath string
 	case "opencode":
 		// Appended last (CP-57 P-0/Task-302 T-3).
 		authCommand = fmt.Sprintf("%s auth login", authInvocation)
+	case "devin":
+		// Appended last (CP-70 P-0/Task-402). `devin auth login` runs the
+		// browser PKCE flow; --force-manual-token-flow exists for headless.
+		authCommand = fmt.Sprintf("%s auth login", authInvocation)
 	default:
 		return fmt.Errorf("provider %s does not support interactive CLI login", providerKey)
 	}
@@ -4575,6 +4739,9 @@ func providerEnvSetCommand(providerKey, homePath, shellType string) string {
 			// Appended last (CP-57 P-0/Task-302 T-3). CA-679: OPENCODE_CONFIG is a
 			// config FILE path (opencode.json), not the config directory.
 			return fmt.Sprintf("export OPENCODE_HOME='%s' && export HOME='%s' && export XDG_CONFIG_HOME='%s/.config' && export XDG_DATA_HOME='%s/.local/share' && export OPENCODE_CONFIG='%s/.config/opencode/opencode.json'", homePath, homePath, homePath, homePath, homePath)
+		case "devin":
+			// Appended last (CP-70 P-0/Task-402): pure XDG isolation.
+			return fmt.Sprintf("export HOME='%s' && export XDG_CONFIG_HOME='%s/.config' && export XDG_DATA_HOME='%s/.local/share'", homePath, homePath, homePath)
 		default:
 			return fmt.Sprintf("export HOME='%s' && export XDG_CONFIG_HOME='%s/.config'", homePath, homePath)
 		}

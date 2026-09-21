@@ -94,6 +94,32 @@ func CheckTool(name string, repoDir string) ToolStatus {
 		}
 		ts.Status = "missing"
 		return ts
+	case "devin":
+		// Appended last (CP-70 P-0/Task-402): respect FLOWPILOT_DEVIN_BIN override
+		bin := strings.TrimSpace(os.Getenv("FLOWPILOT_DEVIN_BIN"))
+		if bin == "" {
+			bin = "devin"
+		}
+		if path, err := exec.LookPath(bin); err == nil && path != "" {
+			out, err := exec.Command(bin, "--version").Output()
+			if err == nil {
+				ts.Version = strings.TrimSpace(string(out))
+				ts.Status = "ok"
+				return ts
+			}
+		} else if bin != "devin" {
+			// Absolute path override may not be on PATH but still be executable
+			if _, err := os.Stat(bin); err == nil {
+				out, err := exec.Command(bin, "--version").Output()
+				if err == nil {
+					ts.Version = strings.TrimSpace(string(out))
+					ts.Status = "ok"
+					return ts
+				}
+			}
+		}
+		ts.Status = "missing"
+		return ts
 	case "gitnexus":
 		// Prefer a native binary; fall back to npx.
 		if path, err := exec.LookPath("gitnexus"); err == nil && path != "" {

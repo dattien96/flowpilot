@@ -50,6 +50,7 @@ func NewRootCommand() *cobra.Command {
 	rootCmd.AddCommand(newBackendsCommand(cfg))
 	rootCmd.AddCommand(newGoogleDriveMcpCommand(cfg))
 	rootCmd.AddCommand(newTelegramMcpCommand(cfg))
+	rootCmd.AddCommand(newDevinMcpStdioCommand(cfg))
 	rootCmd.AddCommand(newSkillsCommand(cfg))
 	rootCmd.AddCommand(newFlowsCommand(cfg))
 	rootCmd.AddCommand(newChatCommand(cfg))
@@ -1783,12 +1784,14 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 					return
 				}
-				instance.CleanupSessions()
 
 				err := writeSupervisorCommand(instance.Health().Cwd, "shutdown")
 				if err != nil {
-					writeHTTPError(w, http.StatusInternalServerError, err)
-					return
+					// Never block shutdown on the supervisor handshake: the
+					// supervisor also tears down via child-exit detection, and
+					// a failed write must not leave the runner alive while the
+					// desktop reports "Turn off" did nothing.
+					log.Printf("[runner] supervisor shutdown command write failed: %v — exiting anyway", err)
 				}
 
 				w.WriteHeader(http.StatusAccepted)
@@ -1798,8 +1801,12 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 				}
 				// Supervisor (just dev) also watches supervisor.cmd. TUI-spawned
 				// runners have no supervisor — exit this process so POST
-				// /system/shutdown actually stops the listener.
+				// /system/shutdown actually stops the listener. Cleanup runs
+				// bounded and async: a wedged provider teardown (e.g. an ACP
+				// handshake holding a process mutex) must never leave the
+				// endpoint hanging with the runner still serving.
 				go func() {
+					cleanupSessionsBounded(instance)
 					time.Sleep(150 * time.Millisecond)
 					os.Exit(0)
 				}()
@@ -1809,7 +1816,6 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 					return
 				}
-				instance.CleanupSessions()
 
 				err := writeSupervisorCommand(instance.Health().Cwd, "restart")
 				if err != nil {
@@ -1822,6 +1828,10 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 				if f, ok := w.(http.Flusher); ok {
 					f.Flush()
 				}
+				// Cleanup is best-effort here: the supervisor SIGINTs this
+				// process next, whose own handler re-runs bounded cleanup and
+				// exits. Keep the endpoint responsive even if teardown stalls.
+				go cleanupSessionsBounded(instance)
 			})
 
 			mux.HandleFunc("GET /translate", func(w http.ResponseWriter, r *http.Request) {
@@ -1848,7 +1858,17 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 			go func() {
 				<-sigChan
 				fmt.Println("\nShutting down local runner. Cleaning up active sessions...")
-				instance.CleanupSessions()
+				// A second Ctrl+C while cleanup runs force-exits immediately —
+				// signal.Notify swallows repeats otherwise, leaving the process
+				// unkillable from the keyboard if a session ever stalls teardown.
+				go func() {
+					<-sigChan
+					fmt.Println("\nForce exit.")
+					os.Exit(1)
+				}()
+				if !cleanupSessionsBounded(instance) {
+					fmt.Println("\nSession cleanup timed out — exiting anyway.")
+				}
 				os.Exit(0)
 			}()
 
@@ -2004,6 +2024,26 @@ func newTelegramMcpCommand(cfg *config) *cobra.Command {
 	}
 }
 
+// newDevinMcpStdioCommand (CP-70 Task-403): the stdio↔HTTP shim that lets the
+// Devin ACP agent reach FlowPilot's per-turn MCP tools. Devin supports stdio
+// MCP only (mcpCapabilities http/sse are false), so the adapter registers this
+// subcommand as the `flowpilot` MCP server command; it proxies each stdin
+// JSON-RPC line to the runner's HTTP MCP endpoint (`--url`, carries the
+// per-turn token) and writes each response line to stdout.
+func newDevinMcpStdioCommand(cfg *config) *cobra.Command {
+	var mcpURL string
+	cmd := &cobra.Command{
+		Use:   "devin-mcp-stdio",
+		Short: "Bridge Devin's stdio MCP transport to the FlowPilot HTTP MCP endpoint",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runner.RunDevinMCPStdio(cmd.Context(), mcpURL, os.Stdin, os.Stdout)
+		},
+	}
+	cmd.Flags().StringVar(&mcpURL, "url", "", "FlowPilot MCP endpoint URL including the per-turn token")
+	_ = cmd.MarkFlagRequired("url")
+	return cmd
+}
+
 func newSkillsCommand(cfg *config) *cobra.Command {
 	skillsCmd := &cobra.Command{
 		Use:   "skills",
@@ -2087,7 +2127,7 @@ func withCORS(next http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Origin", defaultAdminWebOrigin())
 		}
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Idempotency-Key, Last-Event-ID")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Idempotency-Key, Last-Event-ID, X-Client")
 
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
@@ -2154,4 +2194,27 @@ func writeSupervisorCommand(workspace string, command string) error {
 		return err
 	}
 	return os.WriteFile(cmdPath, []byte(command), 0644)
+}
+
+// shutdownCleanupBudget bounds graceful session teardown during shutdown,
+// restart, and SIGINT/SIGTERM paths. A provider teardown can wedge behind
+// process mutexes (e.g. an ACP initialize/authenticate handshake in flight),
+// and the runner must still exit — otherwise orphaned detached children
+// outlive `just dev` and "Turn off system" appears to do nothing.
+const shutdownCleanupBudget = 2 * time.Second
+
+// cleanupSessionsBounded runs Runner.CleanupSessions with a hard time budget.
+// Returns true when cleanup finished inside the budget.
+func cleanupSessionsBounded(instance *runner.Runner) bool {
+	done := make(chan struct{})
+	go func() {
+		instance.CleanupSessions()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(shutdownCleanupBudget):
+		return false
+	}
 }

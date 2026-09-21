@@ -1047,6 +1047,8 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case EngineInitMsg:
 		return m.handleEngineInitMsg(msg)
+	case EngineScaffoldMsg:
+		return m.handleEngineScaffoldMsg(msg)
 
 	case RemoteChatListMsg:
 		// G3 /restore index (silent refresh after a batch, loud bare dump).

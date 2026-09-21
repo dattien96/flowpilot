@@ -1,0 +1,68 @@
+{
+ "jsonrpc": "2.0",
+ "method": "_cognition.ai/turn_stats",
+ "params": {
+  "sessionId": "working-pentagon",
+  "turnClientMessageId": "a7b8d381-2e41-4f0d-876d-6829523f4f5f",
+  "responseDimensions": [
+   {
+    "uid": "agent_messages",
+    "groupTitle": "Response Statistics",
+    "label": "Agent messages",
+    "kind": {
+     "type": "cumulativeMetric",
+     "value": 1.0,
+     "prefix": "",
+     "tail": " message",
+     "pluralTail": " messages"
+    }
+   },
+   {
+    "uid": "model",
+    "groupTitle": "Response Statistics",
+    "label": "Model",
+    "kind": {
+     "type": "metric",
+     "value": "SWE-2 Medium"
+    }
+   },
+   {
+    "uid": "input_tokens",
+    "groupTitle": "Token Usage",
+    "label": "Input tokens",
+    "kind": {
+     "type": "cumulativeMetric",
+     "value": 13133.0,
+     "prefix": "",
+     "tail": " token",
+     "pluralTail": " tokens"
+    }
+   },
+   {
+    "uid": "output_tokens",
+    "groupTitle": "Token Usage",
+    "label": "Output tokens",
+    "kind": {
+     "type": "cumulativeMetric",
+     "value": 29.0,
+     "prefix": "",
+     "tail": " token",
+     "pluralTail": " tokens"
+    }
+   },
+   {
+    "uid": "cached_input_tokens",
+    "groupTitle": "Token Usage",
+    "label": "Cached input tokens",
+    "kind": {
+     "type": "cumulativeMetric",
+     "value": 0.0,
+     "prefix": "",
+     "tail": " token",
+     "pluralTail": " tokens"
+    }
+   }
+  ],
+  "turnRequestId": "651020c9-6ad6-4a47-a250-a0bf9ff4f5ea"
+ }
+}

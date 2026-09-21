@@ -88,6 +88,16 @@ type InteractiveService struct {
 	// fakes here; production falls back to lsp.DefaultSet().
 	lspChecker lspChecker
 
+	// scaffoldDispatcherFactory overrides scaffold-dispatcher construction
+	// (CP-68 / Task-385). Nil means the production wiring,
+	// NewScaffoldDispatcher(s.runner); tests inject a dispatcher backed by a fake
+	// prompt executor so no real provider CLI is ever spawned.
+	scaffoldDispatcherFactory func() *ScaffoldDispatcher
+	// scaffoldInFlight debounces the CP-68 passive scaffold trigger so the same
+	// project gets at most one background AI scaffold turn at a time; guarded by
+	// s.mu, lazily initialized, entries are released when the turn finishes.
+	scaffoldInFlight map[string]bool
+
 	// dispatchLogSyncMu guards dispatchLogSyncHash, kept separate from the main
 	// s.mu since a Drive upload is slow network I/O unrelated to run-state locking.
 	// dispatchLogSyncHash caches the sha256 of the last successfully-uploaded
@@ -162,6 +172,9 @@ type interactiveRun struct {
 	lastGrokTurnSessionID string
 	// lastOpencodeTurnSessionID is the Opencode twin (CP-57).
 	lastOpencodeTurnSessionID string
+	// lastDevinTurnSessionID is the Devin twin (CP-70): newest slug session id
+	// observed this turn so model-switch resume re-loads the real session.
+	lastDevinTurnSessionID    string
 	providerAccountID         string
 	workspaceCwd              string
 	stepID                    string
@@ -465,6 +478,12 @@ type interactiveRun struct {
 	// lastReviewCohortVerdicts is a snapshot taken at the most recent review
 	// cohort join (label → approved|changes_requested|blocked).
 	lastReviewCohortVerdicts map[string]string
+	// pendingBatchSignatureByStep buffers child coder submit_coder_outcome
+	// batch_signature_requests (CP-67 P-1, B-1/B-2 resolution) until the
+	// synthesis_negotiation hub mediates. Record-only: buffering never
+	// advances the flow — the hub reads it when routing the renegotiation
+	// back-edge (same pattern as pendingReviewVerdictByLabel).
+	pendingBatchSignatureByStep map[string][]CoderBatchSignatureRequest
 
 	status          RunStatus
 	createdAt       string
@@ -1385,6 +1404,35 @@ func (s *InteractiveService) injectAgentFeedback(parentRunID, toRunID, message s
 // applyFlowControl advances the generic flow engine for parentRunID.
 // This is the synchronous core: it records the transition, emits the graph update,
 // and returns a FlowControlResult. Re-entry of target nodes is wired by Task-091/092.
+// currentStepIDFor returns the parent run's active step id ("" when unknown).
+func (s *InteractiveService) currentStepIDFor(parentRunID string) string {
+	if s == nil || parentRunID == "" {
+		return ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if rs := s.runs[parentRunID]; rs != nil {
+		return strings.TrimSpace(rs.stepID)
+	}
+	return ""
+}
+
+// isNegotiationHubNode reports whether the step id is the CP-67
+// synthesis_negotiation inline hub (the signature-renegotiation phase).
+func isNegotiationHubNode(stepID string) bool {
+	return strings.TrimSpace(stepID) == "synthesis_negotiation"
+}
+
+// negotiationPhaseActive reports whether the run is currently inside the
+// signature-renegotiation phase. Checked against BOTH activeHubNodeID (the
+// live signal — dispatchHubNotifyNode stamps it when the hub takes over;
+// the hub turn's own stepID is a synthetic "step-N", never the node id) and
+// the current stepID for callers/tests that set it directly.
+func (s *InteractiveService) negotiationPhaseActive(parentRunID string) bool {
+	return isNegotiationHubNode(s.activeHubNodeIDFor(parentRunID)) ||
+		isNegotiationHubNode(s.currentStepIDFor(parentRunID))
+}
+
 func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControlInput) (FlowControlResult, error) {
 	s.flowDiagLog(parentRunID, "flow_control_received", "received flow control input",
 		"status", in.Status,
@@ -1614,6 +1662,14 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 			"round", snap.LoopState.Round,
 			"cap", effectiveCap(snap.LoopState),
 		)
+		// CP-67 P-5 (B-10): the negotiation phase closed — the batch was
+		// adjudicated; reset the phase counter for the next scaffold round.
+		if s.negotiationPhaseActive(parentRunID) {
+			s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
+				st.NegotiationRound = 0
+				return st
+			})
+		}
 		return FlowControlResult{Status: "done", Round: snap.LoopState.Round, Cap: effectiveCap(snap.LoopState), NextAction: "done"}, nil
 
 	case "continue":
@@ -1638,7 +1694,31 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 			s.setFlowStepAwaitingUser(context.Background(), parentRunID)
 		}
 		var result FlowControlResult
+		negotiationPhase := s.negotiationPhaseActive(parentRunID)
 		snap := s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
+			// CP-67 P-5 (B-10): a continue from the negotiation hub consumes a
+			// renegotiation round. Exhausting the phase-scoped cap escalates —
+			// the review loop's extend machinery deliberately does not apply.
+			if negotiationPhase {
+				// B-10: the renegotiation budget is phase-scoped — a
+				// negotiation round consumes NegotiationRound only, never the
+				// review loop's shared Round.
+				st.NegotiationRound++
+				negCap := effectiveNegotiationCap(st)
+				if st.NegotiationRound >= negCap {
+					st.Status = "blocked"
+					st.BlockReason = "escalate"
+					st.GateReason = "signature-renegotiation cap exhausted"
+					result = FlowControlResult{Status: "blocked", Round: st.Round, Cap: negCap, NextAction: "awaiting_user"}
+					return st
+				}
+				st.OpenIssues = issueCount
+				st.Status = "running"
+				st.BlockReason = ""
+				st.GateReason = ""
+				result = FlowControlResult{Status: "continue", Round: st.Round, Cap: effectiveCap(st), OpenIssues: st.OpenIssues, NextAction: "looping"}
+				return st
+			}
 			st.OpenIssues = issueCount
 			cap := effectiveCap(st)
 			st.Round++
@@ -5466,21 +5546,21 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 			s.agentOrchestrator.signalChild(rs.id, finalMsg, false, "", RunStatusCompleted)
 			s.settleFlowChildTurnCompletedLocked(rs, finalMsg, ev)
 		} else if !rs.turnStartedAfterLoopDone {
-		// Root: defer Completed until post-turn gate when the turn touched
-		// code. Plain chat previously published Completed immediately even
-		// when code changed, so dispatch settle saw Completed and returned
-		// allow:true before the gate queued its reprompt — UI stalled at
-		// one auto-reprompt line (run-208282). Arming the same pending gate
-		// contract as children/flow roots makes settle wait for the real
-		// disposition. Plain turns without code (e.g. "hi") still complete
-		// immediately to preserve the original 3-event shape.
-		// V10 residual (TestRootFlowEngineDefersCompletedUntilGate): a
-		// flow-engine-driven root defers even without code events — its
-		// completion fans out to flow children/siblings, so publishing
-		// Completed before the gate would release dependents early, the
-		// same race the children branch above closes. resumePendingFlowGate
-		// already handles roots (V10 P0), so the armed state is resumable.
-		hasCode := rs.flowEngineDriven
+			// Root: defer Completed until post-turn gate when the turn touched
+			// code. Plain chat previously published Completed immediately even
+			// when code changed, so dispatch settle saw Completed and returned
+			// allow:true before the gate queued its reprompt — UI stalled at
+			// one auto-reprompt line (run-208282). Arming the same pending gate
+			// contract as children/flow roots makes settle wait for the real
+			// disposition. Plain turns without code (e.g. "hi") still complete
+			// immediately to preserve the original 3-event shape.
+			// V10 residual (TestRootFlowEngineDefersCompletedUntilGate): a
+			// flow-engine-driven root defers even without code events — its
+			// completion fans out to flow children/siblings, so publishing
+			// Completed before the gate would release dependents early, the
+			// same race the children branch above closes. resumePendingFlowGate
+			// already handles roots (V10 P0), so the armed state is resumable.
+			hasCode := rs.flowEngineDriven
 			for _, e := range rs.events {
 				if e.Type == EventFileChanged && e.Path != "" && !flowgate.IsDocOrAuditFile(e.Path) {
 					hasCode = true
@@ -6133,6 +6213,36 @@ func (b *turnBridge) SpawnAgent(in SpawnAgentInput) (SpawnAgentResult, error) {
 // already instructs (BUG-NOTE-CP42 #13). Non-cohort children (flowCohortId ==
 // "") and the hub itself are unaffected.
 func (b *turnBridge) SubmitFlowControl(in FlowControlInput) (FlowControlResult, error) {
+	// CP-67 P-1 (Task-378, B-1/B-2): the coder's batched renegotiation rides
+	// the payload — buffer it record-only for the synthesis_negotiation hub
+	// BEFORE any routing. A renegotiate_signatures input maps to continue,
+	// and a continue carrying a batch is record-only: it never advances the
+	// flow itself — the batch is consumed when the coder node's completion
+	// dispatches the synthesis_negotiation hub.
+	reqs, batchErr := parseCoderBatchSignatureRequests(in.Payload)
+	if batchErr != nil {
+		return FlowControlResult{}, batchErr
+	}
+	if len(reqs) > 0 {
+		parentID := b.rs.parentRunID
+		if strings.TrimSpace(parentID) == "" {
+			parentID = b.rs.id
+		}
+		b.svc.bufferCoderBatchSignatures(parentID, reqs)
+		if in.Status == "continue" {
+			return FlowControlResult{Status: "continue", NextAction: "renegotiation_recorded"}, nil
+		}
+	}
+	// A non-cohort child (a delegate/coder node — submit_review_outcome is
+	// offered to it only for the CP-67 signature-renegotiation path) can
+	// never settle or loop the flow on its own: done/continue without a
+	// batch is rejected; blocked → escalate stays a legal hard-blocker.
+	if b.rs.parentRunID != "" && b.rs.flowCohortId == "" &&
+		(in.Status == "done" || in.Status == "continue") {
+		return FlowControlResult{}, fmt.Errorf(
+			"submit_review_outcome: a delegate node cannot settle or loop the flow — " +
+				"finish your turn normally, submit status=renegotiate_signatures with a batch to request signature changes, or blocked to escalate")
+	}
 	// Task-344 (CP-62 P-2 follow-up): per-AC verdict coverage — the
 	// reviewer's governing task artifact supplies the expected set; a
 	// submission missing ACs is rejected in-turn (the error result IS the
@@ -6459,6 +6569,14 @@ func (s *InteractiveService) advanceHubDoneThroughEdge(targetRunID string, in Fl
 // maybeAutoReinvokeHubWithPrompt) rendered as silently "skipped" even on a run
 // where the notification never actually needed to be dropped.
 func (s *InteractiveService) dispatchHubNotifyNode(parentRunID string, node agentpack.FlowNode) {
+	s.dispatchHubNotifyNodeWithPrompt(parentRunID, node, composeHubNotifyPrompt(node))
+}
+
+// dispatchHubNotifyNodeWithPrompt is dispatchHubNotifyNode with a caller-
+// supplied focus prompt — used by the CP-67 negotiation dispatch, where the
+// hub prompt must carry the adjudicated batch rows in addition to the
+// standard "reached step" notice.
+func (s *InteractiveService) dispatchHubNotifyNodeWithPrompt(parentRunID string, node agentpack.FlowNode, prompt string) {
 	s.mu.Lock()
 	if rs := s.runs[parentRunID]; rs != nil {
 		rs.activeHubNodeID = node.ID
@@ -6474,7 +6592,7 @@ func (s *InteractiveService) dispatchHubNotifyNode(parentRunID string, node agen
 		s.setFlowStepStatus(context.Background(), parentRunID, node.ID, StepStatusRunning)
 		s.stampFlowNodePosture(context.Background(), parentRunID, node)
 	}
-	s.maybeAutoReinvokeHubWithPrompt(parentRunID, composeHubNotifyPrompt(node))
+	s.maybeAutoReinvokeHubWithPrompt(parentRunID, prompt)
 }
 
 // spawnChildRun is the shared spawn path for the spawn_agent tool and the HTTP handler.
@@ -7173,7 +7291,7 @@ func turnResumeProviderSessionID(rs *interactiveRun) string {
 	if rs.realProviderSessionID != "" && rs.providerKey != ProviderKeyClaude {
 		id = rs.realProviderSessionID
 	}
-	if rs.providerKey != ProviderKeyGrok && rs.providerKey != ProviderKeyOpencode {
+	if rs.providerKey != ProviderKeyGrok && rs.providerKey != ProviderKeyOpencode && rs.providerKey != ProviderKeyDevin {
 		return id
 	}
 	trimmed := strings.TrimSpace(id)
@@ -7182,6 +7300,14 @@ func turnResumeProviderSessionID(rs *interactiveRun) string {
 	}
 	if rs.providerKey == ProviderKeyOpencode {
 		if alt := strings.TrimSpace(rs.lastOpencodeTurnSessionID); isOpencodeRealSessionID(alt) {
+			return alt
+		}
+		return id
+	}
+	if rs.providerKey == ProviderKeyDevin {
+		// Appended last (CP-70/Task-401): Devin slug ids mirror the Opencode
+		// fallback — a mid-chat model switch must session/load the real slug.
+		if alt := strings.TrimSpace(rs.lastDevinTurnSessionID); isDevinRealSessionID(alt) {
 			return alt
 		}
 		return id
@@ -7208,6 +7334,15 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	// state is persisted by the post-turn sessionStateOf snapshot below. (BUG-122)
 	providerPrompt := in.Prompt
 	var providerSessionID string
+	// CP-67 P-1 (Task-378): computed BEFORE s.mu — the helper acquires the
+	// lock itself (isFlowEngineDriven/flowNodeForRun/frozenContractForRun all
+	// lock internally). A signature-locked coder child (agent.code node on a
+	// scaffold-pinned contract) gets submit_review_outcome so it can file its
+	// batched renegotiation — status=renegotiate_signatures +
+	// batch_signature_requests — via the existing transport (B-1/B-2: no
+	// per-face adapter tool). The bridge treats a batch-carrying continue as
+	// record-only, so the offer cannot settle the flow.
+	lockedCoderChild := rs.parentRunID != "" && rs.flowCohortId == "" && s.isSignatureLockedCoderChild(rs)
 	s.mu.Lock()
 	// Prefer the durable real provider handle when present (Codex rollouts and
 	// Grok ACP session ids). Read under lock with lastGrokTurnSessionID fallback
@@ -7252,6 +7387,9 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 			flowRequiresHubMachineVerdict(parent, "cp_synthesis")) {
 			offerReviewOutcomeTool = true
 		}
+	}
+	if !offerReviewOutcomeTool && lockedCoderChild {
+		offerReviewOutcomeTool = true
 	}
 	providerPrompt = prependModePrefix(providerPrompt, rs.turnCount, rs.changeType, rs.sourceDocID)
 	// Persist the per-turn YOLO posture as the run's current default (BUG-129). The UI
@@ -7596,7 +7734,8 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	// CA-688: opencode has NO provider-owned transcript file at all (sessions
 	// live in the shared opencode.db), so its prompt/assistant pairs must ride
 	// the durable turn log for /open replay — same rationale as Gemini/Grok.
-	if completed && (rs.providerKey == ProviderKeyGemini || rs.providerKey == ProviderKeyGrok || rs.providerKey == ProviderKeyOpencode) {
+	// Devin is identical: sessions are rows in cli/sessions.db (CP-70 F-18).
+	if completed && (rs.providerKey == ProviderKeyGemini || rs.providerKey == ProviderKeyGrok || rs.providerKey == ProviderKeyOpencode || rs.providerKey == ProviderKeyDevin) {
 		durableTurn = transcriptTurnForProviderTurnLocked(rs, turnID)
 	}
 	snap := sessionStateOf(rs)
@@ -7626,6 +7765,8 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 				kind = turnLogKindGrokSession
 			} else if rs.providerKey == ProviderKeyOpencode {
 				kind = turnLogKindOpencodeSession
+			} else if rs.providerKey == ProviderKeyDevin {
+				kind = turnLogKindDevinSession
 			}
 			_ = logger.AppendTurnLog(context.Background(), rs.id, turnLogLine{Kind: kind, SessionID: newTurnSessionID})
 		}
@@ -9333,6 +9474,26 @@ func (s *InteractiveService) refreshResumeHandleLocked(rs *interactiveRun, adapt
 			}
 		}
 		return ""
+	case ProviderKeyDevin:
+		// Appended last (CP-70 P-0/Task-401): mirror Opencode — promote only an
+		// id the adapter actually opened this turn (LastDevinSessionID).
+		if reporter, ok := adapter.(interface{ LastDevinSessionID() string }); ok {
+			if id := strings.TrimSpace(reporter.LastDevinSessionID()); isDevinRealSessionID(id) {
+				if s.isForeignProviderSessionID(rs, id) {
+					return ""
+				}
+				rs.realProviderSessionID = id
+				if !isDevinRealSessionID(rs.providerSessionID) {
+					rs.providerSessionID = id
+				}
+				if id != rs.lastDevinTurnSessionID {
+					rs.lastDevinTurnSessionID = id
+					return id
+				}
+				return ""
+			}
+		}
+		return ""
 	}
 	return ""
 }
@@ -9472,10 +9633,10 @@ func (s *InteractiveService) foreignProviderSessionIDs(rs *interactiveRun) map[s
 				continue
 			}
 			for _, e := range entries {
-				if e.Kind != turnLogKindCodexSession && e.Kind != turnLogKindGrokSession && e.Kind != turnLogKindOpencodeSession {
+				if e.Kind != turnLogKindCodexSession && e.Kind != turnLogKindGrokSession && e.Kind != turnLogKindOpencodeSession && e.Kind != turnLogKindDevinSession {
 					continue
 				}
-				if sid := strings.TrimSpace(e.SessionID); isCodexRealSessionID(sid) || isGrokRealSessionID(sid) || isOpencodeRealSessionID(sid) {
+				if sid := strings.TrimSpace(e.SessionID); isCodexRealSessionID(sid) || isGrokRealSessionID(sid) || isOpencodeRealSessionID(sid) || isDevinRealSessionID(sid) {
 					if sid == strings.TrimSpace(rs.realProviderSessionID) || sid == strings.TrimSpace(rs.providerSessionID) {
 						continue
 					}
@@ -10089,6 +10250,10 @@ func defaultModelForProvider(key ProviderKey) string {
 	case ProviderKeyOpencode:
 		// Appended last (CP-57 P-0/Task-303 T-1).
 		return "opencode/muse-spark-1.2-contributor-free"
+	case ProviderKeyDevin:
+		// Appended last (CP-70): swe-2-high is the catalog's default
+		// currentValue (live-verified on 3000.10.31).
+		return "devin/swe-2-high"
 	default:
 		return ""
 	}

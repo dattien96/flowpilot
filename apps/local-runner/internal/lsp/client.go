@@ -149,6 +149,27 @@ func (c *Client) DidClose(params DidCloseTextDocumentParams) error {
 	return c.notify("textDocument/didClose", params)
 }
 
+// DocumentSymbols requests textDocument/documentSymbol and returns the flat
+// symbol rows (CP-67 P-2, Task-379 B-8.4). Servers that reply with the
+// hierarchical DocumentSymbol[] shape are handled by the caller flattening —
+// the runner's adapter maps this to flowgate.DocumentSymbol anchors.
+func (c *Client) DocumentSymbols(ctx context.Context, uri string) ([]DocumentSymbolResultItem, error) {
+	raw, err := c.request(ctx, "textDocument/documentSymbol", DocumentSymbolParams{
+		TextDocument: TextDocumentIdentifier{URI: uri},
+	})
+	if err != nil {
+		return nil, err
+	}
+	var out []DocumentSymbolResultItem
+	if len(raw) == 0 || string(raw) == "null" {
+		return out, nil
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("lsp: decode documentSymbol result: %w", err)
+	}
+	return out, nil
+}
+
 // request sends a JSON-RPC request and waits for its response.
 func (c *Client) request(ctx context.Context, method string, params any) (json.RawMessage, error) {
 	if c.closed.Load() {

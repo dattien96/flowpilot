@@ -13,6 +13,11 @@ import (
 // unknown-behavior check ValidateFlowDefinition already performs.
 const (
 	behaviorIDAgentCode      = "agent.code"
+	// behaviorIDAgentScaffold (CP-67 P-3, B-3): the Contract-First Scaffold
+	// TDD node is a frozen-contract writer like agent.code — its stubs land
+	// inside the freeze-dominated DeclaredPaths and its red test files feed
+	// the acceptance boundary, so it carries the same topology invariants.
+	behaviorIDAgentScaffold  = "agent.scaffold"
 	behaviorIDContractFreeze = "contract.freeze"
 	terminalDoneNodeID       = "done"
 )
@@ -132,7 +137,7 @@ func classifyWriterAndFreezeNodes(def FlowDefinition) (writers, freezes []string
 			continue
 		}
 		switch canonical {
-		case behaviorIDAgentCode:
+		case behaviorIDAgentCode, behaviorIDAgentScaffold:
 			writers = append(writers, node.ID)
 		case behaviorIDContractFreeze:
 			freezes = append(freezes, node.ID)

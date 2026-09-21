@@ -380,9 +380,11 @@ export function AgentsPanel(): React.ReactElement | null {
                       (agent.source === "provider" && lowerPath.includes(".claude"));
                     const isOpencodeSource = agent.source === "opencode" ||
                       (agent.source === "provider" && lowerPath.includes(".opencode"));
+                    const isDevinSource = agent.source === "devin" ||
+                      (agent.source === "provider" && lowerPath.includes(".devin"));
                     const isProviderAgnostic = agent.source === "flowpilot" && !agent.provider;
-                    const cardProvBadge = isProviderAgnostic ? null : (isOpencodeSource ? "OPENCODE" : isClaudeSource ? "CLAUDE" : "CODEX");
-                    const cardProvClass = isOpencodeSource ? "opencode" : isClaudeSource ? "claude" : "codex";
+                    const cardProvBadge = isProviderAgnostic ? null : (isDevinSource ? "DEVIN" : isOpencodeSource ? "OPENCODE" : isClaudeSource ? "CLAUDE" : "CODEX");
+                    const cardProvClass = isDevinSource ? "devin" : isOpencodeSource ? "opencode" : isClaudeSource ? "claude" : "codex";
 
                     return (
                       <div
@@ -421,6 +423,7 @@ export function AgentsPanel(): React.ReactElement | null {
                   <span className={`chip ${dialog?.providerOverride === "gemini" ? "sel" : ""}`} onClick={() => setDialog(c => c ? { ...c, providerOverride: "gemini" } : null)}>◆ Gemini</span>
                   <span className={`chip ${dialog?.providerOverride === "grok" ? "sel" : ""}`} onClick={() => setDialog(c => c ? { ...c, providerOverride: "grok" } : null)}>✦ Grok</span>
                   <span className={`chip ${dialog?.providerOverride === "opencode" ? "sel" : ""}`} onClick={() => setDialog(c => c ? { ...c, providerOverride: "opencode" } : null)}>⬡ OpenCode</span>
+                  <span className={`chip ${dialog?.providerOverride === "devin" ? "sel" : ""}`} onClick={() => setDialog(c => c ? { ...c, providerOverride: "devin" } : null)}>◈ Devin</span>
                 </div>
               </div>
 

@@ -94,13 +94,15 @@ func discoverProjectAgents(cwd string) []AgentDefinition {
 	defs = append(defs, agentsFromDir(filepath.Join(cwd, ".claude", "agents"), "claude")...)
 	defs = append(defs, agentsFromDir(filepath.Join(cwd, ".codex", "agents"), "codex")...)
 	defs = append(defs, agentsFromDir(filepath.Join(cwd, ".opencode", "agents"), "opencode")...)
+	// Appended last (CP-70)
+	defs = append(defs, agentsFromDir(filepath.Join(cwd, ".devin", "agents"), "devin")...)
 	return defs
 }
 
 func discoverProviderHomeAgents() []AgentDefinition {
 	defs := make([]AgentDefinition, 0, 8)
 	seenRoots := make(map[string]struct{})
-	for _, provider := range []string{"claude", "codex", "grok", "gemini", "opencode"} {
+	for _, provider := range []string{"claude", "codex", "grok", "gemini", "opencode", "devin"} {
 		homePaths, err := DiscoverProviderAccountHomes(provider)
 		if err != nil {
 			continue
@@ -128,7 +130,7 @@ func discoverActiveProviderHomeAgents(r *Runner) []AgentDefinition {
 	}
 	defs := make([]AgentDefinition, 0, 8)
 	seenRoots := make(map[string]struct{})
-	for _, provider := range []string{"claude", "codex", "grok", "gemini", "opencode"} {
+	for _, provider := range []string{"claude", "codex", "grok", "gemini", "opencode", "devin"} {
 		account, err := r.ResolveProviderAccount(provider, "")
 		if err != nil {
 			continue
@@ -164,6 +166,14 @@ func providerHomeAgentDirs(provider, homePath string) []string {
 			return []string{filepath.Join(homePath, "agents")}
 		}
 		return []string{filepath.Join(homePath, ".config", "opencode", "agents"), filepath.Join(homePath, ".opencode", "agents"), filepath.Join(homePath, "agents")}
+	case "devin":
+		// Appended last (CP-70): mirrors providerHomeSkillDirs — config-dir style
+		// homes resolve agents directly, user/managed homes check the XDG subtree.
+		isConfigDir := strings.HasSuffix(filepath.ToSlash(filepath.Clean(homePath)), ".config/devin") || strings.HasSuffix(filepath.ToSlash(filepath.Clean(homePath)), "/devin")
+		if isConfigDir {
+			return []string{filepath.Join(homePath, "agents")}
+		}
+		return []string{filepath.Join(homePath, ".config", "devin", "agents"), filepath.Join(homePath, ".devin", "agents"), filepath.Join(homePath, "agents")}
 	default:
 		return nil
 	}

@@ -11,6 +11,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -333,7 +334,7 @@ func (r *Runner) syncProviderAccounts(accounts []ProviderAccount) ([]ProviderAcc
 	synced := make([]ProviderAccount, len(accounts))
 	copy(synced, accounts)
 
-	for _, providerKey := range []string{"codex", "claude", "gemini", "grok", "opencode"} {
+	for _, providerKey := range []string{"codex", "claude", "gemini", "grok", "opencode", "devin"} {
 		defaultIndex := indexDefaultProviderAccount(synced, providerKey)
 		defaultPath, hasDefault := DetectDefaultAccountHomePath(providerKey)
 
@@ -651,6 +652,9 @@ func managedProviderHomePrefix(providerKey string) (string, bool) {
 	case "opencode":
 		// Appended last (CP-57 P-0/Task-302 T-2).
 		return ".opencodeHome", true
+	case "devin":
+		// Appended last (CP-70 P-0/Task-402).
+		return ".devinHome", true
 	default:
 		return "", false
 	}
@@ -698,6 +702,9 @@ func DiscoverProviderAccountHomes(providerKey string) ([]string, error) {
 	case "opencode":
 		// Appended last (CP-57 P-0/Task-302 T-2).
 		return discoverOpencodeAccountHomes()
+	case "devin":
+		// Appended last (CP-70 P-0/Task-402).
+		return discoverDevinAccountHomes()
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", providerKey)
 	}
@@ -942,6 +949,65 @@ func isValidOpencodeAccountPath(homePath string) bool {
 		return true
 	}
 	return HasLocalAuthAtPath("opencode", homePath)
+}
+
+// discoverDevinAccountHomes finds Devin account homes (CP-70 Task-402). Devin
+// is XDG-based on unix (credentials.toml under XDG_DATA_HOME or
+// XDG_CONFIG_HOME) and uses %APPDATA%\devin / %LOCALAPPDATA%\devin on Windows;
+// managed slots (.devinHomeN) replicate the same subtree. Ambient env dirs
+// force-add the real home when they carry a credentials file — same as the
+// opencode discovery probes.
+func discoverDevinAccountHomes() ([]string, error) {
+	discovered := make(map[string]struct{})
+	var accountPaths []string
+
+	homeDir := preferredUserHomeDir()
+	if homeDir != "" {
+		for _, candidate := range devinAmbientAuthCandidates(homeDir) {
+			if fileExists(candidate.authPath) {
+				accountPaths = appendDiscoveredAccountPath(accountPaths, discovered, homeDir, nil)
+				break
+			}
+		}
+		accountPaths = appendDiscoveredAccountPath(accountPaths, discovered, homeDir, isValidDevinAccountPath)
+		for _, path := range discoverManagedProviderHomeSlots(homeDir, ".devinHome", isValidDevinAccountPath) {
+			accountPaths = appendDiscoveredAccountPath(accountPaths, discovered, path, nil)
+		}
+	}
+
+	return accountPaths, nil
+}
+
+// isValidDevinAccountPath reports whether a home path carries a Devin
+// footprint: credentials.toml (REPL auth store) or the config/data dirs.
+// Home-relative only — ambient env dirs belong to the host home probe in
+// discoverDevinAccountHomes.
+func isValidDevinAccountPath(homePath string) bool {
+	info, err := os.Stat(homePath)
+	if err != nil || !info.IsDir() {
+		return false
+	}
+	candidates := append(devinCredentialFilePaths(homePath),
+		filepath.Join(homePath, ".config", "devin", "config.json"),
+		filepath.Join(homePath, ".config", "devin", "mcp_config.json"),
+	)
+	if runtime.GOOS == "windows" {
+		// Windows Devin resolves config to %APPDATA%\devin and data to
+		// %LOCALAPPDATA%\devin (live-verified: credentials.toml sits under
+		// Roaming on a real host install), not the XDG dirs.
+		candidates = append(candidates,
+			filepath.Join(homePath, "AppData", "Roaming", "devin", "config.json"),
+			filepath.Join(homePath, "AppData", "Roaming", "devin", "mcp_config.json"),
+			filepath.Join(homePath, "AppData", "Local", "devin", "config.json"),
+			filepath.Join(homePath, "AppData", "Local", "devin", "mcp_config.json"),
+		)
+	}
+	for _, candidate := range candidates {
+		if fileExists(candidate) {
+			return true
+		}
+	}
+	return HasLocalAuthAtPath("devin", homePath)
 }
 
 // discoverManagedCodexAccounts discovers managed Codex account slots from ~/codex-accounts/* directory.

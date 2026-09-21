@@ -271,6 +271,10 @@ func (r *Runner) EnsureJiraMcpProviderConfig(req JiraMcpProviderConfigRequest) (
 	case "opencode":
 		// Appended last (CP-57): Opencode Jira uses same HTTP MCP as Claude/Grok, written to opencode.json
 		return r.ensureOpencodeJiraMcpConfig(accountHomePath, auth)
+	case "devin":
+		// Appended last (CP-70): Devin remote MCP goes through mcp_config.json
+		// (session/new only accepts stdio — mcpCapabilities http/sse=false, F-2).
+		return r.ensureDevinJiraMcpConfig(accountHomePath, auth)
 	default:
 		return JiraMcpProviderConfigResponse{}, fmt.Errorf("Jira MCP provider config is not yet implemented for provider: %s", providerKey)
 	}
@@ -292,7 +296,7 @@ func (r *Runner) EnsureJiraMcpProviderConfig(req JiraMcpProviderConfigRequest) (
 // only when the entry differs), so re-pushing an already-correct config is a
 // no-op.
 func (r *Runner) rePushJiraConfigToConnectedProviders() {
-	for _, providerKey := range []string{"codex", "claude", "grok", "gemini", "opencode"} {
+	for _, providerKey := range []string{"codex", "claude", "grok", "gemini", "opencode", "devin"} {
 		home, ok := DetectDefaultAccountHomePath(providerKey)
 		if !ok || strings.TrimSpace(home) == "" {
 			continue
@@ -989,6 +993,22 @@ func (r *Runner) PreflightJiraMcp(providerKey string, accountHomePath string) MC
 			result.ErrorMessage = "Provider has stale Jira MCP config. Re-run Configure Providers."
 			return result
 		}
+	case "devin":
+		// Appended last (CP-70): Devin uses mcp_config.json, remote HTTP entry
+		// with headers as an object map (Devin docs schema).
+		status, err := r.checkDevinJiraMcpConfig(accountHomePath)
+		if err != nil {
+			result.ErrorMessage = fmt.Sprintf("Failed to check Devin Jira MCP config: %v", err)
+			return result
+		}
+		if !status.Configured {
+			result.ErrorMessage = fmt.Sprintf("The selected AI provider is not configured with the %s MCP server. Run Configure Providers first.", jiraMcpServerName)
+			return result
+		}
+		if status.Stale {
+			result.ErrorMessage = "Provider has stale Jira MCP config. Re-run Configure Providers."
+			return result
+		}
 	default:
 		// codex/gemini Ensure writers exist; preflight for those providers is
 		// still a follow-up (not G2). Empty providerKey already returned above.
@@ -1087,6 +1107,103 @@ func (r *Runner) checkOpencodeJiraMcpConfig(accountHomePath string) (claudeJiraM
 			return claudeJiraMcpConfigStatus{Configured: true, Stale: true}, nil
 		}
 	} else if headersMap, ok := existingMap["headers"].(map[string]interface{}); ok {
+		if auth, ok := headersMap["Authorization"].(string); !ok || strings.TrimSpace(auth) == "" {
+			return claudeJiraMcpConfigStatus{Configured: true, Stale: true}, nil
+		}
+	} else {
+		return claudeJiraMcpConfigStatus{Configured: true, Stale: true}, nil
+	}
+	if urlVal != jiraMcpAPITokenRemoteURL && urlVal != jiraMcpOAuthRemoteURL {
+		return claudeJiraMcpConfigStatus{Configured: true, Stale: true}, nil
+	}
+	return claudeJiraMcpConfigStatus{Configured: true, Stale: false}, nil
+}
+
+// ensureDevinJiraMcpConfig writes Devin mcp_config.json mcpServers.flowpilot_jira
+// (CP-70, appended last). Devin's remote-server schema is url + transport +
+// headers as an object map (docs: extensibility/mcp/configuration).
+func (r *Runner) ensureDevinJiraMcpConfig(accountHomePath string, auth jiraMcpAuthConfig) (JiraMcpProviderConfigResponse, error) {
+	configPath := getDevinMcpConfigPath(accountHomePath)
+	doc, err := readDevinMcpConfig(configPath)
+	if err != nil {
+		return JiraMcpProviderConfigResponse{}, err
+	}
+	mcpServers, _ := doc["mcpServers"].(map[string]interface{})
+	if mcpServers == nil {
+		mcpServers = map[string]interface{}{}
+		doc["mcpServers"] = mcpServers
+	}
+	if legacy := legacyMcpServerName(jiraMcpServerName); legacy != "" {
+		if _, ok := mcpServers[legacy]; ok {
+			delete(mcpServers, legacy)
+		}
+	}
+	expected := map[string]interface{}{
+		"url":       auth.URL,
+		"transport": "http",
+		"headers": map[string]interface{}{
+			"Authorization": auth.Authorization,
+		},
+	}
+	existingMatches := false
+	if existingRaw, exists := mcpServers[jiraMcpServerName]; exists {
+		if existingMap, ok := existingRaw.(map[string]interface{}); ok {
+			a, _ := json.Marshal(existingMap)
+			b, _ := json.Marshal(expected)
+			if string(a) == string(b) {
+				existingMatches = true
+			}
+		}
+	}
+	changed := !existingMatches
+	if changed {
+		mcpServers[jiraMcpServerName] = expected
+		if err := writeDevinMcpConfigAtomic(configPath, doc); err != nil {
+			return JiraMcpProviderConfigResponse{}, err
+		}
+	}
+	return JiraMcpProviderConfigResponse{
+		ProviderKey: "devin",
+		ServerName:  jiraMcpServerName,
+		Status:      "configured",
+		Changed:     changed,
+		ConfigPath:  configPath,
+	}, nil
+}
+
+// checkDevinJiraMcpConfig is a read-only check of mcp_config.json
+// mcpServers.flowpilot_jira — Configured when the entry exists; Stale when the
+// URL is wrong or headers.Authorization is empty (Devin headers shape = map).
+func (r *Runner) checkDevinJiraMcpConfig(accountHomePath string) (claudeJiraMcpConfigStatus, error) {
+	configPath := getDevinMcpConfigPath(accountHomePath)
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return claudeJiraMcpConfigStatus{}, nil
+		}
+		return claudeJiraMcpConfigStatus{}, fmt.Errorf("failed to read Devin config: %w", err)
+	}
+	var doc map[string]interface{}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return claudeJiraMcpConfigStatus{Configured: true, Stale: true}, nil
+	}
+	mcpServers, _ := doc["mcpServers"].(map[string]interface{})
+	if mcpServers == nil {
+		return claudeJiraMcpConfigStatus{}, nil
+	}
+	existingRaw, ok := mcpServers[jiraMcpServerName]
+	if !ok {
+		return claudeJiraMcpConfigStatus{}, nil
+	}
+	existingMap, ok := existingRaw.(map[string]interface{})
+	if !ok {
+		return claudeJiraMcpConfigStatus{Configured: true, Stale: true}, nil
+	}
+	urlVal, _ := existingMap["url"].(string)
+	if strings.TrimSpace(urlVal) == "" {
+		return claudeJiraMcpConfigStatus{Configured: true, Stale: true}, nil
+	}
+	if headersMap, ok := existingMap["headers"].(map[string]interface{}); ok {
 		if auth, ok := headersMap["Authorization"].(string); !ok || strings.TrimSpace(auth) == "" {
 			return claudeJiraMcpConfigStatus{Configured: true, Stale: true}, nil
 		}

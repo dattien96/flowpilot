@@ -84,6 +84,7 @@ export function CheckVersionSettings(): React.ReactElement {
     testedCodexVersion: "",
     testedGrokVersion: "",
     testedOpencodeVersion: "",
+    testedDevinVersion: "",
   });
   const [deepRun, setDeepRun] = useState(false);
   const [info, setInfo] = useState<CompatVersionInfo | null>(null);
@@ -237,6 +238,11 @@ export function CheckVersionSettings(): React.ReactElement {
             label="Opencode"
             tested={info.testedOpencodeVersion}
           />
+          <VersionRow
+            installed={info.installedDevinVersion}
+            label="Devin"
+            tested={info.testedDevinVersion}
+          />
         </div>
       ) : null}
 
@@ -281,6 +287,16 @@ export function CheckVersionSettings(): React.ReactElement {
                 setConfig((current) => ({ ...current, testedOpencodeVersion: event.target.value }))
               }
               value={config.testedOpencodeVersion}
+            />
+          </label>
+          <label className="settings-field">
+            <span>Devin</span>
+            <input
+              disabled={savingConfig}
+              onChange={(event) =>
+                setConfig((current) => ({ ...current, testedDevinVersion: event.target.value }))
+              }
+              value={config.testedDevinVersion}
             />
           </label>
         </div>

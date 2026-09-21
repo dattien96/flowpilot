@@ -22,10 +22,12 @@ export const VISION_PROVIDERS = new Set<ProviderKey>([
 // opencode model whose detected `inputImage` (models.dev input.image) is true
 // accepts image attachments; opencode models without the capability, unknown
 // models, and every other provider without native support stay gated.
+// Devin (CP-70) follows the same per-model rule — the ACP catalog reports
+// `_meta.supportsImages` per model, cached as `inputImage`.
 export function supportsVisionFor(
   provider: ProviderKey | null | undefined,
   modelInputImage?: boolean | null,
 ): boolean {
   if (provider && VISION_PROVIDERS.has(provider)) return true;
-  return provider === "opencode" && modelInputImage === true;
+  return (provider === "opencode" || provider === "devin") && modelInputImage === true;
 }

@@ -403,6 +403,9 @@ func loadAccountLaunchMetadata(account runner.ProviderAccount) (accountLaunchMet
 	case "opencode":
 		// Appended last (CP-57 P-0/Task-302 T-13).
 		return loadOpencodeAccountMetadata(account.HomePath)
+	case "devin":
+		// Appended last (CP-70 P-0/Task-402): live GetUserStatus quota probe.
+		return loadDevinAccountMetadata(account.HomePath)
 	default:
 		return accountLaunchMetadata{}, nil
 	}

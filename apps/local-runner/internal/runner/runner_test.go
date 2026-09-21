@@ -388,6 +388,44 @@ func TestResolvePromptExecutionAdapterUsesWorkspaceWriteWhenAllowed(t *testing.T
 	}
 }
 
+func TestResolvePromptExecutionAdapterGrokAlwaysApproveHonorsWriteFlags(t *testing.T) {
+	tests := []struct {
+		name       string
+		allowWrite bool
+		yoloMode   bool
+		wantFlag   bool
+	}{
+		{"allow_write", true, false, true},
+		{"yolo_mode", false, true, true},
+		{"both", true, true, true},
+		{"neither", false, false, false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			binary, args, provider, err := resolvePromptExecutionAdapter(
+				PromptExecutionRequest{
+					ProviderKey: "grok",
+					ModelName:   "grok-4.5",
+					AllowWrite:  tc.allowWrite,
+					YoloMode:    tc.yoloMode,
+				},
+				"/tmp/output.md",
+				t.TempDir(),
+			)
+			if err != nil {
+				t.Fatalf("resolve prompt execution adapter: %v", err)
+			}
+			if binary != "grok" || provider != "grok" {
+				t.Fatalf("adapter = (%q, %q), want (grok, grok)", binary, provider)
+			}
+			if got := slices.Contains(args, "--always-approve"); got != tc.wantFlag {
+				t.Fatalf("--always-approve present=%v, want %v (args=%v)", got, tc.wantFlag, args)
+			}
+		})
+	}
+}
+
 func TestResolvePromptExecutionAdapterMapsModelNames(t *testing.T) {
 	tests := []struct {
 		provider      string

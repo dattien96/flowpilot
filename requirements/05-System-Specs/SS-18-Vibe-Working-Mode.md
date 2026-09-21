@@ -10,7 +10,7 @@
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-09-01`
-- Last Updated: `2026-09-08`
+- Last Updated: `2026-09-19` (cập nhật TDD-mandatory cho CP-67 Contract-First Scaffold TDD)
 - Parent Documents: `Product Vision`, `SP-01 Human In Loop`, `SS-04 Workflow`, `SS-08 Approve Gate`, `SS-11 Workflow With Session`, `SS-13 AI-Followable Document Contract`, `SS-14 Code Context And Regression Safety`, `SS-16 Agent Flow Engine`
 - Child Documents: [SD-24: Vibe Working Mode](../06-System-Tech-Design/SD-24-Vibe-Working-Mode.md)
 - Related Documents: [SS-15: Agent Review Loop](./SS-15-Agent-Review-Loop-Until-Clean.md), [SD-19: Agent Flow Engine](../06-System-Tech-Design/SD-19-Agent-Flow-Engine.md), [SS-06: Workflow Skill Agent](./SS-06-Workflow-Skill-Agent.md), [SD-20: Flow Gate Rule Semantics](../06-System-Tech-Design/SD-20-Flow-Gate-Rule-Semantics.md)
@@ -24,7 +24,7 @@
 - Introduce a second `working_mode` beside the existing Dev-controlled mode: **Vibe** for non-tech users who supply a single requirement file (detailed game spec or raw idea) and want FlowPilot to run **auto sprint-by-sprint** to completion. Vibe lives only in **Desktop app + TUI** (`cli-tui`); **not in Admin Web**.
 - `SS` must be **locked first** before any sprint runs. The ingested SS list is the standard; `Task` slicing is fully automatic afterwards — AI self-organizes sprints/tasks, no user lock required.
 - In Vibe, every gate except one stays evaluated but is **auto-resolved by two isolated Owner agents** (`Owner_1` ∥ `Owner_2` → Main synthesis) debating through the Main hub, not by showing Dev cards `1/2/3`. Only two cases surface to the non-tech user.
-- TDD is mandatory and ordered: SS is produced first, test signatures are written from that SS, code is written to make those tests green, and after green a 1:1 signature↔requirement check runs under AI.
+- TDD is mandatory and ordered: SS is produced first, **full Production Stubs + Executable RED Tests** are written from that SS (compile OK, runtime RED) via `agent.scaffold` behavior (`scaffold-contract-tdd.md` prompt), code is written to make those tests green, and after green a 1:1 signature↔requirement check runs under AI. Signature lock (`r-signature-lock`) + batch renegotiation via `synthesis_negotiation` hub enforced. (CP-67 Contract-First Scaffold TDD)
 - Add a single new user-only gate `r-requirement` (`g-requirement`): tests are green but the test signatures no longer adapt to the SS acceptance criteria, or a fix would need to change the SS. That gate — and a 5-round Owner debate with no consensus — are the only user asks in Vibe.
 - Realize Vibe as **data, not engine code**: three FlowDefinitions (`vibe-ingest`, `vibe-sprint`, `vibe-owner-debate`) plus one `owner` agent persona, on the existing SS-16/SD-19 generic engine. Dev mode is unchanged.
 

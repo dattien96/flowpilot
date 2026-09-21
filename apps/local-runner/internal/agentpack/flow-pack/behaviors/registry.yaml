@@ -119,6 +119,59 @@ behaviors:
       - flows/bug-harness.yaml#reproduce_test
       - flows/bug-plan-harness.yaml#reproduce_test
 
+  - id: agent.scaffold
+    scope: delegate
+    aliases:
+      - scaffold
+      - scaffold_tdd
+    purpose: Design the API contract as signature-only production stubs plus a fully executable RED test suite (Contract-First Scaffold TDD).
+    runtimeHandler: behaviorAgentDelegate
+    notes:
+      - CP-67 P-3 (Task-380). Reference-only documentation — the runtime
+        contract is behavior_registry_builtin.go.
+      - A frozen-contract writer like agent.code (stubs live in the
+        freeze-dominated DeclaredPaths; new test files are scope-drift
+        exempt like the reproduce test file).
+      - The runner's gate hook arms r-scaffold-red on this behavior and
+        suppresses r-tests/r-reg for that one turn (the suite is MEANT to
+        be red). Compile failure or an all-green suite is rejected with a
+        reprompt; CP-67 B-11 additionally validates every stub body
+        against the static stub whitelist.
+      - After the gate passes, the test files are locked read-only and the
+        canonical SignatureHash + LockedSignatures are snapshotted into the
+        frozen contract (single-write LockScaffoldArtifacts), so the coder
+        can only fill bodies.
+    aiRole:
+      sees:
+        - The frozen contract intent / task plan and the flow context package.
+        - The node's static promptTemplate (prompts/scaffold-contract-tdd.md).
+      does:
+        - Creates signature-complete production stubs with empty bodies.
+        - Writes the full executable red test suite and runs it.
+        - Calls submit_scaffold_outcome with the typed handover.
+      doesNotDo:
+        - Does not implement business logic inside the stubs.
+        - Does not weaken or skip tests to make the scaffold pass.
+    goRuntime:
+      inputs:
+        - BehaviorInput.Prompt
+      does:
+        - Reuses behaviorAgentDelegate verbatim (no new spawn path).
+        - Spawns the node's agent (agents/scaffold-architect.md) as a child run.
+      usesExistingLogic:
+        - spawnChildRun / tryAdvanceFlowFromNode generic delegate path
+        - r-scaffold-red evaluation + LockScaffoldArtifacts in gate_hook.go
+      doesNotDo:
+        - No provider call inside the handler itself.
+    runtimeEffects:
+      - Gate pass requires a compiling suite with at least one failing test
+        and every stub body inside the static whitelist.
+      - Gate pass locks the test files read-only and snapshots SignatureHash
+        for the coder step.
+    usedBy:
+      - flows/task-harness.yaml#test_signatures
+      - flows/vibe-sprint.yaml#tdd
+
   - id: tournament.arbiter
     scope: inline
     purpose: Score finished candidates deterministically (50% tests + 30% LSP + 20% blast radius) and return the merge/retry/ask verdict for the tournament round.

@@ -8,6 +8,7 @@ agents:
   - agents/reviewer.md
   - agents/tester.md
   - agents/reproducer.md
+  - agents/scaffold-architect.md
   - agents/synthesizer.md
   - agents/contract-planner.md
   - agents/owner.md
@@ -90,6 +91,8 @@ flows:
 tools:
   - tools/submit-review-outcome.yaml
   - tools/vibe-requirement-outcome.yaml
+  - tools/submit-scaffold-outcome.yaml
+  - tools/submit-coder-outcome.yaml
 contexts:
   - contexts/flow-context-package.yaml
 prompts:
@@ -114,6 +117,11 @@ prompts:
   - prompts/vibe-ss-validate.md
   - prompts/vibe-cp-from-ss.md
   - prompts/vibe-cp-validate.md
+  # CP-68 (Task-384 T-1): Zero-Prompt Injection template for the AI Scaffold Turn.
+  - prompts/scaffold-step0-bootstrap.md
+  # CP-67 (Task-380/Task-381): Contract-First Scaffold TDD prompt pair.
+  - prompts/scaffold-contract-tdd.md
+  - prompts/implement-scaffold-body.md
 compatibility:
   minRunnerVersion: TBD
   fallbackToGoBuiltins: true
