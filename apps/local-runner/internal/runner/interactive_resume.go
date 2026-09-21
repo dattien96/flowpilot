@@ -2747,6 +2747,26 @@ func (s *InteractiveService) ensureResumeReady(rs *interactiveRun) *apiErr {
 		log.Printf("[chat-history-open] opencode db-backed session run_id=%q session_id=%q (file check not applicable)", rs.id, sessionID)
 		return nil
 	}
+	if rs.providerKey == ProviderKeyDevin {
+		// Appended last (CP-70/Task-401): same CA-688 shape as opencode —
+		// Devin keeps sessions in the shared ~/.local/share/devin/cli/sessions.db
+		// SQLite store; ACP session/load works from any process on this machine
+		// (live-verified F-23). A real slug id is enough; the file-based flow
+		// below does not apply.
+		sessionID := s.resumeSessionID(rs)
+		if !isDevinRealSessionID(sessionID) {
+			log.Printf("[chat-history-open] devin session id not resumable run_id=%q session_id=%q", rs.id, sessionID)
+			return newAPIErr(http.StatusConflict, "session_unavailable", "devin session has no real session id to resume")
+		}
+		if srcHome, homeOK := s.resolveAccountHome(rs.providerKey, rs.providerAccountID); homeOK {
+			if rs.providerAccountID == activeAccountID && !HasLocalAuthAtPath(string(rs.providerKey), srcHome) {
+				log.Printf("[chat-history-open] auth missing run_id=%q provider=%q account_id=%q home=%q", rs.id, rs.providerKey, activeAccountID, srcHome)
+				return newAPIErr(http.StatusConflict, "account_not_signed_in", "can't open — the active account isn't signed in")
+			}
+		}
+		log.Printf("[chat-history-open] devin db-backed session run_id=%q session_id=%q (file check not applicable)", rs.id, sessionID)
+		return nil
+	}
 	srcHome, ok := s.resolveAccountHome(rs.providerKey, rs.providerAccountID)
 	if !ok && (strings.TrimSpace(rs.providerAccountID) == "" || rs.providerAccountID == "default") {
 		srcHome, ok = defaultProviderSessionHome(rs.providerKey)
@@ -3002,6 +3022,11 @@ func (s *InteractiveService) ensureProviderResumeHandle(rs *interactiveRun, acco
 	if rs.providerKey == ProviderKeyGrok {
 		return s.ensureGrokProviderResumeHandle(rs, accountHome)
 	}
+	if rs.providerKey == ProviderKeyDevin {
+		// Appended last (CP-70/Task-401): Devin mirrors the Grok turn-log
+		// promotion — durable devin_session ids only, never workspace discovery.
+		return s.ensureDevinProviderResumeHandle(rs, accountHome)
+	}
 	if rs.providerKey != ProviderKeyCodex {
 		return s.resumeSessionID(rs) != ""
 	}
@@ -3085,6 +3110,35 @@ func (s *InteractiveService) ensureGrokProviderResumeHandle(rs *interactiveRun, 
 	return false
 }
 
+// ensureDevinProviderResumeHandle promotes a real Devin ACP session slug into
+// the run's durable resume handle (CP-70/Task-401). Mirrors
+// ensureGrokProviderResumeHandle: allowed sources are an already-real
+// resumeSessionID or a run-owned turn-log devin_session entry — never
+// workspace-wide discovery (sessions.db is shared across chats).
+func (s *InteractiveService) ensureDevinProviderResumeHandle(rs *interactiveRun, accountHome string) bool {
+	if id := s.resumeSessionID(rs); isDevinRealSessionID(id) {
+		return true
+	}
+	if logger, ok := s.workflowStore.(TurnLogStore); ok {
+		if entries, err := logger.ReadTurnLog(context.Background(), rs.id); err == nil {
+			var latest string
+			for _, entry := range entries {
+				if entry.Kind == turnLogKindDevinSession && isDevinRealSessionID(entry.SessionID) {
+					latest = entry.SessionID
+				}
+			}
+			if latest != "" {
+				rs.realProviderSessionID = latest
+				if rs.resumedFromDisk {
+					rs.providerSessionID = latest
+				}
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (s *InteractiveService) resumeSessionID(rs *interactiveRun) string {
 	if rs.realProviderSessionID != "" {
 		return rs.realProviderSessionID
@@ -3124,6 +3178,13 @@ func (s *InteractiveService) seedTranscriptFromDisk(rs *interactiveRun) {
 	}
 	if rs.providerKey == ProviderKeyOpencode {
 		s.seedOpencodeTranscriptFromDisk(rs)
+		s.appendResumedParentAnnotations(rs)
+		return
+	}
+	if rs.providerKey == ProviderKeyDevin {
+		// Appended last (CP-70/Task-401): sessions.db has no per-session file —
+		// rebuild from the durable turn log exactly like opencode.
+		s.seedDevinTranscriptFromDisk(rs)
 		s.appendResumedParentAnnotations(rs)
 		return
 	}
@@ -4160,6 +4221,36 @@ func (s *InteractiveService) seedOpencodeTranscriptFromDisk(rs *interactiveRun) 
 	// Opencode: no provider-owned transcript file loader yet (unlike Grok's chat_history.jsonl).
 	// Rebuild from durable turn-log prompts/assistants so reopen UI is not empty.
 	// ACP session/load still continues the provider thread via LastOpencodeSessionID.
+	var rawPrompts []turnLogLine
+	var allEntries []turnLogLine
+	if logger, logOK := s.workflowStore.(TurnLogStore); logOK {
+		if entries, _ := logger.ReadTurnLog(context.Background(), rs.id); len(entries) > 0 {
+			allEntries = entries
+			for _, e := range entries {
+				if e.Kind == turnLogKindPrompt && strings.TrimSpace(e.Prompt) != "" && !isSystemPrompt(e.Prompt) {
+					rawPrompts = append(rawPrompts, e)
+				}
+			}
+		}
+	}
+	if s.preferFlowHubTurnLogTranscript(rs, allEntries) {
+		s.seedFlowHubTranscriptFromTurnLog(rs, allEntries)
+		return
+	}
+	historical := mergeTurnLogAssistantsIntoTranscript(promptOnlyTurnLogEvents(rawPrompts), allEntries)
+	historical = userFacingTranscriptEvents(historical)
+	if len(historical) == 0 {
+		return
+	}
+	s.appendTranscriptReplayEvents(rs, stampReplayPromptIDs(historical))
+}
+
+// seedDevinTranscriptFromDisk rebuilds a Devin run's transcript from the
+// durable turn log (CP-70/Task-401). Devin keeps sessions in the shared
+// cli/sessions.db SQLite store — there is no provider-owned transcript file,
+// so replay mirrors seedOpencodeTranscriptFromDisk exactly. ACP session/load
+// still continues the provider thread via LastDevinSessionID.
+func (s *InteractiveService) seedDevinTranscriptFromDisk(rs *interactiveRun) {
 	var rawPrompts []turnLogLine
 	var allEntries []turnLogLine
 	if logger, logOK := s.workflowStore.(TurnLogStore); logOK {
