@@ -1,8 +1,11 @@
 package runner
 
 import (
+	"context"
+	"path/filepath"
 	"regexp"
 	"testing"
+	"time"
 )
 
 // Chat handle echo fix: createRun must echo RunKind and ChatID, resumeRun must
@@ -43,6 +46,14 @@ func TestCreateRunWorkflowHandleHasWorkflowKindNoChat(t *testing.T) {
 }
 
 func TestResumeRunEchoesChatIdentity(t *testing.T) {
+	// Isolate the provider home: on Windows preferredUserHomeDir reads
+	// USERPROFILE (not HOME), and codex resume readiness probes the account
+	// home for a rollout + auth — the real machine must never leak in
+	// (same class as BUG-312).
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
 	t.Setenv("FLOWPILOT_CHAT_STORE_DIR", t.TempDir())
 	fws := newFakeWorkflowStore()
 	svc1 := NewInteractiveServiceWithStore(DefaultProviderRegistry(), nil, fws)
@@ -50,6 +61,18 @@ func TestResumeRunEchoesChatIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("createRun: %v", err)
 	}
+	// createRun persists only a thread-* placeholder; post-hardening codex
+	// resume readiness falls through to DiscoverCodexRolloutSessionID plus a
+	// local auth check, so seed a rollout + auth.json under the isolated
+	// account home before "restarting" (real ids promote via the durable
+	// turn log, which a fresh placeholder run does not have).
+	st, found, sessErr := fws.GetProviderSession(context.Background(), handle.RunID)
+	if sessErr != nil || !found {
+		t.Fatalf("GetProviderSession: found=%v err=%v", found, sessErr)
+	}
+	acctHome := filepath.Join(home, ".codex")
+	writeCodexRollout(t, acctHome, "rollout-echo", st.WorkingDirectory, time.Now().UTC())
+	mustWriteTestFile(t, filepath.Join(acctHome, "auth.json"), `{"id_token":"tok"}`)
 	// New service sharing the same persisted store simulates a restart.
 	svc2 := NewInteractiveServiceWithStore(DefaultProviderRegistry(), nil, fws)
 	resumed, err := svc2.resumeRun(handle.RunID)
