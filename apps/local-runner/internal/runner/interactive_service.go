@@ -172,6 +172,9 @@ type interactiveRun struct {
 	lastGrokTurnSessionID string
 	// lastOpencodeTurnSessionID is the Opencode twin (CP-57).
 	lastOpencodeTurnSessionID string
+	// lastDevinTurnSessionID is the Devin twin (CP-70): newest slug session id
+	// observed this turn so model-switch resume re-loads the real session.
+	lastDevinTurnSessionID    string
 	providerAccountID         string
 	workspaceCwd              string
 	stepID                    string
@@ -7288,7 +7291,7 @@ func turnResumeProviderSessionID(rs *interactiveRun) string {
 	if rs.realProviderSessionID != "" && rs.providerKey != ProviderKeyClaude {
 		id = rs.realProviderSessionID
 	}
-	if rs.providerKey != ProviderKeyGrok && rs.providerKey != ProviderKeyOpencode {
+	if rs.providerKey != ProviderKeyGrok && rs.providerKey != ProviderKeyOpencode && rs.providerKey != ProviderKeyDevin {
 		return id
 	}
 	trimmed := strings.TrimSpace(id)
@@ -7297,6 +7300,14 @@ func turnResumeProviderSessionID(rs *interactiveRun) string {
 	}
 	if rs.providerKey == ProviderKeyOpencode {
 		if alt := strings.TrimSpace(rs.lastOpencodeTurnSessionID); isOpencodeRealSessionID(alt) {
+			return alt
+		}
+		return id
+	}
+	if rs.providerKey == ProviderKeyDevin {
+		// Appended last (CP-70/Task-401): Devin slug ids mirror the Opencode
+		// fallback — a mid-chat model switch must session/load the real slug.
+		if alt := strings.TrimSpace(rs.lastDevinTurnSessionID); isDevinRealSessionID(alt) {
 			return alt
 		}
 		return id
@@ -7723,7 +7734,8 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	// CA-688: opencode has NO provider-owned transcript file at all (sessions
 	// live in the shared opencode.db), so its prompt/assistant pairs must ride
 	// the durable turn log for /open replay — same rationale as Gemini/Grok.
-	if completed && (rs.providerKey == ProviderKeyGemini || rs.providerKey == ProviderKeyGrok || rs.providerKey == ProviderKeyOpencode) {
+	// Devin is identical: sessions are rows in cli/sessions.db (CP-70 F-18).
+	if completed && (rs.providerKey == ProviderKeyGemini || rs.providerKey == ProviderKeyGrok || rs.providerKey == ProviderKeyOpencode || rs.providerKey == ProviderKeyDevin) {
 		durableTurn = transcriptTurnForProviderTurnLocked(rs, turnID)
 	}
 	snap := sessionStateOf(rs)
@@ -7753,6 +7765,8 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 				kind = turnLogKindGrokSession
 			} else if rs.providerKey == ProviderKeyOpencode {
 				kind = turnLogKindOpencodeSession
+			} else if rs.providerKey == ProviderKeyDevin {
+				kind = turnLogKindDevinSession
 			}
 			_ = logger.AppendTurnLog(context.Background(), rs.id, turnLogLine{Kind: kind, SessionID: newTurnSessionID})
 		}
@@ -9460,6 +9474,26 @@ func (s *InteractiveService) refreshResumeHandleLocked(rs *interactiveRun, adapt
 			}
 		}
 		return ""
+	case ProviderKeyDevin:
+		// Appended last (CP-70 P-0/Task-401): mirror Opencode — promote only an
+		// id the adapter actually opened this turn (LastDevinSessionID).
+		if reporter, ok := adapter.(interface{ LastDevinSessionID() string }); ok {
+			if id := strings.TrimSpace(reporter.LastDevinSessionID()); isDevinRealSessionID(id) {
+				if s.isForeignProviderSessionID(rs, id) {
+					return ""
+				}
+				rs.realProviderSessionID = id
+				if !isDevinRealSessionID(rs.providerSessionID) {
+					rs.providerSessionID = id
+				}
+				if id != rs.lastDevinTurnSessionID {
+					rs.lastDevinTurnSessionID = id
+					return id
+				}
+				return ""
+			}
+		}
+		return ""
 	}
 	return ""
 }
@@ -9599,10 +9633,10 @@ func (s *InteractiveService) foreignProviderSessionIDs(rs *interactiveRun) map[s
 				continue
 			}
 			for _, e := range entries {
-				if e.Kind != turnLogKindCodexSession && e.Kind != turnLogKindGrokSession && e.Kind != turnLogKindOpencodeSession {
+				if e.Kind != turnLogKindCodexSession && e.Kind != turnLogKindGrokSession && e.Kind != turnLogKindOpencodeSession && e.Kind != turnLogKindDevinSession {
 					continue
 				}
-				if sid := strings.TrimSpace(e.SessionID); isCodexRealSessionID(sid) || isGrokRealSessionID(sid) || isOpencodeRealSessionID(sid) {
+				if sid := strings.TrimSpace(e.SessionID); isCodexRealSessionID(sid) || isGrokRealSessionID(sid) || isOpencodeRealSessionID(sid) || isDevinRealSessionID(sid) {
 					if sid == strings.TrimSpace(rs.realProviderSessionID) || sid == strings.TrimSpace(rs.providerSessionID) {
 						continue
 					}
@@ -10216,6 +10250,10 @@ func defaultModelForProvider(key ProviderKey) string {
 	case ProviderKeyOpencode:
 		// Appended last (CP-57 P-0/Task-303 T-1).
 		return "opencode/muse-spark-1.2-contributor-free"
+	case ProviderKeyDevin:
+		// Appended last (CP-70): swe-2-high is the catalog's default
+		// currentValue (live-verified on 3000.10.31).
+		return "devin/swe-2-high"
 	default:
 		return ""
 	}
