@@ -281,6 +281,74 @@ func TestIsValidDevinAccountPath_WindowsRoaming(t *testing.T) {
 	}
 }
 
+func TestIsValidDevinAccountPath_WindowsLocal(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-only credential layout")
+	}
+	homeDir := t.TempDir()
+	mustWriteTestFile(t, filepath.Join(homeDir, "AppData", "Local", "devin", "credentials.toml"), "[auth]\nwindsurf_api_key = \"k\"")
+	if !isValidDevinAccountPath(homeDir) {
+		t.Fatalf("credentials.toml under AppData\\Local\\devin must validate the home on windows")
+	}
+}
+
+func TestDevinAmbientAuthCandidates(t *testing.T) {
+	homeDir := t.TempDir()
+	xdgData := t.TempDir()
+	xdgConfig := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", xdgData)
+	t.Setenv("XDG_CONFIG_HOME", xdgConfig)
+
+	candidates := defaultAuthCandidates("devin", homeDir)
+	found := map[string]bool{}
+	for _, c := range candidates {
+		found[c.authPath] = true
+	}
+	for _, want := range []string{
+		filepath.Join(xdgData, "devin", "credentials.toml"),
+		filepath.Join(xdgConfig, "devin", "credentials.toml"),
+		filepath.Join(homeDir, ".local", "share", "devin", "credentials.toml"),
+	} {
+		if !found[filepath.Clean(want)] && !found[want] {
+			t.Fatalf("defaultAuthCandidates missing %q; got %v", want, found)
+		}
+	}
+
+	// accountAuthPaths stays env-free so a managed slot cannot match the
+	// host's XDG/AppData credential dirs.
+	for _, p := range accountAuthPaths("devin", homeDir) {
+		if strings.HasPrefix(p, xdgData) || strings.HasPrefix(p, xdgConfig) {
+			t.Fatalf("accountAuthPaths must not probe ambient env dirs, got %q", p)
+		}
+	}
+}
+
+func TestDiscoverDevinAccountHomes_AmbientXDG(t *testing.T) {
+	homeDir := t.TempDir()
+	setDiscoveryTestHome(t, homeDir)
+
+	// Credentials live under an XDG dir outside the home — the ambient probe
+	// must still discover the real home as a Devin account.
+	xdgData := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", xdgData)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(homeDir, ".config"))
+	mustWriteTestFile(t, filepath.Join(xdgData, "devin", "credentials.toml"), "[auth]\nwindsurf_api_key = \"k\"")
+
+	paths, err := DiscoverProviderAccountHomes("devin")
+	if err != nil {
+		t.Fatalf("DiscoverProviderAccountHomes: %v", err)
+	}
+	found := false
+	for _, p := range paths {
+		if p == filepath.Clean(homeDir) || p == homeDir {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("ambient XDG_DATA_HOME credentials must discover the real home: %v", paths)
+	}
+}
+
 func TestDiscoverDevinAccountHomes_DefaultAndManaged(t *testing.T) {
 	homeDir := t.TempDir()
 	setDiscoveryTestHome(t, homeDir)

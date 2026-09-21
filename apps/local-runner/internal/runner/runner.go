@@ -2452,20 +2452,12 @@ func defaultAuthCandidates(providerKey, dir string) []authCandidate {
 		return candidates
 	case "devin":
 		// Appended last (CP-70 P-0/Task-402): opencode branch above unchanged.
-		// Live-verified: REPL credentials live in the XDG DATA dir
-		// (~/.local/share/devin/credentials.toml), not ~/.config/devin.
-		candidates := []authCandidate{
-			{homePath: dir, authPath: filepath.Join(dir, ".local", "share", "devin", "credentials.toml")},
-			{homePath: dir, authPath: filepath.Join(dir, ".config", "devin", "credentials.toml")},
-		}
-		if runtime.GOOS == "windows" {
-			// Windows Devin stores credentials under %APPDATA%\devin
-			// (Roaming), i.e. <home>\AppData\Roaming\devin\credentials.toml —
-			// verified on a real install (devin 3000.10.31).
-			candidates = append(candidates, authCandidate{
-				homePath: dir,
-				authPath: filepath.Join(dir, "AppData", "Roaming", "devin", "credentials.toml"),
-			})
+		// Probe ambient overrides first (XDG_DATA_HOME/XDG_CONFIG_HOME, Windows
+		// %APPDATA%/%LOCALAPPDATA% — the live store is
+		// %APPDATA%\devin\credentials.toml on 3000.10.31), then home-relative.
+		candidates := devinAmbientAuthCandidates(dir)
+		for _, authPath := range devinCredentialFilePaths(dir) {
+			candidates = append(candidates, authCandidate{homePath: dir, authPath: authPath})
 		}
 		return candidates
 	default:
@@ -2505,15 +2497,9 @@ func accountAuthPaths(providerKey, homePath string) []string {
 		return opencodeAuthFilePaths(homePath)
 	case "devin":
 		// Appended last (CP-70 P-0/Task-402): opencode branch above unchanged.
-		paths := []string{
-			filepath.Join(homePath, ".local", "share", "devin", "credentials.toml"),
-			filepath.Join(homePath, ".config", "devin", "credentials.toml"),
-			filepath.Join(homePath, "credentials.toml"),
-		}
-		if runtime.GOOS == "windows" {
-			paths = append(paths, filepath.Join(homePath, "AppData", "Roaming", "devin", "credentials.toml"))
-		}
-		return paths
+		// Home-relative only — ambient env probing would make managed slots
+		// match the host's credential dirs.
+		return devinCredentialFilePaths(homePath)
 	default:
 		return nil
 	}

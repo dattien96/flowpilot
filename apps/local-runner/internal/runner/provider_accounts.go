@@ -952,15 +952,23 @@ func isValidOpencodeAccountPath(homePath string) bool {
 }
 
 // discoverDevinAccountHomes finds Devin account homes (CP-70 Task-402). Devin
-// is pure XDG: credentials.toml + cli/sessions.db under XDG_DATA_HOME,
-// config.json + mcp_config.json under XDG_CONFIG_HOME — both default to the
-// user home, and managed slots (.devinHomeN) replicate the same subtree.
+// is XDG-based on unix (credentials.toml under XDG_DATA_HOME or
+// XDG_CONFIG_HOME) and uses %APPDATA%\devin / %LOCALAPPDATA%\devin on Windows;
+// managed slots (.devinHomeN) replicate the same subtree. Ambient env dirs
+// force-add the real home when they carry a credentials file — same as the
+// opencode discovery probes.
 func discoverDevinAccountHomes() ([]string, error) {
 	discovered := make(map[string]struct{})
 	var accountPaths []string
 
 	homeDir := preferredUserHomeDir()
 	if homeDir != "" {
+		for _, candidate := range devinAmbientAuthCandidates(homeDir) {
+			if fileExists(candidate.authPath) {
+				accountPaths = appendDiscoveredAccountPath(accountPaths, discovered, homeDir, nil)
+				break
+			}
+		}
 		accountPaths = appendDiscoveredAccountPath(accountPaths, discovered, homeDir, isValidDevinAccountPath)
 		for _, path := range discoverManagedProviderHomeSlots(homeDir, ".devinHome", isValidDevinAccountPath) {
 			accountPaths = appendDiscoveredAccountPath(accountPaths, discovered, path, nil)
@@ -972,25 +980,26 @@ func discoverDevinAccountHomes() ([]string, error) {
 
 // isValidDevinAccountPath reports whether a home path carries a Devin
 // footprint: credentials.toml (REPL auth store) or the config/data dirs.
+// Home-relative only — ambient env dirs belong to the host home probe in
+// discoverDevinAccountHomes.
 func isValidDevinAccountPath(homePath string) bool {
 	info, err := os.Stat(homePath)
 	if err != nil || !info.IsDir() {
 		return false
 	}
-	candidates := []string{
-		filepath.Join(homePath, ".local", "share", "devin", "credentials.toml"),
-		filepath.Join(homePath, ".config", "devin", "credentials.toml"),
+	candidates := append(devinCredentialFilePaths(homePath),
 		filepath.Join(homePath, ".config", "devin", "config.json"),
 		filepath.Join(homePath, ".config", "devin", "mcp_config.json"),
-	}
+	)
 	if runtime.GOOS == "windows" {
 		// Windows Devin resolves config to %APPDATA%\devin and data to
 		// %LOCALAPPDATA%\devin (live-verified: credentials.toml sits under
 		// Roaming on a real host install), not the XDG dirs.
 		candidates = append(candidates,
-			filepath.Join(homePath, "AppData", "Roaming", "devin", "credentials.toml"),
 			filepath.Join(homePath, "AppData", "Roaming", "devin", "config.json"),
 			filepath.Join(homePath, "AppData", "Roaming", "devin", "mcp_config.json"),
+			filepath.Join(homePath, "AppData", "Local", "devin", "config.json"),
+			filepath.Join(homePath, "AppData", "Local", "devin", "mcp_config.json"),
 		)
 	}
 	for _, candidate := range candidates {
