@@ -23,10 +23,23 @@ func (s *InteractiveService) gateBlindBlocksTurn(
 	if !flowgate.HasCodeChanges(diff) {
 		return false
 	}
+	// CP-67 contract-first (live run-13173): a red baseline is the DESIGNED
+	// intermediate of signature-locked flows — the scaffold turn produces the
+	// RED suite by contract, and the tree stays dirty until the coder lands
+	// the implementation, so a red/stale baseline can never refresh green and
+	// every scaffold+coder turn would block on red_at_capture forever.
+	// Downgrade to warn: r-scaffold-red / r-signature-lock own correctness for
+	// this pipeline, and validate still runs the suite directly.
+	contractFirstRed := reason == flowgate.GateBlindRedAtCapture && rs != nil
+	if contractFirstRed {
+		if rec, ok := s.frozenContractForRun(rs.workspaceCwd, rs.parentRunID); !ok || len(rec.DeclaredPaths) == 0 {
+			contractFirstRed = false
+		}
+	}
 	gateMode := loadGateMode(dotFP)
 	msg := flowgate.GateBlindMessage(reason)
 	status := "warn"
-	if gateMode == "enforce" {
+	if gateMode == "enforce" && !contractFirstRed {
 		status = "block"
 	}
 	runIDForMetric := runID
@@ -36,7 +49,7 @@ func (s *InteractiveService) gateBlindBlocksTurn(
 		stepID = rs.lastTurnStepID
 	}
 	if !s.gateEpochStillValid(runID, epoch) {
-		return gateMode == "enforce"
+		return gateMode == "enforce" && !contractFirstRed
 	}
 	s.mu.Lock()
 	if rs2 := s.runs[runID]; rs2 != nil && rs2.gateEpoch == epoch {
@@ -56,7 +69,7 @@ func (s *InteractiveService) gateBlindBlocksTurn(
 		Action:   "gate_blind",
 		RuleIDs:  []string{string(reason)},
 	})
-	if gateMode == "enforce" {
+	if gateMode == "enforce" && !contractFirstRed {
 		return true
 	}
 	return false

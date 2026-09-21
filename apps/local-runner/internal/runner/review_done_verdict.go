@@ -134,7 +134,7 @@ func (s *InteractiveService) hubProseVerdictDerivesFlowStatus(parentRunID string
 	parent := s.runs[parentRunID]
 	var verdicts map[string]string
 	if parent != nil {
-		verdicts = parent.lastReviewCohortVerdicts
+		verdicts = mergePendingReviewVerdictsLocked(parent, parent.lastReviewCohortVerdicts)
 	}
 	s.mu.Unlock()
 	if len(verdicts) == 0 {
@@ -180,6 +180,31 @@ func (s *InteractiveService) advanceHubFromCohortMachineVerdicts(parentRunID str
 	return err == nil
 }
 
+// mergePendingReviewVerdictsLocked folds reviewer verdicts that landed after
+// their member's turn settle into the cohort verdict view. Deferred tool
+// transports (e.g. grok's search_tool/use_tool hop) can deliver the
+// submit_review_outcome MCP call AFTER the ACP turn-end already consumed
+// pendingReviewVerdictByLabel into the cohort entry — the record then sits in
+// the pending map forever while the hub reports a missing verdict. Credited
+// entries are consumed so they cannot leak into a later cohort round.
+// Caller holds s.mu.
+func mergePendingReviewVerdictsLocked(parent *interactiveRun, verdicts map[string]string) map[string]string {
+	if parent == nil || len(parent.pendingReviewVerdictByLabel) == 0 {
+		return verdicts
+	}
+	merged := make(map[string]string, len(verdicts)+len(parent.pendingReviewVerdictByLabel))
+	for k, v := range verdicts {
+		merged[k] = v
+	}
+	for k, v := range parent.pendingReviewVerdictByLabel {
+		if _, ok := merged[k]; !ok && strings.TrimSpace(v) != "" {
+			merged[k] = v
+			delete(parent.pendingReviewVerdictByLabel, k)
+		}
+	}
+	return merged
+}
+
 // synthesisDoneVerdictError describes why hub approved→done was rejected.
 func (s *InteractiveService) synthesisDoneVerdictError(parentRunID string) error {
 	s.mu.Lock()
@@ -189,7 +214,7 @@ func (s *InteractiveService) synthesisDoneVerdictError(parentRunID string) error
 	hasOwnerDebate := false
 	if parent != nil {
 		expected = reviewCohortNodeLabels(parent.activeFlowNodes)
-		verdicts = parent.lastReviewCohortVerdicts
+		verdicts = mergePendingReviewVerdictsLocked(parent, parent.lastReviewCohortVerdicts)
 		hasOwnerDebate = len(cohortNodeLabels(parent.activeFlowNodes, "owner_debate")) > 0
 	}
 	s.mu.Unlock()
@@ -236,7 +261,7 @@ func (s *InteractiveService) hubDoneVerdictError(parentRunID, hubID string) erro
 	var verdicts map[string]string
 	if parent != nil {
 		expected = cohortNodeLabels(parent.activeFlowNodes, cohort)
-		verdicts = parent.lastReviewCohortVerdicts
+		verdicts = mergePendingReviewVerdictsLocked(parent, parent.lastReviewCohortVerdicts)
 	}
 	s.mu.Unlock()
 
@@ -276,8 +301,9 @@ func (s *InteractiveService) hubDoneCohortHasChangesRequested(parentRunID, hubID
 	if parent == nil {
 		return false
 	}
+	verdicts := mergePendingReviewVerdictsLocked(parent, parent.lastReviewCohortVerdicts)
 	for _, label := range cohortNodeLabels(parent.activeFlowNodes, cohort) {
-		if parent.lastReviewCohortVerdicts[label] == "changes_requested" {
+		if verdicts[label] == "changes_requested" {
 			return true
 		}
 	}

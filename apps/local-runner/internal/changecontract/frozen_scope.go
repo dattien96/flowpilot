@@ -89,6 +89,20 @@ func IsRunnerLedgerBookkeepingPath(p string) bool {
 	return false
 }
 
+// IsRunnerChatBookkeepingPath reports whether p lives under the runner's own
+// chat/session log directory (.flowpilot/chats/). The runner appends turn,
+// flow-event, step-transition, dispatch and session records there on EVERY
+// turn — including inside the exact diff window the frozen-scope gate
+// observes — so without the exemption every writer false-positives on the
+// runner's own bookkeeping (CP-67 live: run-9968 parked on
+// .flowpilot/chats/run-*-turns.ndjson + dispatch.ndjson + sessions.ndjson).
+// Narrow prefix per CA-427 Finding 2: chat logs are pure observability — no
+// gate decision reads them — while .flowpilot/contracts/, .flowpilot/settings/
+// and every other .flowpilot/** path stay fully subject to drift enforcement.
+func IsRunnerChatBookkeepingPath(p string) bool {
+	return strings.HasPrefix(normalizeScopePath(p), ".flowpilot/chats/")
+}
+
 // IsChangeAuditPath reports whether p is a change audit note — flat, direct
 // children of change-audit/ named CA-*.md — which coding agents are explicitly
 // allowed to create per BUG-278 without triggering code scope drift.

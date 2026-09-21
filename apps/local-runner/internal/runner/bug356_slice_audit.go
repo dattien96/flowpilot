@@ -57,6 +57,7 @@ func isDocsScopePath(p string) bool {
 		changecontract.IsFrozenStoreBookkeepingPath(np) ||
 		changecontract.IsPendingCanonicalStoreBookkeepingPath(np) ||
 		changecontract.IsRunnerLedgerBookkeepingPath(np) ||
+		changecontract.IsRunnerChatBookkeepingPath(np) ||
 		changecontract.IsCanonicalHeadStorePath(np) ||
 		changecontract.IsLegacyContractsStorePath(np) ||
 		changecontract.IsToolOwnedScaffoldPath(np)

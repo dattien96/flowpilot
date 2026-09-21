@@ -484,6 +484,11 @@ type interactiveRun struct {
 	// advances the flow — the hub reads it when routing the renegotiation
 	// back-edge (same pattern as pendingReviewVerdictByLabel).
 	pendingBatchSignatureByStep map[string][]CoderBatchSignatureRequest
+	// verdictRepromptCount bounds missing-verdict reprompts on a cohort child
+	// (live run-8853: deferred-tool providers can end the turn with the
+	// submit_review_outcome call cancelled in flight, so the verdict never
+	// reaches the bridge — reprompting is the only recovery).
+	verdictRepromptCount int
 
 	status          RunStatus
 	createdAt       string
@@ -5213,6 +5218,64 @@ func (s *InteractiveService) settleFlowChildTurnCompletedLocked(rs *interactiveR
 		if parent := s.runs[rs.parentRunID]; parent != nil && parent.pendingReviewVerdictByLabel != nil {
 			machineVerdict = parent.pendingReviewVerdictByLabel[rs.label]
 			delete(parent.pendingReviewVerdictByLabel, rs.label)
+		}
+		// CP-67 live finding (run-8853): on deferred-tool transports a reviewer
+		// can end its turn with the submit_review_outcome call cancelled in
+		// flight (grok use_tool + final text in one response → user_cancel), so
+		// the verdict never reaches the bridge. Completing the member with an
+		// empty verdict then parks the hub on missing_review_verdict forever.
+		// Reprompt the child (bounded) with an ordering-explicit instruction;
+		// after the cap the member completes verdict-less as before.
+		if machineVerdict == "" {
+			if parent := s.runs[rs.parentRunID]; parent != nil &&
+				(flowRequiresSynthesisMachineVerdict(parent) ||
+					flowRequiresHubMachineVerdict(parent, "plan_synthesis") ||
+					flowRequiresHubMachineVerdict(parent, "synthesis") ||
+					flowRequiresHubMachineVerdict(parent, "cp_synthesis")) &&
+				rs.verdictRepromptCount < 2 {
+				rs.verdictRepromptCount++
+				stepID := rs.stepID
+				if stepID == "" {
+					stepID = rs.lastTurnStepID
+				}
+				if stepID == "" {
+					stepID = "verdict-reprompt-" + rs.id
+				}
+				// Flip the child back to running (same pattern as the retry
+				// activation path in flow_executor.go) so the reprompt turn is
+				// admitted and the agent card reflects the retry.
+				rs.activationSeq++
+				rs.status = RunStatusRunning
+				rs.agentStatus = string(RunStatusRunning)
+				s.agentOrchestrator.upsertSummary(rs.parentRunID, AgentRunSummary{
+					RunID:         rs.id,
+					AgentName:     rs.agentName,
+					Label:         rs.label,
+					Role:          rs.role,
+					Status:        rs.status,
+					ParentRunID:   rs.parentRunID,
+					CreatedAt:     rs.createdAt,
+					DependsOn:     append([]string(nil), rs.dependsOn...),
+					AgentStatus:   rs.agentStatus,
+					ProviderKey:   string(rs.providerKey),
+					ModelName:     rs.modelName,
+					WaitForResult: rs.waitForResult,
+					ActivationSeq: rs.activationSeq,
+				})
+				s.flowDiagLog(rs.parentRunID, "cohort_member_verdict_reprompt",
+					"cohort member completed without a machine verdict; reprompting",
+					"child_run_id", rs.id,
+					"label", rs.label,
+					"attempt", rs.verdictRepromptCount,
+				)
+				prompt := "Your previous turn ended without the required submit_review_outcome call — " +
+					"the verdict was never recorded (a tool call attached to your final message may have been " +
+					"cancelled in flight). Call submit_review_outcome NOW, as the FIRST action of this turn, " +
+					"with status=approved|changes_requested|blocked and a verdicts array containing one row " +
+					"per acceptance criterion. Wait for the tool result before writing any summary text."
+				s.scheduleChildTurn(rs.id, stepID, prompt)
+				return
+			}
 		}
 		s.agentOrchestrator.appendCohortResult(rs.parentRunID, rs.flowCohortId, cohortEntry{
 			Label:          rs.label,

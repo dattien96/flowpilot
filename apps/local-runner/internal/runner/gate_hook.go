@@ -933,6 +933,7 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 			if changecontract.IsFrozenStoreBookkeepingPath(p) ||
 				changecontract.IsPendingCanonicalStoreBookkeepingPath(p) ||
 				changecontract.IsRunnerLedgerBookkeepingPath(p) ||
+				changecontract.IsRunnerChatBookkeepingPath(p) ||
 				changecontract.IsChangeAuditPath(p) ||
 				// Runner-owned stores the gate's own diff can observe: the
 				// Canonical Head file (SaveHead on gate passes) and the legacy

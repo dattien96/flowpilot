@@ -1853,41 +1853,6 @@ func (s *InteractiveService) runContractFreezeNode(ctx context.Context, parentRu
 		return true
 	}
 
-	// Enforce the planner produced no project mutations (it is read-only by
-	// contract). Diffing against a plain "is the tree dirty" check would fire
-	// on any pre-existing uncommitted work the user already had when the flow
-	// started — instead, diff a fresh fingerprint against the one captured
-	// once at flow start (rs.flowStartWorktreeFingerprint, before the planner
-	// — the flow's entry node — ever ran): a path new or changed-hash
-	// relative to that baseline is the planner's own mutation; a path dirty
-	// in both with the same hash is pre-existing and not the planner's doing.
-	if workspace != "" {
-		currentFingerprint := baselineWorktreeFingerprint(workspace)
-		if mutated := worktreeMutatedSincePaths(startFingerprint, currentFingerprint); len(mutated) > 0 {
-			return escalate(fmt.Sprintf("planner changed %d file(s) (%s); the contract planner must be read-only", len(mutated), strings.Join(mutated, ", ")))
-		}
-	}
-
-	draft, err := changecontract.ParsePreflightDraft(plannerResult)
-	if err != nil {
-		if fallback := s.findPlannerResultForFreeze(parentRunID, edges, nodes, node.ID); fallback != "" && fallback != plannerResult {
-			if d2, err2 := changecontract.ParsePreflightDraft(fallback); err2 == nil {
-				draft = d2
-				err = nil
-			}
-		}
-	}
-	if err != nil {
-		return escalate("invalid planner proposal: " + err.Error())
-	}
-	// CP-55 P-3 deliberately does not allowlist feature_key against the
-	// catalog here (knownFeatureKeys=nil skips that check in
-	// ValidatePreflightDraft) — the planner's feature_key is trusted for now;
-	// catalog-backed validation can be added later without an API change.
-	draft, err = changecontract.ValidatePreflightDraft(draft, nil)
-	if err != nil {
-		return escalate("invalid planner proposal: " + err.Error())
-	}
 	writerNode, path, direct, ok := freezeWriterBinding(edges, nodes, node.ID)
 	if !ok {
 		return escalate("no reachable agent.code writer target for this contract.freeze node")
@@ -1906,10 +1871,17 @@ func (s *InteractiveService) runContractFreezeNode(ctx context.Context, parentRu
 		return escalate("cannot open frozen contract store: " + err.Error())
 	}
 
-	// Duplicate delivery / recovery: a prior process may already have frozen
-	// this exact (runID, coderStepID) — reuse it rather than minting a second
-	// version (the version bump/Supersedes chain is reserved for genuine
-	// amendments, CP-55 P-4).
+	// Duplicate delivery / recovery / re-drive after a downstream gate park:
+	// a prior pass may already have frozen this exact (runID, coderStepID) —
+	// reuse it rather than minting a second version (the version
+	// bump/Supersedes chain is reserved for genuine amendments, CP-55 P-4).
+	// This check runs BEFORE the planner-mutation check below on purpose
+	// (CP-67 live run-13173): on a re-drive after a scaffold/gate park the
+	// worktree already contains the earlier round's downstream artifacts
+	// (e.g. test_signatures' scaffold files), which the flow-start
+	// fingerprint would misattribute to the planner. An already-frozen
+	// contract for this step makes the freeze idempotent — planner purity
+	// was already proven on the pass that minted it.
 	if existing, ok, _ := store.GetFrozenForStep(parentRunID, writerNode.ID); ok {
 		lock.Unlock()
 		s.flowDiagLog(parentRunID, "flow_contract_freeze_reused", "reusing already-frozen contract for this step",
@@ -1931,6 +1903,45 @@ func (s *InteractiveService) runContractFreezeNode(ctx context.Context, parentRu
 			return escalate("could not bind sibling writer contracts: " + err.Error())
 		}
 		return s.advanceAfterContractFreeze(ctx, parentRunID, edges, nodes, node, writerNode, existing, path, direct, plannerResult)
+	}
+
+	// Enforce the planner produced no project mutations (it is read-only by
+	// contract). Diffing against a plain "is the tree dirty" check would fire
+	// on any pre-existing uncommitted work the user already had when the flow
+	// started — instead, diff a fresh fingerprint against the one captured
+	// once at flow start (rs.flowStartWorktreeFingerprint, before the planner
+	// — the flow's entry node — ever ran): a path new or changed-hash
+	// relative to that baseline is the planner's own mutation; a path dirty
+	// in both with the same hash is pre-existing and not the planner's doing.
+	if workspace != "" {
+		currentFingerprint := baselineWorktreeFingerprint(workspace)
+		if mutated := worktreeMutatedSincePaths(startFingerprint, currentFingerprint); len(mutated) > 0 {
+			lock.Unlock()
+			return escalate(fmt.Sprintf("planner changed %d file(s) (%s); the contract planner must be read-only", len(mutated), strings.Join(mutated, ", ")))
+		}
+	}
+
+	draft, err := changecontract.ParsePreflightDraft(plannerResult)
+	if err != nil {
+		if fallback := s.findPlannerResultForFreeze(parentRunID, edges, nodes, node.ID); fallback != "" && fallback != plannerResult {
+			if d2, err2 := changecontract.ParsePreflightDraft(fallback); err2 == nil {
+				draft = d2
+				err = nil
+			}
+		}
+	}
+	if err != nil {
+		lock.Unlock()
+		return escalate("invalid planner proposal: " + err.Error())
+	}
+	// CP-55 P-3 deliberately does not allowlist feature_key against the
+	// catalog here (knownFeatureKeys=nil skips that check in
+	// ValidatePreflightDraft) — the planner's feature_key is trusted for now;
+	// catalog-backed validation can be added later without an API change.
+	draft, err = changecontract.ValidatePreflightDraft(draft, nil)
+	if err != nil {
+		lock.Unlock()
+		return escalate("invalid planner proposal: " + err.Error())
 	}
 
 	// Derive the next version from what's actually on disk (not hardcoded 1):
