@@ -79,6 +79,14 @@ func devinAmbientAuthCandidates(homePath string) []authCandidate {
 	return candidates
 }
 
+// DevinCredentialFilePaths exports devinCredentialFilePaths for the cli
+// package's account-metadata loader (CP-70 usage/status). Home-relative only —
+// ambient env dirs stay out of managed slots by design (see
+// accountAuthPaths).
+func DevinCredentialFilePaths(homePath string) []string {
+	return devinCredentialFilePaths(homePath)
+}
+
 // devinWellKnownBinaryPaths returns the install locations the official Devin
 // CLI setup scripts use (F-12): Windows `irm static.devin.ai/cli/setup.ps1`
 // lands at %LOCALAPPDATA%\devin\cli\bin\devin.exe and does NOT add the dir to
