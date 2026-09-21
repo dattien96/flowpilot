@@ -180,6 +180,9 @@ func discoverProjectSkills(provider string, cwd string) []ProviderSkill {
 	case "opencode":
 		// Appended last (CP-57)
 		return providerSkillsFromDir(filepath.Join(cwd, ".opencode", "skills"), "workspace")
+	case "devin":
+		// Appended last (CP-70)
+		return providerSkillsFromDir(filepath.Join(cwd, ".devin", "skills"), "workspace")
 	default:
 		return nil
 	}
@@ -255,6 +258,20 @@ func providerHomeSkillDirs(provider string, homePath string) []string {
 		return []string{
 			filepath.Join(homePath, ".config", "opencode", "skills"),
 			filepath.Join(homePath, ".opencode", "skills"),
+			filepath.Join(homePath, "skills"),
+		}
+	case "devin":
+		// Appended last (CP-70): homePath is a user home or managed .devinHomeN
+		// slot; config-dir style homes resolve skills directly under them.
+		isConfigDir := strings.HasSuffix(filepath.ToSlash(filepath.Clean(homePath)), ".config/devin") || strings.HasSuffix(filepath.ToSlash(filepath.Clean(homePath)), "/devin")
+		if isConfigDir {
+			return []string{
+				filepath.Join(homePath, "skills"),
+			}
+		}
+		return []string{
+			filepath.Join(homePath, ".config", "devin", "skills"),
+			filepath.Join(homePath, ".devin", "skills"),
 			filepath.Join(homePath, "skills"),
 		}
 	default:
