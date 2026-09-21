@@ -106,6 +106,10 @@ func (g *CompilerGate) Run(ctx context.Context) (*CompilerGateResult, error) {
 	cmd.Stdout = &combined
 	cmd.Stderr = &combined
 	cmd.WaitDelay = compilerGateWaitDelay
+	// The default CommandContext kill only terminates the shell; `cmd /c`
+	// grandchildren keep the output pipes open and stall Wait until WaitDelay
+	// (Windows). compilerGateCancel takes the whole tree down instead.
+	cmd.Cancel = compilerGateCancel(cmd)
 
 	started := time.Now()
 	runErr := cmd.Run()
