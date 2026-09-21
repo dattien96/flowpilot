@@ -99,11 +99,20 @@ func writeDevinModelsCache(models []ProviderModel) {
 // "devin/" for the provider inventory (Task-402): the cache stores bare ids
 // because devinModelIDForACP strips the prefix before sending to the CLI.
 func devinPrefixedProviderModels(models []ProviderModel) []ProviderModel {
+	// Derive per-model effort options from the catalog's sibling variants even
+	// for caches written before SupportedReasoningEfforts existed — otherwise a
+	// stale cache would keep serving the picker fallback (every effort level on
+	// every model) until the next refresh.
+	efforts := devinModelEffortsByID(devinBareModelIDs(models))
 	out := make([]ProviderModel, 0, len(models))
 	for _, m := range models {
 		id := strings.TrimSpace(m.ID)
 		if id == "" {
 			continue
+		}
+		bare := strings.TrimPrefix(id, "devin/")
+		if len(m.SupportedReasoningEfforts) == 0 {
+			m.SupportedReasoningEfforts = efforts[bare]
 		}
 		if !strings.HasPrefix(id, "devin/") {
 			id = "devin/" + id
@@ -117,11 +126,28 @@ func devinPrefixedProviderModels(models []ProviderModel) []ProviderModel {
 	return out
 }
 
+// devinBareModelIDs returns catalog ids without the "devin/" prefix for the
+// effort-scope grouping (suffix parsing is prefix-agnostic only on bare ids).
+func devinBareModelIDs(models []ProviderModel) []string {
+	ids := make([]string, 0, len(models))
+	for _, m := range models {
+		ids = append(ids, strings.TrimPrefix(strings.TrimSpace(m.ID), "devin/"))
+	}
+	return ids
+}
+
 // devinCatalogChoicesToProviderModels maps ACP "model" config option choices
 // to ProviderModel entries — ids keep the bare Devin catalog id; callers that
 // display them through the provider registry add the "devin/" prefix.
 func devinCatalogChoicesToProviderModels(choices []DevinConfigChoice) []ProviderModel {
 	models := make([]ProviderModel, 0, len(choices))
+	ids := make([]string, 0, len(choices))
+	for _, c := range choices {
+		if strings.TrimSpace(c.Value) != "" {
+			ids = append(ids, strings.TrimSpace(c.Value))
+		}
+	}
+	efforts := devinModelEffortsByID(ids)
 	for _, c := range choices {
 		id := strings.TrimSpace(c.Value)
 		if id == "" {
@@ -132,11 +158,12 @@ func devinCatalogChoicesToProviderModels(choices []DevinConfigChoice) []Provider
 			name = id
 		}
 		models = append(models, ProviderModel{
-			ID:          id,
-			DisplayName: name,
-			Available:   true,
-			Source:      "devin-acp",
-			InputImage:  devinChoiceSupportsImages(c),
+			ID:                        id,
+			DisplayName:               name,
+			Available:                 true,
+			Source:                    "devin-acp",
+			InputImage:                devinChoiceSupportsImages(c),
+			SupportedReasoningEfforts: efforts[id],
 		})
 	}
 	return models
