@@ -701,7 +701,19 @@ func devinModelForTurn(req TurnRequest) string {
 	}
 	if effort := strings.TrimSpace(req.ReasoningEffort); effort != "" {
 		if mapped := devinModelForEffort(model, effort); mapped != "" {
-			return mapped
+			// Only remap to ids Devin actually lists — suffix arithmetic can
+			// produce ids absent from the catalog (bare families like
+			// "adaptive" have no effort variants at all). Under tests the
+			// catalog is empty and the guard is skipped.
+			if catalog := readDevinModelsCacheStale(true); len(catalog) == 0 {
+				return mapped
+			} else {
+				for _, entry := range catalog {
+					if strings.EqualFold(strings.TrimPrefix(entry.ID, "devin/"), mapped) {
+						return mapped
+					}
+				}
+			}
 		}
 	}
 	return model
@@ -727,6 +739,7 @@ func devinModelIDForACP(model string) string {
 //   - YOLO on + forceShellBridge → "accept-edits" — workspace edits
 //     auto-approved, exec still raises session/request_permission so the
 //     commit denylist / approval card / read-only posture can all fire.
+//
 // resolveDevinSessionMode maps FlowPilot posture to Devin's session "mode"
 // config option (live-verified values: accept-edits/smart/ask/plan/bypass —
 // 3000.10.31 configOptions; "auto" is a CLI --permission-mode value, NOT a
