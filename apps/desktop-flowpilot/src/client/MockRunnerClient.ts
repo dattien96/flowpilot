@@ -425,7 +425,7 @@ export class MockRunnerClient implements RunnerClient {
     return { runId, generated: true, skipped: false };
   }
 
-  async connectProviderAccount(providerKey: "codex" | "claude" | "gemini" | "grok" | "opencode"): Promise<void> {
+  async connectProviderAccount(providerKey: "codex" | "claude" | "gemini" | "grok" | "opencode" | "devin"): Promise<void> {
     await delay(80);
     const nextSlotIndex =
       MOCK_PROVIDER_ACCOUNTS.filter((account) => account.providerKey === providerKey).reduce(

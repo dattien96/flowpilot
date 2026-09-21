@@ -263,6 +263,9 @@ function providerKeyForPinnedModel(modelId?: string): ProviderKey | null {
   if (id.startsWith("claude-")) return "claude";
   if (id.startsWith("grok-") || id === "grok-build") return "grok";
   if (id.startsWith("opencode/") || id.startsWith("opencode-go/")) return "opencode";
+  // Appended last (CP-70): devin/ prefix is mandatory — bare catalog ids
+  // (swe-*, opus, codex, gpt aliases) collide with other providers' namespaces.
+  if (id.startsWith("devin/")) return "devin";
   return null;
 }
 
@@ -293,6 +296,13 @@ function pickDefaultModel(provider: ProviderKey | undefined, models: SupportedMo
     return (
       enabled.find((m) => m.modelId === "opencode/muse-spark-1.2-contributor-free")?.modelId ??
       enabled.find((m) => m.modelId === "opencode/gpt-5.4-nano")?.modelId ??
+      enabled[0]?.modelId
+    );
+  }
+  if (provider === "devin") {
+    // Appended last (CP-70): prefer the live-verified default swe-2-high.
+    return (
+      enabled.find((m) => m.modelId === "devin/swe-2-high")?.modelId ??
       enabled[0]?.modelId
     );
   }
@@ -2747,6 +2757,7 @@ export function providerLabel(providerKey: string): string {
   if (providerKey === "gemini") return "Gemini";
   if (providerKey === "grok") return "Grok";
   if (providerKey === "opencode") return "OpenCode";
+  if (providerKey === "devin") return "Devin";
   return providerKey;
 }
 
