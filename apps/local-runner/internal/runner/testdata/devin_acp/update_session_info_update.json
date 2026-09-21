@@ -1,0 +1,11 @@
+{
+ "jsonrpc": "2.0",
+ "method": "session/update",
+ "params": {
+  "sessionId": "working-pentagon",
+  "update": {
+   "sessionUpdate": "session_info_update",
+   "title": "Reply with exactly: PROBE_OK"
+  }
+ }
+}

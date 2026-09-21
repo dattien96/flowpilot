@@ -1,0 +1,11 @@
+{
+ "jsonrpc": "2.0",
+ "method": "session/update",
+ "params": {
+  "sessionId": "working-pentagon",
+  "update": {
+   "sessionUpdate": "current_mode_update",
+   "currentModeId": "accept-edits"
+  }
+ }
+}

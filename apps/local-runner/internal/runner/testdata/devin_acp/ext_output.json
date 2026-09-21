@@ -1,0 +1,10 @@
+{
+ "jsonrpc": "2.0",
+ "method": "_cognition.ai/output",
+ "params": {
+  "channel": "MCP: flowpilot_drive",
+  "message": "Connecting to MCP server 'flowpilot_drive'",
+  "level": "info",
+  "sessionId": ""
+ }
+}

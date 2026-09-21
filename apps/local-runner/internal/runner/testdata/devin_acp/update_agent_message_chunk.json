@@ -1,0 +1,14 @@
+{
+ "jsonrpc": "2.0",
+ "method": "session/update",
+ "params": {
+  "sessionId": "working-pentagon",
+  "update": {
+   "sessionUpdate": "agent_message_chunk",
+   "content": {
+    "type": "text",
+    "text": "PROBE"
+   }
+  }
+ }
+}

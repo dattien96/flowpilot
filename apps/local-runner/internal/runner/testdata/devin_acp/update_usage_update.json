@@ -1,0 +1,16 @@
+{
+ "jsonrpc": "2.0",
+ "method": "session/update",
+ "params": {
+  "sessionId": "working-pentagon",
+  "update": {
+   "sessionUpdate": "usage_update",
+   "used": 13162,
+   "size": 262000,
+   "_meta": {
+    "cognition.ai/inputTokens": 13133,
+    "cognition.ai/outputTokens": 29
+   }
+  }
+ }
+}

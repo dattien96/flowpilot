@@ -1,0 +1,9 @@
+{
+ "jsonrpc": "2.0",
+ "method": "_cognition.ai/thinking_complete",
+ "params": {
+  "durationMs": 0,
+  "blockIndex": 0,
+  "sessionId": "working-pentagon"
+ }
+}

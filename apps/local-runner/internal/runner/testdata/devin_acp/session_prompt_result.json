@@ -1,0 +1,11 @@
+{
+ "stopReason": "end_turn",
+ "usage": {
+  "totalTokens": 13162,
+  "inputTokens": 13133,
+  "outputTokens": 29
+ },
+ "_meta": {
+  "cognition.ai/userMessageId": "a7b8d381-2e41-4f0d-876d-6829523f4f5f"
+ }
+}

@@ -1,0 +1,34 @@
+{
+ "sessions": [
+  {
+   "sessionId": "working-pentagon",
+   "cwd": "/private/tmp",
+   "title": "Reply with exactly: PROBE_OK",
+   "updatedAt": "2026-09-20T17:08:35+00:00",
+   "_meta": {
+    "cognition.ai/createdAt": "2026-09-20T17:08:31.000Z",
+    "cognition.ai/isLocked": false
+   }
+  },
+  {
+   "sessionId": "generated-iguanodon",
+   "cwd": "/private/tmp",
+   "title": "functions.bash:0{\"command\": \"echo hello\"}",
+   "updatedAt": "2026-09-20T15:40:04+00:00",
+   "_meta": {
+    "cognition.ai/createdAt": "2026-09-20T15:39:59.000Z",
+    "cognition.ai/isLocked": false
+   }
+  },
+  {
+   "sessionId": "sore-router",
+   "cwd": "/private/tmp",
+   "title": "Reply with exactly: PROBE_OK",
+   "updatedAt": "2026-09-20T15:38:43+00:00",
+   "_meta": {
+    "cognition.ai/createdAt": "2026-09-20T15:38:00.000Z",
+    "cognition.ai/isLocked": false
+   }
+  }
+ ]
+}

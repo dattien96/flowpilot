@@ -1,0 +1,91 @@
+{
+ "configOptions": [
+  {
+   "id": "mode",
+   "name": "Session Mode",
+   "category": "mode",
+   "type": "select",
+   "currentValue": "plan",
+   "options": [
+    {
+     "value": "accept-edits",
+     "name": "Code",
+     "description": "Write and edit code",
+     "_meta": {
+      "cognition.ai/icon": "code"
+     }
+    },
+    {
+     "value": "smart",
+     "name": "Smart",
+     "description": "Auto-approve actions the model judges safe",
+     "_meta": {
+      "cognition.ai/icon": "sparkles"
+     }
+    },
+    {
+     "value": "ask",
+     "name": "Ask",
+     "description": "Answer questions without code changes",
+     "_meta": {
+      "cognition.ai/icon": "message-circle"
+     }
+    },
+    {
+     "value": "plan",
+     "name": "Plan",
+     "description": "Plan changes before implementing",
+     "_meta": {
+      "cognition.ai/icon": "file-text"
+     }
+    },
+    {
+     "value": "bypass",
+     "name": "Bypass Permissions",
+     "description": "Auto-approve all tool calls",
+     "_meta": {
+      "cognition.ai/icon": "shield-off"
+     }
+    }
+   ]
+  },
+  {
+   "id": "model",
+   "name": "Model",
+   "description": "AI model to use",
+   "category": "model",
+   "type": "select",
+   "currentValue": "swe-2-medium",
+   "options": [
+    {
+     "value": "claude-opus-5-medium",
+     "name": "Claude Opus 5 Medium",
+     "_meta": {
+      "cognition.ai/supportsImages": true
+     }
+    },
+    {
+     "value": "claude-opus-5-low",
+     "name": "Claude Opus 5 Low",
+     "_meta": {
+      "cognition.ai/supportsImages": true
+     }
+    },
+    {
+     "value": "claude-opus-5-high",
+     "name": "Claude Opus 5 High",
+     "_meta": {
+      "cognition.ai/supportsImages": true
+     }
+    },
+    {
+     "value": "claude-opus-5-xhigh",
+     "name": "Claude Opus 5 XHigh",
+     "_meta": {
+      "cognition.ai/supportsImages": true
+     }
+    }
+   ]
+  }
+ ]
+}
