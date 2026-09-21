@@ -26,6 +26,9 @@ const (
 	// during CP-57 Task-300 (appended last, CP-57 P-0). Spec CP-57 lists 1.18.23 but
 	// live probe on 2026-08-27 is 1.18.18; we keep live and document drift (review I-?).
 	CompatTestedOpencodeVersion = "1.18.18"
+	// CompatTestedDevinVersion is seeded from the Devin CLI binary live-verified
+	// during CP-70 authoring (appended last, CP-70 P-0/Task-402).
+	CompatTestedDevinVersion = "3000.10.31"
 )
 
 // compatClaudeFlags are the CLI flags passed on every `claude -p` invocation.
@@ -55,6 +58,9 @@ type CompatVersionInfo struct {
 	// Appended last (CP-57 P-0/Task-302 T-6): grok fields above unchanged.
 	TestedOpencodeVersion    string `json:"testedOpencodeVersion"`
 	InstalledOpencodeVersion string `json:"installedOpencodeVersion"`
+	// Appended last (CP-70 P-0/Task-402): opencode fields above unchanged.
+	TestedDevinVersion    string `json:"testedDevinVersion"`
+	InstalledDevinVersion string `json:"installedDevinVersion"`
 }
 
 type CompatConfig struct {
@@ -64,6 +70,8 @@ type CompatConfig struct {
 	TestedGrokVersion string `json:"testedGrokVersion"`
 	// Appended last (CP-57 P-0/Task-302 T-6): grok field above unchanged.
 	TestedOpencodeVersion string `json:"testedOpencodeVersion"`
+	// Appended last (CP-70 P-0/Task-402): opencode field above unchanged.
+	TestedDevinVersion string `json:"testedDevinVersion"`
 }
 
 // CompatItem is one check result.
@@ -132,6 +140,8 @@ func (r *Runner) CompatLoadInfo(ctx context.Context) CompatVersionInfo {
 		InstalledGrokVersion:     compatRunVersion(ctx, grokBinaryName()),
 		TestedOpencodeVersion:    config.TestedOpencodeVersion,
 		InstalledOpencodeVersion: compatRunVersion(ctx, opencodeBinaryName()),
+		TestedDevinVersion:       config.TestedDevinVersion,
+		InstalledDevinVersion:    compatRunVersion(ctx, devinBinaryName()),
 	}
 }
 
@@ -147,6 +157,7 @@ func (r *Runner) RunCompatCheck(ctx context.Context) CompatCheckResult {
 	items = append(items, compatVersionItem("Codex version", info.InstalledCodexVersion, info.TestedCodexVersion))
 	items = append(items, compatVersionItem("Grok version", info.InstalledGrokVersion, info.TestedGrokVersion))
 	items = append(items, compatVersionItem("Opencode version", info.InstalledOpencodeVersion, info.TestedOpencodeVersion))
+	items = append(items, compatVersionItem("Devin version", info.InstalledDevinVersion, info.TestedDevinVersion))
 
 	// 2. Claude required flags (each is passed on every `claude -p` invocation)
 	claudeHelp := compatRunHelp(ctx, "claude")
@@ -227,6 +238,7 @@ func defaultCompatConfig() CompatConfig {
 		TestedCodexVersion:    CompatTestedCodexVersion,
 		TestedGrokVersion:     CompatTestedGrokVersion,
 		TestedOpencodeVersion: CompatTestedOpencodeVersion,
+		TestedDevinVersion:    CompatTestedDevinVersion,
 	}
 }
 
@@ -235,6 +247,7 @@ func normalizeCompatConfig(config CompatConfig) CompatConfig {
 	config.TestedCodexVersion = strings.TrimSpace(config.TestedCodexVersion)
 	config.TestedGrokVersion = strings.TrimSpace(config.TestedGrokVersion)
 	config.TestedOpencodeVersion = strings.TrimSpace(config.TestedOpencodeVersion)
+	config.TestedDevinVersion = strings.TrimSpace(config.TestedDevinVersion)
 	if config.TestedClaudeVersion == "" {
 		config.TestedClaudeVersion = CompatTestedClaudeVersion
 	}
@@ -246,6 +259,9 @@ func normalizeCompatConfig(config CompatConfig) CompatConfig {
 	}
 	if config.TestedOpencodeVersion == "" {
 		config.TestedOpencodeVersion = CompatTestedOpencodeVersion
+	}
+	if config.TestedDevinVersion == "" {
+		config.TestedDevinVersion = CompatTestedDevinVersion
 	}
 	return config
 }
