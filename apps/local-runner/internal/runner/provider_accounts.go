@@ -333,7 +333,7 @@ func (r *Runner) syncProviderAccounts(accounts []ProviderAccount) ([]ProviderAcc
 	synced := make([]ProviderAccount, len(accounts))
 	copy(synced, accounts)
 
-	for _, providerKey := range []string{"codex", "claude", "gemini", "grok", "opencode"} {
+	for _, providerKey := range []string{"codex", "claude", "gemini", "grok", "opencode", "devin"} {
 		defaultIndex := indexDefaultProviderAccount(synced, providerKey)
 		defaultPath, hasDefault := DetectDefaultAccountHomePath(providerKey)
 
@@ -651,6 +651,9 @@ func managedProviderHomePrefix(providerKey string) (string, bool) {
 	case "opencode":
 		// Appended last (CP-57 P-0/Task-302 T-2).
 		return ".opencodeHome", true
+	case "devin":
+		// Appended last (CP-70 P-0/Task-402).
+		return ".devinHome", true
 	default:
 		return "", false
 	}
@@ -698,6 +701,9 @@ func DiscoverProviderAccountHomes(providerKey string) ([]string, error) {
 	case "opencode":
 		// Appended last (CP-57 P-0/Task-302 T-2).
 		return discoverOpencodeAccountHomes()
+	case "devin":
+		// Appended last (CP-70 P-0/Task-402).
+		return discoverDevinAccountHomes()
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", providerKey)
 	}
@@ -942,6 +948,45 @@ func isValidOpencodeAccountPath(homePath string) bool {
 		return true
 	}
 	return HasLocalAuthAtPath("opencode", homePath)
+}
+
+// discoverDevinAccountHomes finds Devin account homes (CP-70 Task-402). Devin
+// is pure XDG: credentials.toml + cli/sessions.db under XDG_DATA_HOME,
+// config.json + mcp_config.json under XDG_CONFIG_HOME — both default to the
+// user home, and managed slots (.devinHomeN) replicate the same subtree.
+func discoverDevinAccountHomes() ([]string, error) {
+	discovered := make(map[string]struct{})
+	var accountPaths []string
+
+	homeDir := preferredUserHomeDir()
+	if homeDir != "" {
+		accountPaths = appendDiscoveredAccountPath(accountPaths, discovered, homeDir, isValidDevinAccountPath)
+		for _, path := range discoverManagedProviderHomeSlots(homeDir, ".devinHome", isValidDevinAccountPath) {
+			accountPaths = appendDiscoveredAccountPath(accountPaths, discovered, path, nil)
+		}
+	}
+
+	return accountPaths, nil
+}
+
+// isValidDevinAccountPath reports whether a home path carries a Devin
+// footprint: credentials.toml (REPL auth store) or the config/data dirs.
+func isValidDevinAccountPath(homePath string) bool {
+	info, err := os.Stat(homePath)
+	if err != nil || !info.IsDir() {
+		return false
+	}
+	for _, candidate := range []string{
+		filepath.Join(homePath, ".local", "share", "devin", "credentials.toml"),
+		filepath.Join(homePath, ".config", "devin", "credentials.toml"),
+		filepath.Join(homePath, ".config", "devin", "config.json"),
+		filepath.Join(homePath, ".config", "devin", "mcp_config.json"),
+	} {
+		if fileExists(candidate) {
+			return true
+		}
+	}
+	return HasLocalAuthAtPath("devin", homePath)
 }
 
 // discoverManagedCodexAccounts discovers managed Codex account slots from ~/codex-accounts/* directory.
