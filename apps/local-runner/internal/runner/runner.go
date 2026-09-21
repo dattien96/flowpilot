@@ -2454,10 +2454,20 @@ func defaultAuthCandidates(providerKey, dir string) []authCandidate {
 		// Appended last (CP-70 P-0/Task-402): opencode branch above unchanged.
 		// Live-verified: REPL credentials live in the XDG DATA dir
 		// (~/.local/share/devin/credentials.toml), not ~/.config/devin.
-		return []authCandidate{
+		candidates := []authCandidate{
 			{homePath: dir, authPath: filepath.Join(dir, ".local", "share", "devin", "credentials.toml")},
 			{homePath: dir, authPath: filepath.Join(dir, ".config", "devin", "credentials.toml")},
 		}
+		if runtime.GOOS == "windows" {
+			// Windows Devin stores credentials under %APPDATA%\devin
+			// (Roaming), i.e. <home>\AppData\Roaming\devin\credentials.toml —
+			// verified on a real install (devin 3000.10.31).
+			candidates = append(candidates, authCandidate{
+				homePath: dir,
+				authPath: filepath.Join(dir, "AppData", "Roaming", "devin", "credentials.toml"),
+			})
+		}
+		return candidates
 	default:
 		return nil
 	}
@@ -2495,11 +2505,15 @@ func accountAuthPaths(providerKey, homePath string) []string {
 		return opencodeAuthFilePaths(homePath)
 	case "devin":
 		// Appended last (CP-70 P-0/Task-402): opencode branch above unchanged.
-		return []string{
+		paths := []string{
 			filepath.Join(homePath, ".local", "share", "devin", "credentials.toml"),
 			filepath.Join(homePath, ".config", "devin", "credentials.toml"),
 			filepath.Join(homePath, "credentials.toml"),
 		}
+		if runtime.GOOS == "windows" {
+			paths = append(paths, filepath.Join(homePath, "AppData", "Roaming", "devin", "credentials.toml"))
+		}
+		return paths
 	default:
 		return nil
 	}

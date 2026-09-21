@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -266,6 +267,17 @@ func TestIsValidDevinAccountPath(t *testing.T) {
 	}
 	if isValidDevinAccountPath(filepath.Join(homeDir, "does-not-exist")) {
 		t.Fatalf("nonexistent path must be invalid")
+	}
+}
+
+func TestIsValidDevinAccountPath_WindowsRoaming(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-only credential layout")
+	}
+	homeDir := t.TempDir()
+	mustWriteTestFile(t, filepath.Join(homeDir, "AppData", "Roaming", "devin", "credentials.toml"), "[auth]\nwindsurf_api_key = \"k\"")
+	if !isValidDevinAccountPath(homeDir) {
+		t.Fatalf("credentials.toml under AppData\\Roaming\\devin must validate the home on windows")
 	}
 }
 

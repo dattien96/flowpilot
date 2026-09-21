@@ -11,6 +11,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -976,12 +977,23 @@ func isValidDevinAccountPath(homePath string) bool {
 	if err != nil || !info.IsDir() {
 		return false
 	}
-	for _, candidate := range []string{
+	candidates := []string{
 		filepath.Join(homePath, ".local", "share", "devin", "credentials.toml"),
 		filepath.Join(homePath, ".config", "devin", "credentials.toml"),
 		filepath.Join(homePath, ".config", "devin", "config.json"),
 		filepath.Join(homePath, ".config", "devin", "mcp_config.json"),
-	} {
+	}
+	if runtime.GOOS == "windows" {
+		// Windows Devin resolves config to %APPDATA%\devin and data to
+		// %LOCALAPPDATA%\devin (live-verified: credentials.toml sits under
+		// Roaming on a real host install), not the XDG dirs.
+		candidates = append(candidates,
+			filepath.Join(homePath, "AppData", "Roaming", "devin", "credentials.toml"),
+			filepath.Join(homePath, "AppData", "Roaming", "devin", "config.json"),
+			filepath.Join(homePath, "AppData", "Roaming", "devin", "mcp_config.json"),
+		)
+	}
+	for _, candidate := range candidates {
 		if fileExists(candidate) {
 			return true
 		}
