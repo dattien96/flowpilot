@@ -94,3 +94,49 @@ UI verification.
 - Base regression: 5 TempDir file-lock flakes + 1 pre-existing
   `TestOpencodeProcessEnvIsolatesWindows` path-separator bug — none
   CP-70 related.
+
+## Live-test round 2 (post-3144188) — MCP-after-resume fix + remaining matrix
+
+- **MCP-on-resume bugfix (commit 3144188)** — `session/load` silently
+  IGNORES the ACP `mcpServers` param (live-verified: loaded sessions only
+  enumerate config scopes — org/user/project). Fix: adapter upserts the
+  turn's entries into `<cwd>/.devin/mcp_config.local.json` before
+  `session/new|load` and git-excludes the file (same as
+  `devin mcp add -s local`). Evidence: resumed `trusted-airmail` →
+  `mcp__flowpilot__ask_user` → `q-260` surfaced via
+  `POST /client/questions/q-260/answer {B}` → model replied `B`.
+- **R4 approve path** — run-270 `yolo=false`, `rm -rf danger_dir2` →
+  `waiting_approval` `appr-284` → `decision=approve` → dir deleted,
+  turn settled. (Deny path verified in round 1 — full binary matrix done.)
+- **R7 spawn_agent** — resumed session called
+  `mcp__flowpilot__spawn_agent{agent:"default",wait:true}` → child
+  `run-314` created with its OWN Devin session `blushing-raver`
+  (isolation confirmed — no slug reuse), completed `CHILD_OK`, result
+  returned to parent turn.
+- **Vision** — `attachments:[{image/png base64}]` → ACP
+  `session/prompt` carries `{type:"image",data,mimeType}` block;
+  `devin/claude-sonnet-5-low` answered the image content ("Pink" for a
+  red pixel). `devin/grok-4-5-low` errored upstream
+  (`third-party model provider ... not available`) — surfaced cleanly as
+  `turn-failed`, not a FlowPilot bug.
+- **Posture plan** — `chatPosture:"plan"` → `mode=plan`; Devin wrote a
+  plan doc to `~/.devin/plans/` and did NOT create the requested
+  workspace file — read-only plan posture enforced.
+- **Skills injection** — `.devin/skills/demo-skill` discovered via
+  `GET /client/provider-skills?provider=devin` (source=workspace);
+  `selectedSkills` produced the `## Selected Skills` prompt preamble AND
+  Devin's own skill catalog listed/invoked `/demo-skill`; reply began
+  `SKILL_INJECTED_OK`.
+- **Detection** — `/providers` shows devin INSTALLED/AUTH_REQUIRED with
+  detected_version `devin 3000.10.31`; `/compat` returns
+  `testedDevinVersion` + `installedDevinVersion`.
+
+Still blocked (environment, not code):
+- **R6 full workflow run** — `/client/workflows` catalog needs Supabase
+  (`dial tcp ... no such host`); chat-turn `flowRef:"bug-harness"`
+  fell back to normal chat (`failed to resolve`) — same offline cause.
+  Posture-level gating already verified via scan/plan/smart modes.
+- **Summarizer one-shot** — `devin -p` uses the REPL credential store;
+  ACP auth doesn't satisfy it. Needs interactive `devin auth login`.
+- **Cross-account/Drive restore** — needs connected external creds.
+- UI verification — deferred per instructions.
