@@ -1788,8 +1788,11 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 
 				err := writeSupervisorCommand(instance.Health().Cwd, "shutdown")
 				if err != nil {
-					writeHTTPError(w, http.StatusInternalServerError, err)
-					return
+					// Never block shutdown on the supervisor handshake: the
+					// supervisor also tears down via child-exit detection, and
+					// a failed write must not leave the runner alive while the
+					// desktop reports "Turn off" did nothing.
+					log.Printf("[runner] supervisor shutdown command write failed: %v — exiting anyway", err)
 				}
 
 				w.WriteHeader(http.StatusAccepted)
@@ -1849,6 +1852,14 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 			go func() {
 				<-sigChan
 				fmt.Println("\nShutting down local runner. Cleaning up active sessions...")
+				// A second Ctrl+C while cleanup runs force-exits immediately —
+				// signal.Notify swallows repeats otherwise, leaving the process
+				// unkillable from the keyboard if a session ever stalls teardown.
+				go func() {
+					<-sigChan
+					fmt.Println("\nForce exit.")
+					os.Exit(1)
+				}()
 				instance.CleanupSessions()
 				os.Exit(0)
 			}()
