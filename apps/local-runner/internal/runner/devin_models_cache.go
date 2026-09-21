@@ -117,13 +117,10 @@ func devinPrefixedProviderModels(models []ProviderModel) []ProviderModel {
 	return out
 }
 
-// recordDevinModelCatalog persists the ACP-captured model catalog as
-// ProviderModel entries — ids keep the bare Devin catalog id; callers that
+// devinCatalogChoicesToProviderModels maps ACP "model" config option choices
+// to ProviderModel entries — ids keep the bare Devin catalog id; callers that
 // display them through the provider registry add the "devin/" prefix.
-func recordDevinModelCatalog(choices []DevinConfigChoice) {
-	if len(choices) == 0 {
-		return
-	}
+func devinCatalogChoicesToProviderModels(choices []DevinConfigChoice) []ProviderModel {
 	models := make([]ProviderModel, 0, len(choices))
 	for _, c := range choices {
 		id := strings.TrimSpace(c.Value)
@@ -142,5 +139,14 @@ func recordDevinModelCatalog(choices []DevinConfigChoice) {
 			InputImage:  devinChoiceSupportsImages(c),
 		})
 	}
-	writeDevinModelsCache(models)
+	return models
+}
+
+// recordDevinModelCatalog persists the ACP-captured model catalog as
+// ProviderModel entries (devinCatalogChoicesToProviderModels).
+func recordDevinModelCatalog(choices []DevinConfigChoice) {
+	if len(choices) == 0 {
+		return
+	}
+	writeDevinModelsCache(devinCatalogChoicesToProviderModels(choices))
 }

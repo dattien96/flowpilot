@@ -1987,6 +1987,15 @@ func resolveProviderModels(ctx context.Context, spec providerSpec, binaryPath st
 		if models := readDevinModelsCache(); len(models) > 0 {
 			return devinPrefixedProviderModels(models)
 		}
+		// A stale catalog still beats the static two-model fallback — serve it
+		// and refresh in the background so the next detect sees the live list
+		// (the probe's initialize->authenticate->session/new handshake runs far
+		// beyond this endpoint's 8s budget).
+		if models := readDevinModelsCacheStale(true); len(models) > 0 {
+			warmDevinModelsCacheAsync()
+			return devinPrefixedProviderModels(models)
+		}
+		warmDevinModelsCacheAsync()
 	}
 
 	return spec.Models
