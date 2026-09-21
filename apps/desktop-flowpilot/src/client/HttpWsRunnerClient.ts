@@ -128,11 +128,12 @@ export class HttpWsRunnerClient implements RunnerClient {
     return this.parse<T>(resp);
   }
 
-  private async postJSON<T>(path: string, body?: unknown, headers?: Record<string, string>): Promise<T> {
+  private async postJSON<T>(path: string, body?: unknown, headers?: Record<string, string>, timeoutMs?: number): Promise<T> {
     const resp = await fetch(this.base + path, {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "application/json", "X-Client": "desktop", ...(headers ?? {}) },
       body: body === undefined ? undefined : JSON.stringify(body),
+      signal: timeoutMs === undefined ? undefined : AbortSignal.timeout(timeoutMs),
     });
     return this.parse<T>(resp);
   }
@@ -393,10 +394,13 @@ export class HttpWsRunnerClient implements RunnerClient {
     return this.postJSON<void>("/provider-accounts/test", { accountId });
   }
   restartStack(): Promise<void> {
-    return this.postJSON<void>("/system/restart");
+    // The runner answers before running cleanup, so this should return fast —
+    // but bound it anyway so a wedged teardown can never leave the button on
+    // "Shutting down…" forever.
+    return this.postJSON<void>("/system/restart", undefined, undefined, 10_000);
   }
   shutdownStack(): Promise<void> {
-    return this.postJSON<void>("/system/shutdown");
+    return this.postJSON<void>("/system/shutdown", undefined, undefined, 10_000);
   }
 
   // ---- streaming -----------------------------------------------------------

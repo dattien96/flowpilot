@@ -446,35 +446,24 @@ func devinSegmentedScope(base, segment string) string {
 // segment: the account-switch reclaim closes handles whose BASE differs, so a
 // child segment spawning its own process never kills a live parent process.
 // Within one segment, exact-key misses reuse any live same-segment handle.
+//
+// The mutex is released before the spawn+handshake: initialize/authenticate
+// can take up to ~120s (PKCE browser flow), and holding devinProcessMu across
+// it wedges closeAllDevinProcesses — which made /system/shutdown, restart, and
+// SIGINT cleanup stall until the timeouts fired.
 func (r *Runner) ensureDevinProcessSegmented(ctx context.Context, scopeBase, scopeSegment, cwd string, extraEnv map[string]string, model, permissionMode string) (*devinProcessHandle, error) {
 	scopeKey := devinSegmentedScope(scopeBase, scopeSegment)
-	r.devinProcessMu.Lock()
-	defer r.devinProcessMu.Unlock()
+	key := devinProcessKey(scopeKey, model, permissionMode)
 
+	r.devinProcessMu.Lock()
 	if r.devinProcesses == nil {
 		r.devinProcesses = make(map[string]*devinProcessHandle)
 	}
-
-	for k, h := range r.devinProcesses {
-		if devinScopeBaseOf(h) != scopeBase {
-			h.close()
-			delete(r.devinProcesses, k)
-		}
+	if h := r.reuseDevinProcessLocked(scopeBase, scopeSegment, key); h != nil {
+		r.devinProcessMu.Unlock()
+		return h, nil
 	}
-
-	key := devinProcessKey(scopeKey, model, permissionMode)
-	if h := r.devinProcesses[key]; h != nil {
-		if !h.dispatcher.isClosed() {
-			return h, nil
-		}
-		h.close()
-		delete(r.devinProcesses, key)
-	}
-	for _, h := range r.devinProcesses {
-		if devinScopeBaseOf(h) == scopeBase && h.scopeSegment == scopeSegment && !h.dispatcher.isClosed() {
-			return h, nil
-		}
-	}
+	r.devinProcessMu.Unlock()
 
 	if !devinAgentEnabled() {
 		return nil, fmt.Errorf("devin controlled runtime is not implemented yet")
@@ -529,14 +518,52 @@ func (r *Runner) ensureDevinProcessSegmented(ctx context.Context, scopeBase, sco
 
 	adapter := newDevinAdapter(dispatcher, cwd)
 	adapter.initResult = initResult
+
+	h := &devinProcessHandle{scopeKey: scopeKey, scopeBase: scopeBase, scopeSegment: scopeSegment, model: model, permissionMode: permissionMode, dispatcher: dispatcher, adapter: adapter, initResult: initResult, kill: kill}
+
+	// CAS the fresh handle in: a concurrent ensure may have registered a live
+	// same-segment handle while our handshake ran without the mutex. The
+	// reclaim pass runs again so a foreign-base insert that raced us still
+	// wins the account-switch invariant either way.
+	r.devinProcessMu.Lock()
+	if existing := r.reuseDevinProcessLocked(scopeBase, scopeSegment, key); existing != nil {
+		r.devinProcessMu.Unlock()
+		h.close()
+		return existing, nil
+	}
 	if r.devinRunSessions == nil {
 		r.devinRunSessions = &devinRunSessionIndex{byRun: make(map[string]string), bySession: make(map[string]string)}
 	}
 	adapter.runSessions = r.devinRunSessions
-
-	h := &devinProcessHandle{scopeKey: scopeKey, scopeBase: scopeBase, scopeSegment: scopeSegment, model: model, permissionMode: permissionMode, dispatcher: dispatcher, adapter: adapter, initResult: initResult, kill: kill}
 	r.devinProcesses[key] = h
+	r.devinProcessMu.Unlock()
 	return h, nil
+}
+
+// reuseDevinProcessLocked is the reclaim+reuse pass shared by the pre-spawn
+// fast path and the post-handshake insert: purge handles whose base differs
+// (account-switch reclaim), prefer an exact-key live handle, else reuse any
+// live same-segment handle. Caller must hold devinProcessMu.
+func (r *Runner) reuseDevinProcessLocked(scopeBase, scopeSegment, key string) *devinProcessHandle {
+	for k, h := range r.devinProcesses {
+		if devinScopeBaseOf(h) != scopeBase {
+			h.close()
+			delete(r.devinProcesses, k)
+		}
+	}
+	if h := r.devinProcesses[key]; h != nil {
+		if !h.dispatcher.isClosed() {
+			return h
+		}
+		h.close()
+		delete(r.devinProcesses, key)
+	}
+	for _, h := range r.devinProcesses {
+		if devinScopeBaseOf(h) == scopeBase && h.scopeSegment == scopeSegment && !h.dispatcher.isClosed() {
+			return h
+		}
+	}
+	return nil
 }
 
 // devinScopeBaseOf tolerates test handle literals that only set scopeKey.

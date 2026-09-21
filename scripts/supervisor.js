@@ -552,13 +552,15 @@ async function startServicesFresh(existing = {}) {
     if (desktopPort) {
       desktopArgs.push('--', '--port', desktopPort, '--strictPort', '--host', '127.0.0.1');
     }
+    const desktopEnv = { ...process.env };
+    delete desktopEnv.ELECTRON_RUN_AS_NODE;
     desktopProcess = spawn(desktopCmd, desktopArgs, {
       cwd: path.join(rootDir, desktopPath),
       shell: true,
       stdio: 'inherit',
       detached: process.platform !== 'win32',
       env: {
-        ...process.env,
+        ...desktopEnv,
         FLOWPILOT_ADMIN_WEB_PORT: webPort,
         FLOWPILOT_RUNNER_PORT: runnerPort,
         FLOWPILOT_RUNNER_URL: runnerUrl,
@@ -785,6 +787,11 @@ setInterval(() => {
 // Capture signals
 process.on('SIGINT', cleanupAndExit);
 process.on('SIGTERM', cleanupAndExit);
+// Terminal window closed (SIGHUP) must also tear down: managed children are
+// spawned detached (own process groups), so without this they outlive the
+// supervisor as unkillable-by-Ctrl+C orphans that keep holding ports and
+// dispatch.lock files.
+process.on('SIGHUP', cleanupAndExit);
 
 // Start
 startServices();
