@@ -350,6 +350,11 @@ func ModelProviderKey(model string) (string, bool) {
 	case strings.HasPrefix(m, "opencode/"), strings.HasPrefix(m, "opencode-go/"):
 		// Appended last (CP-57 P-0): existing prefix cases above are unchanged.
 		return "opencode", true
+	case strings.HasPrefix(m, "devin/"):
+		// Appended last (CP-70): Devin model ids persist with the devin/
+		// namespace prefix so catalog entries like claude-opus-5-high never
+		// collide with the claude- prefix case above.
+		return "devin", true
 	}
 	return "", false
 }
