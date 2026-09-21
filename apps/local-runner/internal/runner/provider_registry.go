@@ -630,5 +630,51 @@ func ProviderRegistryFor(r *Runner) *ProviderRegistry {
 			},
 		})
 	}
+	// Devin controlled-mode adapter over `devin acp` (CP-70). On by default
+	// (devinAgentEnabled); set FLOWPILOT_DEVIN_AGENT=0/false/no to opt out.
+	// Appended last — existing registrations above are unchanged.
+	if devinAgentEnabled() {
+		reg.register(ProviderRegistration{
+			Key:          ProviderKeyDevin,
+			DisplayName:  "Devin",
+			Status:       ProviderStatusAvailable,
+			Capabilities: (&devinAdapter{}).Capabilities(),
+			newAdapterForTurn: func(model, reasoningEffort, childScope string) ProviderRuntimeAdapter {
+				scopeKey, env, envErr := r.devinLaunchEnv()
+				if envErr != nil {
+					return errorAdapter{key: ProviderKeyDevin, err: envErr}
+				}
+				if strings.TrimSpace(model) == "" {
+					if def := defaultModelForProvider(ProviderKeyDevin); strings.TrimSpace(def) != "" {
+						model = def
+					}
+				}
+				// Devin mode (YOLO/posture) is a per-SESSION config option the
+				// adapter applies via set_config_option — not a launch flag —
+				// so the process key's permissionMode field only keeps the
+				// tuple shape; the resolved mode is applied per turn.
+				h, ensureErr := r.ensureDevinProcessSegmented(context.Background(), scopeKey, childScope, r.workspace, env, model, "")
+				if ensureErr != nil {
+					return errorAdapter{key: ProviderKeyDevin, err: ensureErr}
+				}
+				a := h.adapter
+				a.sessionStore = ProviderSessionStoreFor(r)
+				a.promptPrep = func(req TurnRequest) string {
+					workspace := r.workspace
+					if req.Cwd != "" {
+						workspace = req.Cwd
+					}
+					return r.injectSelectedSkills(workspace, req.Prompt, req.SelectedSkills) + devinToolReinforcements
+				}
+				a.mcpServer = r.claudeMCP
+				a.mcpBaseURL = r.mcpBaseURLValue
+				accountHome := env["HOME"]
+				a.extraMCPServers = func(yolo bool) map[string]claudeMcpServer {
+					return r.flowpilotClaudeExtraMCPServers(accountHome, yolo)
+				}
+				return a
+			},
+		})
+	}
 	return reg
 }
