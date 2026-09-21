@@ -19,6 +19,9 @@ const (
 	// ProviderKeyOpencode is Opencode over ACP (CP-57). Appended last — existing
 	// cases/order are unchanged (CP-57 P-0).
 	ProviderKeyOpencode ProviderKey = "opencode"
+	// ProviderKeyDevin is Devin over ACP (CP-70). Appended last — existing
+	// cases/order are unchanged.
+	ProviderKeyDevin ProviderKey = "devin"
 )
 
 // RunStatus mirrors the client-facing RunStatus set (04-01) — the user-facing
