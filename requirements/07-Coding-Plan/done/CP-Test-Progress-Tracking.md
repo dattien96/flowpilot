@@ -9,13 +9,13 @@
 - Owner: `FlowPilot`
 - Reviewers: `Operator`
 - Created: `2026-09-19`
-- Last Updated: `2026-09-19`
-- Related Documents: [CP-23-Test-Steps](./CP-23-Test-Steps.md), [CP-62-Test-Steps](./CP-62-Test-Steps.md), [CP-63-Test-Steps](./CP-63-Test-Steps.md), [CP-64-Test-Steps](./CP-64-Test-Steps.md), [CP-65-Test-Steps](./CP-65-Test-Steps.md), [CP-66-Test-Steps](./CP-66-Test-Steps.md)
+- Last Updated: `2026-09-21`
+- Related Documents: [CP-23-Test-Steps](./CP-23-Test-Steps.md), [CP-62-Test-Steps](./CP-62-Test-Steps.md), [CP-63-Test-Steps](./CP-63-Test-Steps.md), [CP-64-Test-Steps](./CP-64-Test-Steps.md), [CP-65-Test-Steps](./CP-65-Test-Steps.md), [CP-66-Test-Steps](./CP-66-Test-Steps.md), [CP-70-Test-Steps](./CP-70-Test-Steps.md)
 - Tags: `test-progress, verification, cp-tracking`
 
 ## Overview
 
-Danh sách các scenario verification chưa hoàn thành (PARTIAL/BLOCKED) cho CP-23, CP-62, CP-63, CP-64, CP-65, CP-66, CP-68. **2026-09-20 closeout: tất cả DOD + auto-test + API/log-verifiable manual test đều DONE; chỉ còn 3 UI-only scenarios chờ user verify trên Desktop/TUI.**
+Danh sách các scenario verification chưa hoàn thành (PARTIAL/BLOCKED) cho CP-23, CP-62, CP-63, CP-64, CP-65, CP-66, CP-68, CP-70. **2026-09-20 closeout: tất cả DOD + auto-test + API/log-verifiable manual test đều DONE; chỉ còn 3 UI-only scenarios chờ user verify trên Desktop/TUI. 2026-09-21: CP-70 added — API/log matrix R1..R10 DONE, còn UI/TUI + env-blocked items.**
 
 ---
 
@@ -162,6 +162,40 @@ Danh sách các scenario verification chưa hoàn thành (PARTIAL/BLOCKED) cho C
 
 ---
 
+## CP-70: Devin Provider Integration (ACP)
+
+### Automated Tests Status
+- ✅ 70/70 Devin tests PASS (`go test ./internal/runner -run Devin`, `go test ./internal/tooling -run Devin`); base regression green ngoại trừ pre-existing fails không liên quan CP-70 (`TestOpencodeProcessEnvIsolatesWindows` path-separator, 5 TempDir file-lock flakes Windows, 1 tsc error BUG-340 `store.chat-mode-persist.test.ts`)
+
+### Manual Verification Status (Windows, devin 3000.10.31, runner :4317, workspace `C:/working/fp-devin-sandbox` — chi tiết CA-899/CA-900)
+
+| Scenario | Status | Notes | API Testable? |
+|----------|--------|-------|---------------|
+| R1 chat + auth PKCE | ✅ DONE | `run-1` slug `trusted-airmail`; `initialize→authenticate{devin-browser}→session/new→prompt→end_turn` | Yes |
+| R2 write/tool lifecycle | ✅ DONE | `hello_devin.txt` ghi thật | Yes |
+| R3 mid-chat model switch | ✅ DONE | `set_config_option{grok-4-5-low}` cùng session — BUG-329 không lặp | Yes |
+| R4 approval gate deny+approve | ✅ DONE | `request_permission` → `waiting_approval`; `appr-97` deny→`reject_once`, `appr-284` approve→executed. Bug found+fixed: non-yolo mode `"auto"` invalid → map `smart` (commit a96c35e) | Yes |
+| R5 resume sau restart | ✅ DONE | `session/load{trusted-airmail}` replay + turn mới OK | Yes |
+| R6 flow gates | ✅ DONE (machinery) | `run-876` `bug-harness` qua embedded pack (Supabase store bypassed bằng workspace `supabase-config.json={}`); freeze strict-parse reject → `WAITING_USER_APPROVAL` + `blocked/escalate`; `agent-loop/continue` 200. **Finding**: Devin Sonnet từ chối prompt `[SYSTEM_PROMPT]`-embedded như prompt-injection → planner trả prose thay draft → escalate đúng design; tuning template là follow-up | Yes |
+| R7 spawn_agent isolation | ✅ DONE | child `run-314` session riêng `blushing-raver`, `CHILD_OK` — BUG-334 không lặp | Yes |
+| R8 cancel | ✅ DONE | `session/cancel` → `stopReason:"cancelled"` | Yes |
+| R9 Grok regression | ✅ DONE | `GROK_REGRESSION_OK` | Yes |
+| R10 usage normalization | ✅ DONE | `token_usage_updated` + `modelContextWindow:500000` | Yes |
+| ask_user qua MCP trên resumed session | ✅ DONE | Bug found+fixed: `session/load` ignore `mcpServers` → persist `.devin/mcp_config.local.json` + git-exclude (commit 3144188); E2E `q-260`→answer B→reply B | Yes |
+| Posture scan/plan | ✅ DONE | `scan`→`ask` không write; `plan`→plan doc `~/.devin/plans/` | Yes |
+| Vision | ✅ DONE | image block qua ACP; `claude-sonnet-5-low` đọc "Pink" | Yes |
+| Skills injection | ✅ DONE | `.devin/skills` discovered + invoked `/demo-skill` → `SKILL_INJECTED_OK` | Yes |
+| Detection + compat | ✅ DONE | `/providers` INSTALLED/AUTH_REQUIRED; `/compat` trả `installedDevinVersion` | Yes |
+
+### Remaining Work
+- **⏸ AWAITING USER (env/auth)**: J Summarizer — `devin -p` dùng REPL credential store tách ACP PKCE; cần operator chạy `devin auth login`
+- **⏸ AWAITING USER (env/creds)**: I5 Drive `/sync`+`/restore` và I6 cross-account session-leak guard — cần Drive creds + tài khoản Devin thứ 2
+- **⏸ AWAITING USER (UI-only)**: Mục S (TUI `/provider`,`/model`,Ctrl+C restore), Mục A (Settings card/Install/Detect buttons A1..A7), Mục B (TUI picker B1..B8), Task-403 DOD-7 (Tab cycle posture), Account Usage panel (Mục P UI)
+- **⏸ FOLLOW-UP (design)**: R6 full E2E — prompt template `flow-pack/agents/contract-planner.md` dạng `[SYSTEM_PROMPT]` bị Devin Sonnet chặn như injection; cần quyết định tune template cho Devin hay chấp nhận escalate
+- **N/A by design**: Mục Q handoff — `supportsHandoffSource(devin)=false` parity opencode
+
+---
+
 ## Summary
 
 ### CP Completion Status
@@ -175,6 +209,7 @@ Danh sách các scenario verification chưa hoàn thành (PARTIAL/BLOCKED) cho C
 | CP-65 | ✅ 32/32 PASS | 4/4 DONE (M-2/3/4 via automated — live needs multi-provider) | ✅ DONE |
 | CP-66 | ✅ 100% PASS | 3/3 DONE | ✅ DONE |
 | CP-68 | ✅ 28/28 PASS | 8/8 DONE (6/8 live-verified via API/log 2026-09-20; M-2/M-6 UI-only via automated tests; real bug found+fixed — CA-894) | ✅ DONE |
+| CP-70 | ✅ 70/70 Devin PASS | 15/15 API/log scenarios DONE (R1..R10 + ask_user + posture + vision + skills + detection); 2 bugs found+fixed live (CA-900: mode `"auto"`→`smart`, MCP-on-resume `3144188`); còn UI/TUI sections + summarizer/Drive/cross-account ⏸ env-blocked | ⚠️ AWAITING USER (UI + env) |
 
 ### API-Testable Scenarios Priority Ranking
 
@@ -185,6 +220,15 @@ Danh sách các scenario verification chưa hoàn thành (PARTIAL/BLOCKED) cho C
 1. CP-62 M-5: Decision Card UI display on Desktop + TUI
 2. CP-23 Kịch bản 2: UI drift card display on Desktop/TUI
 3. CP-62 M-8: UI drift card display (same surface as CP-23)
+4. CP-70 Mục S/A/B: TUI commands + Desktop Settings card/install/detect buttons + Tab posture cycle
+5. CP-70 Mục P: Account Usage panel UI (usage data đã normalize qua R10)
+
+**⏸ AWAITING USER (env/auth — cần operator action):**
+6. CP-70 Mục J Summarizer: `devin auth login` (REPL credential store tách ACP PKCE)
+7. CP-70 Mục I5/I6: Drive sync/restore + cross-account guard — cần Drive creds + Devin account thứ 2
+
+**⏸ FOLLOW-UP (design call):**
+8. CP-70 R6: flow-pack planner prompt dạng `[SYSTEM_PROMPT]` bị Devin Sonnet refuse như prompt-injection → freeze escalate đúng; cần quyết định tune template cho Devin (CA-900)
 
 **COMPLETED via automated tests (2026-09-20):**
 - CP-62 M-2: Trigger boundary/handoff in live vibe-sprint flow ✅
