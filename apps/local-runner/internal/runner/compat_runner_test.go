@@ -71,6 +71,10 @@ func TestRunCompatCheckIncludesPortabilityCanaries(t *testing.T) {
 	instance := &Runner{workspace: workspace}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("HOME", homeDir)
+	// Windows resolves the user home via USERPROFILE before HOME — without
+	// this the claude canary reads the real ~/.claude (BUG-312 class).
+	t.Setenv("USERPROFILE", homeDir)
+	t.Setenv("APPDATA", filepath.Join(homeDir, "AppData", "Roaming"))
 	t.Setenv("CODEX_HOME", codexHome)
 
 	result := instance.RunCompatCheck(context.Background())
@@ -105,6 +109,8 @@ func TestRunCompatCheckFailsWhenCodexPortabilityContractDrifts(t *testing.T) {
 	instance := &Runner{workspace: workspace}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("HOME", homeDir)
+	t.Setenv("USERPROFILE", homeDir)
+	t.Setenv("APPDATA", filepath.Join(homeDir, "AppData", "Roaming"))
 	t.Setenv("CODEX_HOME", codexHome)
 
 	result := instance.RunCompatCheck(context.Background())
