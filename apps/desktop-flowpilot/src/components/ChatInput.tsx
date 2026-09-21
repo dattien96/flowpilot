@@ -60,6 +60,15 @@ function OpencodeIcon(): React.ReactElement {
   );
 }
 
+// Devin (Cognition) mark: stylized "D" glyph (CP-70 Task-402).
+function DevinIcon(): React.ReactElement {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path d="M12 2a10 10 0 0 1 0 20H4V2h8zm0 3H7v14h5a7 7 0 0 0 0-14z" />
+    </svg>
+  );
+}
+
 function StopIcon(): React.ReactElement {
   return (
     <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" aria-hidden="true">
@@ -83,6 +92,7 @@ const PROVIDER_CARDS: { value: ProviderKey; label: string; icon: React.ReactElem
   { value: "gemini", label: "Gemini", icon: <GeminiIcon /> },
   { value: "grok", label: "Grok", icon: <GrokIcon /> },
   { value: "opencode", label: "OpenCode", icon: <OpencodeIcon /> },
+  { value: "devin", label: "Devin", icon: <DevinIcon /> },
 ];
 
 
