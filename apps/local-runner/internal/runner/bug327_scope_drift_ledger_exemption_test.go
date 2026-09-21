@@ -560,14 +560,19 @@ func TestBUG327_EmitLockedDoesNotUnparkWaitingChild(t *testing.T) {
 	svc.mu.Unlock()
 
 	svc.mu.Lock()
-	defer svc.mu.Unlock()
 	if rs.status != RunStatusWaitingUserApr {
+		svc.mu.Unlock()
 		t.Fatalf("child status after stray event = %q, want %q (park must not unpark)", rs.status, RunStatusWaitingUserApr)
 	}
 	if rs.agentStatus != "waiting_user_approval" {
+		svc.mu.Unlock()
 		t.Fatalf("agentStatus = %q, want waiting_user_approval", rs.agentStatus)
 	}
+	svc.mu.Unlock()
+
 	// The graph summary must stay parked too — emitLocked's default upserts it.
+	// agentGraphSnapshot takes svc.mu internally (BUG-367) so it must be called
+	// after releasing the lock, or the test self-deadlocks.
 	snap := svc.agentGraphSnapshot(parentID)
 	for _, r := range snap.Runs {
 		if r.RunID == rs.id {
