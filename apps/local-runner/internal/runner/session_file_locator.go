@@ -104,6 +104,13 @@ func LocateSessionFile(providerKey ProviderKey, accountHome, sessionID, cwd stri
 			}
 		}
 		return "", false
+	case ProviderKeyDevin:
+		// Appended last (CP-70/Task-403): Devin stores all sessions as rows in
+		// a single SQLite DB (~/.local/share/devin/cli/sessions.db) — there is
+		// no per-session file to locate or copy. Returning the DB path would
+		// leak every session into relocation copies, so Devin reports "no
+		// relocatable file" (session resume still works via ACP session/load).
+		return "", false
 	default:
 		return "", false
 	}
@@ -516,6 +523,9 @@ func defaultProviderSessionHome(providerKey ProviderKey) (string, bool) {
 		return filepath.Join(userHome, ".grok"), true
 	case ProviderKeyOpencode:
 		return filepath.Join(userHome, ".config", "opencode"), true
+	case ProviderKeyDevin:
+		// Appended last (CP-70/Task-403): Devin data root under XDG data dir.
+		return filepath.Join(userHome, ".local", "share", "devin"), true
 	default:
 		return "", false
 	}
