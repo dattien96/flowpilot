@@ -420,6 +420,7 @@ export class HttpWsRunnerClient implements RunnerClient {
         flowRef: input.flowRef,
         scenario: this.scenario,
       },
+      input.idempotencyKey ? { "Idempotency-Key": input.idempotencyKey } : undefined,
     );
 
     for await (const ev of this.openStream(input.runId, after)) {

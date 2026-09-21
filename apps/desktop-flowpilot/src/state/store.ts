@@ -1775,8 +1775,25 @@ export const useStore = create<AppState>((set, get) => ({
       ? detectVibeEntry(chatSourceDocId.trim() || prompt)
       : null;
     try {
+      // `go run` recompiles before the runner listens and restarts drop in-flight
+      // connections, so a send inside that window dies at the socket ("Failed to
+      // fetch") with no run created. Retry connection-level failures briefly —
+      // RunnerApiError responses are real errors and must not retry.
+      const startRunWithRetry = async (input: Parameters<typeof client.startRun>[0]) => {
+        let lastErr: unknown;
+        for (let i = 0; i < 4; i++) {
+          try {
+            return await client.startRun(input);
+          } catch (err) {
+            lastErr = err;
+            if (err instanceof RunnerApiError || (err instanceof Error && err.name === "AbortError")) throw err;
+            await new Promise((r) => setTimeout(r, 1500));
+          }
+        }
+        throw lastErr;
+      };
       if (isDetachedReattach) {
-        const handle = await client.startRun({
+        const handle = await startRunWithRetry({
           projectId: selectedProjectId!,
           providerKey: selectedProvider,
           model: selectedModel,
@@ -1799,7 +1816,7 @@ export const useStore = create<AppState>((set, get) => ({
           activeAgentRunId: undefined,
         });
       } else if (!runId) {
-        const handle = await client.startRun(
+        const handle = await startRunWithRetry(
           chatMode === "normal_chat"
             ? {
                 projectId: selectedProjectId!,
@@ -1879,6 +1896,10 @@ export const useStore = create<AppState>((set, get) => ({
           : isFirstChatTurn && chatStartMode === "bugfix"
             ? flowRef
             : undefined,
+        // One key per user send: the transient-retry loop below may re-POST
+        // after a connection-level failure and the runner replays the same
+        // turnId instead of minting a duplicate turn.
+        idempotencyKey: `turn-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
       };
       set({ runId, lastTurnInput: turnInput, activeStepId: turnStepId, _streamRunSeq: get()._streamRunSeq + 1 });
       cancelHistoryReplayStream();
@@ -1898,11 +1919,25 @@ export const useStore = create<AppState>((set, get) => ({
       const TRANSIENT_SEND_CODES = new Set(["turn_in_progress", "gate_in_progress", "hub_parked"]);
       const TRANSIENT_SEND_MAX_RETRIES = 6;
       const TRANSIENT_SEND_RETRY_MS = 700;
+      // A send that lands inside a runner restart window dies at the socket
+      // ("Failed to fetch") — retry those too. The Idempotency-Key on turnInput
+      // makes a re-POST side-effect-free: the runner replays the minted turnId.
+      // AbortError (user-driven cancel) is deliberately not retried.
+      const isConnectionFailure = (err: unknown) =>
+        !(err instanceof RunnerApiError) && !(err instanceof Error && err.name === "AbortError");
+      const CONN_SEND_MAX_RETRIES = 5;
+      const CONN_SEND_RETRY_MS = 1500;
+      let connAttempts = 0;
       for (let attempt = 0; ; attempt++) {
         try {
           await consumeStream(runId, client.sendTurn(turnInput), set, get);
           break;
         } catch (err) {
+          if (isConnectionFailure(err) && connAttempts < CONN_SEND_MAX_RETRIES && shouldApplyRunEvent(get().runId, runId)) {
+            connAttempts++;
+            await new Promise((r) => setTimeout(r, CONN_SEND_RETRY_MS));
+            continue;
+          }
           const transient = err instanceof RunnerApiError && TRANSIENT_SEND_CODES.has(err.code ?? "");
           // Give up (fall to the catch below) if it is a real error, we have waited
           // long enough, or the user switched runs out from under this send.
