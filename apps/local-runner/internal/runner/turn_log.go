@@ -22,6 +22,9 @@ const (
 	turnLogKindGrokSession turnLogKind = "grok_session"
 	// turnLogKindOpencodeSession records the real Opencode ACP session id (CP-57, appended last).
 	turnLogKindOpencodeSession turnLogKind = "opencode_session"
+	// turnLogKindDevinSession records the real Devin ACP session slug id
+	// ("working-pentagon" shape, CP-70 appended last).
+	turnLogKindDevinSession turnLogKind = "devin_session"
 	// turnLogKindAssistant records the full assistant response for providers
 	// that do not expose a provider-owned transcript file for replay.
 	turnLogKindAssistant turnLogKind = "assistant"
