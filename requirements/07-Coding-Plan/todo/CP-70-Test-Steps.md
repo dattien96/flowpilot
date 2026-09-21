@@ -264,15 +264,30 @@ Mở Desktop App ➔ **Settings** ➔ **AI Providers**.
 
 **Ghi bằng chứng:** mỗi R* ghi `run-XXXXXX`, Devin sessionId slug, và log line chứng minh (vd `spawn devin acp`, `authenticate ok`, `session/load <slug>`) — theo convention CP-64 §6.
 
+### Kết quả live test Windows 2026-09-21 (devin 3000.10.31, workspace `C:/working/fp-devin-sandbox`, log `runner-live.log`, chi tiết CA-900)
+
+| # | Kết quả | Bằng chứng |
+|---|---|---|
+| **R1** | ✅ PASS | `run-1`, slug `trusted-airmail`; `initialize`→`authenticate{devin-browser}` (PKCE ~3s)→`session/new`→`session/prompt`→`end_turn`; reply `DEVIN_LIVE_OK` |
+| **R2** | ✅ PASS | `hello_devin.txt` ghi thật; `tool_call{write}` in_progress→completed |
+| **R3** | ✅ PASS | `set_config_option{model:grok-4-5-low}` trên cùng `trusted-airmail` (không `session/new`); reply `MODEL_SWITCH_OK` |
+| **R4** | ✅ PASS (sau fix CA-900) | `run-83` yolo=false → `session/request_permission{rm -rf}` options `allow_once/allow_session/allow_always/reject_once` → `waiting_approval appr-97` → deny → `reject_once`, tool failed, `danger_dir` absent. **Bug đã sửa**: non-yolo gửi mode `"auto"` (không hợp lệ) bị coerce thành `accept-edits` → auto-approve mọi thứ; nay map `smart`. Ceiling: write thường vẫn auto-approve dưới `smart` — chỉ dangerous ops prompt |
+| **R5** | ✅ PASS | Restart runner → `resume run-1` giữ slug, replay 10 events; turn mới → `session/load{trusted-airmail}` → `end_turn RESUMED_OK` |
+| **R6** | ⏳ deferred | Cần workflow `bug-harness` trên sandbox |
+| **R7** | ⏳ deferred | spawn_agent child isolation chưa drive live |
+| **R8** | ✅ PASS | `interrupt` → `session/cancel` → `stopReason:"cancelled"`, `agent_stopped{cause:cancelled}` |
+| **R9** | ✅ PASS | `run-120` grok `grok-4.5` low → `GROK_REGRESSION_OK` |
+| **R10** | ✅ PASS | `token_usage_updated` events `last/total` + `modelContextWindow:500000` |
+
 ---
 
 ## Bảng Tổng Kết Kết Quả Nghiệm Thu (DOD Verification Sign-off)
 
 Ghi lại mã phiên chạy thật (Run ID) và ngày kiểm thử:
 
-- **Ngày thực hiện:** `2026-09-XX`
-- **Phiên bản Devin CLI kiểm thử:** `devin --version = X.Y.Z`
-- **Mã Run ID kiểm thử E2E:** `run-XXXXXX`
+- **Ngày thực hiện:** `2026-09-21` (Windows, HTTP-driven R-series)
+- **Phiên bản Devin CLI kiểm thử:** `devin 3000.10.31 (b98cc431)`
+- **Mã Run ID kiểm thử E2E:** `run-1` (R1/R2/R3/R5/R8), `run-83` (R4), `run-120` (R9-Grok)
 - **Kết quả nghiệm thu:**
   - [⬜] Smoke Test (Mục S): **PASS**
   - [⬜] Settings Desktop (Mục A): **PASS** (Đã kiểm tra A1..A6 gồm 1-click install)
