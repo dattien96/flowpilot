@@ -307,8 +307,14 @@ func (a *devinAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Tur
 	// carry both selects; session/new has no model/mode params).
 	a.applyDevinSessionConfig(ctx, sessionID, req)
 
+	// Devin must NOT wait for the Claude-style tools/list readiness signal:
+	// Devin's ACP client starts stdio MCP servers lazily (mcp/serversChanged
+	// fires only after session/prompt begins), so waitReady would burn the
+	// full 30s timeout on every turn without ever proving the shim is up.
+	// The token stays registered for the whole prompt, so MCP calls that
+	// arrive mid-turn still resolve to this bridge.
 	if mcpToken != "" {
-		_ = a.mcpServer.waitReady(ctx, mcpToken, claudeMCPReadyDefaultTimeout)
+		log.Printf("[devin-mcp] lazy readiness — prompt dispatched without tools/list gate session=%s", sessionID)
 	}
 
 	notif, err := a.dispatcher.registerSession(sessionID)

@@ -481,3 +481,120 @@ func TestDevinAdapterDeniedEmptyAnswerNotice(t *testing.T) {
 		t.Fatalf("expected no-reply notice, got %+v", bridge.events)
 	}
 }
+
+// Devin lazy MCP lifecycle: the stdio shim only comes up after session/prompt
+// begins, so SendTurn must NOT block on the Claude-style tools/list readiness
+// gate. A token that never signals ready used to cost the full 30s timeout.
+func TestDevinSendTurnDoesNotWaitForClaudeMCPReadyTimeout(t *testing.T) {
+	d, fd := startFakeDevin(t, nil)
+	var promptSent bool
+	serveDevinBaseline(fd, func(m map[string]any) {
+		promptSent = true
+		fd.reply(m["id"], map[string]any{"stopReason": "end_turn", "text": "ok"})
+	})
+	a := newDevinAdapter(d, t.TempDir())
+	a.mcpServer = newClaudeMCPServer()
+	a.mcpBaseURL = func() string { return "http://127.0.0.1:7777" }
+	a.mcpShimCommand = func() (string, []string) { return "/bin/fake", []string{"devin-mcp-stdio"} }
+	bridge := &fakeDevinBridge{}
+	start := time.Now()
+	if err := a.SendTurn(context.Background(), TurnRequest{RunID: "run-1", Prompt: "hi"}, bridge); err != nil {
+		t.Fatalf("SendTurn: %v", err)
+	}
+	if !promptSent {
+		t.Fatal("session/prompt never dispatched")
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("SendTurn blocked %s — readiness gate must not gate Devin prompts", elapsed)
+	}
+}
+
+// Removing the readiness gate must not remove the wiring: session/new still
+// carries the stdio shim entry with the per-turn token, the token stays
+// registered for the whole prompt, and is released after the turn.
+func TestDevinSendTurnPreservesMCPServerEntryWithoutReadyWait(t *testing.T) {
+	d, fd := startFakeDevin(t, nil)
+	var mcpToken string
+	var a *devinAdapter
+	fd.serve(func(fd *fakeDevin, m map[string]any) {
+		switch m["method"] {
+		case "session/new":
+			params, _ := m["params"].(map[string]any)
+			servers, _ := params["mcpServers"].([]any)
+			for _, s := range servers {
+				entry, _ := s.(map[string]any)
+				args, _ := entry["args"].([]any)
+				for _, arg := range args {
+					str, _ := arg.(string)
+					if i := strings.Index(str, "token="); i >= 0 {
+						mcpToken = str[i+len("token="):]
+					}
+				}
+			}
+			fd.reply(m["id"], map[string]any{"sessionId": "lazy-otter"})
+		case "session/set_config_option":
+			fd.reply(m["id"], map[string]any{})
+		case "session/prompt":
+			// Mid-prompt the token must still resolve to this bridge.
+			if mcpToken == "" {
+				t.Error("no token in session/new mcpServers")
+			} else if a.mcpServer.bridgeFor(mcpToken) == nil {
+				t.Error("token unregistered while prompt in flight")
+			}
+			fd.reply(m["id"], map[string]any{"stopReason": "end_turn", "text": "ok"})
+		}
+	})
+	a = newDevinAdapter(d, t.TempDir())
+	a.mcpServer = newClaudeMCPServer()
+	a.mcpBaseURL = func() string { return "http://127.0.0.1:7777" }
+	a.mcpShimCommand = func() (string, []string) { return "/bin/fake", []string{"devin-mcp-stdio"} }
+	if err := a.SendTurn(context.Background(), TurnRequest{RunID: "run-1", Prompt: "hi"}, &fakeDevinBridge{}); err != nil {
+		t.Fatalf("SendTurn: %v", err)
+	}
+	if mcpToken == "" {
+		t.Fatal("session/new lost the FlowPilot stdio shim entry")
+	}
+	if a.mcpServer.bridgeFor(mcpToken) != nil {
+		t.Fatal("token still registered after turn — unregister leak")
+	}
+}
+
+// Resume path: .devin/mcp_config.local.json is the only MCP source
+// session/load honors, so it must exist before load and carry the shim.
+func TestDevinResumeWritesLocalMCPConfigBeforeSessionLoad(t *testing.T) {
+	d, fd := startFakeDevin(t, nil)
+	cwd := t.TempDir()
+	var loadSawConfig bool
+	fd.serve(func(fd *fakeDevin, m map[string]any) {
+		switch m["method"] {
+		case "session/load":
+			if _, err := os.Stat(filepath.Join(cwd, ".devin", "mcp_config.local.json")); err == nil {
+				loadSawConfig = true
+			}
+			fd.reply(m["id"], map[string]any{"modes": map[string]any{"currentModeId": "accept-edits"}})
+		case "session/set_config_option":
+			fd.reply(m["id"], map[string]any{})
+		case "session/prompt":
+			fd.reply(m["id"], map[string]any{"stopReason": "end_turn", "text": "ok"})
+		}
+	})
+	a := newDevinAdapter(d, cwd)
+	a.mcpServer = newClaudeMCPServer()
+	a.mcpBaseURL = func() string { return "http://127.0.0.1:7777" }
+	a.mcpShimCommand = func() (string, []string) { return "/bin/fake", []string{"devin-mcp-stdio"} }
+	req := TurnRequest{RunID: "run-1", ProviderSessionID: "quiet-otter", Prompt: "hi", Cwd: cwd}
+	if err := a.SendTurn(context.Background(), req, &fakeDevinBridge{}); err != nil {
+		t.Fatalf("SendTurn: %v", err)
+	}
+	if !loadSawConfig {
+		t.Fatal("session/load ran before mcp_config.local.json was written")
+	}
+	doc, _ := readDevinMcpConfig(filepath.Join(cwd, ".devin", "mcp_config.local.json"))
+	if doc == nil {
+		t.Fatal("mcp_config.local.json missing")
+	}
+	raw, _ := json.Marshal(doc)
+	if !strings.Contains(string(raw), "devin-mcp-stdio") {
+		t.Fatalf("local config lost the flowpilot shim: %s", raw)
+	}
+}
