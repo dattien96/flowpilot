@@ -16,6 +16,9 @@ export interface CompatVersionInfo {
   // Appended last (CP-57 P-0/Task-302 T-6).
   testedOpencodeVersion: string;
   installedOpencodeVersion: string;
+  // Appended last (CP-70 P-0/Task-402).
+  testedDevinVersion: string;
+  installedDevinVersion: string;
 }
 
 export interface CompatConfig {
@@ -24,6 +27,8 @@ export interface CompatConfig {
   testedGrokVersion: string;
   // Appended last (CP-57 P-0/Task-302 T-6).
   testedOpencodeVersion: string;
+  // Appended last (CP-70 P-0/Task-402).
+  testedDevinVersion: string;
 }
 
 export interface CompatItem {

@@ -8,7 +8,7 @@
 // Keep this in sync with the Go runner's event DTOs.
 // ============================================================================
 
-export type ProviderKey = "codex" | "claude" | "gemini" | "grok" | "opencode";
+export type ProviderKey = "codex" | "claude" | "gemini" | "grok" | "opencode" | "devin";
 
 // ---- Domain (navigator) ----------------------------------------------------
 
