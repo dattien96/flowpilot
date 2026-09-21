@@ -2477,6 +2477,10 @@ input {
 .account-pin-label,
 .account-detail-title {
   font-weight: 600;
+  /* Emails/display labels are single tokens — break inside them instead of
+     overflowing the sidebar. */
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .account-pin-sub,
 .account-detail-sub,
@@ -2512,6 +2516,10 @@ input {
   gap: 6px;
   font-size: 9px;
   color: var(--text-dim);
+}
+.account-bar-meta > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .meter {
   width: 100%;
@@ -3149,6 +3157,8 @@ input {
   margin-top: 12px;
   font-size: 10px;
   color: var(--text-dim);
+  /* Auth-store/exec paths are long unbroken tokens on Windows. */
+  overflow-wrap: anywhere;
 }
 .account-detail-actions {
   display: flex;
@@ -4410,6 +4420,12 @@ input {
      text) — without its own scroll the cards below the fold were unreachable. */
   height: 100%;
   overflow-y: auto;
+  /* Long unbroken tokens (account emails) must never force an h-scrollbar. */
+  overflow-x: hidden;
+}
+
+.right-sidebar-stack > * {
+  min-width: 0;
 }
 
 /* LSP missing-server notice (CP-63 follow-up): pinned first in the stack so
