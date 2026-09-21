@@ -50,6 +50,7 @@ func NewRootCommand() *cobra.Command {
 	rootCmd.AddCommand(newBackendsCommand(cfg))
 	rootCmd.AddCommand(newGoogleDriveMcpCommand(cfg))
 	rootCmd.AddCommand(newTelegramMcpCommand(cfg))
+	rootCmd.AddCommand(newDevinMcpStdioCommand(cfg))
 	rootCmd.AddCommand(newSkillsCommand(cfg))
 	rootCmd.AddCommand(newFlowsCommand(cfg))
 	rootCmd.AddCommand(newChatCommand(cfg))
@@ -2002,6 +2003,26 @@ func newTelegramMcpCommand(cfg *config) *cobra.Command {
 			return instance.RunTelegramProxyMcpServer(cmd.Context())
 		},
 	}
+}
+
+// newDevinMcpStdioCommand (CP-70 Task-403): the stdio↔HTTP shim that lets the
+// Devin ACP agent reach FlowPilot's per-turn MCP tools. Devin supports stdio
+// MCP only (mcpCapabilities http/sse are false), so the adapter registers this
+// subcommand as the `flowpilot` MCP server command; it proxies each stdin
+// JSON-RPC line to the runner's HTTP MCP endpoint (`--url`, carries the
+// per-turn token) and writes each response line to stdout.
+func newDevinMcpStdioCommand(cfg *config) *cobra.Command {
+	var mcpURL string
+	cmd := &cobra.Command{
+		Use:   "devin-mcp-stdio",
+		Short: "Bridge Devin's stdio MCP transport to the FlowPilot HTTP MCP endpoint",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runner.RunDevinMCPStdio(cmd.Context(), mcpURL, os.Stdin, os.Stdout)
+		},
+	}
+	cmd.Flags().StringVar(&mcpURL, "url", "", "FlowPilot MCP endpoint URL including the per-turn token")
+	_ = cmd.MarkFlagRequired("url")
+	return cmd
 }
 
 func newSkillsCommand(cfg *config) *cobra.Command {
