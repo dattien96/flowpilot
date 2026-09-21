@@ -291,6 +291,14 @@ func (a *devinAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Tur
 		}
 	}
 
+	// session/load ignores the ACP mcpServers param (live-verified), so the
+	// per-turn entries are also written to <cwd>/.devin/mcp_config.local.json —
+	// the config scope a loaded session actually enumerates. Without it the
+	// flowpilot shim (ask_user/spawn_agent/approve) is missing on resume.
+	if err := ensureDevinLocalMcpServers(cwd, mcpServers); err != nil {
+		log.Printf("[devin] project-local mcp_config write failed (MCP tools may be absent on resume) cwd=%q err=%v", cwd, err)
+	}
+
 	sessionID, err := a.ensureSession(ctx, req, cwd, mcpServers)
 	if err != nil {
 		return err

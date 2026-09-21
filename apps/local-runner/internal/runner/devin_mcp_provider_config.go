@@ -95,6 +95,96 @@ func ensureDevinMcpServer(home, name string, server map[string]interface{}) (boo
 	return true, nil
 }
 
+// ensureDevinLocalMcpServers upserts this turn's ACP mcpServers entries into
+// the project-local <cwd>/.devin/mcp_config.local.json. Required because
+// Devin's session/load silently IGNORES the ACP mcpServers param
+// (live-verified): loaded sessions only enumerate config-file scopes, so
+// resumed sessions would lose the flowpilot shim — ask_user / spawn_agent /
+// approve — without this file. Mirrors `devin mcp add -s local`, including
+// git-excluding the file so the per-turn token URL is never committed.
+func ensureDevinLocalMcpServers(cwd string, servers []interface{}) error {
+	cwd = strings.TrimSpace(cwd)
+	if cwd == "" || len(servers) == 0 {
+		return nil
+	}
+	path := filepath.Join(cwd, ".devin", "mcp_config.local.json")
+	doc, err := readDevinMcpConfig(path)
+	if err != nil {
+		return err
+	}
+	mcpServers, _ := doc["mcpServers"].(map[string]interface{})
+	if mcpServers == nil {
+		mcpServers = map[string]interface{}{}
+		doc["mcpServers"] = mcpServers
+	}
+	for _, raw := range servers {
+		entry, _ := raw.(map[string]interface{})
+		if entry == nil {
+			continue
+		}
+		name, _ := entry["name"].(string)
+		name = strings.TrimSpace(name)
+		command, _ := entry["command"].(string)
+		if name == "" || strings.TrimSpace(command) == "" {
+			continue
+		}
+		mcpServers[name] = map[string]interface{}{
+			"command":   command,
+			"args":      entry["args"],
+			"env":       devinACPNameValueListToMap(entry["env"]),
+			"transport": "stdio",
+		}
+	}
+	if err := writeDevinMcpConfigAtomic(path, doc); err != nil {
+		return err
+	}
+	ensureDevinLocalConfigGitExcluded(cwd)
+	return nil
+}
+
+// devinACPNameValueListToMap converts ACP's env array-of-{name,value} back to
+// the plain object shape mcp_config.json expects.
+func devinACPNameValueListToMap(env interface{}) map[string]interface{} {
+	out := map[string]interface{}{}
+	list, _ := env.([]interface{})
+	for _, raw := range list {
+		kv, _ := raw.(map[string]interface{})
+		k, _ := kv["name"].(string)
+		if k == "" {
+			continue
+		}
+		out[k] = kv["value"]
+	}
+	return out
+}
+
+// ensureDevinLocalConfigGitExcluded appends .devin/mcp_config.local.json to
+// .git/info/exclude when the cwd is a git repo — the file carries a per-turn
+// token URL and must not be committed (same behaviour as `devin mcp add -s
+// local`).
+func ensureDevinLocalConfigGitExcluded(cwd string) {
+	excludePath := filepath.Join(cwd, ".git", "info", "exclude")
+	raw, err := os.ReadFile(excludePath)
+	if err != nil {
+		return // not a git repo (or no info dir) — nothing to do
+	}
+	const pattern = ".devin/mcp_config.local.json"
+	for _, line := range strings.Split(string(raw), "\n") {
+		if strings.TrimSpace(line) == pattern {
+			return
+		}
+	}
+	f, err := os.OpenFile(excludePath, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	if len(raw) > 0 && !strings.HasSuffix(string(raw), "\n") {
+		_, _ = f.WriteString("\n")
+	}
+	_, _ = f.WriteString(pattern + "\n")
+}
+
 // CheckDevinMcpConfig reports whether mcp_config.json already carries the named server.
 func CheckDevinMcpConfig(home, name string) (bool, error) {
 	path := getDevinMcpConfigPath(home)

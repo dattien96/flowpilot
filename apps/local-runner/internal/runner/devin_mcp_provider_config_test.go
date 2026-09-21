@@ -120,3 +120,56 @@ func TestDevinJiraMcpConfigCheckMissingIsNotConfigured(t *testing.T) {
 		t.Fatal("missing mcp_config.json must not report configured")
 	}
 }
+
+// CP-70 live-fix: session/load ignores the ACP mcpServers param, so the turn's
+// entries are persisted to <cwd>/.devin/mcp_config.local.json instead.
+func TestEnsureDevinLocalMcpServersWritesLocalScope(t *testing.T) {
+	cwd := t.TempDir()
+	servers := []interface{}{
+		map[string]interface{}{
+			"name":    "flowpilot",
+			"command": `C:\bin\flowpilot-runner.exe`,
+			"args":    []interface{}{"devin-mcp-stdio", "--url", "http://127.0.0.1:4317/internal/claude-permission-mcp?token=tok1"},
+			"env":     []interface{}{map[string]interface{}{"name": "FOO", "value": "bar"}},
+		},
+	}
+	if err := ensureDevinLocalMcpServers(cwd, servers); err != nil {
+		t.Fatalf("ensureDevinLocalMcpServers: %v", err)
+	}
+	doc, err := readDevinMcpConfig(filepath.Join(cwd, ".devin", "mcp_config.local.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, _ := doc["mcpServers"].(map[string]interface{})["flowpilot"].(map[string]interface{})
+	if entry == nil {
+		t.Fatal("flowpilot entry missing from mcp_config.local.json")
+	}
+	if entry["command"] != `C:\bin\flowpilot-runner.exe` || entry["transport"] != "stdio" {
+		t.Fatalf("unexpected entry: %+v", entry)
+	}
+	env, _ := entry["env"].(map[string]interface{})
+	if env["FOO"] != "bar" {
+		t.Fatalf("env not converted to map: %+v", entry["env"])
+	}
+	// Merge: a pre-existing user server must survive the upsert.
+	servers[0].(map[string]interface{})["args"] = []interface{}{"devin-mcp-stdio", "--url", "http://x?token=tok2"}
+	if err := ensureDevinLocalMcpServers(cwd, servers); err != nil {
+		t.Fatal(err)
+	}
+	doc, _ = readDevinMcpConfig(filepath.Join(cwd, ".devin", "mcp_config.local.json"))
+	entry, _ = doc["mcpServers"].(map[string]interface{})["flowpilot"].(map[string]interface{})
+	args, _ := entry["args"].([]interface{})
+	if len(args) == 0 || !strings.Contains(args[len(args)-1].(string), "tok2") {
+		t.Fatalf("entry not refreshed with new token: %+v", entry)
+	}
+}
+
+func TestEnsureDevinLocalMcpServersEmptyIsNoop(t *testing.T) {
+	cwd := t.TempDir()
+	if err := ensureDevinLocalMcpServers(cwd, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(cwd, ".devin", "mcp_config.local.json")); !os.IsNotExist(err) {
+		t.Fatal("no servers must not create the file")
+	}
+}
