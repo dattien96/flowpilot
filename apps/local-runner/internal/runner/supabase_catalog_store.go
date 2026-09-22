@@ -40,6 +40,8 @@ type CreateProjectInput struct {
 	DirectoryPath string `json:"directoryPath"`
 	Platform      string `json:"platform,omitempty"`
 	DefaultModel  string `json:"defaultModel,omitempty"`
+	Description   string `json:"description,omitempty"`
+	RepositoryURL string `json:"repositoryUrl,omitempty"`
 }
 
 // CatalogStoreFor returns the live SupabaseCatalogStore when the runner has a
@@ -300,10 +302,13 @@ func (s *SupabaseCatalogStore) CreateProject(ctx context.Context, input CreatePr
 		"platform":                    platform,
 		"status":                      "active",
 		"artifact_storage_preference": "supabase",
-		// projects.legacy_id / created_by are NOT NULL with no DB default —
-		// same contract the TS insert paths fixed in BUG-135 / BUG-136.
-		"legacy_id":  newProjectLegacyID(),
-		"created_by": "supabase-admin",
+		// projects.legacy_id / created_by / description / repository_url are
+		// NOT NULL with no DB default — same contract the TS insert paths
+		// fixed in BUG-135 / BUG-136. Empty string satisfies the constraint.
+		"legacy_id":      newProjectLegacyID(),
+		"created_by":     "supabase-admin",
+		"description":    strings.TrimSpace(input.Description),
+		"repository_url": strings.TrimSpace(input.RepositoryURL),
 	}
 	if defaultModel != "" {
 		bodyMap["default_model"] = defaultModel

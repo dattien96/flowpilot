@@ -98,6 +98,14 @@ func TestCreateProjectSendsLegacyIDAndCreatedBy(t *testing.T) {
 	if !strings.Contains(body, `"created_by":"supabase-admin"`) {
 		t.Fatalf("projects insert missing created_by, body = %s", body)
 	}
+	// description / repository_url are NOT NULL without defaults — absent
+	// input must still send them as empty strings, never omit them.
+	if !strings.Contains(body, `"description":""`) {
+		t.Fatalf("projects insert missing description, body = %s", body)
+	}
+	if !strings.Contains(body, `"repository_url":""`) {
+		t.Fatalf("projects insert missing repository_url, body = %s", body)
+	}
 }
 
 // F-3: a failed workspace binding insert must not fail project creation and
