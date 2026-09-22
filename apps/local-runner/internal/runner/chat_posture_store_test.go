@@ -84,10 +84,10 @@ func TestChatPostureStore_Normalize(t *testing.T) {
 	cfg := ChatPostureConfig{
 		Active: "nonsense",
 		Profiles: map[string]ChatPostureProfile{
-			ChatPostureCode:  {Provider: "  codex  ", ReasoningEffort: "HIGH"},
-			"evil":           {Provider: "claude"},
-			ChatPostureScan:  {Model: "x"},
-			ChatPosturePlan:  {},
+			ChatPostureCode: {Provider: "  codex  ", ReasoningEffort: "HIGH"},
+			"evil":          {Provider: "claude"},
+			ChatPostureScan: {Model: "x"},
+			ChatPosturePlan: {},
 		},
 	}
 	_, err := saveChatPosture(cfg)

@@ -135,17 +135,17 @@ type ndjsonSessionRecord struct {
 	PendingGateRepromptPrompt string            `json:"pending_gate_reprompt_prompt,omitempty"`
 	PendingGateRepromptStepID string            `json:"pending_gate_reprompt_step_id,omitempty"`
 	// CP-51 A1 residual: durable continue-delegate marker (see ProviderSessionState).
-	HubContinueDelegatedTurnID      string   `json:"hub_continue_delegated_turn_id,omitempty"`
-	PendingGateCodePaths            []string `json:"pending_gate_code_paths,omitempty"`
-	RepromptAttempts                int      `json:"reprompt_attempts,omitempty"`
+	HubContinueDelegatedTurnID string   `json:"hub_continue_delegated_turn_id,omitempty"`
+	PendingGateCodePaths       []string `json:"pending_gate_code_paths,omitempty"`
+	RepromptAttempts           int      `json:"reprompt_attempts,omitempty"`
 	// CP-71 run worktree binding (see ProviderSessionState).
-	WorktreeOwnerID    string `json:"worktree_owner_id,omitempty"`
-	WorktreePath       string `json:"worktree_path,omitempty"`
-	WorktreeBranch     string `json:"worktree_branch,omitempty"`
-	WorktreeBaseCommit string `json:"worktree_base_commit,omitempty"`
-	WorktreeSlug       string `json:"worktree_slug,omitempty"`
-	WorktreeState      string `json:"worktree_state,omitempty"`
-	WorktreeEnabled    bool   `json:"worktree_enabled,omitempty"`
+	WorktreeOwnerID                 string   `json:"worktree_owner_id,omitempty"`
+	WorktreePath                    string   `json:"worktree_path,omitempty"`
+	WorktreeBranch                  string   `json:"worktree_branch,omitempty"`
+	WorktreeBaseCommit              string   `json:"worktree_base_commit,omitempty"`
+	WorktreeSlug                    string   `json:"worktree_slug,omitempty"`
+	WorktreeState                   string   `json:"worktree_state,omitempty"`
+	WorktreeEnabled                 bool     `json:"worktree_enabled,omitempty"`
 	PendingResumePrompt             string   `json:"pending_resume_prompt,omitempty"`
 	PendingResumeStepID             string   `json:"pending_resume_step_id,omitempty"`
 	PendingResumeGen                int64    `json:"pending_resume_gen,omitempty"`

@@ -256,5 +256,3 @@ func worktreeViewOf(b *worktreeBinding) *worktreeView {
 		Enabled:    b.Enabled,
 	}
 }
-
-
