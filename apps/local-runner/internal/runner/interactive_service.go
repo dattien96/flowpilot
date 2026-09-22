@@ -4196,7 +4196,7 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 	if rs.realProviderSessionID != "" {
 		providerSessionID = rs.realProviderSessionID
 	}
-	return ProviderSessionState{
+	st := ProviderSessionState{
 		RunID:                           rs.id,
 		ProjectID:                       rs.projectID,
 		WorkflowID:                      rs.workflowID,
@@ -4312,6 +4312,11 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 		LastFailedDelegateNodeID:  rs.lastFailedDelegateNodeID,
 		LastEscalatedInlineNodeID: rs.lastEscalatedInlineNodeID,
 	}
+	// The binding rides every status write: sessions are append-only with
+	// last-wins reads, so a row missing the fields erases the binding and
+	// boot GC prunes the worktree as an orphan (CP-81 live regression).
+	worktreeFieldsToSession(&st, rs.worktree)
+	return st
 }
 
 // sessionStateOfProtectingIdem builds a session snapshot that always retains
