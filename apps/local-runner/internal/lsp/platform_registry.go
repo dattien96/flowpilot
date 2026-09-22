@@ -47,6 +47,11 @@ func DefaultRegistry() Registry {
 			FileExtensions: []string{".ts", ".tsx", ".js", ".jsx"},
 			InstallHint:    "npm i -g vtsls",
 		},
+		"react-native": {
+			Platform: "react-native", Binary: "vtsls", Args: []string{"--stdio"},
+			FileExtensions: []string{".ts", ".tsx", ".js", ".jsx"},
+			InstallHint:    "npm i -g vtsls",
+		},
 		"node": {
 			Platform: "node", Binary: "vtsls", Args: []string{"--stdio"},
 			FileExtensions: []string{".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"},

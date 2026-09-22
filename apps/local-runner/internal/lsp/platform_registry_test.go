@@ -229,6 +229,22 @@ func TestDetectPlatformPython(t *testing.T) {
 	}
 }
 
+func TestDetectPlatformReactNative(t *testing.T) {
+	ws := lspFixtureDir(t, map[string]string{
+		"package.json": `{"dependencies":{"react-native":"0.74.5","react":"18.2.0"}}`,
+	})
+	if got := DetectPlatform(ws); got != "react-native" {
+		t.Fatalf("DetectPlatform = %q, want react-native", got)
+	}
+	cfg, ok := DefaultRegistry().Lookup("react-native")
+	if !ok {
+		t.Fatal("react-native missing from DefaultRegistry")
+	}
+	if cfg.Binary != "vtsls" {
+		t.Fatalf("react-native binary = %q, want vtsls", cfg.Binary)
+	}
+}
+
 func TestLanguageIDMapping(t *testing.T) {
 	cases := map[string]string{
 		".go": "go", "main.go": "go",

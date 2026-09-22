@@ -293,6 +293,17 @@ func TestPlatformGroups(t *testing.T) {
 	}
 }
 
+func TestPlatformGroupsNodeAlias(t *testing.T) {
+	// DetectPlatform returns the LSP token "node" for plain JS repos while the
+	// embedded pack group is "nodejs"; the stored platform must still resolve
+	// to the nodejs group instead of silently installing common only.
+	got := platformGroups("node")
+	want := []string{"common", "nodejs"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("platformGroups(%q) = %v, want %v", "node", got, want)
+	}
+}
+
 func TestSkillNames_IncludesPlatformSkill(t *testing.T) {
 	names, err := SkillNames("android")
 	if err != nil {

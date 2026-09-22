@@ -130,6 +130,26 @@ func TestProjectWizardNavigationAndCycle(t *testing.T) {
 	}
 }
 
+func TestProjectWizardPlatformOptionsCoverSkillPackGroups(t *testing.T) {
+	// Every platform that owns an embedded flow-pack group must be selectable
+	// in the wizard; a missing option silently installs common-only skills.
+	for _, p := range []string{
+		"android", "angularjs", "flutter", "golang", "ios", "java",
+		"kmm", "nodejs", "python", "react-native", "reactjs", "vuejs",
+	} {
+		found := false
+		for _, opt := range wizardPlatformOptions {
+			if opt == p {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("wizardPlatformOptions missing skill-pack platform %q", p)
+		}
+	}
+}
+
 func TestLoginModalNavigationAndValidation(t *testing.T) {
 	m := newTestAppModel(t)
 	m.openLoginModal()

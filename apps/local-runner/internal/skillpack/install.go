@@ -88,6 +88,9 @@ func platformGroups(platform string) []string {
 	switch normalizePlatform(platform) {
 	case "kmm":
 		groups = append(groups, "kmm", "android", "ios")
+	case "node":
+		// DetectPlatform yields the LSP token "node"; the pack group is "nodejs".
+		groups = append(groups, "nodejs")
 	case "android", "ios", "react-native", "flutter", "reactjs", "vuejs",
 		"angularjs", "golang", "java", "python", "nodejs":
 		groups = append(groups, normalizePlatform(platform))
