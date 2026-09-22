@@ -81,6 +81,11 @@ func (m *AppModel) renderStatusLine0(sep string, w int) string {
 		parts = append(parts, styleError.Render("[stop]"))
 	}
 	parts = append(parts, statusStyle.Render(m.statusReadyLabel()))
+	// CP-81 T-5: compact lifecycle fragment — shared client count, idle
+	// countdown, update pending, restart banner.
+	if chip := m.lifecycleStatusChip(); chip != "" {
+		parts = append(parts, styleStatus.Render(chip))
+	}
 	if m.authNeedLogin {
 		parts = append(parts, styleStatusErr.Render("SIGN-IN"))
 	}
