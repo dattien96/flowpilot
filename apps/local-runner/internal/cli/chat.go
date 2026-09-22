@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"flowpilot-runner/internal/runner"
 	tuiapp "flowpilot-runner/internal/tui/app"
 	tuicfg "flowpilot-runner/internal/tui/config"
 	"flowpilot-runner/internal/tui/desktopboot"
@@ -97,13 +98,18 @@ Examples:
 				Timeout:         timeout,
 			}
 
-			// Auto-ensure runner is online.
+			// Auto-ensure runner is online. CP-81: the expected lifecycle
+			// identity lets EnsureRunner reuse compatible runners, fence
+			// stale-build replacement to idle runners, and never kill foreign
+			// listeners on the port.
 			bootResult, err := runnerboot.EnsureRunner(cmd.Context(), runnerboot.Config{
-				ExplicitURL: runnerURL,
-				NoStart:     noStartRunner,
-				Workspace:   workspace,
-				Host:        cfg.host,
-				Port:        cfg.port,
+				ExplicitURL:             runnerURL,
+				NoStart:                 noStartRunner,
+				Workspace:               workspace,
+				Host:                    cfg.host,
+				Port:                    cfg.port,
+				ExpectedBuildID:         runner.EffectiveBuildID(),
+				ExpectedProtocolVersion: runner.ProtocolVersion,
 			})
 			if err != nil {
 				return fmt.Errorf("runner unavailable: %w", err)
@@ -111,9 +117,12 @@ Examples:
 
 			if bootResult.Launched {
 				chatCfg.OwnsRunner = true
-				fmt.Fprintf(os.Stderr, "Runner started at %s (live Codex enabled)\n", bootResult.RunnerURL)
+				fmt.Fprintf(os.Stderr, "Runner started at %s (shared, live Codex enabled)\n", bootResult.RunnerURL)
 			} else if bootResult.Reused {
 				fmt.Fprintf(os.Stderr, "Reusing runner at %s\n", bootResult.RunnerURL)
+				if bootResult.UpdatePending {
+					fmt.Fprintf(os.Stderr, "Runner is busy on an older build; it will be replaced when idle.\n")
+				}
 				fmt.Fprintf(os.Stderr, "If Codex replies look scripted, kill that runner and restart chat (needs FLOWPILOT_CODEX_APPSERVER=1).\n")
 			}
 
