@@ -21,35 +21,35 @@ func TestProjectHistoryLiveBranchCarriesChatId(t *testing.T) {
 	// Seed two live runs of the same chat (simulating a switch).
 	svc.mu.Lock()
 	svc.runs["run-1"] = &interactiveRun{
-		id:        "run-1",
-		projectID: "proj-chat",
-		runKind:   "chat",
-		chatID:    "cht_a8d253c2fe6f",
-		legSeq:    0,
+		id:          "run-1",
+		projectID:   "proj-chat",
+		runKind:     "chat",
+		chatID:      "cht_a8d253c2fe6f",
+		legSeq:      0,
 		providerKey: ProviderKeyOpencode,
-		status:    RunStatusCompleted,
-		createdAt: "2026-08-31T00:00:00Z",
-		updatedAt: "2026-08-31T00:00:00Z",
+		status:      RunStatusCompleted,
+		createdAt:   "2026-08-31T00:00:00Z",
+		updatedAt:   "2026-08-31T00:00:00Z",
 	}
 	svc.runs["run-2"] = &interactiveRun{
-		id:        "run-2",
-		projectID: "proj-chat",
-		runKind:   "chat",
-		chatID:    "cht_a8d253c2fe6f",
-		legSeq:    1,
+		id:          "run-2",
+		projectID:   "proj-chat",
+		runKind:     "chat",
+		chatID:      "cht_a8d253c2fe6f",
+		legSeq:      1,
 		providerKey: ProviderKeyGrok,
-		status:    RunStatusCompleted,
-		createdAt: "2026-08-31T00:01:00Z",
-		updatedAt: "2026-08-31T00:01:00Z",
+		status:      RunStatusCompleted,
+		createdAt:   "2026-08-31T00:01:00Z",
+		updatedAt:   "2026-08-31T00:01:00Z",
 	}
 	svc.runs["run-wf"] = &interactiveRun{
-		id:        "run-wf",
-		projectID: "proj-chat",
-		runKind:   "workflow",
+		id:          "run-wf",
+		projectID:   "proj-chat",
+		runKind:     "workflow",
 		providerKey: ProviderKeyCodex,
-		status:    RunStatusCompleted,
-		createdAt: "2026-08-31T00:02:00Z",
-		updatedAt: "2026-08-31T00:02:00Z",
+		status:      RunStatusCompleted,
+		createdAt:   "2026-08-31T00:02:00Z",
+		updatedAt:   "2026-08-31T00:02:00Z",
 	}
 	svc.mu.Unlock()
 

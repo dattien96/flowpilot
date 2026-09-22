@@ -13,11 +13,11 @@ import (
 
 func verdictArgs() map[string]any {
 	return map[string]any{
-		"status": "changes_requested",
+		"status":   "changes_requested",
 		"feedback": "AC-2 fails",
 		"verdicts": []any{
 			map[string]any{
-				"ac_id":  "AC-1",
+				"ac_id":   "AC-1",
 				"verdict": "pass",
 				"evidence": []any{
 					map[string]any{"path": "stringutil/string.go", "line": 12, "excerpt": "return reversed"},

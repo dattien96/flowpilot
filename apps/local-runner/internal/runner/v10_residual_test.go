@@ -659,11 +659,11 @@ func TestRootPendingGateNotCancelledByNormalize(t *testing.T) {
 		RunID: "root-gate-norm", ProjectID: "proj", ProviderKey: ProviderKeyCodex,
 		Status: RunStatusRunning, StartedAt: now, UpdatedAt: now, RunKind: "chat",
 		ActiveFlowNodes: reviewLoopTestNodes(), AutoOrchestrate: true,
-		LoopState:                 AgentLoopState{Status: "running", Mode: "explicit", Cap: 3},
-		PendingFlowGateSettle:     true,
-		PendingFlowGateFinalMsg:   "hub done",
-		PendingFlowGateTurnID:     "turn-root-9",
-		WorkingDirectory:          t.TempDir(),
+		LoopState:               AgentLoopState{Status: "running", Mode: "explicit", Cap: 3},
+		PendingFlowGateSettle:   true,
+		PendingFlowGateFinalMsg: "hub done",
+		PendingFlowGateTurnID:   "turn-root-9",
+		WorkingDirectory:        t.TempDir(),
 	}
 	rs, apiErr := svc.reconstructRun(st)
 	if apiErr != nil {
