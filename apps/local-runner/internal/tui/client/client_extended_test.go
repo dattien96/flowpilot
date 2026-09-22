@@ -722,7 +722,7 @@ func TestA2_7_StreamRun_ParsesTokenUsage(t *testing.T) {
 	srv := newStreamSrv(t, []client.ProviderEvent{
 		{ID: "e1", Seq: 1, Type: "token_usage_updated",
 			TokenUsage: &client.TokenUsageSnapshot{
-				Last: &client.TokenUsageBreakdown{TotalTokens: 512},
+				Last:               &client.TokenUsageBreakdown{TotalTokens: 512},
 				ModelContextWindow: &ctxTokens,
 			},
 		},
