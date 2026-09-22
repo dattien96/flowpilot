@@ -886,6 +886,7 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 		lastOpencodeTurnSessionID: st.ProviderSessionID,
 		providerAccountID:         st.ProviderAccountID,
 		workspaceCwd:              st.WorkingDirectory,
+		worktree:                  worktreeBindingFromSession(st),
 		runKind:                   st.RunKind,
 		// BUG-330 residual: the handle echo reads rs.chatID/legSeq, but the
 		// disk-reconstruction path never restored them — a restarted chat run

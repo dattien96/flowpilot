@@ -177,6 +177,9 @@ type interactiveRun struct {
 	lastDevinTurnSessionID    string
 	providerAccountID         string
 	workspaceCwd              string
+	// worktree is the CP-71 binding when the run opted into worktree
+	// isolation; nil for normal runs.
+	worktree *worktreeBinding
 	stepID                    string
 	modelName                 string
 	yolo                      bool
@@ -4109,7 +4112,6 @@ func (s *InteractiveService) persistenceStore() InteractiveStateStore {
 
 func (s *InteractiveService) AttachRunner(r *Runner) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.runner = r
 	s.agentCatalog.providerHomeFn = func() []AgentDefinition {
 		return discoverActiveProviderHomeAgents(r)
@@ -4134,6 +4136,9 @@ func (s *InteractiveService) AttachRunner(r *Runner) {
 	// DefaultContextSourceRegistry().SetJiraIssueAdapter(&jiraRestIssueAdapter{runner: r})
 	// DefaultContextSourceRegistry().SetJiraSprintAdapter(&jiraRestSprintAdapter{runner: r})
 	// DefaultContextSourceRegistry().SetFirebaseCrashlyticsAdapter(newFirebaseToolsMcpAdapter(r))
+	s.mu.Unlock()
+	// CP-71: boot-time worktree GC runs off-lock after s.runner is set.
+	go s.sweepOrphanedWorktrees(context.Background())
 }
 
 // SetFlowDefinitionStore attaches the FlowDefinitionStore startResolvedFlow
@@ -5867,6 +5872,12 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 			default: // subscriber slow/full — it reconnects via afterSeq, no gap
 			}
 		}
+	}
+	// CP-71: terminal non-chat runs with an active worktree binding emit the
+	// merge-back card once (SD-27 D-4c flow trigger; chat runs resolve via the
+	// user-initiated control instead — ongoing chats have no terminal point).
+	if worktreeTerminal(rs.status) {
+		s.maybeEmitWorktreeMergeRequest(rs)
 	}
 	return ev
 }
