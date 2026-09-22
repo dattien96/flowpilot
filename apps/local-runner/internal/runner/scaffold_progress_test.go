@@ -232,3 +232,28 @@ func TestTailPromptStdout_StreamsAppendsBeforeClose(t *testing.T) {
 		t.Fatalf("tailer captured %q, want both chunks (incl. post-stop flush)", final)
 	}
 }
+
+func TestScaffoldProgress_RingTrimMergesPersistedHead(t *testing.T) {
+	dir := newScaffoldWorkspace(t)
+	svc, srv := newScaffoldTestService(t, dir, "react-native", nil)
+
+	// Drive the feed past the in-memory ring cap so the head trims to disk-only.
+	svc.beginScaffoldProgress("proj-rn", dir)
+	total := scaffoldProgressKeep + 60
+	for i := 0; i < total; i++ {
+		svc.emitScaffoldProgress("proj-rn", "output", "ai_turn", 1, fmt.Sprintf("chunk-%03d ", i))
+	}
+	svc.endScaffoldProgress("proj-rn", &ScaffoldDispatchResult{Status: ScaffoldStatusDone, Message: "done"})
+
+	_, body := doJSON(t, http.MethodGet, srv.URL+"/client/projects/proj-rn/scaffold/progress", nil, nil)
+	snap := scaffoldProgressFromResponse(t, body)
+	if snap.Events[0].Seq != 1 {
+		t.Fatalf("first event seq = %d, want 1 — trimmed head must be recovered from the persisted log", snap.Events[0].Seq)
+	}
+	if len(snap.Events) < total {
+		t.Fatalf("snapshot returned %d events, want >= %d (full transcript incl. trimmed head)", len(snap.Events), total)
+	}
+	if got := scaffoldOutputText(snap.Events); !strings.HasPrefix(got, "chunk-000") {
+		t.Fatalf("transcript head = %.40q, want chunk-000 first", got)
+	}
+}

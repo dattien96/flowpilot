@@ -152,6 +152,7 @@ func (m *AppModel) cmdDispatchScaffold() tea.Cmd {
 // handleEngineScaffoldMsg renders the scaffold outcome in the chat timeline.
 func (m *AppModel) handleEngineScaffoldMsg(msg EngineScaffoldMsg) (tea.Model, tea.Cmd) {
 	m.scaffoldBusy = false
+	m.scaffoldPhase = ""
 	if msg.Err != nil {
 		m.addMessage("system", fmt.Sprintf("scaffold: failed: %v", msg.Err), "error")
 		return m, nil

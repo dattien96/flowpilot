@@ -633,3 +633,76 @@ export function applyScaffoldSnapshot(
 export function scaffoldFeedTerminal(state: ScaffoldFeedState): boolean {
   return !state.active && (state.result != null || scaffoldTerminalPhases.has(state.phase));
 }
+
+// CA-917: manual scaffold trigger — TUI /init parity for Desktop. The status
+// endpoint tells the UI whether the platform has a verified recipe (capable)
+// and whether a scaffold already completed (force needed to re-run).
+
+export interface ScaffoldStatusResult {
+  projectId: string;
+  platform: string;
+  capable: boolean;
+  verificationCommand?: string;
+  scaffoldStatus?: { status: string; completedAt?: string } | null;
+}
+
+export async function fetchScaffoldStatus(
+  projectId: string,
+  workingDirectory: string,
+  platform?: string,
+  signal?: AbortSignal,
+): Promise<ScaffoldStatusResult> {
+  const params = new URLSearchParams();
+  if (workingDirectory) params.set("workingDirectory", workingDirectory);
+  if (platform) params.set("platform", platform);
+  const qs = params.toString();
+  const response = await fetch(
+    new URL(
+      `/client/projects/${encodeURIComponent(projectId)}/scaffold/status${qs ? `?${qs}` : ""}`,
+      RUNNER_URL,
+    ).toString(),
+    { cache: "no-store", signal },
+  );
+  if (!response.ok) {
+    throw new Error(await readProjectEngineError(response));
+  }
+  return (await response.json()) as ScaffoldStatusResult;
+}
+
+export interface DispatchScaffoldOptions {
+  platform?: string;
+  providerKey?: string;
+  modelName?: string;
+  force?: boolean;
+}
+
+// dispatchScaffold runs POST /client/projects/{id}/scaffold. The call blocks
+// for the whole AI turn + compiler gate — callers should not await it inside a
+// click handler's busy state; the live feed (fetchScaffoldProgress) renders
+// progress meanwhile.
+export async function dispatchScaffold(
+  projectId: string,
+  workingDirectory: string,
+  options: DispatchScaffoldOptions = {},
+): Promise<ScaffoldRunResult> {
+  const response = await fetch(
+    new URL(`/client/projects/${encodeURIComponent(projectId)}/scaffold`, RUNNER_URL).toString(),
+    {
+      method: "POST",
+      cache: "no-store",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        workingDirectory,
+        platform: options.platform ?? "",
+        providerKey: options.providerKey ?? "",
+        modelName: options.modelName ?? "",
+        force: options.force ?? false,
+        trigger: "manual",
+      }),
+    },
+  );
+  if (!response.ok) {
+    throw new Error(await readProjectEngineError(response));
+  }
+  return (await response.json()) as ScaffoldRunResult;
+}

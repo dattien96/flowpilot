@@ -60,8 +60,12 @@ type scaffoldProgressHub struct {
 	workspace string
 	events    []ScaffoldProgressEvent
 	nextSeq   int64
-	active    bool
-	result    *ScaffoldDispatchResult
+	// runStartSeq is the seq of the current run's first event. nextSeq never
+	// resets across runs, so hubFloor > runStartSeq is the only true signal that
+	// the ring trimmed THIS run's head.
+	runStartSeq int64
+	active      bool
+	result      *ScaffoldDispatchResult
 }
 
 // beginScaffoldProgress starts a fresh feed run: clears the previous run's
@@ -81,6 +85,7 @@ func (s *InteractiveService) beginScaffoldProgress(projectID, workspace string) 
 	hub.events = nil
 	hub.active = true
 	hub.result = nil
+	hub.runStartSeq = hub.nextSeq
 	s.mu.Unlock()
 	s.emitScaffoldProgress(projectID, "phase", scaffoldProgressPhaseStart, 0, "AI scaffold turn started")
 }
@@ -152,12 +157,17 @@ func (s *InteractiveService) endScaffoldProgress(projectID string, result *Scaff
 // client still sees the last run's transcript.
 func (s *InteractiveService) scaffoldProgressSnapshot(projectID string, after int64) ScaffoldProgressSnapshot {
 	snap := ScaffoldProgressSnapshot{ProjectID: projectID, Events: []ScaffoldProgressEvent{}}
+	var hubFloor, runStartSeq int64
 	s.mu.Lock()
 	hub := s.scaffoldProgress[projectID]
 	if hub != nil {
+		runStartSeq = hub.runStartSeq
 		snap.Active = hub.active
 		snap.NextSeq = hub.nextSeq
 		snap.Result = hub.result
+		if len(hub.events) > 0 {
+			hubFloor = hub.events[0].Seq
+		}
 		for _, ev := range hub.events {
 			if ev.Seq > after {
 				snap.Events = append(snap.Events, ev)
@@ -197,6 +207,23 @@ func (s *InteractiveService) scaffoldProgressSnapshot(projectID string, after in
 				}
 			}
 		}
+		return snap
+	}
+
+	// Ring-trim gap: the in-memory hub keeps only the last ~400 events. When the
+	// caller's cursor sits below the retained floor AND the trim dropped events
+	// from THIS run (hubFloor > runStartSeq), prepend the persisted log for the
+	// missing head so a late joiner still sees the full transcript.
+	if hubFloor > runStartSeq && after < hubFloor {
+		if persisted := s.loadScaffoldProgressTail(projectID); len(persisted) > 0 {
+			head := make([]ScaffoldProgressEvent, 0, len(persisted)+len(snap.Events))
+			for _, ev := range persisted {
+				if ev.Seq > after && ev.Seq < hubFloor && ev.Seq >= runStartSeq {
+					head = append(head, ev)
+				}
+			}
+			snap.Events = append(head, snap.Events...)
+		}
 	}
 	return snap
 }
@@ -212,7 +239,9 @@ func (s *InteractiveService) loadScaffoldProgressTail(projectID string) []Scaffo
 	if err != nil || dir == "" {
 		return nil
 	}
-	return readScaffoldProgressTail(filepath.Join(dir, ".flowpilot", scaffoldProgressFileName), scaffoldProgressKeep)
+	// Read more than the in-memory ring so the merge path can recover a trimmed
+	// transcript head; NDJSON lines are small so a few thousand is cheap.
+	return readScaffoldProgressTail(filepath.Join(dir, ".flowpilot", scaffoldProgressFileName), scaffoldProgressKeep*8)
 }
 
 // appendScaffoldProgressLine writes one event as an NDJSON line. The log lives
