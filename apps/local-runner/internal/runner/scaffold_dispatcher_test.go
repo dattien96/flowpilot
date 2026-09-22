@@ -708,4 +708,3 @@ func TestScaffoldDispatcher_RejectsNonexistentAbsoluteWorkspace(t *testing.T) {
 		t.Fatalf("executor calls = %d, want 0 — reject before any AI call", executor.count())
 	}
 }
-
