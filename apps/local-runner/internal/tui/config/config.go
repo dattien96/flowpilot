@@ -52,4 +52,8 @@ type ChatConfig struct {
 
 	// Timeout is the session timeout (--timeout).
 	Timeout string
+
+	// ClientInstanceID overrides this client's lifecycle lease identity
+	// (CP-81). Empty → "tui-<pid>"; tests and embeddings may set a stable id.
+	ClientInstanceID string
 }
