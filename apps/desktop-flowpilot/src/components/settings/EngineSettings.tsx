@@ -17,6 +17,7 @@ import {
   type LibreTranslateInstallResult,
   type ProjectEngineStatus,
 } from "@/components/settings/projectEngine";
+import { ScaffoldActivity } from "@/components/settings/ScaffoldActivity";
 
 interface EngineProjectEntry {
   project: Project;
@@ -501,6 +502,9 @@ export function EngineSettings(): React.ReactElement {
             No project engine status is available for the selected binding yet.
           </div>
         )}
+        {/* CA-916: live AI scaffold transcript for the selected project —
+            self-hides when the runner reports no scaffold activity. */}
+        <ScaffoldActivity projectId={selectedProjectId || null} />
       </div>
       <div className="settings-subpanel">
         <div className="settings-panel-head">
