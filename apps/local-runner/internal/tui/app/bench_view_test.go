@@ -22,7 +22,7 @@ func benchModel(chats int, panelExpanded bool) *AppModel {
 	return m
 }
 
-func BenchmarkView_NoPanel(b *testing.B)  { benchView(b, 0, false) }
+func BenchmarkView_NoPanel(b *testing.B)    { benchView(b, 0, false) }
 func BenchmarkView_Sidebar100(b *testing.B) { benchView(b, 100, true) }
 func BenchmarkView_Sidebar0(b *testing.B)   { benchView(b, 0, true) }
 
