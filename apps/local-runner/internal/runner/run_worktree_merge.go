@@ -132,11 +132,16 @@ func (s *InteractiveService) persistRunWorktreeLocked(rs *interactiveRun) {
 func (s *InteractiveService) resolveWorktree(ctx context.Context, runID, mode string, confirm bool) (map[string]any, *apiErr) {
 	s.mu.Lock()
 	rs := s.runs[runID]
+	s.mu.Unlock()
 	if rs == nil {
+		// Rebuild without holding s.mu: loadPersistedRun → reconstructRun
+		// acquires s.mu internally, so calling it under the lock self-deadlocks
+		// on resolve-after-restart (live-found bug).
 		if rebuilt, err := s.loadPersistedRun(runID); err == nil {
 			rs = rebuilt
 		}
 	}
+	s.mu.Lock()
 	if rs == nil || rs.worktree == nil {
 		s.mu.Unlock()
 		return nil, newAPIErr(http.StatusNotFound, "worktree_not_found", "run has no worktree binding")
@@ -208,10 +213,10 @@ func (s *InteractiveService) resolveWorktree(ctx context.Context, runID, mode st
 			untracked, _ := mgr.Untracked(ctx, repoDir, b.OwnerID, "")
 			if len(untracked) > 0 && !confirm {
 				return map[string]any{
-					"runId": runID, "worktreeState": b.State, "mode": mode,
-					"requiresConfirm": true, "untracked": untracked,
-				}, newAPIErr(http.StatusConflict, "worktree_discard_confirm",
-					"worktree has untracked artifacts; resend with confirm to discard")
+						"runId": runID, "worktreeState": b.State, "mode": mode,
+						"requiresConfirm": true, "untracked": untracked,
+					}, newAPIErr(http.StatusConflict, "worktree_discard_confirm",
+						"worktree has untracked artifacts; resend with confirm to discard")
 			}
 		}
 		_ = mgr.Cleanup(ctx, repoDir, b.OwnerID, "", false)
@@ -278,7 +283,7 @@ func (s *InteractiveService) validateWorktreeBindingOnResume(rs *interactiveRun)
 		s.persistRunWorktreeLocked(rs)
 		s.emitLocked(rs, ProviderEvent{Type: EventWorktreeLost, Input: map[string]any{
 			"ownerId": rs.worktree.OwnerID, "path": rs.worktree.Path,
-			"reason": err.Error(),
+			"reason":  err.Error(),
 			"options": []string{"archive", "recreate_empty"},
 		}})
 		s.mu.Unlock()
