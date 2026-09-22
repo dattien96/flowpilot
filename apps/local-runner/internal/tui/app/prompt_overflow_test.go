@@ -131,5 +131,3 @@ func TestRegression_SidebarDoesNotCutPromptBox(t *testing.T) {
 		}
 	}
 }
-
-

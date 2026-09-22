@@ -17,8 +17,8 @@ func TestRegression_Grok7dQuota_AlwaysOnStatusLine(t *testing.T) {
 	reset := "2026-09-04T00:00:00Z"
 	m := New(config.ChatConfig{Provider: "grok", Model: "grok-4.5"}, "http://127.0.0.1:4317")
 	m.account = &client.ProviderAccountSummary{
-		ProviderKey:       "grok",
-		DisplayLabel:      "trashname899@gmail.com",
+		ProviderKey:        "grok",
+		DisplayLabel:       "trashname899@gmail.com",
 		Remaining7dPercent: &seven,
 		Remaining7dResetAt: &reset,
 		UsageDetailLines: []client.ProviderAccountUsageLine{
