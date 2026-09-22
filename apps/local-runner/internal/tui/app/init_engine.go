@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -105,7 +106,13 @@ func (m *AppModel) handleEngineInitMsg(msg EngineInitMsg) (tea.Model, tea.Cmd) {
 		label = strings.TrimSpace(m.project.Name)
 	}
 	m.scaffoldBusy = true
+	m.scaffoldPhase = ""
+	m.scaffoldProgressSeq = 0
+	m.scaffoldProgressInFlight = false
 	m.addMessage("system", fmt.Sprintf("Starting AI Scaffold turn for %s…", label), "")
+	// CA-916: the blocking dispatch POST is unchanged; /scaffold/progress polling
+	// piggybacks on the thinking ticker (which runs while scaffoldBusy) so the AI
+	// turn's output streams into the chat like a normal run.
 	return m, m.cmdDispatchScaffold()
 }
 
@@ -143,35 +150,133 @@ func (m *AppModel) cmdDispatchScaffold() tea.Cmd {
 	}
 }
 
+// scaffoldResultLine renders one scaffold result into (text, style) shared by
+// the POST response path and the CA-918 post-lost feed fallback.
+func scaffoldResultLine(res *client.ScaffoldResult) (string, string) {
+	text := strings.TrimSpace(res.Message)
+	if text == "" {
+		text = fmt.Sprintf("scaffold: %s", res.Status)
+	}
+	style := ""
+	switch res.Status {
+	case "error":
+		style = "error"
+	case "done":
+		if res.CompilerGate != nil {
+			verdict := "FAIL"
+			if res.CompilerGate.Passed {
+				verdict = "PASS"
+			}
+			text += fmt.Sprintf(" — Compiler Gate: %s (exit %d)", verdict, res.CompilerGate.ExitCode)
+		}
+	}
+	return text, style
+}
+
 // handleEngineScaffoldMsg renders the scaffold outcome in the chat timeline.
 func (m *AppModel) handleEngineScaffoldMsg(msg EngineScaffoldMsg) (tea.Model, tea.Cmd) {
-	m.scaffoldBusy = false
 	if msg.Err != nil {
+		var apiErr *client.APIError
+		if !errors.As(msg.Err, &apiErr) {
+			// CA-918: transport error (conn reset, timeout) — the dispatch is
+			// detached server-side so the turn keeps running. Let the feed own
+			// the terminal result instead of reporting a false failure.
+			m.scaffoldPostLost = true
+			m.addMessage("system", fmt.Sprintf("scaffold: connection lost (%v) — the turn may still be running; watching progress…", msg.Err), "error")
+			return m, nil
+		}
+		// A real HTTP error response means the server rejected/ended the
+		// dispatch — report it and release the composer immediately.
+		m.scaffoldBusy = false
+		m.scaffoldPhase = ""
 		m.addMessage("system", fmt.Sprintf("scaffold: failed: %v", msg.Err), "error")
 		return m, nil
 	}
+	m.scaffoldBusy = false
+	m.scaffoldPhase = ""
 	if msg.Result == nil {
 		m.addMessage("system", "scaffold: empty response.", "error")
 		return m, nil
 	}
 
-	text := strings.TrimSpace(msg.Result.Message)
-	if text == "" {
-		text = fmt.Sprintf("scaffold: %s", msg.Result.Status)
+	text, style := scaffoldResultLine(msg.Result)
+	m.addMessage("system", text, style)
+	// CA-916: one final progress fetch flushes events that landed between the
+	// last poll's `after` cursor and the POST result; the ticker has stopped by
+	// now so nothing else will fetch again. Always issue — the seq cursor dedupes
+	// against any poll still in flight.
+	m.scaffoldProgressInFlight = true
+	return m, m.cmdScaffoldProgress()
+}
+
+// EngineScaffoldProgressMsg carries one poll of the CA-916 scaffold progress
+// feed; output events render as a chat-style assistant stream.
+type EngineScaffoldProgressMsg struct {
+	Snapshot *client.ScaffoldProgressSnapshot
+	Err      error
+}
+
+// cmdScaffoldProgress fetches the scaffold feed after the rendered cursor. The
+// thinking ticker (90ms, live while scaffoldBusy) re-issues it every ~720ms.
+func (m *AppModel) cmdScaffoldProgress() tea.Cmd {
+	if m.project == nil || strings.TrimSpace(m.project.ID) == "" {
+		return nil
 	}
-	style := ""
-	switch msg.Result.Status {
-	case "error":
-		style = "error"
-	case "done":
-		if msg.Result.CompilerGate != nil {
-			verdict := "FAIL"
-			if msg.Result.CompilerGate.Passed {
-				verdict = "PASS"
+	projectID := strings.TrimSpace(m.project.ID)
+	after := m.scaffoldProgressSeq
+	cl := m.client
+	return func() tea.Msg {
+		snap, err := cl.ScaffoldProgress(context.Background(), projectID, after)
+		return EngineScaffoldProgressMsg{Snapshot: snap, Err: err}
+	}
+}
+
+// handleEngineScaffoldProgressMsg renders scaffold feed events like a chat run:
+// output deltas append to the assistant stream, phase milestones update the
+// busy-line label. Polling resumes via the thinking ticker, not here.
+func (m *AppModel) handleEngineScaffoldProgressMsg(msg EngineScaffoldProgressMsg) (tea.Model, tea.Cmd) {
+	m.scaffoldProgressInFlight = false
+	if msg.Err != nil || msg.Snapshot == nil {
+		// CA-918: when the POST connection was already lost, a dead runner would
+		// otherwise leave scaffoldBusy latched forever — bound the retries.
+		if m.scaffoldPostLost {
+			m.scaffoldPollErrs++
+			if m.scaffoldPollErrs >= 10 {
+				m.scaffoldBusy = false
+				m.scaffoldPhase = ""
+				m.scaffoldPostLost = false
+				m.scaffoldPollErrs = 0
+				m.addMessage("system", "scaffold: runner unreachable — the turn may have been lost", "error")
 			}
-			text += fmt.Sprintf(" — Compiler Gate: %s (exit %d)", verdict, msg.Result.CompilerGate.ExitCode)
+		}
+		return m, nil
+	}
+	m.scaffoldPollErrs = 0
+	snap := msg.Snapshot
+	for _, ev := range snap.Events {
+		// Overlapping fetches (ticker poll + final flush) can return the same
+		// events — the seq cursor is the dedupe guard so output never doubles.
+		if ev.Seq <= m.scaffoldProgressSeq {
+			continue
+		}
+		m.scaffoldProgressSeq = ev.Seq
+		switch ev.Kind {
+		case "output":
+			m.appendAssistantDelta(ev.Text)
+		case "phase":
+			if ev.Phase != "" {
+				m.scaffoldPhase = ev.Phase
+			}
 		}
 	}
-	m.addMessage("system", text, style)
+	// CA-918: the POST died earlier — the feed's terminal result is now the
+	// authoritative outcome; finalize exactly like the normal POST path.
+	if m.scaffoldPostLost && snap.Result != nil {
+		m.scaffoldPostLost = false
+		m.scaffoldBusy = false
+		m.scaffoldPhase = ""
+		text, style := scaffoldResultLine(snap.Result)
+		m.addMessage("system", text, style)
+	}
 	return m, nil
 }

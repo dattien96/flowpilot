@@ -699,6 +699,17 @@ type AppModel struct {
 	providersWarmRetries int
 	loadingFrame         int
 	scaffoldBusy         bool
+	// CA-916: live scaffold progress feed — seq cursor for /scaffold/progress
+	// polling, in-flight fetch guard, plus the latest phase label shown next to
+	// the busy spinner.
+	scaffoldProgressSeq      int64
+	scaffoldProgressInFlight bool
+	// CA-918: scaffoldPostLost marks that the dispatch POST connection dropped
+	// while the detached turn still runs server-side; the feed then owns the
+	// terminal result, and scaffoldPollErrs bounds retries if the runner died.
+	scaffoldPostLost bool
+	scaffoldPollErrs int
+	scaffoldPhase            string
 
 	// thinkingFrame drives the animated "Thinking" placeholder (spinner /
 	// shimmer / elapsed). Advanced by thinkingTickMsg while a thinking row is

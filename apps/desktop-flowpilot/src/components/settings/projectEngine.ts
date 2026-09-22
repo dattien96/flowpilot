@@ -514,3 +514,195 @@ export async function autoInitProjectEngine(
     }),
   );
 }
+
+// CA-916: live scaffold progress feed — the runner records phase milestones and
+// provider stdout deltas per project so the AI scaffold turn renders like a
+// chat run instead of a silent background task.
+
+export interface ScaffoldProgressEvent {
+  seq: number;
+  time: string;
+  kind: "phase" | "output" | "result" | string;
+  phase: string;
+  attempt?: number;
+  text?: string;
+  result?: ScaffoldRunResult | null;
+}
+
+export interface ScaffoldRunResult {
+  status: string;
+  platform?: string;
+  message?: string;
+  runId?: string;
+  providerKey?: string;
+  attempts?: number;
+  compilerGate?: { passed?: boolean; exitCode?: number } | null;
+}
+
+export interface ScaffoldProgressSnapshot {
+  projectId: string;
+  active: boolean;
+  phase?: string;
+  attempt?: number;
+  events: ScaffoldProgressEvent[];
+  nextSeq: number;
+  result?: ScaffoldRunResult | null;
+}
+
+export async function fetchScaffoldProgress(
+  projectId: string,
+  after = 0,
+  signal?: AbortSignal,
+): Promise<ScaffoldProgressSnapshot> {
+  const response = await fetch(
+    new URL(
+      `/client/projects/${encodeURIComponent(projectId)}/scaffold/progress?after=${after}`,
+      RUNNER_URL,
+    ).toString(),
+    { cache: "no-store", signal },
+  );
+  if (!response.ok) {
+    throw new Error(await readProjectEngineError(response));
+  }
+  return (await response.json()) as ScaffoldProgressSnapshot;
+}
+
+// ScaffoldFeedState is the reducer state ScaffoldActivity renders. `output`
+// accumulates provider stdout so it reads like an assistant message.
+export interface ScaffoldFeedState {
+  seen: boolean;
+  active: boolean;
+  phase: string;
+  attempt: number;
+  output: string;
+  milestones: string[];
+  result: ScaffoldRunResult | null;
+  cursor: number;
+}
+
+export const emptyScaffoldFeed: ScaffoldFeedState = {
+  seen: false,
+  active: false,
+  phase: "",
+  attempt: 0,
+  output: "",
+  milestones: [],
+  result: null,
+  cursor: 0,
+};
+
+const scaffoldTerminalPhases = new Set(["done", "skipped", "error"]);
+
+// applyScaffoldSnapshot folds one poll into the feed state. Pure + exported for
+// tests — the component owns only timing and rendering.
+export function applyScaffoldSnapshot(
+  state: ScaffoldFeedState,
+  snap: ScaffoldProgressSnapshot,
+): ScaffoldFeedState {
+  let output = state.output;
+  let phase = state.phase;
+  let attempt = state.attempt;
+  let result = state.result;
+  const milestones = state.milestones.slice();
+  for (const ev of snap.events) {
+    if (ev.kind === "output" && ev.text) {
+      output += ev.text;
+    } else if (ev.kind === "phase" && ev.phase) {
+      phase = ev.phase;
+      attempt = ev.attempt ?? attempt;
+      if (ev.text && ev.phase !== "started") {
+        milestones.push(ev.text);
+      }
+    } else if (ev.kind === "result" && ev.result) {
+      result = ev.result;
+      phase = ev.phase || ev.result.status;
+    }
+  }
+  return {
+    seen: state.seen || snap.events.length > 0 || snap.active,
+    active: snap.active,
+    phase,
+    attempt,
+    output,
+    milestones,
+    result,
+    cursor: Math.max(state.cursor, snap.nextSeq - 1),
+  };
+}
+
+export function scaffoldFeedTerminal(state: ScaffoldFeedState): boolean {
+  return !state.active && (state.result != null || scaffoldTerminalPhases.has(state.phase));
+}
+
+// CA-917: manual scaffold trigger — TUI /init parity for Desktop. The status
+// endpoint tells the UI whether the platform has a verified recipe (capable)
+// and whether a scaffold already completed (force needed to re-run).
+
+export interface ScaffoldStatusResult {
+  projectId: string;
+  platform: string;
+  capable: boolean;
+  verificationCommand?: string;
+  scaffoldStatus?: { status: string; completedAt?: string } | null;
+}
+
+export async function fetchScaffoldStatus(
+  projectId: string,
+  workingDirectory: string,
+  platform?: string,
+  signal?: AbortSignal,
+): Promise<ScaffoldStatusResult> {
+  const params = new URLSearchParams();
+  if (workingDirectory) params.set("workingDirectory", workingDirectory);
+  if (platform) params.set("platform", platform);
+  const qs = params.toString();
+  const response = await fetch(
+    new URL(
+      `/client/projects/${encodeURIComponent(projectId)}/scaffold/status${qs ? `?${qs}` : ""}`,
+      RUNNER_URL,
+    ).toString(),
+    { cache: "no-store", signal },
+  );
+  if (!response.ok) {
+    throw new Error(await readProjectEngineError(response));
+  }
+  return (await response.json()) as ScaffoldStatusResult;
+}
+
+export interface DispatchScaffoldOptions {
+  platform?: string;
+  providerKey?: string;
+  modelName?: string;
+  force?: boolean;
+}
+
+// dispatchScaffold runs POST /client/projects/{id}/scaffold. The call blocks
+// for the whole AI turn + compiler gate — callers should not await it inside a
+// click handler's busy state; the live feed (fetchScaffoldProgress) renders
+// progress meanwhile.
+export async function dispatchScaffold(
+  projectId: string,
+  workingDirectory: string,
+  options: DispatchScaffoldOptions = {},
+): Promise<ScaffoldRunResult> {
+  const response = await fetch(
+    new URL(`/client/projects/${encodeURIComponent(projectId)}/scaffold`, RUNNER_URL).toString(),
+    {
+      method: "POST",
+      cache: "no-store",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        workingDirectory,
+        platform: options.platform ?? "",
+        providerKey: options.providerKey ?? "",
+        modelName: options.modelName ?? "",
+        force: options.force ?? false,
+        trigger: "manual",
+      }),
+    },
+  );
+  if (!response.ok) {
+    throw new Error(await readProjectEngineError(response));
+  }
+  return (await response.json()) as ScaffoldRunResult;
+}

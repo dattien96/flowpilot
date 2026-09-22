@@ -19,6 +19,7 @@ import { formatTimestamp, integrationTypes, toErrorMessage, validateDirectoryBin
 import {
   autoInitProjectEngine,
 } from "@/components/settings/projectEngine";
+import { ScaffoldActivity } from "@/components/settings/ScaffoldActivity";
 
 type BindingDraft = Pick<ProjectWorkspaceBinding, "id" | "localPath" | "label"> & { persisted: boolean };
 type ProjectTargetSection = "teams" | "workflows" | "artifacts" | "google-drive" | "jira-mcp";
@@ -757,6 +758,9 @@ export function ProjectsSettings({ onNavigateSection }: ProjectsSettingsProps): 
       </div>
       {message ? <div className="settings-feedback">{message}</div> : null}
       {loading ? <div className="settings-feedback">Loading projects...</div> : null}
+      {/* CA-916: live AI scaffold transcript for the selected/created project —
+          self-hides when the runner reports no scaffold activity. */}
+      <ScaffoldActivity projectId={selectedProjectId} />
 
       {showCreateView ? (
         <div className="settings-subpanel">

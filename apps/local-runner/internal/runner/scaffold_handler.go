@@ -144,12 +144,19 @@ func (s *InteractiveService) handleDispatchScaffold(w http.ResponseWriter, r *ht
 	}
 	defer s.releaseScaffold(projectID)
 
+	// CA-918: the dispatch must NOT run on r.Context() — a client disconnect
+	// (TUI quit, laptop sleep, proxy timeout) would SIGKILL the provider child
+	// mid-write and burn the turn. Detach like the create_project auto-trigger:
+	// bound by scaffoldAPITimeout, cancellable only via the lifecycle drain.
+	dispatchCtx, dispatchCancel := context.WithTimeout(context.Background(), scaffoldAPITimeout)
+	defer dispatchCancel()
 	// CP-81 Task-415: arm the dispatch context so a confirmed system drain can
 	// terminate the scaffold turn instead of stranding it mid-write.
-	dispatchCtx, dispatchCancel := context.WithCancel(r.Context())
-	defer dispatchCancel()
 	s.armScaffoldCancel(projectID, dispatchCancel)
 
+	// CA-916: open the live progress feed before dispatch so clients polling
+	// /scaffold/progress see phases + AI output while this POST is in flight.
+	s.beginScaffoldProgress(projectID, dir)
 	result, err := s.scaffoldDispatcher().Dispatch(dispatchCtx, ScaffoldRequest{
 		ProjectID:    projectID,
 		WorkspaceDir: dir,
@@ -159,7 +166,11 @@ func (s *InteractiveService) handleDispatchScaffold(w http.ResponseWriter, r *ht
 		YoloMode:     body.YoloMode,
 		Force:        body.Force,
 		Trigger:      firstNonEmptyLineOf(strings.TrimSpace(body.Trigger), "manual"),
+		OnProgress: func(ev ScaffoldProgressEvent) {
+			s.emitScaffoldProgressEvent(projectID, ev)
+		},
 	})
+	s.endScaffoldProgress(projectID, result)
 	if err != nil {
 		writeInteractiveError(w, newAPIErr(http.StatusBadGateway, "scaffold_dispatch_failed", err.Error()))
 		return
@@ -261,6 +272,10 @@ func (s *InteractiveService) autoTriggerScaffold(projectID, workspaceDir, platfo
 		return
 	}
 
+	// CA-916: mark the feed active before the create-project response returns so
+	// a client that starts polling immediately sees the turn as live.
+	s.beginScaffoldProgress(projectID, workspaceDir)
+
 	go func() {
 		// Background work must never take the whole runner process down, and the
 		// in-flight claim must always be released when the turn finishes.
@@ -279,6 +294,8 @@ func (s *InteractiveService) autoTriggerScaffold(projectID, workspaceDir, platfo
 		defer drainCancel()
 		s.armScaffoldCancel(projectID, drainCancel)
 
+		// CA-916: same live feed as the HTTP path — Desktop create-project flows
+		// poll /scaffold/progress to render this background turn like a chat run.
 		result, err := s.scaffoldDispatcher().Dispatch(drainCtx, ScaffoldRequest{
 			ProjectID:    projectID,
 			WorkspaceDir: workspaceDir,
@@ -286,7 +303,11 @@ func (s *InteractiveService) autoTriggerScaffold(projectID, workspaceDir, platfo
 			ProviderKey:  s.resolveScaffoldProviderKey("", modelName),
 			ModelName:    strings.TrimSpace(modelName),
 			Trigger:      "create_project",
+			OnProgress: func(ev ScaffoldProgressEvent) {
+				s.emitScaffoldProgressEvent(projectID, ev)
+			},
 		})
+		s.endScaffoldProgress(projectID, result)
 		if err != nil {
 			log.Printf("[scaffold] project=%s dispatch error: %v", projectID, err)
 			return

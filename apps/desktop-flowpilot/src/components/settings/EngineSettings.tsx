@@ -4,10 +4,12 @@ import { getAdminUseCases } from "@/clientCore";
 import { LIBRETRANSLATE_URL } from "@/config";
 import { formatTimestamp, toErrorMessage } from "@/components/settings/settingsHelpers";
 import {
+  dispatchScaffold,
   engineTone,
   fetchApprovalAllowlist,
   fetchGlobalEngineToolingStatus,
   fetchProjectEngineStatus,
+  fetchScaffoldStatus,
   initProjectEngine,
   installLibreTranslateTool,
   removeApprovalAllowRule,
@@ -16,7 +18,9 @@ import {
   type GlobalEngineToolingStatus,
   type LibreTranslateInstallResult,
   type ProjectEngineStatus,
+  type ScaffoldStatusResult,
 } from "@/components/settings/projectEngine";
+import { ScaffoldActivity } from "@/components/settings/ScaffoldActivity";
 
 interface EngineProjectEntry {
   project: Project;
@@ -42,7 +46,8 @@ export function EngineSettings(): React.ReactElement {
   const libreTranslatePort = LIBRETRANSLATE_URL.split(":").at(-1) ?? "5001";
   const [loading, setLoading] = useState(true);
   const [toolingBusy, setToolingBusy] = useState(false);
-  const [projectBusyAction, setProjectBusyAction] = useState<"refresh" | "init" | null>(null);
+  const [projectBusyAction, setProjectBusyAction] = useState<"refresh" | "init" | "scaffold" | null>(null);
+  const [scaffoldStatus, setScaffoldStatus] = useState<ScaffoldStatusResult | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [entries, setEntries] = useState<EngineProjectEntry[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState("");
@@ -120,9 +125,15 @@ export function EngineSettings(): React.ReactElement {
     if (!selectedProjectId || !selectedBindingPath) {
       setProjectStatus(null);
       setApprovalAllowlist([]);
+      setScaffoldStatus(null);
       return;
     }
     let active = true;
+    // CA-917: load scaffold capability alongside engine status so the manual
+    // "Run AI Scaffold" affordance reflects the selected project.
+    void fetchScaffoldStatus(selectedProjectId, selectedBindingPath, selectedEntry?.project.platform)
+      .then((s) => { if (active) setScaffoldStatus(s); })
+      .catch(() => { if (active) setScaffoldStatus(null); });
     void (async () => {
       try {
         const status = await fetchProjectEngineStatus(selectedProjectId, selectedBindingPath, selectedEntry?.project.platform);
@@ -218,6 +229,11 @@ export function EngineSettings(): React.ReactElement {
     } finally {
       setProjectBusyAction(null);
     }
+    // CA-917: capability check for the manual "Run AI Scaffold" affordance —
+    // best-effort so a status failure never blocks the engine panel.
+    fetchScaffoldStatus(selectedProjectId, selectedBindingPath, selectedEntry?.project.platform)
+      .then(setScaffoldStatus)
+      .catch(() => setScaffoldStatus(null));
   };
 
   const initSelectedProject = async () => {
@@ -230,6 +246,31 @@ export function EngineSettings(): React.ReactElement {
       setMessage(summarizeProjectEngineInit(status.lastInit));
     } catch (error) {
       setMessage(toErrorMessage(error, "Unable to initialize the selected project engine."));
+    } finally {
+      setProjectBusyAction(null);
+    }
+  };
+
+  // CA-917: TUI `/init` parity — Desktop can dispatch the AI scaffold turn
+  // manually. The POST blocks for the whole turn; the ScaffoldActivity card
+  // renders live progress via the CA-916 feed while it runs.
+  const runScaffold = async () => {
+    if (!selectedProjectId || !selectedBindingPath) return;
+    setProjectBusyAction("scaffold");
+    setMessage(null);
+    const alreadyDone = scaffoldStatus?.scaffoldStatus?.status === "done";
+    try {
+      const result = await dispatchScaffold(selectedProjectId, selectedBindingPath, {
+        platform: selectedEntry?.project.platform,
+        modelName: selectedEntry?.project.defaultModel ?? undefined,
+        force: alreadyDone,
+      });
+      setMessage(result.message ?? `scaffold: ${result.status}`);
+      fetchScaffoldStatus(selectedProjectId, selectedBindingPath, selectedEntry?.project.platform)
+        .then(setScaffoldStatus)
+        .catch(() => {});
+    } catch (error) {
+      setMessage(toErrorMessage(error, "Unable to run AI scaffold."));
     } finally {
       setProjectBusyAction(null);
     }
@@ -387,6 +428,21 @@ export function EngineSettings(): React.ReactElement {
             >
               {projectBusyAction === "init" ? "Running..." : "Initialize / Re-sync Project"}
             </button>
+            {scaffoldStatus?.capable ? (
+              <button
+                className="secondary-btn"
+                disabled={!selectedProjectId || !selectedBindingPath || projectBusyAction !== null}
+                onClick={() => void runScaffold()}
+                title={scaffoldStatus.verificationCommand ? `Gate: ${scaffoldStatus.verificationCommand}` : undefined}
+                type="button"
+              >
+                {projectBusyAction === "scaffold"
+                  ? "Scaffolding…"
+                  : scaffoldStatus.scaffoldStatus?.status === "done"
+                    ? "Re-run AI Scaffold"
+                    : "Run AI Scaffold"}
+              </button>
+            ) : null}
           </div>
         </div>
 
@@ -501,6 +557,9 @@ export function EngineSettings(): React.ReactElement {
             No project engine status is available for the selected binding yet.
           </div>
         )}
+        {/* CA-916: live AI scaffold transcript for the selected project —
+            self-hides when the runner reports no scaffold activity. */}
+        <ScaffoldActivity projectId={selectedProjectId || null} />
       </div>
       <div className="settings-subpanel">
         <div className="settings-panel-head">

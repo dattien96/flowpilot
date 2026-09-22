@@ -103,6 +103,10 @@ type InteractiveService struct {
 	// CP-81 confirmed drain (StopAllForSystemAction) can terminate them; same
 	// lifecycle/locking as scaffoldInFlight.
 	scaffoldCancels map[string]context.CancelFunc
+	// scaffoldProgress is the per-project live scaffold feed (CA-916): phase
+	// milestones + provider stdout deltas so TUI/Desktop can render the AI turn
+	// like a chat run. Guarded by s.mu; lazily initialized.
+	scaffoldProgress map[string]*scaffoldProgressHub
 	// lifecycleMgr is the CP-81 shared-lifecycle authority attached by
 	// `runner serve`; used only for the drain gate (reject new work while
 	// draining). nil in unmanaged contexts. Guarded by s.mu.
