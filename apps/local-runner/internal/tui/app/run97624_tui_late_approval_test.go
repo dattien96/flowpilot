@@ -81,8 +81,8 @@ func TestApplyPendingFromSnapshot_WaitingApproval(t *testing.T) {
 			m.yolo = false
 			m.runHandle = &client.RunHandle{RunID: "run-97624", ProviderKey: provider}
 			cmd := m.applyPendingFromSnapshot(client.RunSnapshot{
-				RunID:  "run-97624",
-				Status: "waiting_approval",
+				RunID:           "run-97624",
+				Status:          "waiting_approval",
 				PendingApproval: &client.ApprovalInfo{ID: "appr-97698"},
 			})
 			if cmd != nil {
@@ -105,8 +105,8 @@ func TestApplyPendingFromSnapshot_CompletedDoesNotMountReplayCard(t *testing.T) 
 	m := New(config.ChatConfig{Provider: "grok"}, "http://127.0.0.1:4317")
 	m.yolo = false
 	m.applyPendingFromSnapshot(client.RunSnapshot{
-		RunID:  "run-done",
-		Status: "completed",
+		RunID:           "run-done",
+		Status:          "completed",
 		PendingApproval: &client.ApprovalInfo{ID: "appr-stale"},
 	})
 	if m.approval != nil {
@@ -118,8 +118,8 @@ func TestApplyPendingFromSnapshot_WaitingQuestion(t *testing.T) {
 	m := New(config.ChatConfig{Provider: "claude"}, "http://127.0.0.1:4317")
 	m.yolo = false
 	m.applyPendingFromSnapshot(client.RunSnapshot{
-		RunID:  "run-q",
-		Status: "waiting_question",
+		RunID:           "run-q",
+		Status:          "waiting_question",
 		PendingQuestion: &client.QuestionInfo{ID: "q-1", Prompt: "Pick one"},
 	})
 	if m.approval != nil {
@@ -135,11 +135,11 @@ func TestChatOpenedMsg_HydratesWaitingApproval(t *testing.T) {
 	m.width, m.height = 120, 40
 	m.yolo = false
 	m2, _ := m.Update(ChatOpenedMsg{
-		Handle: client.RunHandle{RunID: "run-97624", ProviderKey: "grok", Status: "waiting_approval"},
+		Handle:   client.RunHandle{RunID: "run-97624", ProviderKey: "grok", Status: "waiting_approval"},
 		Messages: []ChatMessage{{Role: "user", Content: "ghi file"}},
 		Snapshot: client.RunSnapshot{
-			RunID:  "run-97624",
-			Status: "waiting_approval",
+			RunID:           "run-97624",
+			Status:          "waiting_approval",
 			PendingApproval: &client.ApprovalInfo{ID: "appr-97698"},
 		},
 	})
@@ -158,8 +158,8 @@ func TestChatOpenedMsg_CompletedIgnoresStalePending(t *testing.T) {
 	m2, _ := m.Update(ChatOpenedMsg{
 		Handle: client.RunHandle{RunID: "run-old", Status: "completed"},
 		Snapshot: client.RunSnapshot{
-			RunID:  "run-old",
-			Status: "completed",
+			RunID:           "run-old",
+			Status:          "completed",
 			PendingApproval: &client.ApprovalInfo{ID: "appr-old"},
 		},
 	})

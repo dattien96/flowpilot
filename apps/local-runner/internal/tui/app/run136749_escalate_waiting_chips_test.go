@@ -121,7 +121,7 @@ func TestRun136749_BannerIncludesGateReason(t *testing.T) {
 	m := New(config.ChatConfig{Provider: "codex"}, "http://127.0.0.1:4317")
 	m.applyAgentGraph(&client.AgentGraphSnapshot{
 		LoopState: client.AgentLoopState{Status: "blocked", BlockReason: "escalate", GateReason: "Reviewer requested escalate: missing clamp"},
-		Runs: []client.AgentRunSummary{{RunID: "run-136749", AgentName: "main", Status: "completed"}},
+		Runs:      []client.AgentRunSummary{{RunID: "run-136749", AgentName: "main", Status: "completed"}},
 	})
 	var banner string
 	for _, msg := range m.messages {
@@ -140,7 +140,7 @@ func TestRun136749_BannerIncludesGateReason(t *testing.T) {
 	gate := strings.Repeat("á", 130) + " escalate reason"
 	m2.applyAgentGraph(&client.AgentGraphSnapshot{
 		LoopState: client.AgentLoopState{Status: "blocked", BlockReason: "escalate", GateReason: gate},
-		Runs: []client.AgentRunSummary{{RunID: "run-2", Status: "completed"}},
+		Runs:      []client.AgentRunSummary{{RunID: "run-2", Status: "completed"}},
 	})
 	var banner2 string
 	for _, msg := range m2.messages {
