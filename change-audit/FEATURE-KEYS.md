@@ -28,6 +28,7 @@ Source of truth for stable `feature_key` values used by:
 - google-drive — Google Drive connection, artifact/chat sync, and restore
 - supabase-config — Supabase connection, RLS policies, runtime config, schema constraints
 - terminal-session — terminal/process lifecycle, dev-stack controls, thinking-stream rendering
+- runner-lifecycle — SS-24/SD-28/CP-81 shared local runner lifecycle: client leases, heartbeat/TTL, idle shutdown, force stop, restart reconnect, stale replacement
 - context-regression-engine — SD-17 context + regression engine (Plane C): gate, resolver, requirements scaffold, flow rules
 - cross-provider-handoff — cross-provider chat handoff: provider-neutral transcript transfer + summary-based hybrid
 - token-usage
