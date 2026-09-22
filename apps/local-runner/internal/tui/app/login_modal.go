@@ -143,12 +143,12 @@ func (m *AppModel) renderLoginModal(width int) string {
 	btnActive := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("0")).Background(lipgloss.Color("82"))
 	btnInactive := lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Background(lipgloss.Color("238"))
 
-	sb.WriteString(border.Render("╭" + strings.Repeat("─", width-2) + "╮") + "\n")
+	sb.WriteString(border.Render("╭"+strings.Repeat("─", width-2)+"╮") + "\n")
 	title := " Supabase Sign In "
 	sb.WriteString(border.Render("│"))
 	sb.WriteString(titleStyle.Render(lipgloss.PlaceHorizontal(innerW, lipgloss.Center, title)))
 	sb.WriteString(border.Render("│") + "\n")
-	sb.WriteString(border.Render("├" + strings.Repeat("─", width-2) + "┤") + "\n")
+	sb.WriteString(border.Render("├"+strings.Repeat("─", width-2)+"┤") + "\n")
 
 	// Notice line
 	sb.WriteString(border.Render("│ "))
@@ -225,7 +225,7 @@ func (m *AppModel) renderLoginModal(width int) string {
 	}
 
 	// Action buttons
-	sb.WriteString(border.Render("├" + strings.Repeat("─", width-2) + "┤") + "\n")
+	sb.WriteString(border.Render("├"+strings.Repeat("─", width-2)+"┤") + "\n")
 	sb.WriteString(border.Render("│ "))
 	submitLbl := " Sign In "
 	cancelLbl := " Cancel "

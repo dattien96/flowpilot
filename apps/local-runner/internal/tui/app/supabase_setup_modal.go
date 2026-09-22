@@ -160,12 +160,12 @@ func (m *AppModel) renderSupabaseSetupModal(width int) string {
 	btnActive := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("0")).Background(lipgloss.Color("82"))
 	btnInactive := lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Background(lipgloss.Color("238"))
 
-	sb.WriteString(border.Render("╭" + strings.Repeat("─", width-2) + "╮") + "\n")
+	sb.WriteString(border.Render("╭"+strings.Repeat("─", width-2)+"╮") + "\n")
 	title := " Supabase Workspace Setup "
 	sb.WriteString(border.Render("│"))
 	sb.WriteString(titleStyle.Render(lipgloss.PlaceHorizontal(innerW, lipgloss.Center, title)))
 	sb.WriteString(border.Render("│") + "\n")
-	sb.WriteString(border.Render("├" + strings.Repeat("─", width-2) + "┤") + "\n")
+	sb.WriteString(border.Render("├"+strings.Repeat("─", width-2)+"┤") + "\n")
 
 	// Notice line
 	sb.WriteString(border.Render("│ "))
@@ -249,7 +249,7 @@ func (m *AppModel) renderSupabaseSetupModal(width int) string {
 	}
 
 	// Action buttons
-	sb.WriteString(border.Render("├" + strings.Repeat("─", width-2) + "┤") + "\n")
+	sb.WriteString(border.Render("├"+strings.Repeat("─", width-2)+"┤") + "\n")
 	sb.WriteString(border.Render("│ "))
 	saveLbl := " Save Configuration "
 	cancelLbl := " Cancel "
