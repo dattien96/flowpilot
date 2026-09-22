@@ -21,9 +21,9 @@ import (
 // (startTurn rejects that with 400 "stepId is required").
 func TestResolveTurnStepID_FallsBackForWorkflowOpen(t *testing.T) {
 	cases := []struct {
-		name       string
-		mutate     func(*AppModel)
-		want       string
+		name   string
+		mutate func(*AppModel)
+		want   string
 	}{
 		{
 			name: "handle step id wins",
@@ -84,7 +84,7 @@ func TestChatOpenedMsg_WorkflowOpenPersistsResolvedStepID(t *testing.T) {
 					WorkflowID: "wf-grok", FlowRef: "wf-grok", Status: "completed",
 					ProviderKey: pk,
 				},
-				Snapshot:   client.RunSnapshot{RunID: "run-193749", Status: "completed"},
+				Snapshot:    client.RunSnapshot{RunID: "run-193749", Status: "completed"},
 				HistoryMeta: client.RunHistoryItem{RunID: "run-193749", RunKind: "workflow", WorkflowID: "wf-grok", Status: "completed"},
 				Messages:    []ChatMessage{{Role: "user", Content: "fix bug 1+1 != 2"}},
 			})
@@ -110,7 +110,7 @@ func TestChatOpenedMsg_NormalChatOpenKeepsSyntheticStepID(t *testing.T) {
 			RunID: "run-5", RunKind: "chat", StepID: "chat-run-5", Status: "completed",
 			ProviderKey: "codex",
 		},
-		Snapshot:   client.RunSnapshot{RunID: "run-5", Status: "completed"},
+		Snapshot:    client.RunSnapshot{RunID: "run-5", Status: "completed"},
 		HistoryMeta: client.RunHistoryItem{RunID: "run-5", RunKind: "chat"},
 		Messages:    []ChatMessage{{Role: "user", Content: "hi"}},
 	})
@@ -154,7 +154,7 @@ func TestOpenTurnStream_WorkflowOpenSendsWorkflowIDAsStepID(t *testing.T) {
 					WorkflowID: "wf-grok", FlowRef: "wf-grok", Status: "completed",
 					ProviderKey: pk,
 				},
-				Snapshot:   client.RunSnapshot{RunID: "run-193749", Status: "completed"},
+				Snapshot:    client.RunSnapshot{RunID: "run-193749", Status: "completed"},
 				HistoryMeta: client.RunHistoryItem{RunID: "run-193749", RunKind: "workflow", WorkflowID: "wf-grok", Status: "completed"},
 				Messages:    []ChatMessage{{Role: "user", Content: "fix bug 1+1 != 2"}},
 			})

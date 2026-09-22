@@ -213,7 +213,7 @@ func TestBlockedBar_ClickAllowMultiPath(t *testing.T) {
 		captured = body["paths"]
 		json.NewEncoder(w).Encode(client.AgentGraphSnapshot{
 			ParentRunID: "run-1",
-			LoopState: client.AgentLoopState{Status: "running"},
+			LoopState:   client.AgentLoopState{Status: "running"},
 		})
 	}))
 	defer srv.Close()
