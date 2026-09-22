@@ -94,7 +94,6 @@ func TestCA797_SkipDoesNotClobberDone(t *testing.T) {
 	}
 }
 
-
 func TestCA797_EmptyStartDoesNotSkipPrefix(t *testing.T) {
 	svc, _ := newTestServer(t)
 	parent, err := svc.createRun(StartRunInput{
