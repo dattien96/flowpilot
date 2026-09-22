@@ -390,14 +390,14 @@ type devinProcessHandle struct {
 	// for spawned child runs, "probe" for catalog probes, "" for chat turns)
 	// — the BUG-334 rule: a child process must never tear down a live parent
 	// process whose in-flight MCP tool call would die with it.
-	scopeBase    string
-	scopeSegment string
-	model        string
+	scopeBase      string
+	scopeSegment   string
+	model          string
 	permissionMode string
-	dispatcher   *devinDispatcher
-	adapter      *devinAdapter
-	initResult   map[string]any
-	kill         func()
+	dispatcher     *devinDispatcher
+	adapter        *devinAdapter
+	initResult     map[string]any
+	kill           func()
 }
 
 func (h *devinProcessHandle) close() {

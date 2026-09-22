@@ -18,9 +18,9 @@ type fakeDevinBridge struct {
 	decision  string
 }
 
-func (b *fakeDevinBridge) Emit(ev ProviderEvent) { b.events = append(b.events, ev) }
+func (b *fakeDevinBridge) Emit(ev ProviderEvent)            { b.events = append(b.events, ev) }
 func (b *fakeDevinBridge) Accepted(receipt ReceiptEvidence) {}
-func (b *fakeDevinBridge) Terminal(proof TerminalEvidence) {}
+func (b *fakeDevinBridge) Terminal(proof TerminalEvidence)  {}
 func (b *fakeDevinBridge) RequestApproval(details ApprovalDetails) (string, error) {
 	b.approvals = append(b.approvals, details)
 	if b.decision != "" {
@@ -392,7 +392,7 @@ func TestDevinModelIDForACP(t *testing.T) {
 func TestDevinModelForEffort(t *testing.T) {
 	cases := []struct{ model, effort, want string }{
 		{"swe-2-high", "low", "swe-2-low"},
-		{"swe-2-high", "high", ""},          // already high → no-op
+		{"swe-2-high", "high", ""}, // already high → no-op
 		{"swe-2-high", "xhigh", "swe-2-xhigh"},
 		{"claude-opus-5-medium", "max", "claude-opus-5-max"},
 		{"adaptive", "high", "adaptive-high"}, // family-only id gets suffix
