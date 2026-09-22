@@ -4461,6 +4461,27 @@ func (r *Runner) StartGoogleDriveMcpAuth() error {
 	return launchTerminalCommandWithEnvFn(env, authCommand, true)
 }
 
+// withoutEnvKeys drops exact keys from a KEY=VALUE env list — for
+// host-integration markers that must not leak into spawned provider CLIs.
+func withoutEnvKeys(env []string, keys ...string) []string {
+	drop := make(map[string]struct{}, len(keys))
+	for _, k := range keys {
+		drop[k] = struct{}{}
+	}
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		key := kv
+		if idx := strings.IndexByte(kv, '='); idx >= 0 {
+			key = kv[:idx]
+		}
+		if _, ok := drop[key]; ok {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
+}
+
 func (r *Runner) getEnvForExecution(
 	providerKey string,
 	accountHomePath string,
@@ -4473,6 +4494,13 @@ func (r *Runner) getEnvForExecution(
 	baseEnv := rawEnv
 	if strings.EqualFold(providerKey, "gemini") {
 		baseEnv = agyFilteredEnv(rawEnv, nil)
+	}
+	if strings.EqualFold(providerKey, string(ProviderKeyDevin)) {
+		// CA-912: ACP_BACKEND is exported by Windsurf into shells it owns; when
+		// it leaks into `devin -p` the CLI ignores the on-disk credentials.toml
+		// entirely and one-shot turns die with "Not logged in" despite a valid
+		// credential file.
+		baseEnv = withoutEnvKeys(baseEnv, "ACP_BACKEND")
 	}
 	trimmedAccountHomePath := strings.TrimSpace(accountHomePath)
 

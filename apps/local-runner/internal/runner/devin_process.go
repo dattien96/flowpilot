@@ -612,6 +612,14 @@ func devinProcessEnv(extraEnv map[string]string) []string {
 		if strings.HasPrefix(kv, "DEVIN_") || strings.HasPrefix(kv, "WINDSURF_API_KEY=") {
 			continue
 		}
+		// CA-912: ACP_BACKEND marks "running inside a host that owns
+		// credentials" — inherited from Windsurf-owned shells it makes the
+		// server refuse the on-disk store, so authenticate never refreshes
+		// credentials.toml and `devin -p` turns starve. The runner always
+		// calls authenticate itself; the flag must not propagate.
+		if strings.HasPrefix(kv, "ACP_BACKEND=") {
+			continue
+		}
 		filtered = append(filtered, kv)
 	}
 	for key, value := range extraEnv {
