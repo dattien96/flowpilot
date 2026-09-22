@@ -6,6 +6,15 @@ type Health struct {
 	Cwd           string `json:"cwd"`
 	Os            string `json:"os"`
 	StartedAt     string `json:"startedAt"`
+	// CP-81 additive identity (SD-28 §6.2): present only when a lifecycle
+	// manager is attached (runner serve); zero-valued/omitted otherwise so
+	// legacy consumers see the unchanged shape.
+	RunnerInstanceID string `json:"runnerInstanceId,omitempty"`
+	Generation       int    `json:"generation,omitempty"`
+	ProtocolVersion  int    `json:"protocolVersion,omitempty"`
+	BuildID          string `json:"buildId,omitempty"`
+	LifecycleMode    string `json:"lifecycleMode,omitempty"`
+	Phase            string `json:"phase,omitempty"`
 }
 
 type Provider struct {
