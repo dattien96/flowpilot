@@ -27,6 +27,7 @@ import {
 } from "@/clientCore";
 import { runnerModeLabel } from "@/client/createRunnerClient";
 import { autoInitProjectEngine } from "@/components/settings/projectEngine";
+import { useStore } from "@/state/store";
 
 type AppPhase = "loading" | "unauthenticated" | "authenticated";
 type UnauthenticatedView = "login" | "settings";
@@ -67,6 +68,18 @@ export function App(): React.ReactElement {
 
   useEffect(() => {
     void refreshBootstrap();
+  }, []);
+
+  // CP-81 Task-418 T-5: subscribe to the lifecycle status pushed by Electron
+  // main (shared clients, active work, idle deadline, update pending,
+  // reconnecting). No-op outside Electron (plain browser/e2e).
+  useEffect(() => {
+    const bridge = window.flowpilot?.lifecycle;
+    if (!bridge?.onStatus) return;
+    const unsubscribe = bridge.onStatus((status) => {
+      useStore.getState().setLifecycleStatus(status);
+    });
+    return unsubscribe;
   }, []);
 
   // On every authenticated boot, run a bind-time engine init for all projects so

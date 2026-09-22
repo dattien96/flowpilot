@@ -2,6 +2,23 @@ import { useEffect, useState } from "react";
 import type { RunnerHealth } from "@flowpilot/client-core";
 import { loadRunnerHealthUseCase } from "@/clientCore";
 import { RUNNER_URL } from "@/config";
+import { useStore } from "@/state/store";
+
+// CP-81 T-5: compact lifecycle fragment for the runner chip — reconnecting
+// overrides everything; then idle countdown, shared clients, update pending.
+function lifecycleChip(status: ReturnType<typeof useStore.getState>["lifecycleStatus"], nowMs: number): string | null {
+  if (!status) return null;
+  if (status.reconnecting || status.phase === "draining_restart") return "Runner restarting…";
+  const parts: string[] = [];
+  if (status.sharedClients > 1) parts.push(`shared:${status.sharedClients}`);
+  if (status.activeWork > 0) parts.push(`work:${status.activeWork}`);
+  if (status.idleDeadlineMs !== undefined && status.phase === "idle_grace") {
+    const secs = Math.max(0, Math.round((status.idleDeadlineMs - nowMs) / 1000));
+    parts.push(`idle shutdown in ${secs}s`);
+  }
+  if (status.updatePending) parts.push("update pending");
+  return parts.length > 0 ? parts.join(" · ") : null;
+}
 
 function toErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : "Unable to reach local runner.";
@@ -12,6 +29,7 @@ export function RunnerStatusIndicator(): React.ReactElement {
   const [busy, setBusy] = useState(true);
   const [health, setHealth] = useState<RunnerHealth | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const lifecycleStatus = useStore((s) => s.lifecycleStatus);
 
   const refresh = async () => {
     setBusy(true);
@@ -32,6 +50,7 @@ export function RunnerStatusIndicator(): React.ReactElement {
 
   const label = error ? "Offline" : busy ? "Checking" : "Online";
   const tone = error ? "offline" : busy ? "checking" : "online";
+  const chip = lifecycleChip(lifecycleStatus, Date.now());
 
   return (
     <>
@@ -45,6 +64,7 @@ export function RunnerStatusIndicator(): React.ReactElement {
       >
         <span className={`status-dot status-${tone === "checking" ? "starting" : tone}`} />
         <span>Runner {label}</span>
+        {chip ? <span className="runner-lifecycle-chip">{chip}</span> : null}
       </button>
 
       {open ? (

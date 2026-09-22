@@ -585,6 +585,19 @@ interface AppState {
   openAdminWeb(): void;
   restartSystem(): Promise<void>;
   shutdownSystem(): Promise<void>;
+  /** CP-81 Task-418 T-5: lifecycle status pushed from Electron main via the
+   *  bridge (shared clients, active work, idle deadline, update pending,
+   *  reconnecting). Undefined when unmanaged or running outside Electron. */
+  lifecycleStatus?: {
+    connected: boolean;
+    phase?: string;
+    sharedClients: number;
+    activeWork: number;
+    idleDeadlineMs?: number;
+    updatePending: boolean;
+    reconnecting: boolean;
+  };
+  setLifecycleStatus(status: AppState["lifecycleStatus"]): void;
   confirmAccountSwitch(): Promise<void>;
   cancelAccountSwitch(): void;
   requestManualAccountSwitch(): void;
@@ -2759,6 +2772,10 @@ export const useStore = create<AppState>((set, get) => ({
 
   async shutdownSystem() {
     await get().client.shutdownStack();
+  },
+
+  setLifecycleStatus(status) {
+    set({ lifecycleStatus: status });
   },
 
   cancelAccountSwitch() {
