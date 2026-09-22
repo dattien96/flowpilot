@@ -9,55 +9,59 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
-import { Route as LoginRouteImport } from './routes/login'
-import { Route as GuideRouteImport } from './routes/guide'
-import { Route as AuthenticatedRouteImport } from './routes/_authenticated'
 import { Route as IndexRouteImport } from './routes/index'
-import { Route as SetupSupabaseRouteImport } from './routes/setup.supabase'
-import { Route as AuthenticatedWorkflowsRouteImport } from './routes/_authenticated/workflows'
-import { Route as AuthenticatedWorkflowStepsRouteImport } from './routes/_authenticated/workflow-steps'
-import { Route as AuthenticatedWorkflowRunsRouteImport } from './routes/_authenticated/workflow-runs'
-import { Route as AuthenticatedTeamsRouteImport } from './routes/_authenticated/teams'
-import { Route as AuthenticatedDashboardRouteImport } from './routes/_authenticated/dashboard'
-import { Route as AuthenticatedArtifactsRouteImport } from './routes/_authenticated/artifacts'
+import { Route as AuthenticatedRouteImport } from './routes/_authenticated'
+import { Route as GuideRouteImport } from './routes/guide'
+import { Route as LoginRouteImport } from './routes/login'
 import { Route as AuthenticatedAiRunsRouteImport } from './routes/_authenticated/ai-runs'
-import { Route as AuthenticatedProjectsIndexRouteImport } from './routes/_authenticated/projects/index'
-import { Route as AuthenticatedWorkflowsCreateRouteImport } from './routes/_authenticated/workflows/create'
-import { Route as AuthenticatedWorkflowsWorkflowIdRouteImport } from './routes/_authenticated/workflows/$workflowId'
-import { Route as AuthenticatedWorkflowStepsCreateRouteImport } from './routes/_authenticated/workflow-steps/create'
-import { Route as AuthenticatedWorkflowStepsStepTypeRouteImport } from './routes/_authenticated/workflow-steps/$stepType'
-import { Route as AuthenticatedWorkflowRunsRunIdRouteImport } from './routes/_authenticated/workflow-runs/$runId'
-import { Route as AuthenticatedSettingsSupabaseRouteImport } from './routes/_authenticated/settings/supabase'
-import { Route as AuthenticatedSettingsRunnerRouteImport } from './routes/_authenticated/settings/runner'
-import { Route as AuthenticatedSettingsPromptTemplatesRouteImport } from './routes/_authenticated/settings/prompt-templates'
-import { Route as AuthenticatedSettingsMcpServersRouteImport } from './routes/_authenticated/settings/mcp-servers'
-import { Route as AuthenticatedSettingsGoogleDriveSetupRouteImport } from './routes/_authenticated/settings/google-drive-setup'
-import { Route as AuthenticatedSettingsArtifactsRouteImport } from './routes/_authenticated/settings/artifacts'
-import { Route as AuthenticatedSettingsAiProvidersRouteImport } from './routes/_authenticated/settings/ai-providers'
-import { Route as AuthenticatedSettingsAccountsRouteImport } from './routes/_authenticated/settings/accounts'
-import { Route as AuthenticatedProjectsCreateRouteImport } from './routes/_authenticated/projects/create'
-import { Route as AuthenticatedProjectsProjectIdRouteImport } from './routes/_authenticated/projects/$projectId'
+import { Route as AuthenticatedArtifactsRouteImport } from './routes/_authenticated/artifacts'
+import { Route as AuthenticatedDashboardRouteImport } from './routes/_authenticated/dashboard'
+import { Route as AuthenticatedTeamsRouteImport } from './routes/_authenticated/teams'
+import { Route as AuthenticatedWorkflowRunsRouteImport } from './routes/_authenticated/workflow-runs'
+import { Route as AuthenticatedWorkflowStepsRouteImport } from './routes/_authenticated/workflow-steps'
+import { Route as AuthenticatedWorkflowsRouteImport } from './routes/_authenticated/workflows'
+import { Route as SetupSupabaseRouteImport } from './routes/setup.supabase'
 import { Route as AuthenticatedArtifactsCreateRouteImport } from './routes/_authenticated/artifacts/create'
-import { Route as AuthenticatedSettingsPromptTemplatesCreateRouteImport } from './routes/_authenticated/settings/prompt-templates/create'
-import { Route as AuthenticatedSettingsMcpServersMcpConnectTestRouteImport } from './routes/_authenticated/settings/mcp-servers/mcp-connect-test'
-import { Route as AuthenticatedSettingsMcpServersJiraLinkRouteImport } from './routes/_authenticated/settings/mcp-servers/jira-link'
-import { Route as AuthenticatedSettingsMcpServersInstancesRouteImport } from './routes/_authenticated/settings/mcp-servers/instances'
-import { Route as AuthenticatedSettingsMcpServersCreateRouteImport } from './routes/_authenticated/settings/mcp-servers/create'
-import { Route as AuthenticatedSettingsArtifactsCreateRouteImport } from './routes/_authenticated/settings/artifacts/create'
-import { Route as AuthenticatedProjectsProjectIdWorkflowsRouteImport } from './routes/_authenticated/projects/$projectId/workflows'
-import { Route as AuthenticatedProjectsProjectIdTechSpecsRouteImport } from './routes/_authenticated/projects/$projectId/tech-specs'
-import { Route as AuthenticatedProjectsProjectIdTasksRouteImport } from './routes/_authenticated/projects/$projectId/tasks'
-import { Route as AuthenticatedProjectsProjectIdSettingsRouteImport } from './routes/_authenticated/projects/$projectId/settings'
-import { Route as AuthenticatedProjectsProjectIdMembersRouteImport } from './routes/_authenticated/projects/$projectId/members'
-import { Route as AuthenticatedProjectsProjectIdMasterScheduleRouteImport } from './routes/_authenticated/projects/$projectId/master-schedule'
-import { Route as AuthenticatedProjectsProjectIdDirectoryBindingsRouteImport } from './routes/_authenticated/projects/$projectId/directory-bindings'
-import { Route as AuthenticatedProjectsProjectIdCodingPlanRouteImport } from './routes/_authenticated/projects/$projectId/coding-plan'
-import { Route as AuthenticatedProjectsProjectIdBusinessLogicRouteImport } from './routes/_authenticated/projects/$projectId/business-logic'
+import { Route as AuthenticatedProjectsIndexRouteImport } from './routes/_authenticated/projects/index'
+import { Route as AuthenticatedProjectsProjectIdRouteImport } from './routes/_authenticated/projects/$projectId'
+import { Route as AuthenticatedProjectsCreateRouteImport } from './routes/_authenticated/projects/create'
+import { Route as AuthenticatedSettingsAccountsRouteImport } from './routes/_authenticated/settings/accounts'
+import { Route as AuthenticatedSettingsAiProvidersRouteImport } from './routes/_authenticated/settings/ai-providers'
+import { Route as AuthenticatedSettingsArtifactsRouteImport } from './routes/_authenticated/settings/artifacts'
+import { Route as AuthenticatedSettingsGoogleDriveSetupRouteImport } from './routes/_authenticated/settings/google-drive-setup'
+import { Route as AuthenticatedSettingsMcpServersRouteImport } from './routes/_authenticated/settings/mcp-servers'
+import { Route as AuthenticatedSettingsPromptTemplatesRouteImport } from './routes/_authenticated/settings/prompt-templates'
+import { Route as AuthenticatedSettingsRunnerRouteImport } from './routes/_authenticated/settings/runner'
+import { Route as AuthenticatedSettingsSupabaseRouteImport } from './routes/_authenticated/settings/supabase'
+import { Route as AuthenticatedWorkflowRunsRunIdRouteImport } from './routes/_authenticated/workflow-runs/$runId'
+import { Route as AuthenticatedWorkflowStepsStepTypeRouteImport } from './routes/_authenticated/workflow-steps/$stepType'
+import { Route as AuthenticatedWorkflowStepsCreateRouteImport } from './routes/_authenticated/workflow-steps/create'
+import { Route as AuthenticatedWorkflowsWorkflowIdRouteImport } from './routes/_authenticated/workflows/$workflowId'
+import { Route as AuthenticatedWorkflowsCreateRouteImport } from './routes/_authenticated/workflows/create'
 import { Route as AuthenticatedProjectsProjectIdArtifactsRouteImport } from './routes/_authenticated/projects/$projectId/artifacts'
+import { Route as AuthenticatedProjectsProjectIdBusinessLogicRouteImport } from './routes/_authenticated/projects/$projectId/business-logic'
+import { Route as AuthenticatedProjectsProjectIdCodingPlanRouteImport } from './routes/_authenticated/projects/$projectId/coding-plan'
+import { Route as AuthenticatedProjectsProjectIdDirectoryBindingsRouteImport } from './routes/_authenticated/projects/$projectId/directory-bindings'
+import { Route as AuthenticatedProjectsProjectIdMasterScheduleRouteImport } from './routes/_authenticated/projects/$projectId/master-schedule'
+import { Route as AuthenticatedProjectsProjectIdMembersRouteImport } from './routes/_authenticated/projects/$projectId/members'
+import { Route as AuthenticatedProjectsProjectIdSettingsRouteImport } from './routes/_authenticated/projects/$projectId/settings'
+import { Route as AuthenticatedProjectsProjectIdTasksRouteImport } from './routes/_authenticated/projects/$projectId/tasks'
+import { Route as AuthenticatedProjectsProjectIdTechSpecsRouteImport } from './routes/_authenticated/projects/$projectId/tech-specs'
+import { Route as AuthenticatedProjectsProjectIdWorkflowsRouteImport } from './routes/_authenticated/projects/$projectId/workflows'
+import { Route as AuthenticatedSettingsArtifactsCreateRouteImport } from './routes/_authenticated/settings/artifacts/create'
+import { Route as AuthenticatedSettingsMcpServersCreateRouteImport } from './routes/_authenticated/settings/mcp-servers/create'
+import { Route as AuthenticatedSettingsMcpServersInstancesRouteImport } from './routes/_authenticated/settings/mcp-servers/instances'
+import { Route as AuthenticatedSettingsMcpServersJiraLinkRouteImport } from './routes/_authenticated/settings/mcp-servers/jira-link'
+import { Route as AuthenticatedSettingsMcpServersMcpConnectTestRouteImport } from './routes/_authenticated/settings/mcp-servers/mcp-connect-test'
+import { Route as AuthenticatedSettingsPromptTemplatesCreateRouteImport } from './routes/_authenticated/settings/prompt-templates/create'
 
-const LoginRoute = LoginRouteImport.update({
-  id: '/login',
-  path: '/login',
+const IndexRoute = IndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AuthenticatedRoute = AuthenticatedRouteImport.update({
+  id: '/_authenticated',
   getParentRoute: () => rootRouteImport,
 } as any)
 const GuideRoute = GuideRouteImport.update({
@@ -65,45 +69,14 @@ const GuideRoute = GuideRouteImport.update({
   path: '/guide',
   getParentRoute: () => rootRouteImport,
 } as any)
-const AuthenticatedRoute = AuthenticatedRouteImport.update({
-  id: '/_authenticated',
+const LoginRoute = LoginRouteImport.update({
+  id: '/login',
+  path: '/login',
   getParentRoute: () => rootRouteImport,
 } as any)
-const IndexRoute = IndexRouteImport.update({
-  id: '/',
-  path: '/',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const SetupSupabaseRoute = SetupSupabaseRouteImport.update({
-  id: '/setup/supabase',
-  path: '/setup/supabase',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const AuthenticatedWorkflowsRoute = AuthenticatedWorkflowsRouteImport.update({
-  id: '/workflows',
-  path: '/workflows',
-  getParentRoute: () => AuthenticatedRoute,
-} as any)
-const AuthenticatedWorkflowStepsRoute =
-  AuthenticatedWorkflowStepsRouteImport.update({
-    id: '/workflow-steps',
-    path: '/workflow-steps',
-    getParentRoute: () => AuthenticatedRoute,
-  } as any)
-const AuthenticatedWorkflowRunsRoute =
-  AuthenticatedWorkflowRunsRouteImport.update({
-    id: '/workflow-runs',
-    path: '/workflow-runs',
-    getParentRoute: () => AuthenticatedRoute,
-  } as any)
-const AuthenticatedTeamsRoute = AuthenticatedTeamsRouteImport.update({
-  id: '/teams',
-  path: '/teams',
-  getParentRoute: () => AuthenticatedRoute,
-} as any)
-const AuthenticatedDashboardRoute = AuthenticatedDashboardRouteImport.update({
-  id: '/dashboard',
-  path: '/dashboard',
+const AuthenticatedAiRunsRoute = AuthenticatedAiRunsRouteImport.update({
+  id: '/ai-runs',
+  path: '/ai-runs',
   getParentRoute: () => AuthenticatedRoute,
 } as any)
 const AuthenticatedArtifactsRoute = AuthenticatedArtifactsRouteImport.update({
@@ -111,99 +84,48 @@ const AuthenticatedArtifactsRoute = AuthenticatedArtifactsRouteImport.update({
   path: '/artifacts',
   getParentRoute: () => AuthenticatedRoute,
 } as any)
-const AuthenticatedAiRunsRoute = AuthenticatedAiRunsRouteImport.update({
-  id: '/ai-runs',
-  path: '/ai-runs',
+const AuthenticatedDashboardRoute = AuthenticatedDashboardRouteImport.update({
+  id: '/dashboard',
+  path: '/dashboard',
   getParentRoute: () => AuthenticatedRoute,
 } as any)
+const AuthenticatedTeamsRoute = AuthenticatedTeamsRouteImport.update({
+  id: '/teams',
+  path: '/teams',
+  getParentRoute: () => AuthenticatedRoute,
+} as any)
+const AuthenticatedWorkflowRunsRoute =
+  AuthenticatedWorkflowRunsRouteImport.update({
+    id: '/workflow-runs',
+    path: '/workflow-runs',
+    getParentRoute: () => AuthenticatedRoute,
+  } as any)
+const AuthenticatedWorkflowStepsRoute =
+  AuthenticatedWorkflowStepsRouteImport.update({
+    id: '/workflow-steps',
+    path: '/workflow-steps',
+    getParentRoute: () => AuthenticatedRoute,
+  } as any)
+const AuthenticatedWorkflowsRoute = AuthenticatedWorkflowsRouteImport.update({
+  id: '/workflows',
+  path: '/workflows',
+  getParentRoute: () => AuthenticatedRoute,
+} as any)
+const SetupSupabaseRoute = SetupSupabaseRouteImport.update({
+  id: '/setup/supabase',
+  path: '/setup/supabase',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AuthenticatedArtifactsCreateRoute =
+  AuthenticatedArtifactsCreateRouteImport.update({
+    id: '/create',
+    path: '/create',
+    getParentRoute: () => AuthenticatedArtifactsRoute,
+  } as any)
 const AuthenticatedProjectsIndexRoute =
   AuthenticatedProjectsIndexRouteImport.update({
     id: '/projects/',
     path: '/projects/',
-    getParentRoute: () => AuthenticatedRoute,
-  } as any)
-const AuthenticatedWorkflowsCreateRoute =
-  AuthenticatedWorkflowsCreateRouteImport.update({
-    id: '/create',
-    path: '/create',
-    getParentRoute: () => AuthenticatedWorkflowsRoute,
-  } as any)
-const AuthenticatedWorkflowsWorkflowIdRoute =
-  AuthenticatedWorkflowsWorkflowIdRouteImport.update({
-    id: '/$workflowId',
-    path: '/$workflowId',
-    getParentRoute: () => AuthenticatedWorkflowsRoute,
-  } as any)
-const AuthenticatedWorkflowStepsCreateRoute =
-  AuthenticatedWorkflowStepsCreateRouteImport.update({
-    id: '/create',
-    path: '/create',
-    getParentRoute: () => AuthenticatedWorkflowStepsRoute,
-  } as any)
-const AuthenticatedWorkflowStepsStepTypeRoute =
-  AuthenticatedWorkflowStepsStepTypeRouteImport.update({
-    id: '/$stepType',
-    path: '/$stepType',
-    getParentRoute: () => AuthenticatedWorkflowStepsRoute,
-  } as any)
-const AuthenticatedWorkflowRunsRunIdRoute =
-  AuthenticatedWorkflowRunsRunIdRouteImport.update({
-    id: '/$runId',
-    path: '/$runId',
-    getParentRoute: () => AuthenticatedWorkflowRunsRoute,
-  } as any)
-const AuthenticatedSettingsSupabaseRoute =
-  AuthenticatedSettingsSupabaseRouteImport.update({
-    id: '/settings/supabase',
-    path: '/settings/supabase',
-    getParentRoute: () => AuthenticatedRoute,
-  } as any)
-const AuthenticatedSettingsRunnerRoute =
-  AuthenticatedSettingsRunnerRouteImport.update({
-    id: '/settings/runner',
-    path: '/settings/runner',
-    getParentRoute: () => AuthenticatedRoute,
-  } as any)
-const AuthenticatedSettingsPromptTemplatesRoute =
-  AuthenticatedSettingsPromptTemplatesRouteImport.update({
-    id: '/settings/prompt-templates',
-    path: '/settings/prompt-templates',
-    getParentRoute: () => AuthenticatedRoute,
-  } as any)
-const AuthenticatedSettingsMcpServersRoute =
-  AuthenticatedSettingsMcpServersRouteImport.update({
-    id: '/settings/mcp-servers',
-    path: '/settings/mcp-servers',
-    getParentRoute: () => AuthenticatedRoute,
-  } as any)
-const AuthenticatedSettingsGoogleDriveSetupRoute =
-  AuthenticatedSettingsGoogleDriveSetupRouteImport.update({
-    id: '/settings/google-drive-setup',
-    path: '/settings/google-drive-setup',
-    getParentRoute: () => AuthenticatedRoute,
-  } as any)
-const AuthenticatedSettingsArtifactsRoute =
-  AuthenticatedSettingsArtifactsRouteImport.update({
-    id: '/settings/artifacts',
-    path: '/settings/artifacts',
-    getParentRoute: () => AuthenticatedRoute,
-  } as any)
-const AuthenticatedSettingsAiProvidersRoute =
-  AuthenticatedSettingsAiProvidersRouteImport.update({
-    id: '/settings/ai-providers',
-    path: '/settings/ai-providers',
-    getParentRoute: () => AuthenticatedRoute,
-  } as any)
-const AuthenticatedSettingsAccountsRoute =
-  AuthenticatedSettingsAccountsRouteImport.update({
-    id: '/settings/accounts',
-    path: '/settings/accounts',
-    getParentRoute: () => AuthenticatedRoute,
-  } as any)
-const AuthenticatedProjectsCreateRoute =
-  AuthenticatedProjectsCreateRouteImport.update({
-    id: '/projects/create',
-    path: '/projects/create',
     getParentRoute: () => AuthenticatedRoute,
   } as any)
 const AuthenticatedProjectsProjectIdRoute =
@@ -212,94 +134,94 @@ const AuthenticatedProjectsProjectIdRoute =
     path: '/projects/$projectId',
     getParentRoute: () => AuthenticatedRoute,
   } as any)
-const AuthenticatedArtifactsCreateRoute =
-  AuthenticatedArtifactsCreateRouteImport.update({
+const AuthenticatedProjectsCreateRoute =
+  AuthenticatedProjectsCreateRouteImport.update({
+    id: '/projects/create',
+    path: '/projects/create',
+    getParentRoute: () => AuthenticatedRoute,
+  } as any)
+const AuthenticatedSettingsAccountsRoute =
+  AuthenticatedSettingsAccountsRouteImport.update({
+    id: '/settings/accounts',
+    path: '/settings/accounts',
+    getParentRoute: () => AuthenticatedRoute,
+  } as any)
+const AuthenticatedSettingsAiProvidersRoute =
+  AuthenticatedSettingsAiProvidersRouteImport.update({
+    id: '/settings/ai-providers',
+    path: '/settings/ai-providers',
+    getParentRoute: () => AuthenticatedRoute,
+  } as any)
+const AuthenticatedSettingsArtifactsRoute =
+  AuthenticatedSettingsArtifactsRouteImport.update({
+    id: '/settings/artifacts',
+    path: '/settings/artifacts',
+    getParentRoute: () => AuthenticatedRoute,
+  } as any)
+const AuthenticatedSettingsGoogleDriveSetupRoute =
+  AuthenticatedSettingsGoogleDriveSetupRouteImport.update({
+    id: '/settings/google-drive-setup',
+    path: '/settings/google-drive-setup',
+    getParentRoute: () => AuthenticatedRoute,
+  } as any)
+const AuthenticatedSettingsMcpServersRoute =
+  AuthenticatedSettingsMcpServersRouteImport.update({
+    id: '/settings/mcp-servers',
+    path: '/settings/mcp-servers',
+    getParentRoute: () => AuthenticatedRoute,
+  } as any)
+const AuthenticatedSettingsPromptTemplatesRoute =
+  AuthenticatedSettingsPromptTemplatesRouteImport.update({
+    id: '/settings/prompt-templates',
+    path: '/settings/prompt-templates',
+    getParentRoute: () => AuthenticatedRoute,
+  } as any)
+const AuthenticatedSettingsRunnerRoute =
+  AuthenticatedSettingsRunnerRouteImport.update({
+    id: '/settings/runner',
+    path: '/settings/runner',
+    getParentRoute: () => AuthenticatedRoute,
+  } as any)
+const AuthenticatedSettingsSupabaseRoute =
+  AuthenticatedSettingsSupabaseRouteImport.update({
+    id: '/settings/supabase',
+    path: '/settings/supabase',
+    getParentRoute: () => AuthenticatedRoute,
+  } as any)
+const AuthenticatedWorkflowRunsRunIdRoute =
+  AuthenticatedWorkflowRunsRunIdRouteImport.update({
+    id: '/$runId',
+    path: '/$runId',
+    getParentRoute: () => AuthenticatedWorkflowRunsRoute,
+  } as any)
+const AuthenticatedWorkflowStepsStepTypeRoute =
+  AuthenticatedWorkflowStepsStepTypeRouteImport.update({
+    id: '/$stepType',
+    path: '/$stepType',
+    getParentRoute: () => AuthenticatedWorkflowStepsRoute,
+  } as any)
+const AuthenticatedWorkflowStepsCreateRoute =
+  AuthenticatedWorkflowStepsCreateRouteImport.update({
     id: '/create',
     path: '/create',
-    getParentRoute: () => AuthenticatedArtifactsRoute,
+    getParentRoute: () => AuthenticatedWorkflowStepsRoute,
   } as any)
-const AuthenticatedSettingsPromptTemplatesCreateRoute =
-  AuthenticatedSettingsPromptTemplatesCreateRouteImport.update({
+const AuthenticatedWorkflowsWorkflowIdRoute =
+  AuthenticatedWorkflowsWorkflowIdRouteImport.update({
+    id: '/$workflowId',
+    path: '/$workflowId',
+    getParentRoute: () => AuthenticatedWorkflowsRoute,
+  } as any)
+const AuthenticatedWorkflowsCreateRoute =
+  AuthenticatedWorkflowsCreateRouteImport.update({
     id: '/create',
     path: '/create',
-    getParentRoute: () => AuthenticatedSettingsPromptTemplatesRoute,
+    getParentRoute: () => AuthenticatedWorkflowsRoute,
   } as any)
-const AuthenticatedSettingsMcpServersMcpConnectTestRoute =
-  AuthenticatedSettingsMcpServersMcpConnectTestRouteImport.update({
-    id: '/mcp-connect-test',
-    path: '/mcp-connect-test',
-    getParentRoute: () => AuthenticatedSettingsMcpServersRoute,
-  } as any)
-const AuthenticatedSettingsMcpServersJiraLinkRoute =
-  AuthenticatedSettingsMcpServersJiraLinkRouteImport.update({
-    id: '/jira-link',
-    path: '/jira-link',
-    getParentRoute: () => AuthenticatedSettingsMcpServersRoute,
-  } as any)
-const AuthenticatedSettingsMcpServersInstancesRoute =
-  AuthenticatedSettingsMcpServersInstancesRouteImport.update({
-    id: '/instances',
-    path: '/instances',
-    getParentRoute: () => AuthenticatedSettingsMcpServersRoute,
-  } as any)
-const AuthenticatedSettingsMcpServersCreateRoute =
-  AuthenticatedSettingsMcpServersCreateRouteImport.update({
-    id: '/create',
-    path: '/create',
-    getParentRoute: () => AuthenticatedSettingsMcpServersRoute,
-  } as any)
-const AuthenticatedSettingsArtifactsCreateRoute =
-  AuthenticatedSettingsArtifactsCreateRouteImport.update({
-    id: '/create',
-    path: '/create',
-    getParentRoute: () => AuthenticatedSettingsArtifactsRoute,
-  } as any)
-const AuthenticatedProjectsProjectIdWorkflowsRoute =
-  AuthenticatedProjectsProjectIdWorkflowsRouteImport.update({
-    id: '/workflows',
-    path: '/workflows',
-    getParentRoute: () => AuthenticatedProjectsProjectIdRoute,
-  } as any)
-const AuthenticatedProjectsProjectIdTechSpecsRoute =
-  AuthenticatedProjectsProjectIdTechSpecsRouteImport.update({
-    id: '/tech-specs',
-    path: '/tech-specs',
-    getParentRoute: () => AuthenticatedProjectsProjectIdRoute,
-  } as any)
-const AuthenticatedProjectsProjectIdTasksRoute =
-  AuthenticatedProjectsProjectIdTasksRouteImport.update({
-    id: '/tasks',
-    path: '/tasks',
-    getParentRoute: () => AuthenticatedProjectsProjectIdRoute,
-  } as any)
-const AuthenticatedProjectsProjectIdSettingsRoute =
-  AuthenticatedProjectsProjectIdSettingsRouteImport.update({
-    id: '/settings',
-    path: '/settings',
-    getParentRoute: () => AuthenticatedProjectsProjectIdRoute,
-  } as any)
-const AuthenticatedProjectsProjectIdMembersRoute =
-  AuthenticatedProjectsProjectIdMembersRouteImport.update({
-    id: '/members',
-    path: '/members',
-    getParentRoute: () => AuthenticatedProjectsProjectIdRoute,
-  } as any)
-const AuthenticatedProjectsProjectIdMasterScheduleRoute =
-  AuthenticatedProjectsProjectIdMasterScheduleRouteImport.update({
-    id: '/master-schedule',
-    path: '/master-schedule',
-    getParentRoute: () => AuthenticatedProjectsProjectIdRoute,
-  } as any)
-const AuthenticatedProjectsProjectIdDirectoryBindingsRoute =
-  AuthenticatedProjectsProjectIdDirectoryBindingsRouteImport.update({
-    id: '/directory-bindings',
-    path: '/directory-bindings',
-    getParentRoute: () => AuthenticatedProjectsProjectIdRoute,
-  } as any)
-const AuthenticatedProjectsProjectIdCodingPlanRoute =
-  AuthenticatedProjectsProjectIdCodingPlanRouteImport.update({
-    id: '/coding-plan',
-    path: '/coding-plan',
+const AuthenticatedProjectsProjectIdArtifactsRoute =
+  AuthenticatedProjectsProjectIdArtifactsRouteImport.update({
+    id: '/artifacts',
+    path: '/artifacts',
     getParentRoute: () => AuthenticatedProjectsProjectIdRoute,
   } as any)
 const AuthenticatedProjectsProjectIdBusinessLogicRoute =
@@ -308,11 +230,89 @@ const AuthenticatedProjectsProjectIdBusinessLogicRoute =
     path: '/business-logic',
     getParentRoute: () => AuthenticatedProjectsProjectIdRoute,
   } as any)
-const AuthenticatedProjectsProjectIdArtifactsRoute =
-  AuthenticatedProjectsProjectIdArtifactsRouteImport.update({
-    id: '/artifacts',
-    path: '/artifacts',
+const AuthenticatedProjectsProjectIdCodingPlanRoute =
+  AuthenticatedProjectsProjectIdCodingPlanRouteImport.update({
+    id: '/coding-plan',
+    path: '/coding-plan',
     getParentRoute: () => AuthenticatedProjectsProjectIdRoute,
+  } as any)
+const AuthenticatedProjectsProjectIdDirectoryBindingsRoute =
+  AuthenticatedProjectsProjectIdDirectoryBindingsRouteImport.update({
+    id: '/directory-bindings',
+    path: '/directory-bindings',
+    getParentRoute: () => AuthenticatedProjectsProjectIdRoute,
+  } as any)
+const AuthenticatedProjectsProjectIdMasterScheduleRoute =
+  AuthenticatedProjectsProjectIdMasterScheduleRouteImport.update({
+    id: '/master-schedule',
+    path: '/master-schedule',
+    getParentRoute: () => AuthenticatedProjectsProjectIdRoute,
+  } as any)
+const AuthenticatedProjectsProjectIdMembersRoute =
+  AuthenticatedProjectsProjectIdMembersRouteImport.update({
+    id: '/members',
+    path: '/members',
+    getParentRoute: () => AuthenticatedProjectsProjectIdRoute,
+  } as any)
+const AuthenticatedProjectsProjectIdSettingsRoute =
+  AuthenticatedProjectsProjectIdSettingsRouteImport.update({
+    id: '/settings',
+    path: '/settings',
+    getParentRoute: () => AuthenticatedProjectsProjectIdRoute,
+  } as any)
+const AuthenticatedProjectsProjectIdTasksRoute =
+  AuthenticatedProjectsProjectIdTasksRouteImport.update({
+    id: '/tasks',
+    path: '/tasks',
+    getParentRoute: () => AuthenticatedProjectsProjectIdRoute,
+  } as any)
+const AuthenticatedProjectsProjectIdTechSpecsRoute =
+  AuthenticatedProjectsProjectIdTechSpecsRouteImport.update({
+    id: '/tech-specs',
+    path: '/tech-specs',
+    getParentRoute: () => AuthenticatedProjectsProjectIdRoute,
+  } as any)
+const AuthenticatedProjectsProjectIdWorkflowsRoute =
+  AuthenticatedProjectsProjectIdWorkflowsRouteImport.update({
+    id: '/workflows',
+    path: '/workflows',
+    getParentRoute: () => AuthenticatedProjectsProjectIdRoute,
+  } as any)
+const AuthenticatedSettingsArtifactsCreateRoute =
+  AuthenticatedSettingsArtifactsCreateRouteImport.update({
+    id: '/create',
+    path: '/create',
+    getParentRoute: () => AuthenticatedSettingsArtifactsRoute,
+  } as any)
+const AuthenticatedSettingsMcpServersCreateRoute =
+  AuthenticatedSettingsMcpServersCreateRouteImport.update({
+    id: '/create',
+    path: '/create',
+    getParentRoute: () => AuthenticatedSettingsMcpServersRoute,
+  } as any)
+const AuthenticatedSettingsMcpServersInstancesRoute =
+  AuthenticatedSettingsMcpServersInstancesRouteImport.update({
+    id: '/instances',
+    path: '/instances',
+    getParentRoute: () => AuthenticatedSettingsMcpServersRoute,
+  } as any)
+const AuthenticatedSettingsMcpServersJiraLinkRoute =
+  AuthenticatedSettingsMcpServersJiraLinkRouteImport.update({
+    id: '/jira-link',
+    path: '/jira-link',
+    getParentRoute: () => AuthenticatedSettingsMcpServersRoute,
+  } as any)
+const AuthenticatedSettingsMcpServersMcpConnectTestRoute =
+  AuthenticatedSettingsMcpServersMcpConnectTestRouteImport.update({
+    id: '/mcp-connect-test',
+    path: '/mcp-connect-test',
+    getParentRoute: () => AuthenticatedSettingsMcpServersRoute,
+  } as any)
+const AuthenticatedSettingsPromptTemplatesCreateRoute =
+  AuthenticatedSettingsPromptTemplatesCreateRouteImport.update({
+    id: '/create',
+    path: '/create',
+    getParentRoute: () => AuthenticatedSettingsPromptTemplatesRoute,
   } as any)
 
 export interface FileRoutesByFullPath {
@@ -607,18 +607,11 @@ export interface RootRouteChildren {
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
-    '/login': {
-      id: '/login'
-      path: '/login'
-      fullPath: '/login'
-      preLoaderRoute: typeof LoginRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/guide': {
-      id: '/guide'
-      path: '/guide'
-      fullPath: '/guide'
-      preLoaderRoute: typeof GuideRouteImport
+    '/': {
+      id: '/'
+      path: '/'
+      fullPath: '/'
+      preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_authenticated': {
@@ -628,53 +621,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/': {
-      id: '/'
-      path: '/'
-      fullPath: '/'
-      preLoaderRoute: typeof IndexRouteImport
+    '/guide': {
+      id: '/guide'
+      path: '/guide'
+      fullPath: '/guide'
+      preLoaderRoute: typeof GuideRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/setup/supabase': {
-      id: '/setup/supabase'
-      path: '/setup/supabase'
-      fullPath: '/setup/supabase'
-      preLoaderRoute: typeof SetupSupabaseRouteImport
+    '/login': {
+      id: '/login'
+      path: '/login'
+      fullPath: '/login'
+      preLoaderRoute: typeof LoginRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/_authenticated/workflows': {
-      id: '/_authenticated/workflows'
-      path: '/workflows'
-      fullPath: '/workflows'
-      preLoaderRoute: typeof AuthenticatedWorkflowsRouteImport
-      parentRoute: typeof AuthenticatedRoute
-    }
-    '/_authenticated/workflow-steps': {
-      id: '/_authenticated/workflow-steps'
-      path: '/workflow-steps'
-      fullPath: '/workflow-steps'
-      preLoaderRoute: typeof AuthenticatedWorkflowStepsRouteImport
-      parentRoute: typeof AuthenticatedRoute
-    }
-    '/_authenticated/workflow-runs': {
-      id: '/_authenticated/workflow-runs'
-      path: '/workflow-runs'
-      fullPath: '/workflow-runs'
-      preLoaderRoute: typeof AuthenticatedWorkflowRunsRouteImport
-      parentRoute: typeof AuthenticatedRoute
-    }
-    '/_authenticated/teams': {
-      id: '/_authenticated/teams'
-      path: '/teams'
-      fullPath: '/teams'
-      preLoaderRoute: typeof AuthenticatedTeamsRouteImport
-      parentRoute: typeof AuthenticatedRoute
-    }
-    '/_authenticated/dashboard': {
-      id: '/_authenticated/dashboard'
-      path: '/dashboard'
-      fullPath: '/dashboard'
-      preLoaderRoute: typeof AuthenticatedDashboardRouteImport
+    '/_authenticated/ai-runs': {
+      id: '/_authenticated/ai-runs'
+      path: '/ai-runs'
+      fullPath: '/ai-runs'
+      preLoaderRoute: typeof AuthenticatedAiRunsRouteImport
       parentRoute: typeof AuthenticatedRoute
     }
     '/_authenticated/artifacts': {
@@ -684,116 +649,60 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedArtifactsRouteImport
       parentRoute: typeof AuthenticatedRoute
     }
-    '/_authenticated/ai-runs': {
-      id: '/_authenticated/ai-runs'
-      path: '/ai-runs'
-      fullPath: '/ai-runs'
-      preLoaderRoute: typeof AuthenticatedAiRunsRouteImport
+    '/_authenticated/dashboard': {
+      id: '/_authenticated/dashboard'
+      path: '/dashboard'
+      fullPath: '/dashboard'
+      preLoaderRoute: typeof AuthenticatedDashboardRouteImport
       parentRoute: typeof AuthenticatedRoute
+    }
+    '/_authenticated/teams': {
+      id: '/_authenticated/teams'
+      path: '/teams'
+      fullPath: '/teams'
+      preLoaderRoute: typeof AuthenticatedTeamsRouteImport
+      parentRoute: typeof AuthenticatedRoute
+    }
+    '/_authenticated/workflow-runs': {
+      id: '/_authenticated/workflow-runs'
+      path: '/workflow-runs'
+      fullPath: '/workflow-runs'
+      preLoaderRoute: typeof AuthenticatedWorkflowRunsRouteImport
+      parentRoute: typeof AuthenticatedRoute
+    }
+    '/_authenticated/workflow-steps': {
+      id: '/_authenticated/workflow-steps'
+      path: '/workflow-steps'
+      fullPath: '/workflow-steps'
+      preLoaderRoute: typeof AuthenticatedWorkflowStepsRouteImport
+      parentRoute: typeof AuthenticatedRoute
+    }
+    '/_authenticated/workflows': {
+      id: '/_authenticated/workflows'
+      path: '/workflows'
+      fullPath: '/workflows'
+      preLoaderRoute: typeof AuthenticatedWorkflowsRouteImport
+      parentRoute: typeof AuthenticatedRoute
+    }
+    '/setup/supabase': {
+      id: '/setup/supabase'
+      path: '/setup/supabase'
+      fullPath: '/setup/supabase'
+      preLoaderRoute: typeof SetupSupabaseRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/_authenticated/artifacts/create': {
+      id: '/_authenticated/artifacts/create'
+      path: '/create'
+      fullPath: '/artifacts/create'
+      preLoaderRoute: typeof AuthenticatedArtifactsCreateRouteImport
+      parentRoute: typeof AuthenticatedArtifactsRoute
     }
     '/_authenticated/projects/': {
       id: '/_authenticated/projects/'
       path: '/projects'
       fullPath: '/projects/'
       preLoaderRoute: typeof AuthenticatedProjectsIndexRouteImport
-      parentRoute: typeof AuthenticatedRoute
-    }
-    '/_authenticated/workflows/create': {
-      id: '/_authenticated/workflows/create'
-      path: '/create'
-      fullPath: '/workflows/create'
-      preLoaderRoute: typeof AuthenticatedWorkflowsCreateRouteImport
-      parentRoute: typeof AuthenticatedWorkflowsRoute
-    }
-    '/_authenticated/workflows/$workflowId': {
-      id: '/_authenticated/workflows/$workflowId'
-      path: '/$workflowId'
-      fullPath: '/workflows/$workflowId'
-      preLoaderRoute: typeof AuthenticatedWorkflowsWorkflowIdRouteImport
-      parentRoute: typeof AuthenticatedWorkflowsRoute
-    }
-    '/_authenticated/workflow-steps/create': {
-      id: '/_authenticated/workflow-steps/create'
-      path: '/create'
-      fullPath: '/workflow-steps/create'
-      preLoaderRoute: typeof AuthenticatedWorkflowStepsCreateRouteImport
-      parentRoute: typeof AuthenticatedWorkflowStepsRoute
-    }
-    '/_authenticated/workflow-steps/$stepType': {
-      id: '/_authenticated/workflow-steps/$stepType'
-      path: '/$stepType'
-      fullPath: '/workflow-steps/$stepType'
-      preLoaderRoute: typeof AuthenticatedWorkflowStepsStepTypeRouteImport
-      parentRoute: typeof AuthenticatedWorkflowStepsRoute
-    }
-    '/_authenticated/workflow-runs/$runId': {
-      id: '/_authenticated/workflow-runs/$runId'
-      path: '/$runId'
-      fullPath: '/workflow-runs/$runId'
-      preLoaderRoute: typeof AuthenticatedWorkflowRunsRunIdRouteImport
-      parentRoute: typeof AuthenticatedWorkflowRunsRoute
-    }
-    '/_authenticated/settings/supabase': {
-      id: '/_authenticated/settings/supabase'
-      path: '/settings/supabase'
-      fullPath: '/settings/supabase'
-      preLoaderRoute: typeof AuthenticatedSettingsSupabaseRouteImport
-      parentRoute: typeof AuthenticatedRoute
-    }
-    '/_authenticated/settings/runner': {
-      id: '/_authenticated/settings/runner'
-      path: '/settings/runner'
-      fullPath: '/settings/runner'
-      preLoaderRoute: typeof AuthenticatedSettingsRunnerRouteImport
-      parentRoute: typeof AuthenticatedRoute
-    }
-    '/_authenticated/settings/prompt-templates': {
-      id: '/_authenticated/settings/prompt-templates'
-      path: '/settings/prompt-templates'
-      fullPath: '/settings/prompt-templates'
-      preLoaderRoute: typeof AuthenticatedSettingsPromptTemplatesRouteImport
-      parentRoute: typeof AuthenticatedRoute
-    }
-    '/_authenticated/settings/mcp-servers': {
-      id: '/_authenticated/settings/mcp-servers'
-      path: '/settings/mcp-servers'
-      fullPath: '/settings/mcp-servers'
-      preLoaderRoute: typeof AuthenticatedSettingsMcpServersRouteImport
-      parentRoute: typeof AuthenticatedRoute
-    }
-    '/_authenticated/settings/google-drive-setup': {
-      id: '/_authenticated/settings/google-drive-setup'
-      path: '/settings/google-drive-setup'
-      fullPath: '/settings/google-drive-setup'
-      preLoaderRoute: typeof AuthenticatedSettingsGoogleDriveSetupRouteImport
-      parentRoute: typeof AuthenticatedRoute
-    }
-    '/_authenticated/settings/artifacts': {
-      id: '/_authenticated/settings/artifacts'
-      path: '/settings/artifacts'
-      fullPath: '/settings/artifacts'
-      preLoaderRoute: typeof AuthenticatedSettingsArtifactsRouteImport
-      parentRoute: typeof AuthenticatedRoute
-    }
-    '/_authenticated/settings/ai-providers': {
-      id: '/_authenticated/settings/ai-providers'
-      path: '/settings/ai-providers'
-      fullPath: '/settings/ai-providers'
-      preLoaderRoute: typeof AuthenticatedSettingsAiProvidersRouteImport
-      parentRoute: typeof AuthenticatedRoute
-    }
-    '/_authenticated/settings/accounts': {
-      id: '/_authenticated/settings/accounts'
-      path: '/settings/accounts'
-      fullPath: '/settings/accounts'
-      preLoaderRoute: typeof AuthenticatedSettingsAccountsRouteImport
-      parentRoute: typeof AuthenticatedRoute
-    }
-    '/_authenticated/projects/create': {
-      id: '/_authenticated/projects/create'
-      path: '/projects/create'
-      fullPath: '/projects/create'
-      preLoaderRoute: typeof AuthenticatedProjectsCreateRouteImport
       parentRoute: typeof AuthenticatedRoute
     }
     '/_authenticated/projects/$projectId': {
@@ -803,109 +712,109 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedProjectsProjectIdRouteImport
       parentRoute: typeof AuthenticatedRoute
     }
-    '/_authenticated/artifacts/create': {
-      id: '/_authenticated/artifacts/create'
+    '/_authenticated/projects/create': {
+      id: '/_authenticated/projects/create'
+      path: '/projects/create'
+      fullPath: '/projects/create'
+      preLoaderRoute: typeof AuthenticatedProjectsCreateRouteImport
+      parentRoute: typeof AuthenticatedRoute
+    }
+    '/_authenticated/settings/accounts': {
+      id: '/_authenticated/settings/accounts'
+      path: '/settings/accounts'
+      fullPath: '/settings/accounts'
+      preLoaderRoute: typeof AuthenticatedSettingsAccountsRouteImport
+      parentRoute: typeof AuthenticatedRoute
+    }
+    '/_authenticated/settings/ai-providers': {
+      id: '/_authenticated/settings/ai-providers'
+      path: '/settings/ai-providers'
+      fullPath: '/settings/ai-providers'
+      preLoaderRoute: typeof AuthenticatedSettingsAiProvidersRouteImport
+      parentRoute: typeof AuthenticatedRoute
+    }
+    '/_authenticated/settings/artifacts': {
+      id: '/_authenticated/settings/artifacts'
+      path: '/settings/artifacts'
+      fullPath: '/settings/artifacts'
+      preLoaderRoute: typeof AuthenticatedSettingsArtifactsRouteImport
+      parentRoute: typeof AuthenticatedRoute
+    }
+    '/_authenticated/settings/google-drive-setup': {
+      id: '/_authenticated/settings/google-drive-setup'
+      path: '/settings/google-drive-setup'
+      fullPath: '/settings/google-drive-setup'
+      preLoaderRoute: typeof AuthenticatedSettingsGoogleDriveSetupRouteImport
+      parentRoute: typeof AuthenticatedRoute
+    }
+    '/_authenticated/settings/mcp-servers': {
+      id: '/_authenticated/settings/mcp-servers'
+      path: '/settings/mcp-servers'
+      fullPath: '/settings/mcp-servers'
+      preLoaderRoute: typeof AuthenticatedSettingsMcpServersRouteImport
+      parentRoute: typeof AuthenticatedRoute
+    }
+    '/_authenticated/settings/prompt-templates': {
+      id: '/_authenticated/settings/prompt-templates'
+      path: '/settings/prompt-templates'
+      fullPath: '/settings/prompt-templates'
+      preLoaderRoute: typeof AuthenticatedSettingsPromptTemplatesRouteImport
+      parentRoute: typeof AuthenticatedRoute
+    }
+    '/_authenticated/settings/runner': {
+      id: '/_authenticated/settings/runner'
+      path: '/settings/runner'
+      fullPath: '/settings/runner'
+      preLoaderRoute: typeof AuthenticatedSettingsRunnerRouteImport
+      parentRoute: typeof AuthenticatedRoute
+    }
+    '/_authenticated/settings/supabase': {
+      id: '/_authenticated/settings/supabase'
+      path: '/settings/supabase'
+      fullPath: '/settings/supabase'
+      preLoaderRoute: typeof AuthenticatedSettingsSupabaseRouteImport
+      parentRoute: typeof AuthenticatedRoute
+    }
+    '/_authenticated/workflow-runs/$runId': {
+      id: '/_authenticated/workflow-runs/$runId'
+      path: '/$runId'
+      fullPath: '/workflow-runs/$runId'
+      preLoaderRoute: typeof AuthenticatedWorkflowRunsRunIdRouteImport
+      parentRoute: typeof AuthenticatedWorkflowRunsRoute
+    }
+    '/_authenticated/workflow-steps/$stepType': {
+      id: '/_authenticated/workflow-steps/$stepType'
+      path: '/$stepType'
+      fullPath: '/workflow-steps/$stepType'
+      preLoaderRoute: typeof AuthenticatedWorkflowStepsStepTypeRouteImport
+      parentRoute: typeof AuthenticatedWorkflowStepsRoute
+    }
+    '/_authenticated/workflow-steps/create': {
+      id: '/_authenticated/workflow-steps/create'
       path: '/create'
-      fullPath: '/artifacts/create'
-      preLoaderRoute: typeof AuthenticatedArtifactsCreateRouteImport
-      parentRoute: typeof AuthenticatedArtifactsRoute
+      fullPath: '/workflow-steps/create'
+      preLoaderRoute: typeof AuthenticatedWorkflowStepsCreateRouteImport
+      parentRoute: typeof AuthenticatedWorkflowStepsRoute
     }
-    '/_authenticated/settings/prompt-templates/create': {
-      id: '/_authenticated/settings/prompt-templates/create'
+    '/_authenticated/workflows/$workflowId': {
+      id: '/_authenticated/workflows/$workflowId'
+      path: '/$workflowId'
+      fullPath: '/workflows/$workflowId'
+      preLoaderRoute: typeof AuthenticatedWorkflowsWorkflowIdRouteImport
+      parentRoute: typeof AuthenticatedWorkflowsRoute
+    }
+    '/_authenticated/workflows/create': {
+      id: '/_authenticated/workflows/create'
       path: '/create'
-      fullPath: '/settings/prompt-templates/create'
-      preLoaderRoute: typeof AuthenticatedSettingsPromptTemplatesCreateRouteImport
-      parentRoute: typeof AuthenticatedSettingsPromptTemplatesRoute
+      fullPath: '/workflows/create'
+      preLoaderRoute: typeof AuthenticatedWorkflowsCreateRouteImport
+      parentRoute: typeof AuthenticatedWorkflowsRoute
     }
-    '/_authenticated/settings/mcp-servers/mcp-connect-test': {
-      id: '/_authenticated/settings/mcp-servers/mcp-connect-test'
-      path: '/mcp-connect-test'
-      fullPath: '/settings/mcp-servers/mcp-connect-test'
-      preLoaderRoute: typeof AuthenticatedSettingsMcpServersMcpConnectTestRouteImport
-      parentRoute: typeof AuthenticatedSettingsMcpServersRoute
-    }
-    '/_authenticated/settings/mcp-servers/jira-link': {
-      id: '/_authenticated/settings/mcp-servers/jira-link'
-      path: '/jira-link'
-      fullPath: '/settings/mcp-servers/jira-link'
-      preLoaderRoute: typeof AuthenticatedSettingsMcpServersJiraLinkRouteImport
-      parentRoute: typeof AuthenticatedSettingsMcpServersRoute
-    }
-    '/_authenticated/settings/mcp-servers/instances': {
-      id: '/_authenticated/settings/mcp-servers/instances'
-      path: '/instances'
-      fullPath: '/settings/mcp-servers/instances'
-      preLoaderRoute: typeof AuthenticatedSettingsMcpServersInstancesRouteImport
-      parentRoute: typeof AuthenticatedSettingsMcpServersRoute
-    }
-    '/_authenticated/settings/mcp-servers/create': {
-      id: '/_authenticated/settings/mcp-servers/create'
-      path: '/create'
-      fullPath: '/settings/mcp-servers/create'
-      preLoaderRoute: typeof AuthenticatedSettingsMcpServersCreateRouteImport
-      parentRoute: typeof AuthenticatedSettingsMcpServersRoute
-    }
-    '/_authenticated/settings/artifacts/create': {
-      id: '/_authenticated/settings/artifacts/create'
-      path: '/create'
-      fullPath: '/settings/artifacts/create'
-      preLoaderRoute: typeof AuthenticatedSettingsArtifactsCreateRouteImport
-      parentRoute: typeof AuthenticatedSettingsArtifactsRoute
-    }
-    '/_authenticated/projects/$projectId/workflows': {
-      id: '/_authenticated/projects/$projectId/workflows'
-      path: '/workflows'
-      fullPath: '/projects/$projectId/workflows'
-      preLoaderRoute: typeof AuthenticatedProjectsProjectIdWorkflowsRouteImport
-      parentRoute: typeof AuthenticatedProjectsProjectIdRoute
-    }
-    '/_authenticated/projects/$projectId/tech-specs': {
-      id: '/_authenticated/projects/$projectId/tech-specs'
-      path: '/tech-specs'
-      fullPath: '/projects/$projectId/tech-specs'
-      preLoaderRoute: typeof AuthenticatedProjectsProjectIdTechSpecsRouteImport
-      parentRoute: typeof AuthenticatedProjectsProjectIdRoute
-    }
-    '/_authenticated/projects/$projectId/tasks': {
-      id: '/_authenticated/projects/$projectId/tasks'
-      path: '/tasks'
-      fullPath: '/projects/$projectId/tasks'
-      preLoaderRoute: typeof AuthenticatedProjectsProjectIdTasksRouteImport
-      parentRoute: typeof AuthenticatedProjectsProjectIdRoute
-    }
-    '/_authenticated/projects/$projectId/settings': {
-      id: '/_authenticated/projects/$projectId/settings'
-      path: '/settings'
-      fullPath: '/projects/$projectId/settings'
-      preLoaderRoute: typeof AuthenticatedProjectsProjectIdSettingsRouteImport
-      parentRoute: typeof AuthenticatedProjectsProjectIdRoute
-    }
-    '/_authenticated/projects/$projectId/members': {
-      id: '/_authenticated/projects/$projectId/members'
-      path: '/members'
-      fullPath: '/projects/$projectId/members'
-      preLoaderRoute: typeof AuthenticatedProjectsProjectIdMembersRouteImport
-      parentRoute: typeof AuthenticatedProjectsProjectIdRoute
-    }
-    '/_authenticated/projects/$projectId/master-schedule': {
-      id: '/_authenticated/projects/$projectId/master-schedule'
-      path: '/master-schedule'
-      fullPath: '/projects/$projectId/master-schedule'
-      preLoaderRoute: typeof AuthenticatedProjectsProjectIdMasterScheduleRouteImport
-      parentRoute: typeof AuthenticatedProjectsProjectIdRoute
-    }
-    '/_authenticated/projects/$projectId/directory-bindings': {
-      id: '/_authenticated/projects/$projectId/directory-bindings'
-      path: '/directory-bindings'
-      fullPath: '/projects/$projectId/directory-bindings'
-      preLoaderRoute: typeof AuthenticatedProjectsProjectIdDirectoryBindingsRouteImport
-      parentRoute: typeof AuthenticatedProjectsProjectIdRoute
-    }
-    '/_authenticated/projects/$projectId/coding-plan': {
-      id: '/_authenticated/projects/$projectId/coding-plan'
-      path: '/coding-plan'
-      fullPath: '/projects/$projectId/coding-plan'
-      preLoaderRoute: typeof AuthenticatedProjectsProjectIdCodingPlanRouteImport
+    '/_authenticated/projects/$projectId/artifacts': {
+      id: '/_authenticated/projects/$projectId/artifacts'
+      path: '/artifacts'
+      fullPath: '/projects/$projectId/artifacts'
+      preLoaderRoute: typeof AuthenticatedProjectsProjectIdArtifactsRouteImport
       parentRoute: typeof AuthenticatedProjectsProjectIdRoute
     }
     '/_authenticated/projects/$projectId/business-logic': {
@@ -915,12 +824,103 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedProjectsProjectIdBusinessLogicRouteImport
       parentRoute: typeof AuthenticatedProjectsProjectIdRoute
     }
-    '/_authenticated/projects/$projectId/artifacts': {
-      id: '/_authenticated/projects/$projectId/artifacts'
-      path: '/artifacts'
-      fullPath: '/projects/$projectId/artifacts'
-      preLoaderRoute: typeof AuthenticatedProjectsProjectIdArtifactsRouteImport
+    '/_authenticated/projects/$projectId/coding-plan': {
+      id: '/_authenticated/projects/$projectId/coding-plan'
+      path: '/coding-plan'
+      fullPath: '/projects/$projectId/coding-plan'
+      preLoaderRoute: typeof AuthenticatedProjectsProjectIdCodingPlanRouteImport
       parentRoute: typeof AuthenticatedProjectsProjectIdRoute
+    }
+    '/_authenticated/projects/$projectId/directory-bindings': {
+      id: '/_authenticated/projects/$projectId/directory-bindings'
+      path: '/directory-bindings'
+      fullPath: '/projects/$projectId/directory-bindings'
+      preLoaderRoute: typeof AuthenticatedProjectsProjectIdDirectoryBindingsRouteImport
+      parentRoute: typeof AuthenticatedProjectsProjectIdRoute
+    }
+    '/_authenticated/projects/$projectId/master-schedule': {
+      id: '/_authenticated/projects/$projectId/master-schedule'
+      path: '/master-schedule'
+      fullPath: '/projects/$projectId/master-schedule'
+      preLoaderRoute: typeof AuthenticatedProjectsProjectIdMasterScheduleRouteImport
+      parentRoute: typeof AuthenticatedProjectsProjectIdRoute
+    }
+    '/_authenticated/projects/$projectId/members': {
+      id: '/_authenticated/projects/$projectId/members'
+      path: '/members'
+      fullPath: '/projects/$projectId/members'
+      preLoaderRoute: typeof AuthenticatedProjectsProjectIdMembersRouteImport
+      parentRoute: typeof AuthenticatedProjectsProjectIdRoute
+    }
+    '/_authenticated/projects/$projectId/settings': {
+      id: '/_authenticated/projects/$projectId/settings'
+      path: '/settings'
+      fullPath: '/projects/$projectId/settings'
+      preLoaderRoute: typeof AuthenticatedProjectsProjectIdSettingsRouteImport
+      parentRoute: typeof AuthenticatedProjectsProjectIdRoute
+    }
+    '/_authenticated/projects/$projectId/tasks': {
+      id: '/_authenticated/projects/$projectId/tasks'
+      path: '/tasks'
+      fullPath: '/projects/$projectId/tasks'
+      preLoaderRoute: typeof AuthenticatedProjectsProjectIdTasksRouteImport
+      parentRoute: typeof AuthenticatedProjectsProjectIdRoute
+    }
+    '/_authenticated/projects/$projectId/tech-specs': {
+      id: '/_authenticated/projects/$projectId/tech-specs'
+      path: '/tech-specs'
+      fullPath: '/projects/$projectId/tech-specs'
+      preLoaderRoute: typeof AuthenticatedProjectsProjectIdTechSpecsRouteImport
+      parentRoute: typeof AuthenticatedProjectsProjectIdRoute
+    }
+    '/_authenticated/projects/$projectId/workflows': {
+      id: '/_authenticated/projects/$projectId/workflows'
+      path: '/workflows'
+      fullPath: '/projects/$projectId/workflows'
+      preLoaderRoute: typeof AuthenticatedProjectsProjectIdWorkflowsRouteImport
+      parentRoute: typeof AuthenticatedProjectsProjectIdRoute
+    }
+    '/_authenticated/settings/artifacts/create': {
+      id: '/_authenticated/settings/artifacts/create'
+      path: '/create'
+      fullPath: '/settings/artifacts/create'
+      preLoaderRoute: typeof AuthenticatedSettingsArtifactsCreateRouteImport
+      parentRoute: typeof AuthenticatedSettingsArtifactsRoute
+    }
+    '/_authenticated/settings/mcp-servers/create': {
+      id: '/_authenticated/settings/mcp-servers/create'
+      path: '/create'
+      fullPath: '/settings/mcp-servers/create'
+      preLoaderRoute: typeof AuthenticatedSettingsMcpServersCreateRouteImport
+      parentRoute: typeof AuthenticatedSettingsMcpServersRoute
+    }
+    '/_authenticated/settings/mcp-servers/instances': {
+      id: '/_authenticated/settings/mcp-servers/instances'
+      path: '/instances'
+      fullPath: '/settings/mcp-servers/instances'
+      preLoaderRoute: typeof AuthenticatedSettingsMcpServersInstancesRouteImport
+      parentRoute: typeof AuthenticatedSettingsMcpServersRoute
+    }
+    '/_authenticated/settings/mcp-servers/jira-link': {
+      id: '/_authenticated/settings/mcp-servers/jira-link'
+      path: '/jira-link'
+      fullPath: '/settings/mcp-servers/jira-link'
+      preLoaderRoute: typeof AuthenticatedSettingsMcpServersJiraLinkRouteImport
+      parentRoute: typeof AuthenticatedSettingsMcpServersRoute
+    }
+    '/_authenticated/settings/mcp-servers/mcp-connect-test': {
+      id: '/_authenticated/settings/mcp-servers/mcp-connect-test'
+      path: '/mcp-connect-test'
+      fullPath: '/settings/mcp-servers/mcp-connect-test'
+      preLoaderRoute: typeof AuthenticatedSettingsMcpServersMcpConnectTestRouteImport
+      parentRoute: typeof AuthenticatedSettingsMcpServersRoute
+    }
+    '/_authenticated/settings/prompt-templates/create': {
+      id: '/_authenticated/settings/prompt-templates/create'
+      path: '/create'
+      fullPath: '/settings/prompt-templates/create'
+      preLoaderRoute: typeof AuthenticatedSettingsPromptTemplatesCreateRouteImport
+      parentRoute: typeof AuthenticatedSettingsPromptTemplatesRoute
     }
   }
 }
