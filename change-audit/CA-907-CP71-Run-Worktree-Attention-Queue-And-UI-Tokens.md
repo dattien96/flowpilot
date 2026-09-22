@@ -1,4 +1,4 @@
-# CA-906: CP-71 Run Worktree Isolation + Desktop Attention Queue + UI Tokens
+# CA-907: CP-71 Run Worktree Isolation + Desktop Attention Queue + UI Tokens
 
 ## Summary
 
