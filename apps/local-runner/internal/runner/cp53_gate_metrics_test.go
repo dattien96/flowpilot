@@ -14,9 +14,9 @@ func TestAppendGateMetricWritesNDJSON(t *testing.T) {
 	dir := t.TempDir()
 	dot := filepath.Join(dir, ".flowpilot")
 	ev := gateMetricEvent{
-		Action: "block",
-		RunID:  "run-1",
-		StepID: "step-a",
+		Action:  "block",
+		RunID:   "run-1",
+		StepID:  "step-a",
 		RuleIDs: []string{"r-reg"},
 	}
 	if err := appendGateMetric(dot, ev); err != nil {

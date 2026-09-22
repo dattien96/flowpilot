@@ -35,10 +35,10 @@ func TestReattachFirstTurnIncludesPriorHistory(t *testing.T) {
 	capture := &reattachCaptureAdapter{ch: make(chan TurnRequest, 2)}
 	reg := newProviderRegistry()
 	reg.register(ProviderRegistration{
-		Key:   ProviderKeyOpencode,
-		Status: ProviderStatusAvailable,
+		Key:          ProviderKeyOpencode,
+		Status:       ProviderStatusAvailable,
 		Capabilities: ProviderCapabilities{Streaming: true},
-		newAdapter: func() ProviderRuntimeAdapter { return capture },
+		newAdapter:   func() ProviderRuntimeAdapter { return capture },
 	})
 	svc.registry = reg
 
