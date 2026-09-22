@@ -19,11 +19,11 @@ import (
 // hook fsyncs before returning success so unpersisted mutations never surface.
 type localDispatchStore struct {
 	*memoryDispatchStore
-	dir      string
-	logPath  string
-	lockPath string
-	lockFile *os.File
-	writeMu  sync.Mutex // serializes append+fsync
+	dir       string
+	logPath   string
+	lockPath  string
+	lockFile  *os.File
+	writeMu   sync.Mutex // serializes append+fsync
 	tornDrops int
 }
 
