@@ -405,4 +405,3 @@ func (m *AppModel) retargetSkillSuggestion(name string) {
 		}
 	}
 }
-
