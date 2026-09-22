@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"flowpilot-runner/internal/tui/client"
 	"flowpilot-runner/internal/tui/config"
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 // =============================================================================
