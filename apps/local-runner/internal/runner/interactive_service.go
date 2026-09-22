@@ -18,6 +18,7 @@ import (
 
 	"flowpilot-runner/internal/agentpack"
 	"flowpilot-runner/internal/flowgate"
+	"flowpilot-runner/internal/lifecycle"
 	"flowpilot-runner/internal/promptpacker"
 	"flowpilot-runner/internal/workingmode"
 )
@@ -98,6 +99,14 @@ type InteractiveService struct {
 	// by the HTTP dispatch handler via claimScaffold/releaseScaffold; guarded by
 	// s.mu, lazily initialized, entries are released when the turn finishes.
 	scaffoldInFlight map[string]bool
+	// scaffoldCancels holds the cancel func for each in-flight scaffold so a
+	// CP-81 confirmed drain (StopAllForSystemAction) can terminate them; same
+	// lifecycle/locking as scaffoldInFlight.
+	scaffoldCancels map[string]context.CancelFunc
+	// lifecycleMgr is the CP-81 shared-lifecycle authority attached by
+	// `runner serve`; used only for the drain gate (reject new work while
+	// draining). nil in unmanaged contexts. Guarded by s.mu.
+	lifecycleMgr *lifecycle.Manager
 
 	// dispatchLogSyncMu guards dispatchLogSyncHash, kept separate from the main
 	// s.mu since a Drive upload is slow network I/O unrelated to run-state locking.
@@ -175,15 +184,15 @@ type interactiveRun struct {
 	lastOpencodeTurnSessionID string
 	// lastDevinTurnSessionID is the Devin twin (CP-70): newest slug session id
 	// observed this turn so model-switch resume re-loads the real session.
-	lastDevinTurnSessionID    string
-	providerAccountID         string
-	workspaceCwd              string
+	lastDevinTurnSessionID string
+	providerAccountID      string
+	workspaceCwd           string
 	// worktree is the CP-71 binding when the run opted into worktree
 	// isolation; nil for normal runs.
-	worktree *worktreeBinding
-	stepID                    string
-	modelName                 string
-	yolo                      bool
+	worktree  *worktreeBinding
+	stepID    string
+	modelName string
+	yolo      bool
 	// workingMode is Task-326 local SSOT ("dev"|"vibe"); empty reconstructs as dev.
 	workingMode string
 	// Task-321: CP lock + sequential vibe-sprint queue (local only).
