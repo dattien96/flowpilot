@@ -35,4 +35,17 @@ contextBridge.exposeInMainWorld("flowpilot", {
   showNotification: (title: string, body: string): Promise<{ ok: boolean }> =>
     ipcRenderer.invoke("notification:show", { title, body }),
   isGitRepo: (path: string): Promise<boolean> => ipcRenderer.invoke("project:isGitRepo", { path }),
+  // CP-81: lifecycle bridge — renderer sees snapshots/status but never the
+  // lease token; destructive actions are fenced inside Electron main.
+  lifecycle: {
+    getSnapshot: (): Promise<unknown> => ipcRenderer.invoke("lifecycle:snapshot"),
+    requestClose: (): Promise<"cancelled" | "closed"> => ipcRenderer.invoke("lifecycle:requestClose"),
+    requestGlobalShutdown: (): Promise<unknown> => ipcRenderer.invoke("lifecycle:shutdown"),
+    requestRestart: (): Promise<unknown> => ipcRenderer.invoke("lifecycle:restart"),
+    onStatus: (cb: (status: unknown) => void): (() => void) => {
+      const listener = (_e: unknown, status: unknown): void => cb(status);
+      ipcRenderer.on("lifecycle:status", listener);
+      return () => ipcRenderer.removeListener("lifecycle:status", listener);
+    },
+  },
 });

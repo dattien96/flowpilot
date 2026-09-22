@@ -3,6 +3,8 @@ import { execFile } from "node:child_process";
 import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import { wireDesktopLifecycle } from "./lifecycle";
+
 // Electron shell (04-01). Loads the Vite dev server in dev, the built renderer in
 // prod. The IdeBridge is the real Part B implementation: it detects an installed
 // IDE CLI and opens the file at a line.
@@ -255,41 +257,25 @@ ipcMain.handle("http:request", async (_event, payload: BridgeHttpRequest) => {
   }
 });
 
-void app.whenReady().then(createWindow);
-
 const defaultRunnerURL = "http://127.0.0.1:4317";
-let runnerShutdownStarted = false;
 
 function localRunnerURL(): string {
   const fromEnv = process.env.VITE_RUNNER_URL?.trim();
   return fromEnv && fromEnv.length > 0 ? fromEnv.replace(/\/$/, "") : defaultRunnerURL;
 }
 
-async function shutdownLocalRunner(): Promise<void> {
-  const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), 2000);
-  try {
-    await fetch(`${localRunnerURL()}/system/shutdown`, {
-      method: "POST",
-      signal: ac.signal,
-    });
-  } catch {
-    // Runner already gone or never started.
-  } finally {
-    clearTimeout(timer);
-  }
-}
+// CP-81 Task-418: Electron main owns the single Desktop lease. Ordinary quit
+// releases it; only the explicit "Turn off FlowPilot" choice posts a fenced
+// /system/shutdown. The lease survives renderer reloads/crashes — heartbeat
+// and release live in the main process, never the React tree.
+const desktopLifecycle = wireDesktopLifecycle(localRunnerURL());
 
-app.on("before-quit", (event) => {
-  if (runnerShutdownStarted) {
-    return;
-  }
-  runnerShutdownStarted = true;
-  event.preventDefault();
-  void shutdownLocalRunner().finally(() => {
-    app.quit();
-  });
+void app.whenReady().then(() => {
+  void desktopLifecycle.lifecycle.start();
+  createWindow();
 });
+
+app.on("before-quit", desktopLifecycle.onBeforeQuit);
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
