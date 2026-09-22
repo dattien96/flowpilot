@@ -5,6 +5,7 @@ package runnerboot
 import (
 	"fmt"
 	"os/exec"
+	"syscall"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -23,6 +24,17 @@ func setSysProcAttr(cmd *exec.Cmd) {
 	// sends CTRL_CLOSE_EVENT to both), and assignRunnerJob adds the hard
 	// guarantee: KILL_ON_JOB_CLOSE when this process dies (CA-474/CA-445).
 	_ = cmd
+}
+
+// setSysProcAttrShared detaches the spawned runner from the TUI console
+// (CP-81 Task-416 T-1): DETACHED_PROCESS gives it no console at all, so a
+// terminal close delivers no CTRL_CLOSE_EVENT, and the runner is never
+// assigned to the TUI's KILL_ON_JOB_CLOSE job. TUI death cannot kill a
+// shared runner; orphan prevention is owned by lease TTL + idle grace.
+func setSysProcAttrShared(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		CreationFlags: windows.CREATE_NEW_PROCESS_GROUP | windows.DETACHED_PROCESS,
+	}
 }
 
 // assignRunnerJob places the runner process (pid) into the kill-on-close job.
