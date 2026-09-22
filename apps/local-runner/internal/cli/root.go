@@ -1785,6 +1785,11 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 					return
 				}
 
+				// This endpoint exits the process with no other trace — always record
+				// who asked before tearing down (runner vanished mid-scaffold twice
+				// with no caller attribution).
+				log.Printf("[runner] /system/shutdown requested remote=%s ua=%q", r.RemoteAddr, r.UserAgent())
+
 				err := writeSupervisorCommand(instance.Health().Cwd, "shutdown")
 				if err != nil {
 					// Never block shutdown on the supervisor handshake: the
@@ -1816,6 +1821,8 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 					return
 				}
+
+				log.Printf("[runner] /system/restart requested remote=%s ua=%q", r.RemoteAddr, r.UserAgent())
 
 				err := writeSupervisorCommand(instance.Health().Cwd, "restart")
 				if err != nil {
