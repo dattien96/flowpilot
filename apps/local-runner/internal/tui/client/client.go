@@ -633,10 +633,15 @@ const (
 
 // Client is a thin HTTP+SSE client for the FlowPilot runner.
 type Client struct {
-	base    string
-	http    *http.Client
-	mu      sync.Mutex
-	lastSeq map[string]int64
+	base string
+	http *http.Client
+	// longHTTP serves synchronous long-pole endpoints (engine init, scaffold
+	// dispatch) whose response headers legitimately arrive after the normal
+	// transport's 60s ResponseHeaderTimeout; per-call ctx deadlines still bound
+	// them.
+	longHTTP *http.Client
+	mu       sync.Mutex
+	lastSeq  map[string]int64
 }
 
 // New creates a new Client targeting baseURL (e.g. "http://127.0.0.1:4317").
@@ -659,11 +664,17 @@ func New(baseURL string) *Client {
 		ResponseHeaderTimeout: 60 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
 	}
+	longTransport := transport.Clone()
+	longTransport.ResponseHeaderTimeout = 0
 	return &Client{
 		base: strings.TrimRight(baseURL, "/"),
 		http: &http.Client{
 			Timeout:   0,
 			Transport: transport,
+		},
+		longHTTP: &http.Client{
+			Timeout:   0,
+			Transport: longTransport,
 		},
 		lastSeq: make(map[string]int64),
 	}
@@ -1058,7 +1069,7 @@ func (c *Client) InitEngine(ctx context.Context, projectID, workingDirectory, pl
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 	var out EngineInitResult
-	err := c.postJSON(ctx, "/client/projects/"+neturl.PathEscape(projectID)+"/engine/init", map[string]any{
+	err := c.postJSONLong(ctx, "/client/projects/"+neturl.PathEscape(projectID)+"/engine/init", map[string]any{
 		"workingDirectory": workingDirectory,
 		"trigger":          "manual",
 		"platform":         platform,
@@ -1103,7 +1114,7 @@ func (c *Client) DispatchScaffold(ctx context.Context, projectID, workingDirecto
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Minute)
 	defer cancel()
 	var out ScaffoldResult
-	err := c.postJSON(ctx, "/client/projects/"+neturl.PathEscape(projectID)+"/scaffold", map[string]any{
+	err := c.postJSONLong(ctx, "/client/projects/"+neturl.PathEscape(projectID)+"/scaffold", map[string]any{
 		"workingDirectory": workingDirectory,
 		"platform":         platform,
 		"providerKey":      providerKey,
@@ -1608,7 +1619,18 @@ func (c *Client) putJSON(ctx context.Context, path string, in, out any) error {
 	return c.methodJSON(ctx, http.MethodPut, path, in, out)
 }
 
+// postJSONLong is postJSON over the long-pole transport: use it for endpoints
+// that synchronously run minutes-long work (engine init, scaffold dispatch)
+// where the 60s response-header guard would kill a healthy call.
+func (c *Client) postJSONLong(ctx context.Context, path string, in, out any) error {
+	return c.methodJSONOn(c.longHTTP, ctx, http.MethodPost, path, in, out)
+}
+
 func (c *Client) methodJSON(ctx context.Context, method, path string, in, out any) error {
+	return c.methodJSONOn(c.http, ctx, method, path, in, out)
+}
+
+func (c *Client) methodJSONOn(hc *http.Client, ctx context.Context, method, path string, in, out any) error {
 	var body io.Reader
 	if in != nil {
 		b, err := json.Marshal(in)
@@ -1627,7 +1649,7 @@ func (c *Client) methodJSON(ctx context.Context, method, path string, in, out an
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("X-Client", "tui")
 
-	resp, err := c.http.Do(req)
+	resp, err := hc.Do(req)
 	if err != nil {
 		return err
 	}
