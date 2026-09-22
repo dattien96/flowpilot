@@ -282,6 +282,19 @@ func (s *InteractiveService) runEngineInit(
 		warnings = append(warnings, fmt.Sprintf("skill-pack status warning: %v", err))
 	}
 
+	// Ensure .gitignore covers the AI tool dirs/files on every init — including
+	// the bind-skip path below — so already-initialized projects converge on the
+	// rule without a manual re-init. Idempotent: writes only when entries are
+	// missing.
+	gitignoreChanged, gitignoreErr := skillpack.EnsureGitignoreAIEntries(workingDirectory)
+	if gitignoreErr != nil {
+		warnings = append(warnings, fmt.Sprintf("gitignore ai-rules warning: %v", gitignoreErr))
+	}
+	gitignoreDetail := "already up to date"
+	if gitignoreChanged {
+		gitignoreDetail = "created or updated .gitignore"
+	}
+
 	// Always run an incremental ledger update on bind when .flowpilot already exists.
 	// shouldSkipBindInit may short-circuit the full init, which would leave new commits
 	// invisible to the oracle until the next manual re-init or post-commit hook fires.
@@ -313,6 +326,7 @@ func (s *InteractiveService) runEngineInit(
 			Install:          EngineInstallSummary{},
 			Steps: []EngineInitStepResult{
 				{Step: "bind_gate", Outcome: "skipped", Detail: "current skill pack and tooling status already present"},
+				buildEngineStep("gitignore_ai_rules", gitignoreErr, gitignoreDetail),
 			},
 		}
 		if err := saveEngineInitState(dotFlowpilotDir, initState); err != nil {
@@ -332,6 +346,7 @@ func (s *InteractiveService) runEngineInit(
 				installErr,
 				fmt.Sprintf("%d installed, %d skipped, %d install errors", len(installResult.Installed), len(installResult.Skipped), len(installResult.Errors)),
 			),
+			buildEngineStep("gitignore_ai_rules", gitignoreErr, gitignoreDetail),
 			buildEngineStep("tooling_check", toolingErr, fmt.Sprintf("%d tool entries refreshed", len(statuses))),
 		}
 		initState := &EngineInitState{
@@ -370,6 +385,7 @@ func (s *InteractiveService) runEngineInit(
 		),
 		buildEngineStep("tooling_check", toolingErr, fmt.Sprintf("%d tool entries refreshed", len(statuses))),
 		buildEngineStep("req_scaffold", scaffoldErr, scaffoldDetail),
+		buildEngineStep("gitignore_ai_rules", gitignoreErr, gitignoreDetail),
 	}
 
 	ledgerErr := changeledger.Build(workingDirectory, dotFlowpilotDir)

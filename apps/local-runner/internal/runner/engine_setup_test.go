@@ -47,6 +47,10 @@ func TestEngineInitAndStatusEndpoints(t *testing.T) {
 
 	expectFileExists(t, filepath.Join(targetRepo, ".claude", "skills", "git-commit-format", "SKILL.md"))
 	expectFileExists(t, filepath.Join(targetRepo, ".agents", "skills", "git-commit-format", "SKILL.md"))
+	expectFileExists(t, filepath.Join(targetRepo, ".gitignore"))
+	if data, err := os.ReadFile(filepath.Join(targetRepo, ".gitignore")); err != nil || !strings.Contains(string(data), "# AI Rules") || !strings.Contains(string(data), ".claude/") {
+		t.Fatalf(".gitignore missing AI rules block: %v\n%s", err, data)
+	}
 	expectFileExists(t, filepath.Join(targetRepo, ".flowpilot", "tooling.json"))
 	expectFileExists(t, filepath.Join(targetRepo, ".flowpilot", "engine-init.json"))
 	expectFileExists(t, filepath.Join(targetRepo, ".flowpilot", "ledger", "feature_history.ndjson"))
@@ -151,6 +155,22 @@ func TestEngineInitSkipsCurrentBindTrigger(t *testing.T) {
 	}
 	if response.LastInit == nil || !response.LastInit.Skipped {
 		t.Fatalf("lastInit=%+v", response.LastInit)
+	}
+
+	// The AI-rules .gitignore ensure runs before the bind-skip short-circuit so
+	// already-initialized repos converge on the rule without a manual re-init.
+	gitignorePath := filepath.Join(targetRepo, ".gitignore")
+	if err := os.Remove(gitignorePath); err != nil {
+		t.Fatalf("remove .gitignore: %v", err)
+	}
+	if status, body := doJSON(t, http.MethodPost, server.URL+"/client/projects/project-1/engine/init", map[string]any{
+		"workingDirectory": targetRepo,
+		"trigger":          "bind",
+	}, nil); status != http.StatusOK {
+		t.Fatalf("second bind status=%d body=%s", status, body)
+	}
+	if data, err := os.ReadFile(gitignorePath); err != nil || !strings.Contains(string(data), ".agents/") {
+		t.Fatalf("bind-skip did not restore .gitignore: %v\n%s", err, data)
 	}
 }
 
