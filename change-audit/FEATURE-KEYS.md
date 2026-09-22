@@ -55,3 +55,4 @@ Source of truth for stable `feature_key` values used by:
 - run-worktree — SS-23/SD-27/CP-71 opt-in per-run git worktree isolation: start toggle, run binding, patch-based merge-back card, conflict evidence, recovery & GC
 - attention-queue — cross-run pending-action inbox: desktop Attention Queue aggregating waiting runs via a singleton observer store (Task-404)
 - desktop-ui-consistency — desktop design-token revamp: spacing/elevation/radius/motion scales, icon unification, token guardrails (Task-405)
+- dev-infra — developer tooling/build infra: test harness artifacts, gitignore, CI plumbing
