@@ -10,9 +10,9 @@
 - Reviewers: `TBD`
 - Created: `2026-09-22`
 - Last Updated: `2026-09-22`
-- Parent Documents: [CP-81](../../07-Coding-Plan/todo/CP-81-Shared-Runner-Lifecycle.md) `P-0`
+- Parent Documents: [CP-81](../../07-Coding-Plan/done/CP-81-Shared-Runner-Lifecycle.md) `P-0`
 - Child Documents: `Task-414`, `Task-415`, `Task-416`, `Task-417`, `Task-418`, `Task-419`, `Task-420`
-- Related Documents: [SS-24](../../05-System-Specs/SS-24-Shared-Runner-Lifecycle.md), [SD-28](../../06-System-Tech-Design/SD-28-Shared-Runner-Lifecycle.md), [CP-81-Test-Steps](../../07-Coding-Plan/todo/CP-81-Test-Steps.md), `CA-445`, `CA-474`, `CA-901`, `CA-911`, `CA-913`
+- Related Documents: [SS-24](../../05-System-Specs/SS-24-Shared-Runner-Lifecycle.md), [SD-28](../../06-System-Tech-Design/SD-28-Shared-Runner-Lifecycle.md), [CP-81-Test-Steps](../../07-Coding-Plan/done/CP-81-Test-Steps.md), `CA-445`, `CA-474`, `CA-901`, `CA-911`, `CA-913`
 - Replaces: `None`
 - Tags: `runner-lifecycle, docs, contract, planning`
 - Feature Keys: `runner-lifecycle`
@@ -77,9 +77,9 @@ The current system has competing lifecycle authorities: TUI close posts global s
 - files:
   - `requirements/05-System-Specs/SS-24-Shared-Runner-Lifecycle.md`
   - `requirements/06-System-Tech-Design/SD-28-Shared-Runner-Lifecycle.md`
-  - `requirements/07-Coding-Plan/todo/CP-81-Shared-Runner-Lifecycle.md`
-  - `requirements/07-Coding-Plan/todo/CP-81-Test-Steps.md`
-  - `requirements/08-Task/todo/Task-413..Task-420-*.md`
+  - `requirements/07-Coding-Plan/done/CP-81-Shared-Runner-Lifecycle.md`
+  - `requirements/07-Coding-Plan/done/CP-81-Test-Steps.md`
+  - `requirements/08-Task/done/Task-413..Task-420-*.md`
   - `change-audit/FEATURE-KEYS.md`
 - modules: documentation only.
 - routes: none. tables: none.

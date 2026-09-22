@@ -10,9 +10,9 @@
 - Reviewers: `TBD`
 - Created: `2026-09-22`
 - Last Updated: `2026-09-22`
-- Parent Documents: [CP-81](../../07-Coding-Plan/todo/CP-81-Shared-Runner-Lifecycle.md) `P-7`, [SS-24](../../05-System-Specs/SS-24-Shared-Runner-Lifecycle.md), [SD-28](../../06-System-Tech-Design/SD-28-Shared-Runner-Lifecycle.md)
+- Parent Documents: [CP-81](../../07-Coding-Plan/done/CP-81-Shared-Runner-Lifecycle.md) `P-7`, [SS-24](../../05-System-Specs/SS-24-Shared-Runner-Lifecycle.md), [SD-28](../../06-System-Tech-Design/SD-28-Shared-Runner-Lifecycle.md)
 - Child Documents: `None`
-- Related Documents: `Task-414..Task-419`, [CP-81-Test-Steps](../../07-Coding-Plan/todo/CP-81-Test-Steps.md), `BUG-240`, `BUG-328`, `CA-445`, `CA-474`, `CA-901`, `CA-911`, `CA-913`
+- Related Documents: `Task-414..Task-419`, [CP-81-Test-Steps](../../07-Coding-Plan/done/CP-81-Test-Steps.md), `BUG-240`, `BUG-328`, `CA-445`, `CA-474`, `CA-901`, `CA-911`, `CA-913`
 - Replaces: `None`
 - Tags: `runner-lifecycle, e2e, migration, windows, audit, verification`
 - Feature Keys: `runner-lifecycle`
@@ -103,7 +103,7 @@ The lifecycle bug was caused by interacting ownership systems. Individual packag
 - files:
   - `apps/local-runner/internal/runner/cp81_lifecycle_e2e_test.go` (new)
   - focused lifecycle/runnerboot/TUI/Desktop/supervisor test files from earlier tasks
-  - `requirements/07-Coding-Plan/todo/CP-81-Test-Steps.md` if manual matrix needs adjustment
+  - `requirements/07-Coding-Plan/done/CP-81-Test-Steps.md` if manual matrix needs adjustment
   - `change-audit/CA-NNN-shared-runner-lifecycle.md`
 - modules: verification layer across runner/TUI/Desktop/supervisor.
 - routes: all lifecycle routes.

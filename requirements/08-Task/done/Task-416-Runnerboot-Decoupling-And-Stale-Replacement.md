@@ -10,7 +10,7 @@
 - Reviewers: `TBD`
 - Created: `2026-09-22`
 - Last Updated: `2026-09-22`
-- Parent Documents: [CP-81](../../07-Coding-Plan/todo/CP-81-Shared-Runner-Lifecycle.md) `P-3`, [SD-28](../../06-System-Tech-Design/SD-28-Shared-Runner-Lifecycle.md) `D-6`, `D-8`, §6.4
+- Parent Documents: [CP-81](../../07-Coding-Plan/done/CP-81-Shared-Runner-Lifecycle.md) `P-3`, [SD-28](../../06-System-Tech-Design/SD-28-Shared-Runner-Lifecycle.md) `D-6`, `D-8`, §6.4
 - Child Documents: `None`
 - Related Documents: [Task-415](./Task-415-Runner-Lifecycle-API-And-Durable-Stop-All.md), `BUG-240`, `BUG-328`, `CA-474`, `CA-901`
 - Replaces: `CA-474 process-close contract`

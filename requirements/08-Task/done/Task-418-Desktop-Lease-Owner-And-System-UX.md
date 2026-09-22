@@ -10,7 +10,7 @@
 - Reviewers: `TBD`
 - Created: `2026-09-22`
 - Last Updated: `2026-09-22`
-- Parent Documents: [CP-81](../../07-Coding-Plan/todo/CP-81-Shared-Runner-Lifecycle.md) `P-5`, [SD-28](../../06-System-Tech-Design/SD-28-Shared-Runner-Lifecycle.md) `D-2`, `D-5`, §6.3
+- Parent Documents: [CP-81](../../07-Coding-Plan/done/CP-81-Shared-Runner-Lifecycle.md) `P-5`, [SD-28](../../06-System-Tech-Design/SD-28-Shared-Runner-Lifecycle.md) `D-2`, `D-5`, §6.3
 - Child Documents: `None`
 - Related Documents: [Task-417](./Task-417-TUI-Lease-Close-UX-And-Reconnect.md), `CP-56`, `CA-474`, `CA-901`
 - Replaces: `CA-474 Desktop-exit shutdown contract`

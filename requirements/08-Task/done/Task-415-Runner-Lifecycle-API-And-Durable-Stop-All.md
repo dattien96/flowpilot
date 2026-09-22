@@ -10,7 +10,7 @@
 - Reviewers: `TBD`
 - Created: `2026-09-22`
 - Last Updated: `2026-09-22`
-- Parent Documents: [CP-81](../../07-Coding-Plan/todo/CP-81-Shared-Runner-Lifecycle.md) `P-2`, [SD-28](../../06-System-Tech-Design/SD-28-Shared-Runner-Lifecycle.md) `D-4`, `D-7`, §6
+- Parent Documents: [CP-81](../../07-Coding-Plan/done/CP-81-Shared-Runner-Lifecycle.md) `P-2`, [SD-28](../../06-System-Tech-Design/SD-28-Shared-Runner-Lifecycle.md) `D-4`, `D-7`, §6
 - Child Documents: `None`
 - Related Documents: [Task-414](./Task-414-Lifecycle-Lease-Registry-And-State-Machine.md), `CP-51`, `CP-68`, `CA-901`, `CA-911`, `CA-913`
 - Replaces: `None`

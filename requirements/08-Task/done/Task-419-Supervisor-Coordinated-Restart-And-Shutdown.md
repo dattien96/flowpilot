@@ -10,7 +10,7 @@
 - Reviewers: `TBD`
 - Created: `2026-09-22`
 - Last Updated: `2026-09-22`
-- Parent Documents: [CP-81](../../07-Coding-Plan/todo/CP-81-Shared-Runner-Lifecycle.md) `P-6`, [SD-28](../../06-System-Tech-Design/SD-28-Shared-Runner-Lifecycle.md) `D-3`, `D-5`, §6.5
+- Parent Documents: [CP-81](../../07-Coding-Plan/done/CP-81-Shared-Runner-Lifecycle.md) `P-6`, [SD-28](../../06-System-Tech-Design/SD-28-Shared-Runner-Lifecycle.md) `D-3`, `D-5`, §6.5
 - Child Documents: `None`
 - Related Documents: [Task-415](./Task-415-Runner-Lifecycle-API-And-Durable-Stop-All.md), [Task-416](./Task-416-Runnerboot-Decoupling-And-Stale-Replacement.md), `BUG-240`, `CA-240`, `CA-901`
 - Replaces: `None`
