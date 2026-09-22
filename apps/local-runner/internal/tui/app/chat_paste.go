@@ -61,8 +61,8 @@ type pasteBurst struct {
 	active        bool
 	start         int // rune index in inputValue where the burst region begins
 	buf           []rune
-	chainLen      int   // consecutive rapid runes in the current chain
-	chainStart    int   // inputValue rune length before the current chain began
+	chainLen      int // consecutive rapid runes in the current chain
+	chainStart    int // inputValue rune length before the current chain began
 	chainBuf      []rune
 	lastRuneAt    time.Time
 	rejectArmed   bool // CA-612: Windows reject stays armed across 25ms gaps until settle
