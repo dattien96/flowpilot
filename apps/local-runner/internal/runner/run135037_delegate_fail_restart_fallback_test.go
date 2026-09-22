@@ -125,7 +125,7 @@ func TestRun135037_ContinueWithEmptyStepIDStillReusesSameChild(t *testing.T) {
 	crs.role = "contract-planner"
 	crs.status = RunStatusFailed
 	crs.agentStatus = string(RunStatusFailed)
-	crs.stepID = "" // empty — reproduces pre-adapter fail
+	crs.stepID = ""         // empty — reproduces pre-adapter fail
 	crs.lastTurnStepID = "" // also empty
 	svc.mu.Unlock()
 	svc.agentOrchestrator.registerChild(pid, child.RunID)
