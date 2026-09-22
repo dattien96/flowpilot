@@ -746,6 +746,9 @@ func (c *Client) ShutdownStack(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// CA-913: mark TUI-originated shutdowns so the runner's caller-attribution
+	// log can distinguish our quit from foreign Go clients sharing the same UA.
+	req.Header.Set("X-Client", "tui")
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return err

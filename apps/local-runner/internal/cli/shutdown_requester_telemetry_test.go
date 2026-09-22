@@ -25,8 +25,8 @@ func TestSystemShutdown_LogsRequesterIdentity(t *testing.T) {
 	if end := strings.Index(shutdownBody, "mux.HandleFunc"); end > 0 {
 		shutdownBody = shutdownBody[:end]
 	}
-	if !strings.Contains(shutdownBody, "RemoteAddr") || !strings.Contains(shutdownBody, "UserAgent") {
-		t.Fatal("/system/shutdown must log r.RemoteAddr and r.UserAgent() before exiting")
+	if !strings.Contains(shutdownBody, "describeRequester(r)") {
+		t.Fatal("/system/shutdown must log describeRequester(r) (remote+ua+xclient+pid) before exiting")
 	}
 
 	restartIdx := strings.Index(text, `mux.HandleFunc("/system/restart"`)
@@ -37,7 +37,7 @@ func TestSystemShutdown_LogsRequesterIdentity(t *testing.T) {
 	if end := strings.Index(restartBody, "mux.HandleFunc"); end > 0 {
 		restartBody = restartBody[:end]
 	}
-	if !strings.Contains(restartBody, "RemoteAddr") || !strings.Contains(restartBody, "UserAgent") {
-		t.Fatal("/system/restart must log r.RemoteAddr and r.UserAgent() before restarting")
+	if !strings.Contains(restartBody, "describeRequester(r)") {
+		t.Fatal("/system/restart must log describeRequester(r) (remote+ua+xclient+pid) before restarting")
 	}
 }

@@ -1788,7 +1788,9 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 				// This endpoint exits the process with no other trace — always record
 				// who asked before tearing down (runner vanished mid-scaffold twice
 				// with no caller attribution).
-				log.Printf("[runner] /system/shutdown requested remote=%s ua=%q", r.RemoteAddr, r.UserAgent())
+				// describeRequester resolves remote port → owning local PID +
+			// X-Client marker (CA-913).
+			log.Printf("[runner] /system/shutdown requested %s", describeRequester(r))
 
 				err := writeSupervisorCommand(instance.Health().Cwd, "shutdown")
 				if err != nil {
@@ -1822,7 +1824,7 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 					return
 				}
 
-				log.Printf("[runner] /system/restart requested remote=%s ua=%q", r.RemoteAddr, r.UserAgent())
+				log.Printf("[runner] /system/restart requested %s", describeRequester(r))
 
 				err := writeSupervisorCommand(instance.Health().Cwd, "restart")
 				if err != nil {
