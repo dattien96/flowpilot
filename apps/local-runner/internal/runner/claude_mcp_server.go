@@ -58,7 +58,7 @@ type claudeMCPServer struct {
 	// actually acting as a flow hub (BUG-NOTE-CP42 #24). tools/list omits
 	// submit_review_outcome entirely when false; tools/call re-checks it as
 	// defense in depth against a model calling a tool it was never shown.
-	allowReviewOutcome map[string]bool
+	allowReviewOutcome   map[string]bool
 	allowVibeRequirement map[string]bool
 }
 

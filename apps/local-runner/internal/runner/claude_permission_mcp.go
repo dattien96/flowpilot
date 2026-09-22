@@ -246,7 +246,6 @@ func handleClaudeSubmitReviewOutcome(args map[string]any, bridge TurnBridge) map
 	return claudeMcpTextResult(string(resultJSON))
 }
 
-
 func handleClaudeVibeRequirement(args map[string]any, bridge TurnBridge) map[string]any {
 	in, err := parseVibeRequirementInput(args)
 	if err != nil {

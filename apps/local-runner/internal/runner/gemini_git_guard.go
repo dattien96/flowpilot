@@ -24,9 +24,9 @@ var errGitMainRepoMutated = fmt.Errorf("FlowPilot ForceShellBridge: primary work
 // turn. Agent work always runs in an isolated sandbox; main is only mutated by
 // an all-or-nothing copy-back after conflict checks.
 type gitHeadCheckpoint struct {
-	SHA       string // HEAD when born; empty if unborn
-	Unborn    bool
-	MainCwd   string
+	SHA     string // HEAD when born; empty if unborn
+	Unborn  bool
+	MainCwd string
 	// Refs maps full ref name → tip SHA (all heads/tags at turn start).
 	Refs map[string]string
 	// Files maps repo-relative path → identity fingerprint (mode|type|hash/target).
