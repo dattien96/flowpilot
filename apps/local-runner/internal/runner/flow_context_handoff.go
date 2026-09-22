@@ -28,7 +28,7 @@ const flowContextHandoffPrefix = "[FlowPilot flow context package]"
 // A failed I/O init for one dir does not block later inits (no sync.Once trap).
 var (
 	runMarkerSecretsMu sync.RWMutex
-	runMarkerSecrets   = map[string][]byte{} // abs(dataDir) → secret
+	runMarkerSecrets   = map[string][]byte{}  // abs(dataDir) → secret
 	runMarkerActive    = newRunMarkerSecret() // default used by runMarkerMAC
 )
 
