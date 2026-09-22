@@ -52,3 +52,6 @@ Source of truth for stable `feature_key` values used by:
 - living-knowledge-base — CP-66 Living knowledge base & execution flow context source (knowledge.flow) distilled from GitNexus and LSP
 - contract-first-tdd — CP-67 Contract-First Scaffold TDD, AST Signature Lock (r-signature-lock), and batch renegotiation via Main Agent
 - skill-anchored-init — CP-68 Skill-Anchored Project Scaffolding & AI-Guided Init Engine
+- run-worktree — SS-23/SD-27/CP-71 opt-in per-run git worktree isolation: start toggle, run binding, patch-based merge-back card, conflict evidence, recovery & GC
+- attention-queue — cross-run pending-action inbox: desktop Attention Queue aggregating waiting runs via a singleton observer store (Task-404)
+- desktop-ui-consistency — desktop design-token revamp: spacing/elevation/radius/motion scales, icon unification, token guardrails (Task-405)
