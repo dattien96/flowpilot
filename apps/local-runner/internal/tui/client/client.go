@@ -1099,13 +1099,15 @@ type ScaffoldStatusResult struct {
 // DispatchScaffold calls POST /client/projects/{projectId}/scaffold. A scaffold
 // turn runs a real AI generation plus a compiler gate (pnpm install + tsc), so
 // the budget is far longer than InitEngine's 5 minutes.
-func (c *Client) DispatchScaffold(ctx context.Context, projectID, workingDirectory, platform string) (*ScaffoldResult, error) {
+func (c *Client) DispatchScaffold(ctx context.Context, projectID, workingDirectory, platform, providerKey, modelName string) (*ScaffoldResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Minute)
 	defer cancel()
 	var out ScaffoldResult
 	err := c.postJSON(ctx, "/client/projects/"+neturl.PathEscape(projectID)+"/scaffold", map[string]any{
 		"workingDirectory": workingDirectory,
 		"platform":         platform,
+		"providerKey":      providerKey,
+		"modelName":        modelName,
 		"trigger":          "init_all",
 	}, &out)
 	if err != nil {

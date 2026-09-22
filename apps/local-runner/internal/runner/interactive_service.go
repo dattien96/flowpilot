@@ -93,8 +93,9 @@ type InteractiveService struct {
 	// NewScaffoldDispatcher(s.runner); tests inject a dispatcher backed by a fake
 	// prompt executor so no real provider CLI is ever spawned.
 	scaffoldDispatcherFactory func() *ScaffoldDispatcher
-	// scaffoldInFlight debounces the CP-68 passive scaffold trigger so the same
-	// project gets at most one background AI scaffold turn at a time; guarded by
+	// scaffoldInFlight debounces scaffold turns so the same project gets at most
+	// one AI scaffold turn at a time — claimed by the CP-68 passive trigger and
+	// by the HTTP dispatch handler via claimScaffold/releaseScaffold; guarded by
 	// s.mu, lazily initialized, entries are released when the turn finishes.
 	scaffoldInFlight map[string]bool
 

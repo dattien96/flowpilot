@@ -295,3 +295,71 @@ func TestCreateProject_AutoTriggerRejectsEscapingDirectory(t *testing.T) {
 		t.Fatalf("executor calls = %d, want 0 — rejected before any AI call", executor.count())
 	}
 }
+
+func TestScaffoldDispatch_FallsBackToProjectDefaultModel(t *testing.T) {
+	// The TUI /init all dispatch carries no provider/model of its own; the
+	// runner must fall back to the project's stored default_model
+	// (devin/swe-2-max → devin) instead of silently resolving the registry
+	// default provider.
+	executor := &recordingScaffoldExecutor{}
+	workspace := newScaffoldWorkspace(t)
+	dispatcher := dispatcherForRecipe(executor, realScaffoldRecipe(t, "true"))
+
+	catalog := newInteractiveCatalog()
+	catalog.projects = []Project{{ID: "proj-rn", Name: "App", Path: workspace, Platform: "react-native", Model: "devin/swe-2-max"}}
+	svc := newInteractiveService(DefaultProviderRegistry(), catalog, nil)
+	svc.AttachRunner(&Runner{workspace: t.TempDir()})
+	svc.scaffoldDispatcherFactory = func() *ScaffoldDispatcher { return dispatcher }
+	mux := http.NewServeMux()
+	svc.RegisterInteractiveRoutes(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	status, body := doJSON(t, http.MethodPost, srv.URL+"/client/projects/proj-rn/scaffold", map[string]any{
+		"workingDirectory": workspace,
+		"platform":         "react-native",
+		"trigger":          "init_all",
+	}, nil)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d body=%s", status, body)
+	}
+	if executor.count() != 1 {
+		t.Fatalf("executor calls = %d, want 1", executor.count())
+	}
+	turn := executor.turn(0)
+	if turn.ProviderKey != "devin" {
+		t.Fatalf("ProviderKey = %q, want devin resolved from the project's default_model", turn.ProviderKey)
+	}
+	if turn.ModelName != "devin/swe-2-max" {
+		t.Fatalf("ModelName = %q, want the project's default_model", turn.ModelName)
+	}
+}
+
+func TestScaffoldDispatch_SkipsWhileTurnInFlight(t *testing.T) {
+	// The create_project auto-trigger already runs one scaffold turn per
+	// project; a manual dispatch that lands while it runs must skip instead of
+	// stacking a second concurrent AI turn writing into the same workspace.
+	executor := &recordingScaffoldExecutor{}
+	workspace := newScaffoldWorkspace(t)
+	dispatcher := dispatcherForRecipe(executor, realScaffoldRecipe(t, "true"))
+	svc, srv := newScaffoldTestService(t, workspace, "react-native", dispatcher)
+
+	svc.mu.Lock()
+	svc.scaffoldInFlight = map[string]bool{"proj-rn": true}
+	svc.mu.Unlock()
+
+	status, body := doJSON(t, http.MethodPost, srv.URL+"/client/projects/proj-rn/scaffold", map[string]any{
+		"workingDirectory": workspace,
+		"platform":         "react-native",
+	}, nil)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d body=%s", status, body)
+	}
+	out := scaffoldResultFromResponse(t, body)
+	if out.Status != ScaffoldStatusSkipped {
+		t.Fatalf("Status = %q, want skipped while a scaffold turn is in flight", out.Status)
+	}
+	if executor.count() != 0 {
+		t.Fatalf("executor calls = %d, want 0 — no second concurrent AI turn", executor.count())
+	}
+}

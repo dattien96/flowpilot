@@ -133,9 +133,11 @@ func (m *AppModel) cmdDispatchScaffold() tea.Cmd {
 		cwd = strings.TrimSpace(m.project.Path)
 	}
 	cl := m.client
+	provider := strings.TrimSpace(m.provider)
+	model := strings.TrimSpace(m.model)
 	return func() tea.Msg {
 		ctx := context.Background()
-		res, err := cl.DispatchScaffold(ctx, projectID, cwd, platform)
+		res, err := cl.DispatchScaffold(ctx, projectID, cwd, platform, provider, model)
 		return EngineScaffoldMsg{ProjectID: projectID, Result: res, Err: err}
 	}
 }
