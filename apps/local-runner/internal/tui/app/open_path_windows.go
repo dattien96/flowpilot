@@ -8,7 +8,7 @@ import (
 )
 
 var (
-	shell32             = syscall.NewLazyDLL("shell32.dll")
+	shell32           = syscall.NewLazyDLL("shell32.dll")
 	procShellExecuteW = shell32.NewProc("ShellExecuteW")
 )
 
