@@ -966,10 +966,12 @@ export interface RunnerClient {
   /** PUT /client/chat-posture — persists the active posture + profile pins. */
   setChatPosture?(config: ChatPostureConfig): Promise<ChatPostureConfig>;
   openProviderAccountTerminal(accountId: string): Promise<void>;
-  /** System control — mirrors admin-web's runner gateway (`POST /system/restart`). */
+  /** System control — mirrors admin-web's runner gateway (`POST /system/restart`). CP-81: fenced + lease-scoped inside Electron when the lifecycle bridge is present. */
   restartStack(): Promise<void>;
-  /** System control — mirrors admin-web's runner gateway (`POST /system/shutdown`). */
+  /** System control — mirrors admin-web's runner gateway (`POST /system/shutdown`). CP-81: fenced + lease-scoped inside Electron when the lifecycle bridge is present. */
   shutdownStack(): Promise<void>;
+  /** CP-81: GET /system/lifecycle (or bridge snapshot) — lease/workload/phase view for status UI. Optional so mocks/legacy transports degrade. */
+  getLifecycleSnapshot?(): Promise<unknown>;
   /**
    * Submit a user decision for the r-reg gate block card (Task-155).
    * option: "keep-test-fix-code" | "suggest-requirement-change" | "custom"

@@ -1,5 +1,32 @@
 export {};
 
+// CP-81: renderer-facing lifecycle bridge (SD-28 §6.3). Token material never
+// crosses this boundary — fenced actions execute inside Electron main.
+interface RunnerLifecycleStatusEvent {
+  connected: boolean;
+  phase?: string;
+  sharedClients: number;
+  activeWork: number;
+  idleDeadlineMs?: number;
+  updatePending: boolean;
+  reconnecting: boolean;
+}
+
+interface RunnerLifecycleActionResult {
+  ok: boolean;
+  code?: string;
+  restartId?: string;
+  confirmationRequired?: boolean;
+}
+
+interface RunnerLifecycleBridge {
+  getSnapshot(): Promise<unknown>;
+  requestClose(): Promise<"cancelled" | "closed">;
+  requestGlobalShutdown(): Promise<RunnerLifecycleActionResult>;
+  requestRestart(): Promise<RunnerLifecycleActionResult>;
+  onStatus(cb: (status: RunnerLifecycleStatusEvent) => void): () => void;
+}
+
 declare global {
   interface Window {
     flowpilot?: {
@@ -31,6 +58,7 @@ declare global {
         body: string;
       }>;
       showNotification(title: string, body: string): Promise<{ ok: boolean }>;
+      lifecycle?: RunnerLifecycleBridge;
     };
   }
 }
