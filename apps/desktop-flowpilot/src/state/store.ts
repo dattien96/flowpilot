@@ -354,6 +354,15 @@ interface AppState {
   /** Task-326 session default: wire enum "dev"|"vibe". UI label Normal = dev. */
   workingMode: "dev" | "vibe";
   setWorkingMode(mode: "dev" | "vibe"): void;
+  /** CP-71: opt the next run into an isolated git worktree. Persisted per
+   *  chat via the run record — restored from the opened run's binding. */
+  worktreeEnabled: boolean;
+  /** False when the selected project directory is not a git repo (IPC probe). */
+  worktreeAvailable: boolean;
+  /** Binding state of the active run: "" when the run has no worktree. */
+  activeWorktreeState: string;
+  setWorktreeEnabled(on: boolean): void;
+  refreshWorktreeAvailability(): void;
   /** True while toggleYoloForActiveProvider's Grok-only async path is applying
    *  the new posture on the backend (config.toml rewrite + process respawn,
    *  Task-218) — Claude/Codex/Gemini never set this, their YOLO toggle stays
@@ -617,6 +626,9 @@ export const useStore = create<AppState>((set, get) => ({
   selectedProvider: "codex",
   yoloMode: false,
   workingMode: loadWorkingMode(),
+  worktreeEnabled: false,
+  worktreeAvailable: true,
+  activeWorktreeState: "",
   grokYoloPostureLoading: false,
   summaryGenerating: false,
   chatStartMode: "normal",
@@ -1053,6 +1065,7 @@ export const useStore = create<AppState>((set, get) => ({
     if (projectChanged) {
       get().resetRun();
     }
+    get().refreshWorktreeAvailability();
     void get().loadSkills(get().selectedProvider ?? "codex");
   },
 
@@ -1414,6 +1427,46 @@ export const useStore = create<AppState>((set, get) => ({
       flowRef: undefined,
       builtinOrchestrationOptions: [],
     });
+  },
+
+  // CP-71 / Task-409 T-2: the toggle writes through on the next startRun;
+  // per-chat persistence is derived from the chat's newest run record, so the
+  // setter only gates invalid transitions (non-git cwd, live binding).
+  setWorktreeEnabled(on) {
+    if (on && !get().worktreeAvailable) {
+      set((s) => ({
+        timeline: [...s.timeline, {
+          kind: "system",
+          id: `worktree-notice-${s.timeline.length}`,
+          text: "Run in worktree requires a git repository.",
+          tone: "info",
+        }],
+      }));
+      return;
+    }
+    if (!on && (get().activeWorktreeState === "active" || get().activeWorktreeState === "merge_pending")) {
+      set((s) => ({
+        timeline: [...s.timeline, {
+          kind: "system",
+          id: `worktree-notice-${s.timeline.length}`,
+          text: "Merge or discard the worktree before disabling isolation for this chat.",
+          tone: "info",
+        }],
+      }));
+      return;
+    }
+    set({ worktreeEnabled: on });
+  },
+
+  refreshWorktreeAvailability() {
+    const path = selectedProjectPath(get());
+    if (!path || !ideBridge.isGitRepo) {
+      set({ worktreeAvailable: Boolean(path) });
+      return;
+    }
+    void ideBridge.isGitRepo(path)
+      .then((ok) => set({ worktreeAvailable: ok }))
+      .catch(() => set({ worktreeAvailable: true }));
   },
 
   async toggleYoloForActiveProvider(next) {
@@ -1804,6 +1857,7 @@ export const useStore = create<AppState>((set, get) => ({
           cwd,
           chatId: existingChatId!,
           switchFromRunId: runId!,
+          worktree: get().worktreeEnabled,
         });
         runId = handle.runId;
         if (handle.stepId) {
@@ -1815,6 +1869,7 @@ export const useStore = create<AppState>((set, get) => ({
           chatDetached: false,
           activeAgentRunId: undefined,
         });
+        if (get().worktreeEnabled) set({ activeWorktreeState: "active" });
       } else if (!runId) {
         const handle = await startRunWithRetry(
           chatMode === "normal_chat"
@@ -1828,6 +1883,7 @@ export const useStore = create<AppState>((set, get) => ({
                 flowRef: vibeEntry?.flowRef,
                 chatMode: "normal_chat",
                 cwd,
+                worktree: get().worktreeEnabled,
               }
             : {
                 projectId: selectedProjectId!,
@@ -1836,6 +1892,7 @@ export const useStore = create<AppState>((set, get) => ({
                 providerKey: selectedProvider,
                 workingMode,
                 cwd,
+                worktree: get().worktreeEnabled,
               },
         );
         runId = handle.runId;
@@ -1848,6 +1905,7 @@ export const useStore = create<AppState>((set, get) => ({
           chatDetached: false,
           activeAgentRunId: undefined,
         });
+        if (get().worktreeEnabled) set({ activeWorktreeState: "active" });
       }
 
       const turnInput: TurnInput = {
@@ -2538,6 +2596,11 @@ export const useStore = create<AppState>((set, get) => ({
       activeAgentRunId: undefined,
       status: handle.status,
       activeStepId: handle.stepId,
+      // CP-71: restore the per-chat toggle from the opened run's binding —
+      // all legs of a chat share one worktree, so the newest leg's record
+      // is the chat-level value.
+      worktreeEnabled: Boolean(historyItem?.worktreeState),
+      activeWorktreeState: historyItem?.worktreeState ?? "",
       chatMode: isWorkflowHistoryItem ? "workflow_step_auto" : "normal_chat",
       ...(isWorkflowHistoryItem && historyItem?.workflowId
         ? { launchMode: "workflow", selectedWorkflowId: historyItem.workflowId }
@@ -2660,6 +2723,8 @@ export const useStore = create<AppState>((set, get) => ({
       chatSourceDocId: "",
       flowRef: undefined,
       builtinOrchestrationOptions: [],
+      worktreeEnabled: false,
+      activeWorktreeState: "",
       selectedModel: pickDefaultModel(selectedProvider, supportedModels),
     });
   },

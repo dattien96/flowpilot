@@ -290,6 +290,9 @@ type RunHandle struct {
 	// its leg ordinal. Omitted for workflow runs and when the runner flag is off.
 	ChatID string `json:"chatId,omitempty"`
 	LegSeq int    `json:"legSeq,omitempty"`
+	// CP-71: worktree binding echo for the status badge.
+	WorktreeState string `json:"worktreeState,omitempty"`
+	WorktreeSlug  string `json:"worktreeSlug,omitempty"`
 }
 
 // RunHistoryItem mirrors GET /client/projects/{id}/workflow-runs (desktop listRunHistory).
@@ -420,6 +423,8 @@ type StartRunInput struct {
 	ChatID          string `json:"chatId,omitempty"`
 	SwitchFromRunID string `json:"switchFromRunId,omitempty"`
 	LegSeq          int    `json:"legSeq,omitempty"`
+	// Worktree opts the run into an isolated git worktree (CP-71, opt-in).
+	Worktree bool `json:"worktree,omitempty"`
 }
 
 // TurnInput mirrors the runner TurnInput DTO (CP-56/BUG-063).

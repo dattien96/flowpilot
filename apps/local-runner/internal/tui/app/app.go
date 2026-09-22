@@ -1119,6 +1119,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			handle.Status = st
 		}
 		m.runHandle = &handle
+		m.noteWorktreeBinding(handle.WorktreeState, handle.WorktreeSlug)
 		m.stepID = handle.StepID
 		m.pendingPrompt = ""
 		m.firstTurnPending = false
@@ -1446,6 +1447,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case RunStartedMsg:
 		handle := msg.Handle
 		m.runHandle = &handle
+		m.noteWorktreeBinding(handle.WorktreeState, handle.WorktreeSlug)
 		m.runnerPollFailStreak = 0
 		m.stepsPollInFlight = false
 		m.agentsHydrateInFlight = false
@@ -1504,6 +1506,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		h := msg.Handle
 		m.runHandle = &h
+		m.noteWorktreeBinding(h.WorktreeState, h.WorktreeSlug)
 		if h.ProviderKey != "" {
 			m.provider = string(h.ProviderKey)
 		}
@@ -4406,6 +4409,11 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			}
 		}
 
+	case "/worktree", "/wt":
+		// CP-71: arm the next run for worktree isolation (per-chat toggle —
+		// a live binding pins the flag until merged/discarded).
+		return m, m.toggleWorktree()
+
 	case "/yolo":
 		if m.mode != ModeChat || m.launch.IsArmed() {
 			m.addMessage("system", "YOLO is auto-on in flow mode. Switch to /chat to toggle.", "")
@@ -4887,6 +4895,10 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		m.lastEventSeq = 0
 		m.lastTurnError = ""
 		m.lastTokens = nil
+		// CP-71: a new chat starts with worktree isolation off.
+		m.worktree = false
+		m.liveWorktree = ""
+		m.worktreeSlug = ""
 		// Keep provider/model/reasoning + armed flow (clear flow with /chat).
 		m.firstTurnPending = m.launch.IsBuiltin()
 		m.persistSessionPrefs()
@@ -7121,6 +7133,7 @@ func (m *AppModel) cmdStartRun() tea.Cmd {
 		}
 		input := launch.ToStartRunInput(projectID, provider, model, reasoning, cwd, yolo)
 		input.WorkingMode = workingMode
+		input.Worktree = m.worktreeEnabled()
 		if launch.IsBuiltin() {
 			input.FlowRef = launch.FlowRef
 		}
@@ -7550,6 +7563,7 @@ func runHeadless(m *AppModel, prompt string) error {
 		YoloMode:        m.yolo,
 		Cwd:             m.cfg.ProjectPath,
 		ChatMode:        "normal_chat",
+		Worktree:        m.worktreeEnabled(),
 	}
 	if input.Cwd == "" {
 		projects, err := cl.ListProjects(ctx)

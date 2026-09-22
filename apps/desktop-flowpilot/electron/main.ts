@@ -1,6 +1,6 @@
 import { app, BrowserWindow, ipcMain, Notification, shell } from "electron";
 import { execFile } from "node:child_process";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 // Electron shell (04-01). Loads the Vite dev server in dev, the built renderer in
@@ -207,6 +207,20 @@ ipcMain.handle("notification:show", (_event, payload: { title: string; body: str
     console.error("[notification] show failed:", err);
   }
   return { ok: true };
+});
+
+// CP-71: worktree toggle gating — a .git dir OR file (worktree/submodule
+// gitfile) marks a git repo. Renderer fallback stays optimistic; the runner
+// remains the authority (worktree_unavailable).
+ipcMain.handle("project:isGitRepo", async (_event, payload: { path: string }) => {
+  try {
+    const p = payload?.path;
+    if (!p || typeof p !== "string") return false;
+    await stat(path.join(p, ".git"));
+    return true;
+  } catch {
+    return false;
+  }
 });
 
 ipcMain.handle("http:request", async (_event, payload: BridgeHttpRequest) => {

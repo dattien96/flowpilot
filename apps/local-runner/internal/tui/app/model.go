@@ -416,6 +416,11 @@ type AppModel struct {
 	// Per-turn settings
 	yolo        bool
 	workingMode string // Task-326: ""=unfiltered cache, "dev"|"vibe" after /vibe
+	// CP-71: arm the next run for worktree isolation; liveWorktree mirrors the
+	// active run's binding state for the status badge.
+	worktree       bool
+	liveWorktree   string // "" | active | merge_pending | lost | merged | ...
+	worktreeSlug   string
 	agentsFocus bool
 	// chatPosture is the active Scan/Plan/Code posture ("" = code). Scan/Plan are
 	// read-only: the runner auto-approves reads and auto-denies writes without

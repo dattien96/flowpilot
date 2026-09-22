@@ -626,6 +626,14 @@ export function Navigator(): React.ReactElement {
                           {item.legsCount && item.legsCount > 1 ? (
                             <span className="project-history-legs-count">{item.legsCount} legs</span>
                           ) : null}
+                          {item.worktreeState ? (
+                            <span
+                              className="project-history-worktree-badge"
+                              title={`Isolated worktree (${item.worktreeState})${item.worktreeSlug ? ` — ${item.worktreeSlug}` : ""}`}
+                            >
+                              ⎇ {item.worktreeSlug ?? "worktree"}
+                            </span>
+                          ) : null}
                         </span>
                       </span>
                       <span className="project-history-item-meta">
@@ -682,6 +690,14 @@ export function Navigator(): React.ReactElement {
                       {showRowSpinner ? <span className="history-status-spinner" aria-hidden="true" /> : <HistoryStatusIcon status={effectiveStatus} isNew={isNew} />}
                       <span className="project-history-item-title">
                         {runTitle(item.lastPrompt || item.lastMessage)}
+                        {item.worktreeState ? (
+                          <span
+                            className="project-history-worktree-badge"
+                            title={`Isolated worktree (${item.worktreeState})${item.worktreeSlug ? ` — ${item.worktreeSlug}` : ""}`}
+                          >
+                            ⎇ {item.worktreeSlug ?? "worktree"}
+                          </span>
+                        ) : null}
                       </span>
                     </span>
                     <span className="project-history-item-meta">

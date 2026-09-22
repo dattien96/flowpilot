@@ -187,6 +187,10 @@ func (m *AppModel) renderStatusModelLine(sep string) string {
 	if posture := m.activePosture(); m.mode == ModeChat {
 		parts = append(parts, styleStatus.Render("mode: ")+postureStyle(posture).Render(posture))
 	}
+	// CP-71 worktree chip — armed flag or live binding state.
+	if badge := m.worktreeBadge(); badge != "" {
+		parts = append(parts, styleStatus.Render("wt: ")+styleStatusHi.Render(strings.TrimPrefix(badge, "wt:")))
+	}
 	if sk := formatAttachedSkillsChip(len(attachedSkillNames(m.selectedSkills)), false, m.asciiMode); sk != "" {
 		parts = append(parts, styleStatusHi.Render(sk))
 	}

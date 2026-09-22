@@ -34,4 +34,5 @@ contextBridge.exposeInMainWorld("flowpilot", {
   }> => ipcRenderer.invoke("http:request", payload),
   showNotification: (title: string, body: string): Promise<{ ok: boolean }> =>
     ipcRenderer.invoke("notification:show", { title, body }),
+  isGitRepo: (path: string): Promise<boolean> => ipcRenderer.invoke("project:isGitRepo", { path }),
 });

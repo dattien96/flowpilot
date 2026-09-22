@@ -47,6 +47,38 @@ function PostureModeIcon({ posture }: { posture: ChatPosture }): React.ReactElem
   );
 }
 
+// RunInWorktreeToggle (CP-71 / Task-409 T-1): opt the next run into an
+// isolated git worktree. Disabled reasons (T-3): non-git project, live
+// binding (must merge/discard first), or a turn in flight.
+export function RunInWorktreeToggle(props: {
+  enabled: boolean;
+  disabled: boolean;
+  disabledReason?: string;
+  onToggle(on: boolean): void;
+}): React.ReactElement {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={props.enabled}
+      aria-label="Run in worktree"
+      className={`worktree-toggle ${props.enabled ? "active" : ""}`}
+      disabled={props.disabled}
+      title={props.disabledReason ?? "Run the next turn in an isolated git worktree"}
+      onClick={() => props.onToggle(!props.enabled)}
+    >
+      <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+        <circle cx="5" cy="4" r="2" fill="none" stroke="currentColor" strokeWidth="1.3" />
+        <circle cx="5" cy="12" r="2" fill="none" stroke="currentColor" strokeWidth="1.3" />
+        <circle cx="11" cy="8" r="2" fill="none" stroke="currentColor" strokeWidth="1.3" />
+        <path d="M5 6v4M6.7 5.4C8 6 9.5 6.5 10.5 6.9" fill="none" stroke="currentColor" strokeWidth="1.2" />
+      </svg>
+      <span className="worktree-toggle-label">Worktree</span>
+      <span className="worktree-toggle-state">{props.enabled ? "On" : "Off"}</span>
+    </button>
+  );
+}
+
 export function ChatPosturePanel(): React.ReactElement | null {
   const chatMode = useStore((s) => s.chatMode);
   const chatPosture = useStore((s) => s.chatPosture);
@@ -55,6 +87,10 @@ export function ChatPosturePanel(): React.ReactElement | null {
   const openChatPostureSetup = useStore((s) => s.openChatPostureSetup);
   const closeChatPostureSetup = useStore((s) => s.closeChatPostureSetup);
   const runStatus = useStore((s) => s.status);
+  const worktreeEnabled = useStore((s) => s.worktreeEnabled);
+  const worktreeAvailable = useStore((s) => s.worktreeAvailable);
+  const activeWorktreeState = useStore((s) => s.activeWorktreeState);
+  const setWorktreeEnabled = useStore((s) => s.setWorktreeEnabled);
 
   // BUG-NOTE: posture is resendable between prompts like model/YOLO (the runner
   // applies ChatPosture per turn), so unlike ChatStartIntentPanel it is NOT
@@ -109,6 +145,22 @@ export function ChatPosturePanel(): React.ReactElement | null {
       <p className="chat-posture-hint">
         {CHAT_POSTURES.find((item) => item.key === chatPosture)?.hint}
       </p>
+      <RunInWorktreeToggle
+        enabled={worktreeEnabled}
+        disabled={
+          isRunning ||
+          !worktreeAvailable ||
+          (worktreeEnabled && (activeWorktreeState === "active" || activeWorktreeState === "merge_pending"))
+        }
+        disabledReason={
+          !worktreeAvailable
+            ? "Run in worktree requires a git repository"
+            : worktreeEnabled && (activeWorktreeState === "active" || activeWorktreeState === "merge_pending")
+              ? "Merge or discard the worktree first"
+              : undefined
+        }
+        onToggle={setWorktreeEnabled}
+      />
       {chatPostureSetupOpen ? (
         <ChatPostureSetupModal
           posture={chatPosture}

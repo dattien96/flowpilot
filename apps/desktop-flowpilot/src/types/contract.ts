@@ -347,6 +347,8 @@ export interface StartRunInput {
   chatId?: string;
   switchFromRunId?: string;
   legSeq?: number;
+  /** CP-71: run this chat/flow inside an isolated git worktree (opt-in). */
+  worktree?: boolean;
 }
 
 export interface RunHandle {
@@ -396,6 +398,9 @@ export interface RunHistoryItem {
    */
   subMode?: string;
   flowRef?: string;
+  /** CP-71: present when the run owns/shares a worktree binding. */
+  worktreeState?: string;
+  worktreeSlug?: string;
 }
 
 export interface ChatSessionSyncRequest {
@@ -988,6 +993,8 @@ export interface IdeBridge {
   openInIde(file: string, line?: number): Promise<void>;
   /** Open a URL in the user's default browser (e.g. the admin-web app). */
   openExternal(url: string): Promise<void>;
+  /** CP-71: whether the project directory is a git repository (worktree toggle gating). */
+  isGitRepo?(path: string): Promise<boolean>;
 }
 
 
