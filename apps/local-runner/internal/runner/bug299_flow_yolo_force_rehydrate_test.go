@@ -148,10 +148,10 @@ func TestReconstructRunForcesYoloTrueForWorkflowAndFlowEngine(t *testing.T) {
 
 	// Legacy workflow row: no Yolo field → zero false → must force true.
 	rs, apiErr := svc.reconstructRun(ProviderSessionState{
-		RunID:     "run-legacy-wf",
-		ProjectID: "p",
+		RunID:      "run-legacy-wf",
+		ProjectID:  "p",
 		WorkflowID: "wf-1",
-		RunKind:   "workflow",
+		RunKind:    "workflow",
 		// Yolo intentionally zero / missing
 	})
 	if apiErr != nil {

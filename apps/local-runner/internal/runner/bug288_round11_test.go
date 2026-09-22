@@ -504,7 +504,7 @@ func TestSubmitApprovalDecisionRejectsElapsedTTLOnSubmit(t *testing.T) {
 	rec := &approvalRecord{
 		id: "appr-ttl-2", runID: rs.id, status: "pending", resolve: make(chan string, 1),
 		expiresAt: past,
-		details: ApprovalDetails{Decisions: []ApprovalDecisionOption{{Value: "approve", Label: "Approve"}, {Value: "deny", Label: "Deny"}}},
+		details:   ApprovalDetails{Decisions: []ApprovalDecisionOption{{Value: "approve", Label: "Approve"}, {Value: "deny", Label: "Deny"}}},
 	}
 	svc.mu.Lock()
 	svc.runs[rs.id] = rs

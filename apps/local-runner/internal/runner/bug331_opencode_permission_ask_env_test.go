@@ -114,7 +114,7 @@ func TestBug331PermissionOverlayPinsEditAndBashAskOnly(t *testing.T) {
 func TestBug331ProcessEnvKeepsOverlayAndConfigFileDistinct(t *testing.T) {
 	home := t.TempDir()
 	env := opencodeProcessEnv(map[string]string{
-		"HOME":                        home,
+		"HOME":                       home,
 		opencodePermissionOverlayEnv: opencodePermissionOverlayJSON,
 	})
 	overlayCount, configCount := 0, 0

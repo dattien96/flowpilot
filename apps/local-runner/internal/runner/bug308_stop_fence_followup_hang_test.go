@@ -578,4 +578,3 @@ func TestReleaseHubStopFenceForFollowUp_NoopSafe(t *testing.T) {
 	svc.releaseHubStopFenceForFollowUp(context.Background(), "run-never-activated")
 	// should not panic
 }
-
