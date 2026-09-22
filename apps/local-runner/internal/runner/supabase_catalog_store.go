@@ -103,7 +103,7 @@ func (s *SupabaseCatalogStore) ListProjects(ctx context.Context) ([]Project, err
 		Name                  string  `json:"name"`
 		DirectoryPath         string  `json:"directory_path"`
 		DefaultModel          *string `json:"default_model"`
-		Platform             *string `json:"platform"`
+		Platform              *string `json:"platform"`
 		ProjectWorkspaceBinds []struct {
 			LocalPath string `json:"local_path"`
 		} `json:"project_workspace_bindings"`
@@ -371,4 +371,3 @@ func (s *SupabaseCatalogStore) CreateProject(ctx context.Context, input CreatePr
 		Platform: platform,
 	}, nil
 }
-
