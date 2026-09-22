@@ -393,14 +393,48 @@ export class HttpWsRunnerClient implements RunnerClient {
   openProviderAccountTerminal(accountId: string): Promise<void> {
     return this.postJSON<void>("/provider-accounts/test", { accountId });
   }
+  // CP-81 Task-418 T-3: inside Electron, destructive system actions route
+  // through the lifecycle bridge — Electron main owns the lease token and
+  // performs the fenced two-phase call (confirm token + expectedInstanceId).
+  // Browser/test mode (no bridge) keeps the direct POST. Typed self-contained
+  // so the phase1 harness need not include flowpilotBridge.d.ts.
+  private lifecycleBridge(): {
+    requestRestart(): Promise<unknown>;
+    requestGlobalShutdown(): Promise<unknown>;
+    getSnapshot(): Promise<unknown>;
+  } | undefined {
+    return (globalThis as { flowpilot?: { lifecycle?: {
+      requestRestart(): Promise<unknown>;
+      requestGlobalShutdown(): Promise<unknown>;
+      getSnapshot(): Promise<unknown>;
+    } } }).flowpilot?.lifecycle;
+  }
+
   restartStack(): Promise<void> {
+    const bridge = this.lifecycleBridge();
+    if (bridge) {
+      return bridge.requestRestart().then(() => undefined);
+    }
     // The runner answers before running cleanup, so this should return fast —
     // but bound it anyway so a wedged teardown can never leave the button on
     // "Shutting down…" forever.
     return this.postJSON<void>("/system/restart", undefined, undefined, 10_000);
   }
   shutdownStack(): Promise<void> {
+    const bridge = this.lifecycleBridge();
+    if (bridge) {
+      return bridge.requestGlobalShutdown().then(() => undefined);
+    }
     return this.postJSON<void>("/system/shutdown", undefined, undefined, 10_000);
+  }
+
+  // CP-81: renderer-side snapshot read (no token material crosses the bridge).
+  getLifecycleSnapshot(): Promise<unknown> {
+    const bridge = this.lifecycleBridge();
+    if (bridge) {
+      return bridge.getSnapshot();
+    }
+    return this.getJSON<unknown>("/system/lifecycle");
   }
 
   // ---- streaming -----------------------------------------------------------
