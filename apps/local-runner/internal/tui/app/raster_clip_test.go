@@ -51,7 +51,7 @@ func TestRegression_RasterClipIsolatesColumns(t *testing.T) {
 					t.Fatalf("[%s w=%d line %d] sidebar text in chat column: %q", pk, w, i, left)
 				}
 				// You box right border must sit at chatW-2/chatW-1 (full-pane, safeTermWidth
-// leaves one free column), never mid-column.
+				// leaves one free column), never mid-column.
 				if strings.Contains(left, "┌") && strings.Contains(left, "You") {
 					bar := lastBarCol([]rune(left))
 					if bar < chatW-2 {

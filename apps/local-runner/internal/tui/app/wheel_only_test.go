@@ -3,8 +3,8 @@ package app
 import (
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"flowpilot-runner/internal/tui/config"
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 // Wheel-only: AltScreen+Filter, wheel via 1000h (no CellMotion hover flood).
