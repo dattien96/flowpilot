@@ -29,6 +29,14 @@ type HealthResponse struct {
 	Cwd           string `json:"cwd"`
 	OS            string `json:"os"`
 	StartedAt     string `json:"startedAt"`
+	// CP-81 additive identity (SD-28 §6.2): empty on pre-lifecycle builds —
+	// callers must treat missing fields as legacy_unknown, never kill.
+	RunnerInstanceID string `json:"runnerInstanceId,omitempty"`
+	Generation       int    `json:"generation,omitempty"`
+	ProtocolVersion  int    `json:"protocolVersion,omitempty"`
+	BuildID          string `json:"buildId,omitempty"`
+	LifecycleMode    string `json:"lifecycleMode,omitempty"`
+	Phase            string `json:"phase,omitempty"`
 }
 
 // Project mirrors the /client/projects catalog entry.
