@@ -69,15 +69,46 @@ Explain why this task exists now.
 - routes:
 - tables:
 
-## 6. Acceptance Check
+## 6. Code Guide Signatures
 
-- `<what must be verified after implementation>`
+Exact production signatures the implementer must land (name, args, returns, error contract). One fenced block per file. Use the real language of the file (Go / TS). Leave a `— unchanged` note for files touched only mechanically.
 
-## 7. Out of Scope
+```go
+// <path/to/file.go>
+func Name(ctx context.Context, a Type, b Type) (Out, error) // T-n
+```
+
+```ts
+// <path/to/file.ts>
+export function name(a: Type, b: Type): Out // T-n
+```
+
+## 7. Test Signatures
+
+Named tests that must exist and pass — this is the executable half of DoD. Each line maps to an AC: `TestXxx` (Go) or `test("...")` (vitest). Cover the safe-fix-contract matrix: reported path + near-miss shapes + degraded inputs + ordering/lifecycle + provider parity where shared.
+
+- `TestXxx_Scenario` — asserts `<invariant>` (covers AC-n)
+- `test("xxx", ...)` — asserts `<invariant>` (covers AC-n)
+
+## 8. Acceptance Check
+
+- `<what must be verified after implementation — behavior-level, beyond tests>`
+
+## 9. Out of Scope
 
 - `<what this task must not expand into>`
 
-## 8. Completion Notes
+## 10. Definition of Done
+
+- [ ] All §6 signatures implemented exactly (or deviation documented in §11)
+- [ ] All §7 tests exist, green, additive-only (no pre-existing test edited)
+- [ ] Related pre-existing tests still green — any old failure → STOP and report (safe-fix-contract R1)
+- [ ] Provider parity proven or evidenced where the change touches shared/provider paths (R2)
+- [ ] `feature_key` set; CA ledger entry written; FEATURE-KEYS.md already contains the key
+- [ ] §8 acceptance checks verified by hand or test
+- [ ] GitNexus `detect_changes` shows only expected symbols before commit
+
+## 11. Completion Notes
 
 - result:
 - follow-ups:
