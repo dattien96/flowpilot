@@ -401,11 +401,11 @@ func TestRun63960BlockedRestartContinueAndStopStillWork(t *testing.T) {
 				RunID: hubID, ProjectID: "proj", ProviderKey: ProviderKeyCodex,
 				ProviderSessionID: "sess", WorkingDirectory: cwd,
 				Status: RunStatusRunning, RunKind: "chat", AutoOrchestrate: true,
-				ActiveFlowNodes: []agentpack.FlowNode{{ID: "coder"}, {ID: "synthesis"}},
+				ActiveFlowNodes:       []agentpack.FlowNode{{ID: "coder"}, {ID: "synthesis"}},
 				PendingFlowGateSettle: true, PendingFlowGateFinalMsg: "stale",
 				PendingGateRepromptPrompt: "stale", PendingGateRepromptStepID: "synthesis",
 				PendingGateRepromptGen: 4,
-				StartedAt: now, UpdatedAt: now, LoopState: loop,
+				StartedAt:              now, UpdatedAt: now, LoopState: loop,
 			}); err != nil {
 				t.Fatalf("upsert: %v", err)
 			}
@@ -478,7 +478,7 @@ func TestRun63960BlockedRestartStopWorks(t *testing.T) {
 		RunID: hubID, ProjectID: "proj", ProviderKey: ProviderKeyCodex,
 		ProviderSessionID: "sess", WorkingDirectory: cwd,
 		Status: RunStatusRunning, RunKind: "chat", AutoOrchestrate: true,
-		ActiveFlowNodes: []agentpack.FlowNode{{ID: "synthesis"}},
+		ActiveFlowNodes:       []agentpack.FlowNode{{ID: "synthesis"}},
 		PendingFlowGateSettle: true,
 		StartedAt:             now, UpdatedAt: now,
 		LoopState: AgentLoopState{Status: "blocked", BlockReason: "cap", Cap: 3, Round: 3, RoundCap: 3, Mode: "explicit"},

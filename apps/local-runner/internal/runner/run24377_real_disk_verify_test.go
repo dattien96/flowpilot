@@ -164,10 +164,10 @@ func TestRun24377RealDiskStoreResumeOrder(t *testing.T) {
 		RunID: "run-24377", ProviderKey: ProviderKeyGrok, ProviderSessionID: "019f8526-c53f-7e23-ba74-3045301e1e94",
 		ProviderAccountID: "acct-g", WorkingDirectory: "/Users/tiendat/Desktop/BE/gate-sandbox",
 		RunKind: "chat", Status: RunStatusCompleted,
-		LoopState: AgentLoopState{Status: "done", Cap: 3, Mode: "explicit", Round: 2, RoundCap: 3},
-		ChatFlowRef: "flowpilot-core-flow-pack/review-loop",
+		LoopState:       AgentLoopState{Status: "done", Cap: 3, Mode: "explicit", Round: 2, RoundCap: 3},
+		ChatFlowRef:     "flowpilot-core-flow-pack/review-loop",
 		ActiveFlowNodes: []agentpack.FlowNode{{ID: "coder"}, {ID: "reviewer_correctness"}, {ID: "reviewer_security"}, {ID: "synthesis"}},
-		StartedAt: "2026-07-21T14:48:56.194028Z", UpdatedAt: "2026-07-21T14:59:01.069956Z",
+		StartedAt:       "2026-07-21T14:48:56.194028Z", UpdatedAt: "2026-07-21T14:59:01.069956Z",
 	})
 	for _, c := range children {
 		st := RunStatusCompleted
@@ -208,9 +208,9 @@ func TestRun24377RealDiskStoreResumeOrder(t *testing.T) {
 		id: "run-24377", providerKey: ProviderKeyGrok, providerSessionID: sid,
 		realProviderSessionID: sid, providerAccountID: "acct-g",
 		workspaceCwd: cwd, runKind: "chat", flowEngineDriven: true,
-		chatFlowRef: "flowpilot-core-flow-pack/review-loop",
+		chatFlowRef:     "flowpilot-core-flow-pack/review-loop",
 		activeFlowNodes: []agentpack.FlowNode{{ID: "coder"}, {ID: "reviewer_correctness"}, {ID: "reviewer_security"}, {ID: "synthesis"}},
-		status: RunStatusCompleted, resumedFromDisk: true,
+		status:          RunStatusCompleted, resumedFromDisk: true,
 		createdAt: "2026-07-21T14:48:56.194028Z", updatedAt: "2026-07-21T14:59:01.069956Z",
 		subs: map[int64]chan ProviderEvent{}, idempotency: map[string]string{},
 	}
