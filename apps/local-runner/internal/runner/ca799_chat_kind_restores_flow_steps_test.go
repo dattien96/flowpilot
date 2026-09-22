@@ -158,4 +158,3 @@ func TestCA799_InferPackFlowRefFromNodes(t *testing.T) {
 		t.Fatalf("empty=%q", got)
 	}
 }
-

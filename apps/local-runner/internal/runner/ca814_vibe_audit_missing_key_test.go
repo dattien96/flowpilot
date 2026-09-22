@@ -124,7 +124,7 @@ func TestCA814_VibeRetryDoesNotReparkMissingKey(t *testing.T) {
 	svc.agentOrchestrator.setLoop(parent.RunID, AgentLoopState{
 		Status: "blocked", BlockReason: "escalate",
 		GateReason: "Audit blocked: feature key missing or unverified; cannot finalize.",
-		Cap: 3, Mode: "explicit",
+		Cap:        3, Mode: "explicit",
 	})
 	svc.reseedFlowStepRuntime(parent.RunID, nodes)
 	svc.setFlowStepStatus(context.Background(), parent.RunID, "audit", StepStatusWaitingUserApr)

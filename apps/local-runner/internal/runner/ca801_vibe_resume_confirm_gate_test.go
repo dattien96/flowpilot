@@ -18,12 +18,12 @@ func TestCA801_ReconstructParksResumeConfirmNoCoder(t *testing.T) {
 			svc, _ := newTestServer(t)
 			runID := "run-pause-" + string(pk)
 			rs, apiErr := svc.reconstructRun(ProviderSessionState{
-				RunID:              runID,
-				ProjectID:          "proj",
-				ProviderKey:        pk,
-				RunKind:            "chat",
-				WorkingMode:        workingmode.Vibe,
-				ChatFlowRef:        workingmode.PackPrefix + vibeSprintFlowID,
+				RunID:           runID,
+				ProjectID:       "proj",
+				ProviderKey:     pk,
+				RunKind:         "chat",
+				WorkingMode:     workingmode.Vibe,
+				ChatFlowRef:     workingmode.PackPrefix + vibeSprintFlowID,
 				Status:          RunStatusRunning,
 				ActiveFlowNodes: nodes,
 				ActiveFlowEdges: []agentpack.FlowEdge{{From: "tdd", To: "coder", When: "done", Kind: "forward"}},
@@ -168,5 +168,3 @@ func TestCA801_InMemoryResumeParksConfirm(t *testing.T) {
 		t.Fatal("snapshot must include ok/cancel gate")
 	}
 }
-
-

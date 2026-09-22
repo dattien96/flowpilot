@@ -42,7 +42,7 @@ func TestCA813_ReconstructFailedHubStalledParksResume(t *testing.T) {
 		LoopState: AgentLoopState{
 			Status: "blocked", BlockReason: "hub_stalled",
 			GateReason: "hub has made no progress for 2m0s (no turn, gate, or reinvoke in flight)",
-			Cap: 3, RoundCap: 3, Mode: "explicit",
+			Cap:        3, RoundCap: 3, Mode: "explicit",
 		},
 	})
 	if apiErr != nil {

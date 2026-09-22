@@ -284,4 +284,3 @@ func TestCA798_ResumeDoesNotDuplicatePersistedCoder(t *testing.T) {
 		t.Fatalf("must not park over existing coder, got %+v", loop)
 	}
 }
-
