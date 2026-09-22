@@ -7,9 +7,9 @@ package runner
 
 // OpencodeInitializeParams is the client -> server initialize request params.
 type OpencodeInitializeParams struct {
-	ProtocolVersion    int                              `json:"protocolVersion"`
-	ClientCapabilities OpencodeClientCapabilities       `json:"clientCapabilities"`
-	ClientInfo         OpencodeClientInfo               `json:"clientInfo"`
+	ProtocolVersion    int                        `json:"protocolVersion"`
+	ClientCapabilities OpencodeClientCapabilities `json:"clientCapabilities"`
+	ClientInfo         OpencodeClientInfo         `json:"clientInfo"`
 }
 
 type OpencodeClientCapabilities struct {
@@ -28,16 +28,16 @@ type OpencodeClientInfo struct {
 
 // OpencodeInitializeResult is the server -> client initialize result.
 type OpencodeInitializeResult struct {
-	ProtocolVersion   int                          `json:"protocolVersion"`
-	AgentCapabilities OpencodeAgentCapabilities    `json:"agentCapabilities"`
-	AuthMethods       []OpencodeAuthMethod         `json:"authMethods,omitempty"`
-	AgentInfo         OpencodeAgentInfo            `json:"agentInfo"`
+	ProtocolVersion   int                       `json:"protocolVersion"`
+	AgentCapabilities OpencodeAgentCapabilities `json:"agentCapabilities"`
+	AuthMethods       []OpencodeAuthMethod      `json:"authMethods,omitempty"`
+	AgentInfo         OpencodeAgentInfo         `json:"agentInfo"`
 }
 
 type OpencodeAgentCapabilities struct {
-	LoadSession        bool                         `json:"loadSession"`
-	MCPCapabilities    OpencodeMCPCapabilities      `json:"mcpCapabilities"`
-	PromptCapabilities OpencodePromptCapabilities   `json:"promptCapabilities"`
+	LoadSession         bool                        `json:"loadSession"`
+	MCPCapabilities     OpencodeMCPCapabilities     `json:"mcpCapabilities"`
+	PromptCapabilities  OpencodePromptCapabilities  `json:"promptCapabilities"`
 	SessionCapabilities OpencodeSessionCapabilities `json:"sessionCapabilities"`
 }
 
@@ -80,17 +80,17 @@ type OpencodeSessionNewParams struct {
 
 // OpencodeSessionNewResult is server -> client session/new result.
 type OpencodeSessionNewResult struct {
-	SessionID     string                   `json:"sessionId"`
-	ConfigOptions []OpencodeConfigOption   `json:"configOptions,omitempty"`
+	SessionID     string                 `json:"sessionId"`
+	ConfigOptions []OpencodeConfigOption `json:"configOptions,omitempty"`
 }
 
 type OpencodeConfigOption struct {
-	ID           string                   `json:"id"`
-	Name         string                   `json:"name"`
-	Category     string                   `json:"category,omitempty"`
-	Type         string                   `json:"type"`
-	CurrentValue string                   `json:"currentValue"`
-	Options      []OpencodeConfigChoice   `json:"options,omitempty"`
+	ID           string                 `json:"id"`
+	Name         string                 `json:"name"`
+	Category     string                 `json:"category,omitempty"`
+	Type         string                 `json:"type"`
+	CurrentValue string                 `json:"currentValue"`
+	Options      []OpencodeConfigChoice `json:"options,omitempty"`
 }
 
 type OpencodeConfigChoice struct {
@@ -108,8 +108,8 @@ type OpencodeSessionLoadParams struct {
 
 // OpencodePromptParams is client -> server session/prompt params.
 type OpencodePromptParams struct {
-	SessionID string                     `json:"sessionId"`
-	Prompt    []OpencodePromptBlock      `json:"prompt"`
+	SessionID string                `json:"sessionId"`
+	Prompt    []OpencodePromptBlock `json:"prompt"`
 }
 
 type OpencodePromptBlock struct {
@@ -119,15 +119,15 @@ type OpencodePromptBlock struct {
 
 // OpencodeSessionUpdate is a server -> client notification params.update
 type OpencodeSessionUpdate struct {
-	SessionUpdate string                   `json:"sessionUpdate"`
-	Content       *OpencodeContent         `json:"content,omitempty"`
-	ToolCallID    string                   `json:"toolCallId,omitempty"`
-	Title         string                   `json:"title,omitempty"`
-	Kind          string                   `json:"kind,omitempty"`
-	Status        string                   `json:"status,omitempty"`
-	Locations     []OpencodeLocation       `json:"locations,omitempty"`
-	RawInput      map[string]interface{}   `json:"rawInput,omitempty"`
-	RawOutput     map[string]interface{}   `json:"rawOutput,omitempty"`
+	SessionUpdate     string                     `json:"sessionUpdate"`
+	Content           *OpencodeContent           `json:"content,omitempty"`
+	ToolCallID        string                     `json:"toolCallId,omitempty"`
+	Title             string                     `json:"title,omitempty"`
+	Kind              string                     `json:"kind,omitempty"`
+	Status            string                     `json:"status,omitempty"`
+	Locations         []OpencodeLocation         `json:"locations,omitempty"`
+	RawInput          map[string]interface{}     `json:"rawInput,omitempty"`
+	RawOutput         map[string]interface{}     `json:"rawOutput,omitempty"`
 	AvailableCommands []OpencodeAvailableCommand `json:"availableCommands,omitempty"`
 }
 
@@ -153,12 +153,12 @@ type OpencodePermissionRequest struct {
 }
 
 type OpencodeToolCall struct {
-	ToolCallID string                   `json:"toolCallId"`
-	Title      string                   `json:"title"`
-	Kind       string                   `json:"kind"`
-	Status     string                   `json:"status"`
-	Locations  []OpencodeLocation       `json:"locations,omitempty"`
-	RawInput   map[string]interface{}   `json:"rawInput,omitempty"`
+	ToolCallID string                 `json:"toolCallId"`
+	Title      string                 `json:"title"`
+	Kind       string                 `json:"kind"`
+	Status     string                 `json:"status"`
+	Locations  []OpencodeLocation     `json:"locations,omitempty"`
+	RawInput   map[string]interface{} `json:"rawInput,omitempty"`
 }
 
 type OpencodePermissionOption struct {
@@ -194,9 +194,9 @@ type OpencodeUsage struct {
 
 // OpencodeUsageUpdate is server -> client usage_update notification.
 type OpencodeUsageUpdate struct {
-	Used int                    `json:"used"`
-	Size int                    `json:"size"`
-	Cost OpencodeCost           `json:"cost"`
+	Used int          `json:"used"`
+	Size int          `json:"size"`
+	Cost OpencodeCost `json:"cost"`
 }
 
 type OpencodeCost struct {

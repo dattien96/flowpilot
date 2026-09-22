@@ -84,9 +84,9 @@ func mockOpencodeInitProcess(t *testing.T) func() {
 	initResult, _ := json.Marshal(map[string]any{
 		"protocolVersion": 1,
 		"agentCapabilities": map[string]any{
-			"loadSession": true,
-			"mcpCapabilities": map[string]any{"http": true, "sse": true},
-			"promptCapabilities": map[string]any{"embeddedContext": true, "image": true},
+			"loadSession":         true,
+			"mcpCapabilities":     map[string]any{"http": true, "sse": true},
+			"promptCapabilities":  map[string]any{"embeddedContext": true, "image": true},
 			"sessionCapabilities": map[string]any{"close": map[string]any{}, "fork": map[string]any{}, "list": map[string]any{}, "resume": map[string]any{}},
 		},
 	})
