@@ -105,7 +105,13 @@ func (m *AppModel) handleEngineInitMsg(msg EngineInitMsg) (tea.Model, tea.Cmd) {
 		label = strings.TrimSpace(m.project.Name)
 	}
 	m.scaffoldBusy = true
+	m.scaffoldPhase = ""
+	m.scaffoldProgressSeq = 0
+	m.scaffoldProgressInFlight = false
 	m.addMessage("system", fmt.Sprintf("Starting AI Scaffold turn for %s…", label), "")
+	// CA-916: the blocking dispatch POST is unchanged; /scaffold/progress polling
+	// piggybacks on the thinking ticker (which runs while scaffoldBusy) so the AI
+	// turn's output streams into the chat like a normal run.
 	return m, m.cmdDispatchScaffold()
 }
 
@@ -173,5 +179,60 @@ func (m *AppModel) handleEngineScaffoldMsg(msg EngineScaffoldMsg) (tea.Model, te
 		}
 	}
 	m.addMessage("system", text, style)
+	// CA-916: one final progress fetch flushes events that landed between the
+	// last poll's `after` cursor and the POST result; the ticker has stopped by
+	// now so nothing else will fetch again. Always issue — the seq cursor dedupes
+	// against any poll still in flight.
+	m.scaffoldProgressInFlight = true
+	return m, m.cmdScaffoldProgress()
+}
+
+// EngineScaffoldProgressMsg carries one poll of the CA-916 scaffold progress
+// feed; output events render as a chat-style assistant stream.
+type EngineScaffoldProgressMsg struct {
+	Snapshot *client.ScaffoldProgressSnapshot
+	Err      error
+}
+
+// cmdScaffoldProgress fetches the scaffold feed after the rendered cursor. The
+// thinking ticker (90ms, live while scaffoldBusy) re-issues it every ~720ms.
+func (m *AppModel) cmdScaffoldProgress() tea.Cmd {
+	if m.project == nil || strings.TrimSpace(m.project.ID) == "" {
+		return nil
+	}
+	projectID := strings.TrimSpace(m.project.ID)
+	after := m.scaffoldProgressSeq
+	cl := m.client
+	return func() tea.Msg {
+		snap, err := cl.ScaffoldProgress(context.Background(), projectID, after)
+		return EngineScaffoldProgressMsg{Snapshot: snap, Err: err}
+	}
+}
+
+// handleEngineScaffoldProgressMsg renders scaffold feed events like a chat run:
+// output deltas append to the assistant stream, phase milestones update the
+// busy-line label. Polling resumes via the thinking ticker, not here.
+func (m *AppModel) handleEngineScaffoldProgressMsg(msg EngineScaffoldProgressMsg) (tea.Model, tea.Cmd) {
+	m.scaffoldProgressInFlight = false
+	if msg.Err != nil || msg.Snapshot == nil {
+		return m, nil
+	}
+	snap := msg.Snapshot
+	for _, ev := range snap.Events {
+		// Overlapping fetches (ticker poll + final flush) can return the same
+		// events — the seq cursor is the dedupe guard so output never doubles.
+		if ev.Seq <= m.scaffoldProgressSeq {
+			continue
+		}
+		m.scaffoldProgressSeq = ev.Seq
+		switch ev.Kind {
+		case "output":
+			m.appendAssistantDelta(ev.Text)
+		case "phase":
+			if ev.Phase != "" {
+				m.scaffoldPhase = ev.Phase
+			}
+		}
+	}
 	return m, nil
 }

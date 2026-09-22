@@ -1138,6 +1138,42 @@ func (c *Client) DispatchScaffold(ctx context.Context, projectID, workingDirecto
 	return &out, nil
 }
 
+// ScaffoldProgressEvent mirrors the runner's scaffold progress feed (CA-916).
+type ScaffoldProgressEvent struct {
+	Seq     int64           `json:"seq"`
+	Time    string          `json:"time"`
+	Kind    string          `json:"kind"`
+	Phase   string          `json:"phase"`
+	Attempt int             `json:"attempt,omitempty"`
+	Text    string          `json:"text,omitempty"`
+	Result  *ScaffoldResult `json:"result,omitempty"`
+}
+
+// ScaffoldProgressSnapshot mirrors GET /client/projects/{id}/scaffold/progress.
+type ScaffoldProgressSnapshot struct {
+	ProjectID string                  `json:"projectId"`
+	Active    bool                    `json:"active"`
+	Phase     string                  `json:"phase,omitempty"`
+	Attempt   int                     `json:"attempt,omitempty"`
+	Events    []ScaffoldProgressEvent `json:"events"`
+	NextSeq   int64                   `json:"nextSeq"`
+	Result    *ScaffoldResult         `json:"result,omitempty"`
+}
+
+// ScaffoldProgress polls GET /client/projects/{projectId}/scaffold/progress so
+// the TUI can render an in-flight AI scaffold turn like a chat run (CA-916).
+// `after` is the last seq the caller already rendered.
+func (c *Client) ScaffoldProgress(ctx context.Context, projectID string, after int64) (*ScaffoldProgressSnapshot, error) {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	path := fmt.Sprintf("/client/projects/%s/scaffold/progress?after=%d", neturl.PathEscape(projectID), after)
+	var out ScaffoldProgressSnapshot
+	if err := c.getJSON(ctx, path, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // ScaffoldStatus calls GET /client/projects/{projectId}/scaffold/status to learn
 // whether the project's platform has a verified scaffold recipe.
 func (c *Client) ScaffoldStatus(ctx context.Context, projectID, workingDirectory, platform string) (*ScaffoldStatusResult, error) {

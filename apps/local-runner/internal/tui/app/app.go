@@ -364,6 +364,12 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case thinkingTickMsg:
 		m.thinkingFrame++
 		if m.workIsLive() {
+			// CA-916: poll the scaffold feed every ~8 ticks (720ms) so the AI
+			// turn streams into chat while the dispatch POST is in flight.
+			if m.scaffoldBusy && m.thinkingFrame%8 == 0 && !m.scaffoldProgressInFlight {
+				m.scaffoldProgressInFlight = true
+				return m, tea.Batch(cmdThinkingTick(), m.cmdScaffoldProgress())
+			}
 			return m, cmdThinkingTick()
 		}
 		m.thinkingTickerActive = false
@@ -1052,6 +1058,8 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleEngineInitMsg(msg)
 	case EngineScaffoldMsg:
 		return m.handleEngineScaffoldMsg(msg)
+	case EngineScaffoldProgressMsg:
+		return m.handleEngineScaffoldProgressMsg(msg)
 
 	case RemoteChatListMsg:
 		// G3 /restore index (silent refresh after a batch, loud bare dump).
@@ -6223,7 +6231,11 @@ func (m *AppModel) renderInputLine() string {
 	if m.scaffoldBusy {
 		frames := []string{"|", "/", "-", "\\"}
 		spin := frames[m.thinkingFrame%len(frames)]
-		msg := fmt.Sprintf(" %s AI Scaffold running… (chat disabled) ", spin)
+		phase := ""
+		if m.scaffoldPhase != "" && m.scaffoldPhase != "started" {
+			phase = " " + m.scaffoldPhase + "…"
+		}
+		msg := fmt.Sprintf(" %s AI Scaffold%s (chat disabled) ", spin, phase)
 		return styleLoading.Render(truncateVisual(msg, w))
 	}
 	if m.sessionLoading && !strings.HasPrefix(strings.TrimSpace(m.slashSuggestLine()), "/") {
