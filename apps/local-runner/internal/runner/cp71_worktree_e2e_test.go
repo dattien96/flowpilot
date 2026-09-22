@@ -497,6 +497,57 @@ func TestE2EWorktree_BootGCPrunesOnlyOrphansHTTP(t *testing.T) {
 	}
 }
 
+// CP-81 live-run finding: a status write through sessionStateOf lands after
+// the binding row and — under last-wins — erases the persisted worktree
+// fields. The next boot's GC then prunes the worktree (unmerged work lost)
+// and resolve 404s instead of surfacing the merge card. Reproduced here:
+// a terminal run + a plain session write must NOT drop the binding.
+func TestE2EWorktree_PostBindingSessionWriteKeepsBindingHTTP(t *testing.T) {
+	repo := initWorktreeRepo(t)
+	svc, srv := worktreeHTTPServer(t, repo)
+	runID := startWorktreeChatRun(t, srv, repo, nil)
+	wtPath := runWorktreePath(t, srv, runID)
+	if err := os.WriteFile(filepath.Join(wtPath, "kept.txt"), []byte("unmerged\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	markRunTerminal(t, svc, runID)
+
+	// Every status write path (running/completed/cancelled, drain stop-all)
+	// persists sessionStateOf — emulate one landing after the binding row.
+	svc.mu.Lock()
+	rs := svc.runs[runID]
+	svc.mu.Unlock()
+	if rs == nil {
+		t.Fatal("run not resident")
+	}
+	if err := svc.persistProviderSession(sessionStateOf(rs)); err != nil {
+		t.Fatalf("persist sessionStateOf: %v", err)
+	}
+
+	// Restart: fresh service over the same store runs boot GC. A sentinel
+	// orphan proves the sweep actually ran before we assert survival.
+	orphan := filepath.Join(repo, ".flowpilot", "worktrees", "ghost-terminal")
+	if err := os.MkdirAll(orphan, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, srv2 := worktreeHTTPServer(t, repo)
+	waitLoop(t, "orphan prune", 5*time.Second, func() bool {
+		_, err := os.Stat(orphan)
+		return os.IsNotExist(err)
+	})
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Fatalf("terminal run's bound worktree was pruned: %v", err)
+	}
+	// The merge decision must still be resolvable post-restart.
+	status, raw := resolveWorktreeHTTP(t, srv2, runID, "apply_patch")
+	if status != http.StatusOK {
+		t.Fatalf("resolve after restart: %d %s", status, raw)
+	}
+	if got, err := os.ReadFile(filepath.Join(repo, "kept.txt")); err != nil || string(got) != "unmerged\n" {
+		t.Fatalf("patch not applied: %v %q", err, got)
+	}
+}
+
 func TestE2EWorktree_OffByteParityHTTP(t *testing.T) {
 	repo := initWorktreeRepo(t)
 	_, srv := worktreeHTTPServer(t, repo)
