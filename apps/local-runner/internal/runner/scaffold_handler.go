@@ -90,6 +90,11 @@ func (s *InteractiveService) handleScaffoldStatus(w http.ResponseWriter, r *http
 // (done | skipped | error). 4xx/5xx are reserved for malformed requests and an
 // unavailable runner.
 func (s *InteractiveService) handleDispatchScaffold(w http.ResponseWriter, r *http.Request) {
+	// CP-81 D-3: no new work once the lifecycle manager begins draining.
+	if e := s.drainingErr(); e != nil {
+		writeInteractiveError(w, e)
+		return
+	}
 	projectID := strings.TrimSpace(r.PathValue("projectId"))
 
 	body := ScaffoldDispatchRequestBody{}
@@ -139,7 +144,13 @@ func (s *InteractiveService) handleDispatchScaffold(w http.ResponseWriter, r *ht
 	}
 	defer s.releaseScaffold(projectID)
 
-	result, err := s.scaffoldDispatcher().Dispatch(r.Context(), ScaffoldRequest{
+	// CP-81 Task-415: arm the dispatch context so a confirmed system drain can
+	// terminate the scaffold turn instead of stranding it mid-write.
+	dispatchCtx, dispatchCancel := context.WithCancel(r.Context())
+	defer dispatchCancel()
+	s.armScaffoldCancel(projectID, dispatchCancel)
+
+	result, err := s.scaffoldDispatcher().Dispatch(dispatchCtx, ScaffoldRequest{
 		ProjectID:    projectID,
 		WorkspaceDir: dir,
 		Platform:     platform,
@@ -224,6 +235,7 @@ func (s *InteractiveService) claimScaffold(projectID string) bool {
 func (s *InteractiveService) releaseScaffold(projectID string) {
 	s.mu.Lock()
 	delete(s.scaffoldInFlight, projectID)
+	delete(s.scaffoldCancels, projectID)
 	s.mu.Unlock()
 }
 
@@ -261,8 +273,13 @@ func (s *InteractiveService) autoTriggerScaffold(projectID, workspaceDir, platfo
 
 		ctx, cancel := context.WithTimeout(context.Background(), scaffoldAPITimeout)
 		defer cancel()
+		// CP-81 Task-415: a confirmed system drain cancels this turn via
+		// StopAllForSystemAction — arm the cancel under the same claim.
+		drainCtx, drainCancel := context.WithCancel(ctx)
+		defer drainCancel()
+		s.armScaffoldCancel(projectID, drainCancel)
 
-		result, err := s.scaffoldDispatcher().Dispatch(ctx, ScaffoldRequest{
+		result, err := s.scaffoldDispatcher().Dispatch(drainCtx, ScaffoldRequest{
 			ProjectID:    projectID,
 			WorkspaceDir: workspaceDir,
 			Platform:     platform,

@@ -310,6 +310,11 @@ func (s *InteractiveService) handleListRemoteChatSessions(w http.ResponseWriter,
 // ---- run lifecycle handlers ------------------------------------------------
 
 func (s *InteractiveService) handleStartRun(w http.ResponseWriter, r *http.Request) {
+	// CP-81 D-3: no new work once the lifecycle manager begins draining.
+	if e := s.drainingErr(); e != nil {
+		writeInteractiveError(w, e)
+		return
+	}
 	var in StartRunInput
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "invalid_request", "invalid request body"))
@@ -334,6 +339,10 @@ func (s *InteractiveService) handleGetRun(w http.ResponseWriter, r *http.Request
 }
 
 func (s *InteractiveService) handleResumeRun(w http.ResponseWriter, r *http.Request) {
+	if e := s.drainingErr(); e != nil {
+		writeInteractiveError(w, e)
+		return
+	}
 	runID := r.PathValue("runId")
 	log.Printf("[chat-history-open] request run_id=%q remote_addr=%q", runID, r.RemoteAddr)
 	handle, e := s.resumeRun(runID)
@@ -420,6 +429,11 @@ type turnBody struct {
 }
 
 func (s *InteractiveService) handleStartTurn(w http.ResponseWriter, r *http.Request) {
+	// CP-81 D-3: no new work once the lifecycle manager begins draining.
+	if e := s.drainingErr(); e != nil {
+		writeInteractiveError(w, e)
+		return
+	}
 	// Task-333 SS-Lock (CP-49 P-3): while a run is parked at the
 	// non-bypassable SS-Lock gate, no new AI/provider turn may start. The
 	// only continuation path is the human-driven confirm endpoint
