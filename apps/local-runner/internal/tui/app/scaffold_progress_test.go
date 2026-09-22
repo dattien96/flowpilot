@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -171,5 +172,63 @@ func TestScaffoldProgress_FinalFlushAfterResult(t *testing.T) {
 	}
 	if m.scaffoldBusy {
 		t.Fatal("scaffoldBusy still set after terminal result")
+	}
+}
+
+// CA-918 regression: a dropped dispatch POST no longer reports failure — the
+// detached server-side turn keeps running and the feed delivers the terminal
+// result; the busy state clears only when the feed (or a bounded error count)
+// says it is over.
+func TestScaffoldProgress_PostConnLostStillFinishesViaFeed(t *testing.T) {
+	m := newInitTestModel(t, "http://unused", "p1", "react-native")
+	m.scaffoldBusy = true
+	m.scaffoldPhase = "ai_turn"
+
+	_, cmd := m.handleEngineScaffoldMsg(EngineScaffoldMsg{
+		ProjectID: "p1",
+		Err:       context.DeadlineExceeded, // e.g. connection reset / client timeout
+	})
+	if cmd != nil {
+		t.Fatal("post-lost path must not issue the final flush — feed keeps polling via ticker")
+	}
+	if !m.scaffoldBusy {
+		t.Fatal("scaffoldBusy cleared on POST error — detached turn would be orphaned in the UI")
+	}
+	if !m.scaffoldPostLost {
+		t.Fatal("scaffoldPostLost not set on POST error")
+	}
+	if got := m.messages[len(m.messages)-1].Content; !strings.Contains(got, "connection lost") {
+		t.Fatalf("last message = %q, want a connection-lost notice", got)
+	}
+
+	// Feed keeps flowing and eventually delivers the terminal result.
+	_, _ = m.handleEngineScaffoldProgressMsg(EngineScaffoldProgressMsg{Snapshot: &client.ScaffoldProgressSnapshot{
+		Active: false,
+		Events: []client.ScaffoldProgressEvent{
+			{Seq: 1, Kind: "output", Phase: "gate", Text: "gate PASS"},
+		},
+		Result: &client.ScaffoldResult{Status: "done", Message: "scaffold: done — compiler gate PASS"},
+	}})
+	if m.scaffoldBusy || m.scaffoldPostLost {
+		t.Fatal("terminal feed result did not finalize the post-lost scaffold")
+	}
+	if got := m.messages[len(m.messages)-1].Content; !strings.Contains(got, "compiler gate PASS") {
+		t.Fatalf("last message = %q, want the feed-delivered result", got)
+	}
+}
+
+func TestScaffoldProgress_PostLostRunnerDeadGivesUp(t *testing.T) {
+	m := newInitTestModel(t, "http://unused", "p1", "react-native")
+	m.scaffoldBusy = true
+	_, _ = m.handleEngineScaffoldMsg(EngineScaffoldMsg{ProjectID: "p1", Err: context.DeadlineExceeded})
+
+	for i := 0; i < 10; i++ {
+		_, _ = m.handleEngineScaffoldProgressMsg(EngineScaffoldProgressMsg{Err: context.DeadlineExceeded})
+	}
+	if m.scaffoldBusy {
+		t.Fatal("scaffoldBusy latched forever after runner death — bounded retries must give up")
+	}
+	if got := m.messages[len(m.messages)-1].Content; !strings.Contains(got, "unreachable") {
+		t.Fatalf("last message = %q, want an unreachable-runner notice", got)
 	}
 }

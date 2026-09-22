@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -256,4 +257,82 @@ func TestScaffoldProgress_RingTrimMergesPersistedHead(t *testing.T) {
 	if got := scaffoldOutputText(snap.Events); !strings.HasPrefix(got, "chunk-000") {
 		t.Fatalf("transcript head = %.40q, want chunk-000 first", got)
 	}
+}
+
+// disconnectAwareExecutor blocks inside ExecutePrompt until released, and records
+// whether the dispatch ctx was cancelled underneath it (i.e. the provider child
+// would have been SIGKILLed mid-write).
+type disconnectAwareExecutor struct {
+	started chan struct{}
+	release chan struct{}
+	killed  chan struct{}
+}
+
+func (e *disconnectAwareExecutor) ExecutePrompt(ctx context.Context, req PromptExecutionRequest) (PromptExecutionResult, error) {
+	close(e.started)
+	select {
+	case <-ctx.Done():
+		close(e.killed)
+		return PromptExecutionResult{Status: "failed", RunID: "run-disconnect", ProviderKey: req.ProviderKey, ExitCode: -1, ErrorMessage: ctx.Err().Error()}, ctx.Err()
+	case <-e.release:
+		return PromptExecutionResult{Status: "success", RunID: "run-disconnect", ProviderKey: req.ProviderKey, ExitCode: 0}, nil
+	}
+}
+
+// CA-918 regression: POST /client/projects/{id}/scaffold ran the whole AI turn on
+// r.Context() — a client disconnect (TUI quit, laptop sleep, proxy timeout) killed
+// the provider child mid-write and burned the turn. The dispatch must be detached
+// like the create_project auto-trigger: bound by scaffoldAPITimeout and the
+// lifecycle drain-cancel, not by the HTTP connection's lifetime.
+func TestScaffoldDispatch_ClientDisconnectKeepsTurnAlive(t *testing.T) {
+	dir := newScaffoldWorkspace(t)
+	executor := &disconnectAwareExecutor{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+		killed:  make(chan struct{}),
+	}
+	dispatcher := dispatcherForRecipe(executor, realScaffoldRecipe(t, ""))
+	svc, srv := newScaffoldTestService(t, dir, "react-native", dispatcher)
+
+	reqCtx, cancelReq := context.WithCancel(context.Background())
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost,
+		srv.URL+"/client/projects/proj-rn/scaffold",
+		strings.NewReader(`{"workingDirectory":"`+dir+`","platform":"react-native","providerKey":"devin","modelName":"devin/swe-2-high"}`))
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	go func() {
+		resp, err := http.DefaultClient.Do(req)
+		if err == nil {
+			resp.Body.Close()
+		}
+	}()
+
+	select {
+	case <-executor.started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("scaffold turn never started")
+	}
+	cancelReq() // client disconnects mid-turn
+
+	select {
+	case <-executor.killed:
+		t.Fatal("client disconnect cancelled the in-flight scaffold turn — provider child would be killed mid-write")
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	close(executor.release)
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		snap := svc.scaffoldProgressSnapshot("proj-rn", 0)
+		if snap.Result != nil {
+			if snap.Result.Status != ScaffoldStatusDone {
+				t.Fatalf("result status = %q, want done", snap.Result.Status)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("dispatch never reached a terminal result after client disconnect")
 }

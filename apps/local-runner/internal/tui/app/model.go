@@ -704,6 +704,11 @@ type AppModel struct {
 	// the busy spinner.
 	scaffoldProgressSeq      int64
 	scaffoldProgressInFlight bool
+	// CA-918: scaffoldPostLost marks that the dispatch POST connection dropped
+	// while the detached turn still runs server-side; the feed then owns the
+	// terminal result, and scaffoldPollErrs bounds retries if the runner died.
+	scaffoldPostLost bool
+	scaffoldPollErrs int
 	scaffoldPhase            string
 
 	// thinkingFrame drives the animated "Thinking" placeholder (spinner /

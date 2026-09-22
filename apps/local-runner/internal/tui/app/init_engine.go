@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -149,36 +150,56 @@ func (m *AppModel) cmdDispatchScaffold() tea.Cmd {
 	}
 }
 
+// scaffoldResultLine renders one scaffold result into (text, style) shared by
+// the POST response path and the CA-918 post-lost feed fallback.
+func scaffoldResultLine(res *client.ScaffoldResult) (string, string) {
+	text := strings.TrimSpace(res.Message)
+	if text == "" {
+		text = fmt.Sprintf("scaffold: %s", res.Status)
+	}
+	style := ""
+	switch res.Status {
+	case "error":
+		style = "error"
+	case "done":
+		if res.CompilerGate != nil {
+			verdict := "FAIL"
+			if res.CompilerGate.Passed {
+				verdict = "PASS"
+			}
+			text += fmt.Sprintf(" — Compiler Gate: %s (exit %d)", verdict, res.CompilerGate.ExitCode)
+		}
+	}
+	return text, style
+}
+
 // handleEngineScaffoldMsg renders the scaffold outcome in the chat timeline.
 func (m *AppModel) handleEngineScaffoldMsg(msg EngineScaffoldMsg) (tea.Model, tea.Cmd) {
-	m.scaffoldBusy = false
-	m.scaffoldPhase = ""
 	if msg.Err != nil {
+		var apiErr *client.APIError
+		if !errors.As(msg.Err, &apiErr) {
+			// CA-918: transport error (conn reset, timeout) — the dispatch is
+			// detached server-side so the turn keeps running. Let the feed own
+			// the terminal result instead of reporting a false failure.
+			m.scaffoldPostLost = true
+			m.addMessage("system", fmt.Sprintf("scaffold: connection lost (%v) — the turn may still be running; watching progress…", msg.Err), "error")
+			return m, nil
+		}
+		// A real HTTP error response means the server rejected/ended the
+		// dispatch — report it and release the composer immediately.
+		m.scaffoldBusy = false
+		m.scaffoldPhase = ""
 		m.addMessage("system", fmt.Sprintf("scaffold: failed: %v", msg.Err), "error")
 		return m, nil
 	}
+	m.scaffoldBusy = false
+	m.scaffoldPhase = ""
 	if msg.Result == nil {
 		m.addMessage("system", "scaffold: empty response.", "error")
 		return m, nil
 	}
 
-	text := strings.TrimSpace(msg.Result.Message)
-	if text == "" {
-		text = fmt.Sprintf("scaffold: %s", msg.Result.Status)
-	}
-	style := ""
-	switch msg.Result.Status {
-	case "error":
-		style = "error"
-	case "done":
-		if msg.Result.CompilerGate != nil {
-			verdict := "FAIL"
-			if msg.Result.CompilerGate.Passed {
-				verdict = "PASS"
-			}
-			text += fmt.Sprintf(" — Compiler Gate: %s (exit %d)", verdict, msg.Result.CompilerGate.ExitCode)
-		}
-	}
+	text, style := scaffoldResultLine(msg.Result)
 	m.addMessage("system", text, style)
 	// CA-916: one final progress fetch flushes events that landed between the
 	// last poll's `after` cursor and the POST result; the ticker has stopped by
@@ -216,8 +237,21 @@ func (m *AppModel) cmdScaffoldProgress() tea.Cmd {
 func (m *AppModel) handleEngineScaffoldProgressMsg(msg EngineScaffoldProgressMsg) (tea.Model, tea.Cmd) {
 	m.scaffoldProgressInFlight = false
 	if msg.Err != nil || msg.Snapshot == nil {
+		// CA-918: when the POST connection was already lost, a dead runner would
+		// otherwise leave scaffoldBusy latched forever — bound the retries.
+		if m.scaffoldPostLost {
+			m.scaffoldPollErrs++
+			if m.scaffoldPollErrs >= 10 {
+				m.scaffoldBusy = false
+				m.scaffoldPhase = ""
+				m.scaffoldPostLost = false
+				m.scaffoldPollErrs = 0
+				m.addMessage("system", "scaffold: runner unreachable — the turn may have been lost", "error")
+			}
+		}
 		return m, nil
 	}
+	m.scaffoldPollErrs = 0
 	snap := msg.Snapshot
 	for _, ev := range snap.Events {
 		// Overlapping fetches (ticker poll + final flush) can return the same
@@ -234,6 +268,15 @@ func (m *AppModel) handleEngineScaffoldProgressMsg(msg EngineScaffoldProgressMsg
 				m.scaffoldPhase = ev.Phase
 			}
 		}
+	}
+	// CA-918: the POST died earlier — the feed's terminal result is now the
+	// authoritative outcome; finalize exactly like the normal POST path.
+	if m.scaffoldPostLost && snap.Result != nil {
+		m.scaffoldPostLost = false
+		m.scaffoldBusy = false
+		m.scaffoldPhase = ""
+		text, style := scaffoldResultLine(snap.Result)
+		m.addMessage("system", text, style)
 	}
 	return m, nil
 }

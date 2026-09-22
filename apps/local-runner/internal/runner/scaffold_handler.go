@@ -144,10 +144,14 @@ func (s *InteractiveService) handleDispatchScaffold(w http.ResponseWriter, r *ht
 	}
 	defer s.releaseScaffold(projectID)
 
+	// CA-918: the dispatch must NOT run on r.Context() — a client disconnect
+	// (TUI quit, laptop sleep, proxy timeout) would SIGKILL the provider child
+	// mid-write and burn the turn. Detach like the create_project auto-trigger:
+	// bound by scaffoldAPITimeout, cancellable only via the lifecycle drain.
+	dispatchCtx, dispatchCancel := context.WithTimeout(context.Background(), scaffoldAPITimeout)
+	defer dispatchCancel()
 	// CP-81 Task-415: arm the dispatch context so a confirmed system drain can
 	// terminate the scaffold turn instead of stranding it mid-write.
-	dispatchCtx, dispatchCancel := context.WithCancel(r.Context())
-	defer dispatchCancel()
 	s.armScaffoldCancel(projectID, dispatchCancel)
 
 	// CA-916: open the live progress feed before dispatch so clients polling
