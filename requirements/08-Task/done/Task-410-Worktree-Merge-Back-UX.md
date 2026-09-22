@@ -10,7 +10,7 @@
 - Reviewers: `TBD`
 - Created: `2026-09-22`
 - Last Updated: `2026-09-22`
-- Parent Documents: [CP-71](../../07-Coding-Plan/todo/CP-71-Run-Worktree-Isolation.md) `P-4`, [SD-27](../../06-System-Tech-Design/SD-27-Run-Worktree-Isolation.md) `D-2/D-4/D-4c`, §6 contracts
+- Parent Documents: [CP-71](../../07-Coding-Plan/done/CP-71-Run-Worktree-Isolation.md) `P-4`, [SD-27](../../06-System-Tech-Design/SD-27-Run-Worktree-Isolation.md) `D-2/D-4/D-4c`, §6 contracts
 - Child Documents: `None`
 - Related Documents: [Task-408](./Task-408-Run-Worktree-Binding-And-Owner-Resolution.md), [Task-345](../done/Task-345-Decision-Card-Desktop-TUI.md) (card plumbing precedent)
 - Replaces: `None`

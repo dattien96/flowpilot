@@ -10,7 +10,7 @@
 - Reviewers: `TBD`
 - Created: `2026-09-22`
 - Last Updated: `2026-09-22`
-- Parent Documents: [CP-71](../../07-Coding-Plan/todo/CP-71-Run-Worktree-Isolation.md) `P-1`, [SD-27](../../06-System-Tech-Design/SD-27-Run-Worktree-Isolation.md) `D-1`
+- Parent Documents: [CP-71](../../07-Coding-Plan/done/CP-71-Run-Worktree-Isolation.md) `P-1`, [SD-27](../../06-System-Tech-Design/SD-27-Run-Worktree-Isolation.md) `D-1`
 - Child Documents: `None`
 - Related Documents: [Task-369](../done/Task-369-Worktree-Rollout-Manager.md), `CA-877`
 - Replaces: `None`

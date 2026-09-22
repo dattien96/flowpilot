@@ -10,7 +10,7 @@
 - Reviewers: `TBD`
 - Created: `2026-09-22`
 - Last Updated: `2026-09-22`
-- Parent Documents: [CP-71](../../07-Coding-Plan/todo/CP-71-Run-Worktree-Isolation.md) `P-5`, [SD-27](../../06-System-Tech-Design/SD-27-Run-Worktree-Isolation.md) `D-7`, §8 F-2/F-5
+- Parent Documents: [CP-71](../../07-Coding-Plan/done/CP-71-Run-Worktree-Isolation.md) `P-5`, [SD-27](../../06-System-Tech-Design/SD-27-Run-Worktree-Isolation.md) `D-7`, §8 F-2/F-5
 - Child Documents: `None`
 - Related Documents: [Task-408](./Task-408-Run-Worktree-Binding-And-Owner-Resolution.md), [Task-410](./Task-410-Worktree-Merge-Back-UX.md), [CP-51](../../07-Coding-Plan/done/CP-51-Durable-Turn-Dispatch-And-Recovery-Consistency.md)
 - Replaces: `None`

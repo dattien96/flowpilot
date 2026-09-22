@@ -10,7 +10,7 @@
 - Reviewers: `TBD`
 - Created: `2026-09-22`
 - Last Updated: `2026-09-22`
-- Parent Documents: [CP-71](../../07-Coding-Plan/todo/CP-71-Run-Worktree-Isolation.md) `P-3`, [SD-27](../../06-System-Tech-Design/SD-27-Run-Worktree-Isolation.md) `D-5/D-9`
+- Parent Documents: [CP-71](../../07-Coding-Plan/done/CP-71-Run-Worktree-Isolation.md) `P-3`, [SD-27](../../06-System-Tech-Design/SD-27-Run-Worktree-Isolation.md) `D-5/D-9`
 - Child Documents: `None`
 - Related Documents: [Task-408](./Task-408-Run-Worktree-Binding-And-Owner-Resolution.md), [Task-326](../done/Task-326-Vibe-Working-Mode-Switch-And-Flow-Family-Gate.md) (toggle precedent)
 - Replaces: `None`

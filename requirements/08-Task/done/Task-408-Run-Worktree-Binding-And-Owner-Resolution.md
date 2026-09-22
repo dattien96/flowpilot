@@ -10,7 +10,7 @@
 - Reviewers: `TBD`
 - Created: `2026-09-22`
 - Last Updated: `2026-09-22`
-- Parent Documents: [CP-71](../../07-Coding-Plan/todo/CP-71-Run-Worktree-Isolation.md) `P-2/P-2b`, [SD-27](../../06-System-Tech-Design/SD-27-Run-Worktree-Isolation.md) `D-4b/D-5/D-6/D-8/D-9`
+- Parent Documents: [CP-71](../../07-Coding-Plan/done/CP-71-Run-Worktree-Isolation.md) `P-2/P-2b`, [SD-27](../../06-System-Tech-Design/SD-27-Run-Worktree-Isolation.md) `D-4b/D-5/D-6/D-8/D-9`
 - Child Documents: `None`
 - Related Documents: [Task-407](./Task-407-Shared-Worktree-Manager-Package.md), [CP-59](../../07-Coding-Plan/done/CP-59-Chat-Ssot-Continuous-Cross-Provider-Chat.md)
 - Replaces: `None`
