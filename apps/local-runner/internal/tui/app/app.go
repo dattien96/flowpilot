@@ -2288,6 +2288,15 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.quitting = true
 		return m, m.cmdShutdownAndQuit()
 	}
+	if m.scaffoldBusy {
+		switch msg.Type {
+		case tea.KeyCtrlC, tea.KeyEsc, tea.KeyF2, tea.KeyF3, tea.KeyF4,
+			tea.KeyUp, tea.KeyDown, tea.KeyLeft, tea.KeyRight,
+			tea.KeyPgUp, tea.KeyPgDown, tea.KeyHome, tea.KeyEnd:
+		default:
+			return m, nil
+		}
+	}
 
 	if m.authPhase == AuthNone && !m.viewingChild() {
 		now := pasteNow()
@@ -3796,6 +3805,9 @@ func (m *AppModel) turnIsActive() bool {
 // ConnConnecting/session-loading is deliberately not "live": those phases already
 // surface their own "connecting…"/"loading…" labels.
 func (m *AppModel) workIsLive() bool {
+	if m.scaffoldBusy {
+		return true
+	}
 	// A completed flow loop is not live work — stop spinner / thinking immediately.
 	if m.flowLoopDone() {
 		return false
@@ -3836,6 +3848,12 @@ func (m *AppModel) workIsLive() bool {
 }
 
 func (m *AppModel) processInput(input string) (tea.Model, tea.Cmd) {
+	if m.scaffoldBusy {
+		msg := "AI Scaffold is still running — chat is disabled until it finishes."
+		m.addMessage("system", msg, "error")
+		tuiLog("processInput blocked: scaffoldBusy")
+		return m, nil
+	}
 	if (m.sessionLoading || m.chatWaitPending) && !strings.HasPrefix(strings.TrimSpace(input), "/") {
 		msg := "Still loading session — chat is disabled until ready. (F2/F4 still work)"
 		if !m.sessionLoading && m.chatWaitPending {
@@ -6170,6 +6188,12 @@ func (m *AppModel) renderInputLine() string {
 		// editable composer (CA-519).
 		msg := " Child transcript is read-only — chat continues on main (/agent main or Esc) "
 		return styleSystem.Render(truncateVisual(msg, w))
+	}
+	if m.scaffoldBusy {
+		frames := []string{"|", "/", "-", "\\"}
+		spin := frames[m.thinkingFrame%len(frames)]
+		msg := fmt.Sprintf(" %s AI Scaffold running… (chat disabled) ", spin)
+		return styleLoading.Render(truncateVisual(msg, w))
 	}
 	if m.sessionLoading && !strings.HasPrefix(strings.TrimSpace(m.slashSuggestLine()), "/") {
 		frames := []string{"|", "/", "-", "\\"}

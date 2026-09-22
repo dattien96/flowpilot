@@ -195,6 +195,7 @@ func spawnRunner(cfg Config) error {
 		logF.Close()
 		return err
 	}
+	fmt.Fprintf(logF, "[runnerboot] runner pid=%d started\n", cmd.Process.Pid)
 	// KILL_ON_JOB_CLOSE: when this TUI process dies (force-kill, crash, or
 	// terminal close) Windows terminates the runner too — a wedged TUI can
 	// never orphan the --port listener (BUG-328).
@@ -203,7 +204,8 @@ func spawnRunner(cfg Config) error {
 	}
 	// Don't wait — runner runs in background. Close the log file handle in this process.
 	go func() {
-		cmd.Wait() //nolint:errcheck
+		waitErr := cmd.Wait()
+		fmt.Fprintf(logF, "[runnerboot] runner pid=%d exited: %v\n", cmd.Process.Pid, waitErr)
 		logF.Close()
 	}()
 	return nil

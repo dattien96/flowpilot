@@ -688,6 +688,7 @@ type AppModel struct {
 	// model cache is still warming (undersized catalog).
 	providersWarmRetries int
 	loadingFrame         int
+	scaffoldBusy         bool
 
 	// thinkingFrame drives the animated "Thinking" placeholder (spinner /
 	// shimmer / elapsed). Advanced by thinkingTickMsg while a thinking row is
