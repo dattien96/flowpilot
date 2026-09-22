@@ -104,6 +104,8 @@ export interface DesktopLifecyclePorts {
   projectPath?: string;
   /** Override heartbeat cadence (ms); otherwise the server value is used. */
   heartbeatMs?: number;
+  /** Override register-retry cadence (ms); default REGISTER_RETRY_MS. */
+  registerRetryMs?: number;
   /** Reconnect budget for planned restarts; default 60_000 (SD-28). */
   reconnectGraceMs?: number;
   /** /health poll cadence during reconnect; default 500ms. */
@@ -147,6 +149,10 @@ const DEFAULT_HEARTBEAT_MS = 5_000;
 const DEFAULT_RECONNECT_GRACE_MS = 60_000;
 const DEFAULT_RECONNECT_POLL_MS = 500;
 const CALL_TIMEOUT_MS = 4_000;
+// Registration races runner boot (supervisor spawns the desktop while `go run`
+// is still compiling): keep retrying so the app never stays unmanaged while a
+// client-managed/supervised runner would idle-exit under it.
+const REGISTER_RETRY_MS = 2_000;
 
 export function createDesktopLifecycle(ports: DesktopLifecyclePorts): DesktopLifecycle {
   const fetchFn = ports.fetchFn ?? globalThis.fetch.bind(globalThis);
@@ -158,6 +164,7 @@ export function createDesktopLifecycle(ports: DesktopLifecyclePorts): DesktopLif
   let lease: Lease | null = null;
   let phase: string | undefined;
   let heartbeatTimer: ReturnType<typeof setTimeout> | null = null;
+  let registerRetryTimer: ReturnType<typeof setTimeout> | null = null;
   let reconnectDeadlineMs: number | null = null;
   let reconnecting = false;
   let quitting = false;
@@ -242,6 +249,28 @@ export function createDesktopLifecycle(ports: DesktopLifecyclePorts): DesktopLif
     }
   }
 
+  // ensureRegistered is the single entry point for acquiring a lease: on
+  // failure it re-arms a retry (2s cadence) until a lease is held or the app
+  // quits, so a boot-time race or a refused re-register can never leave the
+  // desktop permanently invisible to the runner's idle accounting.
+  async function ensureRegistered(): Promise<void> {
+    if (lease || quitting) return;
+    const ok = await register();
+    if (ok) {
+      scheduleHeartbeat();
+    } else {
+      scheduleRegisterRetry();
+    }
+  }
+
+  function scheduleRegisterRetry(): void {
+    if (registerRetryTimer || lease || quitting) return;
+    registerRetryTimer = setT(() => {
+      registerRetryTimer = null;
+      void ensureRegistered();
+    }, ports.registerRetryMs ?? REGISTER_RETRY_MS);
+  }
+
   function scheduleHeartbeat(): void {
     if (heartbeatTimer || !lease) return;
     const tick = (): void => {
@@ -280,8 +309,10 @@ export function createDesktopLifecycle(ports: DesktopLifecyclePorts): DesktopLif
         (err.code === "lease_unknown" || err.code === "stale_generation" || err.code === "invalid_lease_token")
       ) {
         // Lease expired or generation rotated — rejoin under a fresh lease.
+        // If the re-register itself fails (runner mid-restart), the retry
+        // timer keeps rejoining instead of staying unmanaged forever.
         lease = null;
-        await register();
+        if (!(await register())) scheduleRegisterRetry();
         return;
       }
       if (phase === "draining_restart") {
@@ -312,8 +343,11 @@ export function createDesktopLifecycle(ports: DesktopLifecyclePorts): DesktopLif
           reconnecting = false;
           reconnectDeadlineMs = null;
           lease = null;
-          await register();
-          if (lease && !heartbeatTimer) scheduleHeartbeat();
+          if (await register()) {
+            if (!heartbeatTimer) scheduleHeartbeat();
+          } else {
+            scheduleRegisterRetry();
+          }
           emitStatus();
           return;
         }
@@ -328,6 +362,10 @@ export function createDesktopLifecycle(ports: DesktopLifecyclePorts): DesktopLif
     if (heartbeatTimer) {
       clearT(heartbeatTimer);
       heartbeatTimer = null;
+    }
+    if (registerRetryTimer) {
+      clearT(registerRetryTimer);
+      registerRetryTimer = null;
     }
     reconnecting = false;
     reconnectDeadlineMs = null;
@@ -396,14 +434,17 @@ export function createDesktopLifecycle(ports: DesktopLifecyclePorts): DesktopLif
       // Exactly one Desktop lease per app process (T-1): renderer reloads and
       // window recreation re-run start() but must not mint a second lease.
       if (lease || quitting) return;
-      await register();
-      scheduleHeartbeat();
+      await ensureRegistered();
     },
 
     stop(): void {
       if (heartbeatTimer) {
         clearT(heartbeatTimer);
         heartbeatTimer = null;
+      }
+      if (registerRetryTimer) {
+        clearT(registerRetryTimer);
+        registerRetryTimer = null;
       }
     },
 

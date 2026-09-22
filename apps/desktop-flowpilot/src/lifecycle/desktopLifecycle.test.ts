@@ -18,7 +18,8 @@ interface RunnerStub {
   restartBodies: Array<Record<string, unknown>>;
   setSnapshot(snap: Partial<LifecycleSnapshot>): void;
   setHealthInstance(id: string): void;
-  failHeartbeat(err?: "transport" | "lease_unknown"): void;
+  failHeartbeat(err?: "ok" | "transport" | "lease_unknown"): void;
+  failRegister(times: number): void;
   shutdownFirst(status: number, confirmToken?: string): void;
   restartFirst(status: number, confirmToken?: string): void;
 }
@@ -41,6 +42,7 @@ function stubRunner(): RunnerStub {
   };
   let healthInstance = "inst-1";
   let heartbeatMode: "ok" | "transport" | "lease_unknown" = "ok";
+  let registerFails = 0;
   let shutdownRule: { status: number; confirmToken?: string } | null = null;
   let restartRule: { status: number; confirmToken?: string } | null = null;
 
@@ -67,6 +69,10 @@ function stubRunner(): RunnerStub {
     }
     if (path === "/system/clients/register") {
       counts.register++;
+      if (registerFails > 0) {
+        registerFails--;
+        throw new Error("connection refused");
+      }
       return json(200, {
         leaseId: "l-desk",
         leaseToken: "tok-1",
@@ -137,6 +143,9 @@ function stubRunner(): RunnerStub {
     failHeartbeat(err = "transport") {
       heartbeatMode = err;
     },
+    failRegister(times) {
+      registerFails = times;
+    },
     shutdownFirst(status, confirmToken) {
       shutdownRule = { status, confirmToken };
     },
@@ -175,6 +184,7 @@ function makePorts(stub: RunnerStub): Ports {
     label: "Desktop 4242",
     heartbeatMs: 60_000, // long — tests drive heartbeatOnce() explicitly
     reconnectPollMs: 1,
+    registerRetryMs: 5,
     // unref'd real timers: live reconnect polls still fire, but pending
     // heartbeat timers never keep the node:test process alive.
     setTimeoutFn: ((fn: () => void, ms?: number) => {
@@ -411,4 +421,46 @@ test("TestDesktop_MockRunnerClientLifecycleParity", async () => {
   assert.equal(snap.lifecycleMode, "client-managed");
   assert.ok(Array.isArray(snap.clients) && snap.clients.length >= 1);
   assert.equal(snap.updatePending, false);
+});
+
+// ── CA-920: boot-race register retry + transient heartbeat tolerance ─────────
+
+test("TestDesktop_RegisterRetriesUntilRunnerUp", async () => {
+  const stub = stubRunner();
+  // Simulates the supervisor spawn race: desktop boots while `go run` is still
+  // compiling — first two register attempts hit ECONNREFUSED.
+  stub.failRegister(2);
+  const p = makePorts(stub);
+  await p.lifecycle.start();
+  assert.equal(p.lifecycle.state().leaseId, undefined);
+  await waitFor(() => p.lifecycle.state().leaseId === "l-desk");
+  assert.ok(stub.counts.register >= 3, `expected >=3 register attempts, got ${stub.counts.register}`);
+});
+
+test("TestDesktop_StaleLeaseReregisterFailureRetries", async () => {
+  const stub = stubRunner();
+  const p = makePorts(stub);
+  await p.lifecycle.start();
+  // Lease expired server-side; the immediate re-register fails (runner busy
+  // mid-restart) — the retry loop must still rejoin.
+  stub.failHeartbeat("lease_unknown");
+  stub.failRegister(1);
+  await p.lifecycle.heartbeatOnce();
+  assert.equal(p.lifecycle.state().leaseId, undefined);
+  await waitFor(() => p.lifecycle.state().leaseId === "l-desk");
+  stub.failHeartbeat("ok");
+  await p.lifecycle.heartbeatOnce();
+  assert.equal(stub.counts.heartbeat >= 2, true);
+});
+
+test("TestDesktop_RetryStopsAfterQuit", async () => {
+  const stub = stubRunner();
+  stub.failRegister(10_000); // runner never comes up
+  const p = makePorts(stub);
+  p.setCloseChoice("close_only");
+  await p.lifecycle.start();
+  await p.lifecycle.requestQuit("app");
+  const callsAtQuit = stub.counts.register;
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(stub.counts.register, callsAtQuit);
 });
