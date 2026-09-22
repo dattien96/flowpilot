@@ -310,6 +310,10 @@ type RunHandle struct {
 	// its leg ordinal. Omitted for workflow runs and when the flag is off.
 	ChatID string `json:"chatId,omitempty"`
 	LegSeq int    `json:"legSeq,omitempty"`
+	// CP-71: worktree binding echo for clients that badge run chrome
+	// (TUI status line, desktop navigator). Omitted when the run is unbound.
+	WorktreeState string `json:"worktreeState,omitempty"`
+	WorktreeSlug  string `json:"worktreeSlug,omitempty"`
 }
 
 type StartRunInput struct {
@@ -347,6 +351,10 @@ type StartRunInput struct {
 	ChatID          string `json:"chatId,omitempty"`
 	SwitchFromRunID string `json:"switchFromRunId,omitempty"`
 	LegSeq          int    `json:"legSeq,omitempty"`
+	// Worktree opts the run into per-owner git worktree isolation (SS-23/CP-71).
+	// Client-gated to desktop|tui (enforceWorktreeStart); a chat's legs share
+	// the one worktree owned by chatId (SD-27 D-8).
+	Worktree bool `json:"worktree,omitempty"`
 }
 
 type SkillSelection struct {

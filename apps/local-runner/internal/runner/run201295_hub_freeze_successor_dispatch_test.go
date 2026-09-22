@@ -155,14 +155,14 @@ func TestRun201295ProseVerdictApprovedDrivesFreeze(t *testing.T) {
 			// when the hub's prose summary is not itself a draft.
 			svc.mu.Lock()
 			child := &interactiveRun{
-				id:           "run-planner-" + string(pk),
-				parentRunID:  runID,
-				label:        "preflight_contract_plan",
-				agentName:    "contract-planner",
-				status:       RunStatusCompleted,
-				providerKey:  pk,
-				subs:         map[int64]chan ProviderEvent{},
-				events:       []ProviderEvent{{Type: EventTurnCompleted, FinalMessage: validPlannerDraft}},
+				id:          "run-planner-" + string(pk),
+				parentRunID: runID,
+				label:       "preflight_contract_plan",
+				agentName:   "contract-planner",
+				status:      RunStatusCompleted,
+				providerKey: pk,
+				subs:        map[int64]chan ProviderEvent{},
+				events:      []ProviderEvent{{Type: EventTurnCompleted, FinalMessage: validPlannerDraft}},
 			}
 			svc.runs[child.id] = child
 			svc.agentOrchestrator.registerChild(runID, child.id)

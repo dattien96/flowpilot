@@ -9,6 +9,7 @@ import (
 	"flowpilot-runner/internal/agentpack"
 	"flowpilot-runner/internal/workingmode"
 )
+
 func ca791ArmIngest(t *testing.T) (*InteractiveService, string) {
 	t.Helper()
 	svc, _ := newTestServer(t)

@@ -47,4 +47,3 @@ func TestFreezeWriterBinding_StillFailsWithoutAgentCode(t *testing.T) {
 		t.Fatal("no agent.code must still fail closed")
 	}
 }
-

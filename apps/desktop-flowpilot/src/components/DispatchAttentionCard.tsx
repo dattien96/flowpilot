@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { DispatchAttentionItem, DispatchInspectResult, DispatchResolveAction } from "@/types/contract";
 import { useStore } from "@/state/store";
+import { attentionQueue } from "@/state/attentionQueue";
 
 /**
  * SS-17 / CP-51 Task-256 operator surface: shows uncertain dispatch + repair_required
@@ -29,6 +30,7 @@ export function DispatchAttentionCard(): React.ReactElement | null {
     try {
       const list = await client.listDispatchAttention(runId);
       setItems(list);
+      attentionQueue.ingestDispatch(runId, list);
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));

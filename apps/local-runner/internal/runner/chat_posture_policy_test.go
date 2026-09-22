@@ -180,11 +180,11 @@ func TestIsReadOnlyToolName_FalsePositivesDenied(t *testing.T) {
 	cases := []string{
 		"ReadWrite",
 		"FileReadWrite",
-		"open_pr",   // contains "open" + write intent
-		"open_mr",   // GitLab MR creation
-		"Restart",   // contains "stat"
+		"open_pr",    // contains "open" + write intent
+		"open_mr",    // GitLab MR creation
+		"Restart",    // contains "stat"
 		"Breadcrumb", // contains "read"
-		"research",  // contains "search" but is a write-style MCP tool
+		"research",   // contains "search" but is a write-style MCP tool
 		"createdocument",
 		"updaterecord",
 		"writestream",

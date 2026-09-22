@@ -2,12 +2,15 @@ package runner
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"strings"
+	"time"
 )
 
 // Phase 5 (04-05): the navigator catalog read-path over Supabase. P2 served
@@ -37,6 +40,8 @@ type CreateProjectInput struct {
 	DirectoryPath string `json:"directoryPath"`
 	Platform      string `json:"platform,omitempty"`
 	DefaultModel  string `json:"defaultModel,omitempty"`
+	Description   string `json:"description,omitempty"`
+	RepositoryURL string `json:"repositoryUrl,omitempty"`
 }
 
 // CatalogStoreFor returns the live SupabaseCatalogStore when the runner has a
@@ -98,7 +103,7 @@ func (s *SupabaseCatalogStore) ListProjects(ctx context.Context) ([]Project, err
 		Name                  string  `json:"name"`
 		DirectoryPath         string  `json:"directory_path"`
 		DefaultModel          *string `json:"default_model"`
-		Platform             *string `json:"platform"`
+		Platform              *string `json:"platform"`
 		ProjectWorkspaceBinds []struct {
 			LocalPath string `json:"local_path"`
 		} `json:"project_workspace_bindings"`
@@ -263,6 +268,19 @@ func (s *SupabaseCatalogStore) ListWorkflowSteps(ctx context.Context, workflowID
 	return out, nil
 }
 
+// newProjectLegacyID returns the `project_<18 hex>` legacy text id every
+// projects insert must carry — the same shape the TS repositories generate
+// with `project_${crypto.randomUUID().replaceAll("-","").slice(0,18)}`.
+func newProjectLegacyID() string {
+	var b [9]byte // 9 bytes -> 18 hex chars
+	if _, err := rand.Read(b[:]); err != nil {
+		// crypto/rand failure is near-impossible; fall back to a timestamp
+		// suffix so the unique constraint still has distinct input.
+		return fmt.Sprintf("project_%018d", time.Now().UnixNano())
+	}
+	return "project_" + hex.EncodeToString(b[:])
+}
+
 func (s *SupabaseCatalogStore) CreateProject(ctx context.Context, input CreateProjectInput) (Project, error) {
 	name := strings.TrimSpace(input.Name)
 	dir := strings.TrimSpace(input.DirectoryPath)
@@ -284,6 +302,13 @@ func (s *SupabaseCatalogStore) CreateProject(ctx context.Context, input CreatePr
 		"platform":                    platform,
 		"status":                      "active",
 		"artifact_storage_preference": "supabase",
+		// projects.legacy_id / created_by / description / repository_url are
+		// NOT NULL with no DB default — same contract the TS insert paths
+		// fixed in BUG-135 / BUG-136. Empty string satisfies the constraint.
+		"legacy_id":      newProjectLegacyID(),
+		"created_by":     "supabase-admin",
+		"description":    strings.TrimSpace(input.Description),
+		"repository_url": strings.TrimSpace(input.RepositoryURL),
 	}
 	if defaultModel != "" {
 		bodyMap["default_model"] = defaultModel
@@ -346,4 +371,3 @@ func (s *SupabaseCatalogStore) CreateProject(ctx context.Context, input CreatePr
 		Platform: platform,
 	}, nil
 }
-

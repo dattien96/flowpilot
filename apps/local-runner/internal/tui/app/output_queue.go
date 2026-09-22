@@ -44,7 +44,7 @@ const (
 // queuedOutput serializes writes through one drain goroutine so a blocked
 // console write can never hold the renderer mutex and freeze the event loop.
 type queuedOutput struct {
-	f *os.File // real stdout: Fd/Read/Close delegation for term.File
+	f *os.File  // real stdout: Fd/Read/Close delegation for term.File
 	w io.Writer // drain target; equals f in production, injectable in tests
 
 	ch chan []byte // FIFO of pending write payloads

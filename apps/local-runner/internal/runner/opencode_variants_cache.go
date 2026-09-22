@@ -27,7 +27,7 @@ type opencodeVariantCache struct {
 }
 
 var (
-	opencodeVariantMu sync.Mutex
+	opencodeVariantMu       sync.Mutex
 	opencodeVariantInMemory = map[string]opencodeVariantEntry{}
 )
 

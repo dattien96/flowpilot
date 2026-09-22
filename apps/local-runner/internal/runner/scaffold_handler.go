@@ -90,6 +90,11 @@ func (s *InteractiveService) handleScaffoldStatus(w http.ResponseWriter, r *http
 // (done | skipped | error). 4xx/5xx are reserved for malformed requests and an
 // unavailable runner.
 func (s *InteractiveService) handleDispatchScaffold(w http.ResponseWriter, r *http.Request) {
+	// CP-81 D-3: no new work once the lifecycle manager begins draining.
+	if e := s.drainingErr(); e != nil {
+		writeInteractiveError(w, e)
+		return
+	}
 	projectID := strings.TrimSpace(r.PathValue("projectId"))
 
 	body := ScaffoldDispatchRequestBody{}
@@ -100,13 +105,17 @@ func (s *InteractiveService) handleDispatchScaffold(w http.ResponseWriter, r *ht
 
 	platform := strings.TrimSpace(body.Platform)
 	workspaceInput := strings.TrimSpace(body.WorkingDirectory)
-	if platform == "" || workspaceInput == "" {
+	modelName := strings.TrimSpace(body.ModelName)
+	if platform == "" || workspaceInput == "" || modelName == "" {
 		if project, ok := s.lookupProject(projectID); ok {
 			if platform == "" {
 				platform = strings.TrimSpace(project.Platform)
 			}
 			if workspaceInput == "" {
 				workspaceInput = strings.TrimSpace(project.Path)
+			}
+			if modelName == "" {
+				modelName = strings.TrimSpace(project.Model)
 			}
 		}
 	}
@@ -122,12 +131,31 @@ func (s *InteractiveService) handleDispatchScaffold(w http.ResponseWriter, r *ht
 		return
 	}
 
-	result, err := s.scaffoldDispatcher().Dispatch(r.Context(), ScaffoldRequest{
+	// One scaffold turn per project at a time: the create_project auto-trigger
+	// and a manual /init dispatch must never stack two AI turns writing into the
+	// same workspace.
+	if !s.claimScaffold(projectID) {
+		writeInteractiveJSON(w, http.StatusOK, ScaffoldDispatchResult{
+			Status:   ScaffoldStatusSkipped,
+			Platform: platform,
+			Message:  "scaffold: skipped (a scaffold turn is already in progress)",
+		})
+		return
+	}
+	defer s.releaseScaffold(projectID)
+
+	// CP-81 Task-415: arm the dispatch context so a confirmed system drain can
+	// terminate the scaffold turn instead of stranding it mid-write.
+	dispatchCtx, dispatchCancel := context.WithCancel(r.Context())
+	defer dispatchCancel()
+	s.armScaffoldCancel(projectID, dispatchCancel)
+
+	result, err := s.scaffoldDispatcher().Dispatch(dispatchCtx, ScaffoldRequest{
 		ProjectID:    projectID,
 		WorkspaceDir: dir,
 		Platform:     platform,
-		ProviderKey:  s.resolveScaffoldProviderKey(body.ProviderKey, body.ModelName),
-		ModelName:    strings.TrimSpace(body.ModelName),
+		ProviderKey:  s.resolveScaffoldProviderKey(body.ProviderKey, modelName),
+		ModelName:    modelName,
 		YoloMode:     body.YoloMode,
 		Force:        body.Force,
 		Trigger:      firstNonEmptyLineOf(strings.TrimSpace(body.Trigger), "manual"),
@@ -187,6 +215,30 @@ func (s *InteractiveService) lookupProject(projectID string) (Project, bool) {
 	return Project{}, false
 }
 
+// claimScaffold marks a scaffold turn in-flight for the project; false when one
+// is already running. Shared by the create_project auto-trigger and the HTTP
+// dispatch handler so the two paths dedupe against each other.
+func (s *InteractiveService) claimScaffold(projectID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.scaffoldInFlight == nil {
+		s.scaffoldInFlight = map[string]bool{}
+	}
+	if s.scaffoldInFlight[projectID] {
+		return false
+	}
+	s.scaffoldInFlight[projectID] = true
+	return true
+}
+
+// releaseScaffold drops the in-flight claim when the turn finishes.
+func (s *InteractiveService) releaseScaffold(projectID string) {
+	s.mu.Lock()
+	delete(s.scaffoldInFlight, projectID)
+	delete(s.scaffoldCancels, projectID)
+	s.mu.Unlock()
+}
+
 // autoTriggerScaffold is the CP-68 passive Desktop trigger: after the create-project
 // engine init, a scaffold-capable platform gets one background AI scaffold turn.
 // It is deliberately async (project creation must not block on an AI turn plus a
@@ -201,19 +253,13 @@ func (s *InteractiveService) autoTriggerScaffold(projectID, workspaceDir, platfo
 		return
 	}
 
-	// One in-flight auto-trigger per project: concurrent create/bind flows for
-	// the same project must not stack duplicate background AI turns.
-	s.mu.Lock()
-	if s.scaffoldInFlight == nil {
-		s.scaffoldInFlight = map[string]bool{}
-	}
-	if s.scaffoldInFlight[projectID] {
-		s.mu.Unlock()
+	// One in-flight scaffold turn per project: concurrent create/bind flows (or
+	// a manual /init dispatch landing while the auto-trigger runs) must not
+	// stack duplicate AI turns.
+	if !s.claimScaffold(projectID) {
 		log.Printf("[scaffold] project=%s platform=%q skipped (already in flight)", projectID, platform)
 		return
 	}
-	s.scaffoldInFlight[projectID] = true
-	s.mu.Unlock()
 
 	go func() {
 		// Background work must never take the whole runner process down, and the
@@ -222,15 +268,18 @@ func (s *InteractiveService) autoTriggerScaffold(projectID, workspaceDir, platfo
 			if recovered := recover(); recovered != nil {
 				log.Printf("[scaffold] project=%s panicked: %v", projectID, recovered)
 			}
-			s.mu.Lock()
-			delete(s.scaffoldInFlight, projectID)
-			s.mu.Unlock()
+			s.releaseScaffold(projectID)
 		}()
 
 		ctx, cancel := context.WithTimeout(context.Background(), scaffoldAPITimeout)
 		defer cancel()
+		// CP-81 Task-415: a confirmed system drain cancels this turn via
+		// StopAllForSystemAction — arm the cancel under the same claim.
+		drainCtx, drainCancel := context.WithCancel(ctx)
+		defer drainCancel()
+		s.armScaffoldCancel(projectID, drainCancel)
 
-		result, err := s.scaffoldDispatcher().Dispatch(ctx, ScaffoldRequest{
+		result, err := s.scaffoldDispatcher().Dispatch(drainCtx, ScaffoldRequest{
 			ProjectID:    projectID,
 			WorkspaceDir: workspaceDir,
 			Platform:     platform,

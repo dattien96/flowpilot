@@ -50,10 +50,10 @@ func TestF4Collapsed_ShowsBothWhenPresent(t *testing.T) {
 func TestF4Collapsed_UsageDetailFallbackShowsWeekly(t *testing.T) {
 	m := New(config.ChatConfig{Provider: "grok", Model: "grok-4.6"}, "http://127.0.0.1:4317")
 	m.account = &client.ProviderAccountSummary{
-		ProviderKey:  "grok",
-		DisplayLabel: "grok@example.com",
+		ProviderKey:      "grok",
+		DisplayLabel:     "grok@example.com",
 		UsageDetailLines: []client.ProviderAccountUsageLine{{Label: "Weekly limit", RemainingPercent: 99}},
-		IsActive: true,
+		IsActive:         true,
 	}
 	m.accountLabel = "grok@example.com"
 	got := stripANSI(m.renderStatusLine())
@@ -66,11 +66,11 @@ func TestF4Collapsed_TeamCreditsFallback(t *testing.T) {
 	m := New(config.ChatConfig{Provider: "grok", Model: "grok-4.6"}, "http://127.0.0.1:4317")
 	summary := "Team 54b113be-a4be-4876-9577-d30fa68041d"
 	m.account = &client.ProviderAccountSummary{
-		ProviderKey:  "grok",
-		DisplayLabel: "trashname899@gmail.com",
+		ProviderKey:      "grok",
+		DisplayLabel:     "trashname899@gmail.com",
 		UsageDetailLines: []client.ProviderAccountUsageLine{{Label: "Team Credits (Monthly)", RemainingPercent: 42}},
-		UsageSummary: &summary,
-		IsActive: true,
+		UsageSummary:     &summary,
+		IsActive:         true,
 	}
 	m.accountLabel = "trashname899@gmail.com"
 	got := stripANSI(m.renderStatusLine())

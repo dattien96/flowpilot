@@ -11,9 +11,9 @@ type testBridge struct {
 	events []ProviderEvent
 }
 
-func (b *testBridge) Emit(ev ProviderEvent) { b.events = append(b.events, ev) }
-func (b *testBridge) Accepted(receipt ReceiptEvidence) {}
-func (b *testBridge) Terminal(proof TerminalEvidence) {}
+func (b *testBridge) Emit(ev ProviderEvent)                                   { b.events = append(b.events, ev) }
+func (b *testBridge) Accepted(receipt ReceiptEvidence)                        {}
+func (b *testBridge) Terminal(proof TerminalEvidence)                         {}
 func (b *testBridge) RequestApproval(details ApprovalDetails) (string, error) { return "", nil }
 func (b *testBridge) AskQuestion(prompt string, options []QuestionOption, multiSelect bool) ([]string, error) {
 	return nil, nil

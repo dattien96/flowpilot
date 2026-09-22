@@ -383,6 +383,9 @@ func (m *AppModel) cmdReattachChat() tea.Cmd {
 		Cwd:             cwd,
 		ChatID:          chatID,
 		SwitchFromRunID: switchFrom,
+		// Legs share the chat's worktree server-side; echo the flag so the
+		// intent survives when the chat has no binding yet (CP-71).
+		Worktree: m.worktreeEnabled(),
 	}
 	in.YoloMode = m.effectiveYolo()
 	cl := m.client

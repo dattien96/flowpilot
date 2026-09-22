@@ -205,15 +205,15 @@ type ProvidersWarmRetryMsg struct{}
 
 // SessionDefaultsMsg carries active provider/model discovered after connect.
 type SessionDefaultsMsg struct {
-	Provider         string
-	Model            string
-	AccountLabel     string
-	Providers        []client.Provider
-	ProviderAccounts []client.ProviderAccountSummary
-	Projects         []client.Project
-	Project          *client.Project
-	Account          *client.ProviderAccountSummary
-	CatalogErr       string
+	Provider           string
+	Model              string
+	AccountLabel       string
+	Providers          []client.Provider
+	ProviderAccounts   []client.ProviderAccountSummary
+	Projects           []client.Project
+	Project            *client.Project
+	Account            *client.ProviderAccountSummary
+	CatalogErr         string
 	SupabaseConfigured bool
 }
 
@@ -325,6 +325,16 @@ type AppModel struct {
 	mode       Mode
 	connStatus ConnStatus
 	statusMsg  string
+	// CP-81 (Task-417): runner lifecycle participation — this TUI's lease,
+	// the last-seen phase/inventory for the status chip, reconnect tracking
+	// for planned restarts, and the three-choice close dialog.
+	lease            tuiLease
+	lifecyclePhase   string
+	lifecycleClients int
+	lifecycleWork    int
+	updatePending    bool
+	reconnect        *reconnectState
+	closeDialog      *closeDialogState
 	// flashToast is a short-lived status overlay (e.g. "Copied answer.") — not chat.
 	flashToast   string
 	flashToastID int64
@@ -416,7 +426,12 @@ type AppModel struct {
 	// Per-turn settings
 	yolo        bool
 	workingMode string // Task-326: ""=unfiltered cache, "dev"|"vibe" after /vibe
-	agentsFocus bool
+	// CP-71: arm the next run for worktree isolation; liveWorktree mirrors the
+	// active run's binding state for the status badge.
+	worktree     bool
+	liveWorktree string // "" | active | merge_pending | lost | merged | ...
+	worktreeSlug string
+	agentsFocus  bool
 	// chatPosture is the active Scan/Plan/Code posture ("" = code). Scan/Plan are
 	// read-only: the runner auto-approves reads and auto-denies writes without
 	// asking. Set via /mode or the Tab cycle; resend on every chat turn.
@@ -683,6 +698,7 @@ type AppModel struct {
 	// model cache is still warming (undersized catalog).
 	providersWarmRetries int
 	loadingFrame         int
+	scaffoldBusy         bool
 
 	// thinkingFrame drives the animated "Thinking" placeholder (spinner /
 	// shimmer / elapsed). Advanced by thinkingTickMsg while a thinking row is
@@ -840,7 +856,7 @@ var knownSlashCommands = []slashCommand{
 
 // hasModalOpen returns true if any full-screen or popup modal is open.
 func (m *AppModel) hasModalOpen() bool {
-	return m.projectWizardOpen || m.loginModalOpen || m.supabaseSetupModalOpen || m.modeSetupModalOpen
+	return m.projectWizardOpen || m.loginModalOpen || m.supabaseSetupModalOpen || m.modeSetupModalOpen || m.closeDialog != nil
 }
 
 // handleOnboardingAfterSession runs the Task-353 D-2 first-run chain after a
@@ -883,4 +899,3 @@ func (m *AppModel) maybeAutoOnboard(supabaseConfigured bool) {
 		m.openProjectWizard(m.cfg.ProjectPath)
 	}
 }
-

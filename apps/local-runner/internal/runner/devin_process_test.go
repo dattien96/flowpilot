@@ -256,7 +256,7 @@ func TestEnsureDevinProcessBootOrderIncludesAuthenticate(t *testing.T) {
 	// arrives if a request with method authenticate was actually sent (the
 	// harness below asserts on the call sequence instead).
 	commandContextFn = func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
-		s := shellReadLine() + shellOutputLine(`{"jsonrpc":"2.0","id":1,"result":` + string(initResult) + `}`) +
+		s := shellReadLine() + shellOutputLine(`{"jsonrpc":"2.0","id":1,"result":`+string(initResult)+`}`) +
 			shellReadLine() + shellOutputLine(`{"jsonrpc":"2.0","id":2,"result":{}}`) + "sleep 3\n"
 		return testShellCommand(ctx, s)
 	}
@@ -283,7 +283,7 @@ func TestEnsureDevinProcessAuthenticateFailureKillsProcess(t *testing.T) {
 
 	initResult, _ := json.Marshal(map[string]any{"protocolVersion": 1})
 	commandContextFn = func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
-		s := shellReadLine() + shellOutputLine(`{"jsonrpc":"2.0","id":1,"result":` + string(initResult) + `}`) +
+		s := shellReadLine() + shellOutputLine(`{"jsonrpc":"2.0","id":1,"result":`+string(initResult)+`}`) +
 			shellReadLine() + shellOutputLine(`{"jsonrpc":"2.0","id":2,"error":{"code":-32000,"message":"authentication required"}}`) + "sleep 3\n"
 		return testShellCommand(ctx, s)
 	}

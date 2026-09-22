@@ -109,10 +109,10 @@ func TestFirstCoderContextRanksFeatureHistoryByCurrentLocus(t *testing.T) {
 	entries := make([]changeledger.Entry, 40)
 	for i := 0; i < 40; i++ {
 		entries[i] = changeledger.Entry{
-			CommitHash:  fmt.Sprintf("hash%03d", i),
-			FeatureKey:  "calc-core",
-			Summary:     fmt.Sprintf("unrelated entry %d", i),
-			CommittedAt: base.Add(time.Duration(i) * time.Hour).Format(time.RFC3339),
+			CommitHash:   fmt.Sprintf("hash%03d", i),
+			FeatureKey:   "calc-core",
+			Summary:      fmt.Sprintf("unrelated entry %d", i),
+			CommittedAt:  base.Add(time.Duration(i) * time.Hour).Format(time.RFC3339),
 			ChangedPaths: []string{fmt.Sprintf("src/other%03d.go", i)},
 		}
 	}

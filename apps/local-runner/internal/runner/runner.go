@@ -23,6 +23,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"flowpilot-runner/internal/lifecycle"
 )
 
 const Version = "dev"
@@ -209,6 +211,11 @@ type Runner struct {
 	providersCacheMu  sync.Mutex
 	providersCachedAt time.Time
 	providersCache    []Provider
+
+	// lifecycleMgr is the CP-81 shared-lifecycle authority (SS-24/SD-28),
+	// attached by `runner serve`. nil in unmanaged contexts — Health then
+	// reports the legacy field set only. Guarded by sessionsMu.
+	lifecycleMgr *lifecycle.Manager
 }
 
 func New(workspace string) (*Runner, error) {
@@ -282,13 +289,24 @@ func loadWorkspaceEnvFile(workspace string) error {
 }
 
 func (r *Runner) Health() Health {
-	return Health{
+	h := Health{
 		Status:        "online",
 		RunnerVersion: Version,
 		Cwd:           r.workspace,
 		Os:            runtime.GOOS,
 		StartedAt:     r.startedAt.Format(time.RFC3339Nano),
 	}
+	// CP-81 §6.2 additive identity fields — present only under a managed
+	// lifecycle so unmanaged runners keep the legacy shape byte-identical.
+	if snap, ok := r.lifecycleSnapshot(); ok {
+		h.RunnerInstanceID = snap.RunnerInstanceID
+		h.Generation = snap.Generation
+		h.ProtocolVersion = snap.ProtocolVersion
+		h.BuildID = snap.BuildID
+		h.LifecycleMode = string(snap.Mode)
+		h.Phase = string(snap.Phase)
+	}
+	return h
 }
 
 func (r *Runner) PickDirectory(ctx context.Context) (DirectorySelection, error) {
@@ -4461,6 +4479,27 @@ func (r *Runner) StartGoogleDriveMcpAuth() error {
 	return launchTerminalCommandWithEnvFn(env, authCommand, true)
 }
 
+// withoutEnvKeys drops exact keys from a KEY=VALUE env list — for
+// host-integration markers that must not leak into spawned provider CLIs.
+func withoutEnvKeys(env []string, keys ...string) []string {
+	drop := make(map[string]struct{}, len(keys))
+	for _, k := range keys {
+		drop[k] = struct{}{}
+	}
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		key := kv
+		if idx := strings.IndexByte(kv, '='); idx >= 0 {
+			key = kv[:idx]
+		}
+		if _, ok := drop[key]; ok {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
+}
+
 func (r *Runner) getEnvForExecution(
 	providerKey string,
 	accountHomePath string,
@@ -4473,6 +4512,13 @@ func (r *Runner) getEnvForExecution(
 	baseEnv := rawEnv
 	if strings.EqualFold(providerKey, "gemini") {
 		baseEnv = agyFilteredEnv(rawEnv, nil)
+	}
+	if strings.EqualFold(providerKey, string(ProviderKeyDevin)) {
+		// CA-912: ACP_BACKEND is exported by Windsurf into shells it owns; when
+		// it leaks into `devin -p` the CLI ignores the on-disk credentials.toml
+		// entirely and one-shot turns die with "Not logged in" despite a valid
+		// credential file.
+		baseEnv = withoutEnvKeys(baseEnv, "ACP_BACKEND")
 	}
 	trimmedAccountHomePath := strings.TrimSpace(accountHomePath)
 

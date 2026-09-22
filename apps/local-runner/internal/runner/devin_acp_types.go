@@ -8,9 +8,9 @@ package runner
 
 // DevinInitializeParams is the client -> server initialize request params.
 type DevinInitializeParams struct {
-	ProtocolVersion    int                      `json:"protocolVersion"`
-	ClientCapabilities DevinClientCapabilities  `json:"clientCapabilities"`
-	ClientInfo         DevinClientInfo          `json:"clientInfo"`
+	ProtocolVersion    int                     `json:"protocolVersion"`
+	ClientCapabilities DevinClientCapabilities `json:"clientCapabilities"`
+	ClientInfo         DevinClientInfo         `json:"clientInfo"`
 }
 
 type DevinClientCapabilities struct {
@@ -34,20 +34,20 @@ type DevinClientInfo struct {
 // the agent reads. mcpCapabilities.{http,sse} are both false — Devin accepts
 // stdio MCP servers only (session/new mcpServers or the config file).
 type DevinInitializeResult struct {
-	ProtocolVersion   int                       `json:"protocolVersion"`
-	AgentCapabilities DevinAgentCapabilities    `json:"agentCapabilities"`
-	AuthMethods       []DevinAuthMethod         `json:"authMethods,omitempty"`
-	AgentInfo         DevinAgentInfo            `json:"agentInfo"`
-	Meta              map[string]interface{}    `json:"_meta,omitempty"`
+	ProtocolVersion   int                    `json:"protocolVersion"`
+	AgentCapabilities DevinAgentCapabilities `json:"agentCapabilities"`
+	AuthMethods       []DevinAuthMethod      `json:"authMethods,omitempty"`
+	AgentInfo         DevinAgentInfo         `json:"agentInfo"`
+	Meta              map[string]interface{} `json:"_meta,omitempty"`
 }
 
 type DevinAgentCapabilities struct {
-	LoadSession        bool                        `json:"loadSession"`
-	MCPCapabilities    DevinMCPCapabilities        `json:"mcpCapabilities"`
-	PromptCapabilities DevinPromptCapabilities     `json:"promptCapabilities"`
-	SessionCapabilities map[string]interface{}     `json:"sessionCapabilities,omitempty"`
-	Auth               map[string]interface{}      `json:"auth,omitempty"`
-	Meta               map[string]interface{}      `json:"_meta,omitempty"`
+	LoadSession         bool                    `json:"loadSession"`
+	MCPCapabilities     DevinMCPCapabilities    `json:"mcpCapabilities"`
+	PromptCapabilities  DevinPromptCapabilities `json:"promptCapabilities"`
+	SessionCapabilities map[string]interface{}  `json:"sessionCapabilities,omitempty"`
+	Auth                map[string]interface{}  `json:"auth,omitempty"`
+	Meta                map[string]interface{}  `json:"_meta,omitempty"`
 }
 
 type DevinMCPCapabilities struct {
@@ -96,9 +96,9 @@ type DevinSessionNewParams struct {
 // configOptions:[{id:"mode"...},{id:"model"...}], _meta}. Session IDs are
 // slug-style names (e.g. "working-pentagon") — NOT ses_* and NOT UUIDs.
 type DevinSessionNewResult struct {
-	SessionID     string                `json:"sessionId"`
-	Modes         *DevinSessionModes    `json:"modes,omitempty"`
-	ConfigOptions []DevinConfigOption   `json:"configOptions,omitempty"`
+	SessionID     string                 `json:"sessionId"`
+	Modes         *DevinSessionModes     `json:"modes,omitempty"`
+	ConfigOptions []DevinConfigOption    `json:"configOptions,omitempty"`
 	Meta          map[string]interface{} `json:"_meta,omitempty"`
 }
 
@@ -118,13 +118,13 @@ type DevinModeChoice struct {
 // vision capability. The "mode" option carries the five session modes
 // (accept-edits/smart/ask/plan/bypass).
 type DevinConfigOption struct {
-	ID           string                 `json:"id"`
-	Name         string                 `json:"name,omitempty"`
-	Description  string                 `json:"description,omitempty"`
-	Category     string                 `json:"category,omitempty"`
-	Type         string                 `json:"type"`
-	CurrentValue string                 `json:"currentValue"`
-	Options      []DevinConfigChoice    `json:"options,omitempty"`
+	ID           string              `json:"id"`
+	Name         string              `json:"name,omitempty"`
+	Description  string              `json:"description,omitempty"`
+	Category     string              `json:"category,omitempty"`
+	Type         string              `json:"type"`
+	CurrentValue string              `json:"currentValue"`
+	Options      []DevinConfigChoice `json:"options,omitempty"`
 }
 
 type DevinConfigChoice struct {
@@ -159,8 +159,8 @@ type DevinSessionListEntry struct {
 
 // DevinPromptParams is client -> server session/prompt params.
 type DevinPromptParams struct {
-	SessionID string              `json:"sessionId"`
-	Prompt    []DevinPromptBlock  `json:"prompt"`
+	SessionID string             `json:"sessionId"`
+	Prompt    []DevinPromptBlock `json:"prompt"`
 }
 
 type DevinPromptBlock struct {
@@ -176,19 +176,19 @@ type DevinPromptBlock struct {
 // usage_update, session_info_update, current_mode_update,
 // available_commands_update, config_option_update, plan.
 type DevinSessionUpdate struct {
-	SessionUpdate     string                 `json:"sessionUpdate"`
-	Content           map[string]interface{} `json:"content,omitempty"`
-	ToolCallID        string                 `json:"toolCallId,omitempty"`
-	Title             string                 `json:"title,omitempty"`
-	Kind              string                 `json:"kind,omitempty"`
-	Status            string                 `json:"status,omitempty"`
-	Locations         []DevinLocation        `json:"locations,omitempty"`
-	RawInput          map[string]interface{} `json:"rawInput,omitempty"`
-	RawOutput         map[string]interface{} `json:"rawOutput,omitempty"`
-	Used              int64                  `json:"used,omitempty"`
-	Size              int64                  `json:"size,omitempty"`
-	CurrentModeID     string                 `json:"currentModeId,omitempty"`
-	Meta              map[string]interface{} `json:"_meta,omitempty"`
+	SessionUpdate string                 `json:"sessionUpdate"`
+	Content       map[string]interface{} `json:"content,omitempty"`
+	ToolCallID    string                 `json:"toolCallId,omitempty"`
+	Title         string                 `json:"title,omitempty"`
+	Kind          string                 `json:"kind,omitempty"`
+	Status        string                 `json:"status,omitempty"`
+	Locations     []DevinLocation        `json:"locations,omitempty"`
+	RawInput      map[string]interface{} `json:"rawInput,omitempty"`
+	RawOutput     map[string]interface{} `json:"rawOutput,omitempty"`
+	Used          int64                  `json:"used,omitempty"`
+	Size          int64                  `json:"size,omitempty"`
+	CurrentModeID string                 `json:"currentModeId,omitempty"`
+	Meta          map[string]interface{} `json:"_meta,omitempty"`
 }
 
 type DevinLocation struct {
@@ -197,9 +197,9 @@ type DevinLocation struct {
 
 // DevinPermissionRequest is server -> client session/request_permission params.
 type DevinPermissionRequest struct {
-	SessionID string                    `json:"sessionId"`
-	ToolCall  DevinToolCall             `json:"toolCall"`
-	Options   []DevinPermissionOption   `json:"options"`
+	SessionID string                  `json:"sessionId"`
+	ToolCall  DevinToolCall           `json:"toolCall"`
+	Options   []DevinPermissionOption `json:"options"`
 }
 
 type DevinToolCall struct {

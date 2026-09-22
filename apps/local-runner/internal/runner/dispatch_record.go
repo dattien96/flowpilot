@@ -35,20 +35,20 @@ const (
 type SettlePhase string
 
 const (
-	SettleNone                   SettlePhase = ""
-	SettlePending                SettlePhase = "settle_pending"
-	SettleGateEvaluated          SettlePhase = "gate_evaluated"
-	SettleCompletionCommitted    SettlePhase = "completion_committed"
-	SettleGraphSettled           SettlePhase = "graph_settled"
-	SettleDependentsReleased     SettlePhase = "dependents_released"
-	SettleFinalized              SettlePhase = "finalized"
-	SettleSupersededReprompt     SettlePhase = "settle_superseded_reprompt"
+	SettleNone                SettlePhase = ""
+	SettlePending             SettlePhase = "settle_pending"
+	SettleGateEvaluated       SettlePhase = "gate_evaluated"
+	SettleCompletionCommitted SettlePhase = "completion_committed"
+	SettleGraphSettled        SettlePhase = "graph_settled"
+	SettleDependentsReleased  SettlePhase = "dependents_released"
+	SettleFinalized           SettlePhase = "finalized"
+	SettleSupersededReprompt  SettlePhase = "settle_superseded_reprompt"
 )
 
 // StopOutcome records which Stop branch won linearization (SD-24 §7.2).
 const (
-	StopOutcomeStoppedBeforeSend  = "stopped_before_send"
-	StopOutcomeCancelledInFlight  = "cancelled_in_flight"
+	StopOutcomeStoppedBeforeSend = "stopped_before_send"
+	StopOutcomeCancelledInFlight = "cancelled_in_flight"
 )
 
 // PreSendStopSource distinguishes own-run Stop from parent fence at pre-send cancel.
@@ -71,10 +71,10 @@ const (
 type ResolveAction string
 
 const (
-	ResolveMarkCompleted     ResolveAction = "mark_completed"
-	ResolveMarkFailed        ResolveAction = "mark_failed"
-	ResolveConfirmCancelled  ResolveAction = "confirm_cancelled"
-	ResolveAbandon           ResolveAction = "abandon"
+	ResolveMarkCompleted    ResolveAction = "mark_completed"
+	ResolveMarkFailed       ResolveAction = "mark_failed"
+	ResolveConfirmCancelled ResolveAction = "confirm_cancelled"
+	ResolveAbandon          ResolveAction = "abandon"
 )
 
 // RepairAction / RepairOutcome for the two-phase repair lifecycle.
@@ -105,9 +105,9 @@ const (
 // DispatchRecord is the single durable source of truth for one turn's dispatch
 // (SD-24 §5.3). Forward-only; EVERY mutation is a Revision CAS via DispatchStore.
 type DispatchRecord struct {
-	ProtocolVersion         int               `json:"protocol_version"`
-	TurnID                  string            `json:"turn_id"`
-	RunID                   string            `json:"run_id"`
+	ProtocolVersion int    `json:"protocol_version"`
+	TurnID          string `json:"turn_id"`
+	RunID           string `json:"run_id"`
 	// ProjectID scopes the per-project dispatch.ndjson shard
 	// (.flowpilot/chats/<project_id>/dispatch.ndjson) and Drive sync.
 	ProjectID               string            `json:"project_id,omitempty"`
@@ -185,10 +185,10 @@ type RunStopState struct {
 type StopReason string
 
 const (
-	StopReasonUser      StopReason = "user"
-	StopReasonParent    StopReason = "parent"
-	StopReasonSystem    StopReason = "system"
-	StopReasonRepair    StopReason = "repair"
+	StopReasonUser   StopReason = "user"
+	StopReasonParent StopReason = "parent"
+	StopReasonSystem StopReason = "system"
+	StopReasonRepair StopReason = "repair"
 )
 
 // RecoveryAttachToken is a bounded attach ownership grant (SD-25).
@@ -240,15 +240,15 @@ type DurableIntent struct {
 
 // ReleaseManifestItem is a revisioned dependents-release effect record.
 type ReleaseManifestItem struct {
-	RunID          string              `json:"run_id"`
-	TurnID         string              `json:"turn_id"`
-	DependentRunID string              `json:"dependent_run_id"`
-	Intent         DurableIntent       `json:"intent"`
+	RunID          string               `json:"run_id"`
+	TurnID         string               `json:"turn_id"`
+	DependentRunID string               `json:"dependent_run_id"`
+	Intent         DurableIntent        `json:"intent"`
 	State          ReleaseManifestState `json:"state"`
-	Revision       int64               `json:"revision"`
-	StopGeneration int64               `json:"stop_generation,omitempty"`
-	CreatedAt      string              `json:"created_at,omitempty"`
-	UpdatedAt      string              `json:"updated_at,omitempty"`
+	Revision       int64                `json:"revision"`
+	StopGeneration int64                `json:"stop_generation,omitempty"`
+	CreatedAt      string               `json:"created_at,omitempty"`
+	UpdatedAt      string               `json:"updated_at,omitempty"`
 }
 
 // OperatorEvidence is the operator assertion payload for ResolveUncertain.
@@ -287,32 +287,32 @@ type EffectDone struct {
 
 // AttentionItem surfaces uncertain dispatches and open repairs (SS-17).
 type AttentionItem struct {
-	Kind       string `json:"kind"` // uncertain|repair_required|cancel_required|settle_pending
-	RunID      string `json:"run_id"`
-	TurnID     string `json:"turn_id,omitempty"`
-	Reason     string `json:"reason,omitempty"`
-	UpdatedAt  string `json:"updated_at,omitempty"`
+	Kind      string `json:"kind"` // uncertain|repair_required|cancel_required|settle_pending
+	RunID     string `json:"run_id"`
+	TurnID    string `json:"turn_id,omitempty"`
+	Reason    string `json:"reason,omitempty"`
+	UpdatedAt string `json:"updated_at,omitempty"`
 }
 
 // AuditEntry is an immutable audit row co-committed with store mutations.
 type AuditEntry struct {
-	Seq       int64  `json:"seq"`
-	RunID     string `json:"run_id"`
-	TurnID    string `json:"turn_id,omitempty"`
-	Kind      string `json:"kind"`
-	Detail    string `json:"detail,omitempty"`
-	At        string `json:"at"`
-	Actor     string `json:"actor,omitempty"`
+	Seq    int64  `json:"seq"`
+	RunID  string `json:"run_id"`
+	TurnID string `json:"turn_id,omitempty"`
+	Kind   string `json:"kind"`
+	Detail string `json:"detail,omitempty"`
+	At     string `json:"at"`
+	Actor  string `json:"actor,omitempty"`
 }
 
 // ResolutionResult supports idempotent operator-resolution replay.
 type ResolutionResult struct {
-	ResolutionID string        `json:"resolution_id"`
-	RunID        string        `json:"run_id"`
-	TurnID       string        `json:"turn_id"`
-	Action       string        `json:"action"`
-	Revision     int64         `json:"revision"`
-	NewTurnID    string        `json:"new_turn_id,omitempty"`
+	ResolutionID string         `json:"resolution_id"`
+	RunID        string         `json:"run_id"`
+	TurnID       string         `json:"turn_id"`
+	Action       string         `json:"action"`
+	Revision     int64          `json:"revision"`
+	NewTurnID    string         `json:"new_turn_id,omitempty"`
 	Record       DispatchRecord `json:"record,omitempty"`
 }
 

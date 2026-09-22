@@ -59,7 +59,7 @@ func TestRun135037_TUI_BannerShowsGateReason(t *testing.T) {
 			m := New(config.ChatConfig{Provider: pk}, "http://127.0.0.1:4317")
 			m.applyAgentGraph(&client.AgentGraphSnapshot{
 				LoopState: client.AgentLoopState{Status: "blocked", BlockReason: "delegate_failed", GateReason: "The 'gpt-5.4' model is not supported when using Codex with a ChatGPT account."},
-				Runs: []client.AgentRunSummary{{RunID: "run-1", Status: "completed"}},
+				Runs:      []client.AgentRunSummary{{RunID: "run-1", Status: "completed"}},
 			})
 			// banner is the last system message
 			found := false

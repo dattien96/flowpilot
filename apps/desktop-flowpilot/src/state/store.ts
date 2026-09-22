@@ -36,6 +36,7 @@ import { ideBridge } from "@/client/ideBridge";
 import { getAdminUseCases } from "@/clientCore";
 import { ADMIN_WEB_URL } from "@/config";
 import { isSyncableRun } from "@/components/navigatorHistory";
+import { attentionQueue, type AttentionItem } from "@/state/attentionQueue";
 import {
   mapNavigatorStep,
   mapNavigatorWorkflow,
@@ -354,6 +355,15 @@ interface AppState {
   /** Task-326 session default: wire enum "dev"|"vibe". UI label Normal = dev. */
   workingMode: "dev" | "vibe";
   setWorkingMode(mode: "dev" | "vibe"): void;
+  /** CP-71: opt the next run into an isolated git worktree. Persisted per
+   *  chat via the run record — restored from the opened run's binding. */
+  worktreeEnabled: boolean;
+  /** False when the selected project directory is not a git repo (IPC probe). */
+  worktreeAvailable: boolean;
+  /** Binding state of the active run: "" when the run has no worktree. */
+  activeWorktreeState: string;
+  setWorktreeEnabled(on: boolean): void;
+  refreshWorktreeAvailability(): void;
   /** True while toggleYoloForActiveProvider's Grok-only async path is applying
    *  the new posture on the backend (config.toml rewrite + process respawn,
    *  Task-218) — Claude/Codex/Gemini never set this, their YOLO toggle stays
@@ -411,6 +421,9 @@ interface AppState {
   syncBatchProgress?: { projectId: string; done: number; total: number };
   historyLoading: boolean;
   historyLoadError?: string;
+  /** Task-404: derived attention-queue items for the active project (singleton
+   *  observer mirrors into the store so components re-render). */
+  attentionItems: AttentionItem[];
   remoteHistoryLoading: boolean;
   remoteHistoryLoadError?: string;
   pendingApprovals: PendingApproval[];
@@ -564,11 +577,27 @@ interface AppState {
     options?: { refresh?: boolean; open?: boolean },
   ): Promise<void>;
   openHistoryRun(runId: string): Promise<void>;
+  /** Task-404: open the run that owns an attention-queue item — reuses the
+   *  existing history-picker path (openHistoryRun), no new navigation. */
+  openRunAtAttention(runId: string, chatId: string): Promise<void>;
   resetRun(): void;
   openInIde(path: string, line?: number): void;
   openAdminWeb(): void;
   restartSystem(): Promise<void>;
   shutdownSystem(): Promise<void>;
+  /** CP-81 Task-418 T-5: lifecycle status pushed from Electron main via the
+   *  bridge (shared clients, active work, idle deadline, update pending,
+   *  reconnecting). Undefined when unmanaged or running outside Electron. */
+  lifecycleStatus?: {
+    connected: boolean;
+    phase?: string;
+    sharedClients: number;
+    activeWork: number;
+    idleDeadlineMs?: number;
+    updatePending: boolean;
+    reconnecting: boolean;
+  };
+  setLifecycleStatus(status: AppState["lifecycleStatus"]): void;
   confirmAccountSwitch(): Promise<void>;
   cancelAccountSwitch(): void;
   requestManualAccountSwitch(): void;
@@ -605,6 +634,7 @@ export const useStore = create<AppState>((set, get) => ({
   workflowStepRuntimeMeta: {},
   historyLoading: false,
   remoteHistoryLoading: false,
+  attentionItems: [],
   latestTokenUsage: undefined,
   recoverable: false,
   scenario: "normal",
@@ -617,6 +647,9 @@ export const useStore = create<AppState>((set, get) => ({
   selectedProvider: "codex",
   yoloMode: false,
   workingMode: loadWorkingMode(),
+  worktreeEnabled: false,
+  worktreeAvailable: true,
+  activeWorktreeState: "",
   grokYoloPostureLoading: false,
   summaryGenerating: false,
   chatStartMode: "normal",
@@ -1053,6 +1086,7 @@ export const useStore = create<AppState>((set, get) => ({
     if (projectChanged) {
       get().resetRun();
     }
+    get().refreshWorktreeAvailability();
     void get().loadSkills(get().selectedProvider ?? "codex");
   },
 
@@ -1414,6 +1448,46 @@ export const useStore = create<AppState>((set, get) => ({
       flowRef: undefined,
       builtinOrchestrationOptions: [],
     });
+  },
+
+  // CP-71 / Task-409 T-2: the toggle writes through on the next startRun;
+  // per-chat persistence is derived from the chat's newest run record, so the
+  // setter only gates invalid transitions (non-git cwd, live binding).
+  setWorktreeEnabled(on) {
+    if (on && !get().worktreeAvailable) {
+      set((s) => ({
+        timeline: [...s.timeline, {
+          kind: "system",
+          id: `worktree-notice-${s.timeline.length}`,
+          text: "Run in worktree requires a git repository.",
+          tone: "info",
+        }],
+      }));
+      return;
+    }
+    if (!on && (get().activeWorktreeState === "active" || get().activeWorktreeState === "merge_pending")) {
+      set((s) => ({
+        timeline: [...s.timeline, {
+          kind: "system",
+          id: `worktree-notice-${s.timeline.length}`,
+          text: "Merge or discard the worktree before disabling isolation for this chat.",
+          tone: "info",
+        }],
+      }));
+      return;
+    }
+    set({ worktreeEnabled: on });
+  },
+
+  refreshWorktreeAvailability() {
+    const path = selectedProjectPath(get());
+    if (!path || !ideBridge.isGitRepo) {
+      set({ worktreeAvailable: Boolean(path) });
+      return;
+    }
+    void ideBridge.isGitRepo(path)
+      .then((ok) => set({ worktreeAvailable: ok }))
+      .catch(() => set({ worktreeAvailable: true }));
   },
 
   async toggleYoloForActiveProvider(next) {
@@ -1804,6 +1878,7 @@ export const useStore = create<AppState>((set, get) => ({
           cwd,
           chatId: existingChatId!,
           switchFromRunId: runId!,
+          worktree: get().worktreeEnabled,
         });
         runId = handle.runId;
         if (handle.stepId) {
@@ -1815,6 +1890,7 @@ export const useStore = create<AppState>((set, get) => ({
           chatDetached: false,
           activeAgentRunId: undefined,
         });
+        if (get().worktreeEnabled) set({ activeWorktreeState: "active" });
       } else if (!runId) {
         const handle = await startRunWithRetry(
           chatMode === "normal_chat"
@@ -1828,6 +1904,7 @@ export const useStore = create<AppState>((set, get) => ({
                 flowRef: vibeEntry?.flowRef,
                 chatMode: "normal_chat",
                 cwd,
+                worktree: get().worktreeEnabled,
               }
             : {
                 projectId: selectedProjectId!,
@@ -1836,6 +1913,7 @@ export const useStore = create<AppState>((set, get) => ({
                 providerKey: selectedProvider,
                 workingMode,
                 cwd,
+                worktree: get().worktreeEnabled,
               },
         );
         runId = handle.runId;
@@ -1848,6 +1926,7 @@ export const useStore = create<AppState>((set, get) => ({
           chatDetached: false,
           activeAgentRunId: undefined,
         });
+        if (get().worktreeEnabled) set({ activeWorktreeState: "active" });
       }
 
       const turnInput: TurnInput = {
@@ -2226,6 +2305,7 @@ export const useStore = create<AppState>((set, get) => ({
   async loadRunHistory() {
     const { client, selectedProjectId } = get();
     if (!selectedProjectId) {
+      attentionQueue.ingestHistory([], "");
       set({ runHistory: [], historyLoading: false, historyLoadError: undefined });
       return;
     }
@@ -2235,6 +2315,7 @@ export const useStore = create<AppState>((set, get) => ({
     try {
       const runHistory = await client.listRunHistory(selectedProjectId);
       if (get()._historyLoadSeq !== seq) return;
+      attentionQueue.ingestHistory(runHistory, selectedProjectId);
       set({ runHistory, historyLoading: false, historyLoadError: undefined });
     } catch (err) {
       if (get()._historyLoadSeq !== seq) return;
@@ -2538,6 +2619,11 @@ export const useStore = create<AppState>((set, get) => ({
       activeAgentRunId: undefined,
       status: handle.status,
       activeStepId: handle.stepId,
+      // CP-71: restore the per-chat toggle from the opened run's binding —
+      // all legs of a chat share one worktree, so the newest leg's record
+      // is the chat-level value.
+      worktreeEnabled: Boolean(historyItem?.worktreeState),
+      activeWorktreeState: historyItem?.worktreeState ?? "",
       chatMode: isWorkflowHistoryItem ? "workflow_step_auto" : "normal_chat",
       ...(isWorkflowHistoryItem && historyItem?.workflowId
         ? { launchMode: "workflow", selectedWorkflowId: historyItem.workflowId }
@@ -2621,6 +2707,12 @@ export const useStore = create<AppState>((set, get) => ({
     void get().refreshWorkflowStepRuntime();
   },
 
+  // Task-404: attention items carry the run that is blocked; opening it goes
+  // through the exact same history-picker path as clicking a history row.
+  async openRunAtAttention(runId, _chatId) {
+    await get().openHistoryRun(runId);
+  },
+
   resetRun() {
     const { selectedProvider, supportedModels } = get();
     cancelHistoryReplayStream();
@@ -2660,6 +2752,8 @@ export const useStore = create<AppState>((set, get) => ({
       chatSourceDocId: "",
       flowRef: undefined,
       builtinOrchestrationOptions: [],
+      worktreeEnabled: false,
+      activeWorktreeState: "",
       selectedModel: pickDefaultModel(selectedProvider, supportedModels),
     });
   },
@@ -2678,6 +2772,10 @@ export const useStore = create<AppState>((set, get) => ({
 
   async shutdownSystem() {
     await get().client.shutdownStack();
+  },
+
+  setLifecycleStatus(status) {
+    set({ lifecycleStatus: status });
   },
 
   cancelAccountSwitch() {
@@ -3587,5 +3685,15 @@ function emptyRunSnapshot(status: RunStatus): Partial<AppState> {
 
 function cacheRunSnapshot(state: AppState, runId?: string): void {
   if (!runId) return;
-  state._runSnapshots[runId] = snapshotRunState(state);
+  const snap = snapshotRunState(state);
+  state._runSnapshots[runId] = snap;
+  // Task-404: feed the attention-queue observer with the focused run's pending
+  // fields so its queue entry refines to the right kind (approval/question).
+  attentionQueue.ingestSnapshot(runId, snap);
 }
+
+// Task-404: mirror the singleton observer's derived items into zustand so the
+// Navigator queue re-renders whenever a producer ingests new state.
+attentionQueue.subscribe(() => {
+  useStore.setState({ attentionItems: attentionQueue.items });
+});

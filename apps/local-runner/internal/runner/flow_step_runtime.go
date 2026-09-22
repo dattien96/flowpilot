@@ -514,6 +514,7 @@ func (s *InteractiveService) settleParentRunOnFlowDone(parentRunID string) {
 	if parent := s.runs[parentRunID]; parent != nil {
 		parent.status = RunStatusCompleted
 		parent.agentStatus = string(RunStatusCompleted)
+		s.maybeEmitWorktreeMergeRequest(parent) // CP-71: flow-done merge card
 		if id := parent.pendingApprovalID; id != "" {
 			if rec := s.approvals[id]; rec != nil && rec.status == "pending" {
 				rec.status = "expired"

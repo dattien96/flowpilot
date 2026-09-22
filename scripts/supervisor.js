@@ -90,7 +90,9 @@ desktopPort = desktopPort || process.env.FLOWPILOT_DESKTOP_PORT || '';
 
 const flowpilotDir = path.join(rootDir, '.flowpilot');
 const metadataPath = path.join(flowpilotDir, 'supervisor.json');
-const controlPath = path.join(flowpilotDir, 'supervisor.cmd');
+// `let` so tests can relocate the control file without touching the real
+// workspace (Task-419 _internals seam).
+let controlPath = path.join(flowpilotDir, 'supervisor.cmd');
 const runnerUrl = process.env.FLOWPILOT_RUNNER_URL || `http://127.0.0.1:${runnerPort}`;
 const googleDriveRedirectUri =
   process.env.GOOGLE_DRIVE_REDIRECT_URI ||
@@ -105,6 +107,13 @@ let libreProcess = null;
 let hintDesktopPid = null;
 let isExiting = false;
 let isRestarting = false;
+// CP-81 Task-419: set when a valid fenced restart-runner command has been
+// consumed — the runner self-exits after its drain, so its exit is EXPECTED
+// and must respawn only the runner, not the stack.
+let plannedRunnerRestart = false;
+// Cached runnerInstanceId learned from /health while the runner was alive —
+// used to fence stale supervisor.cmd records after the writer has exited.
+let currentRunnerInstanceId = null;
 
 function ensureDirectoryExists(dir) {
   if (!fs.existsSync(dir)) {
@@ -422,13 +431,18 @@ async function startServices() {
         ? '[Supervisor] Both services are already running. Watching for control commands...'
         : '[Supervisor] Runner service is already running. Watching for control commands...',
     );
-    
+
     if (withWeb && adoptedWebPid) {
       webProcess = createManagedProcessRef(adoptedWebPid, false);
     }
     if (adoptedRunnerPid) {
       runnerProcess = createManagedProcessRef(adoptedRunnerPid, false);
+      // CP-81: learn the adopted runner's instance ID so fenced commands are
+      // validated against this generation, and clear any command file left by
+      // a dead generation (T-6 startup hygiene).
+      void refreshRunnerInstanceId();
     }
+    clearStaleSupervisorCommand();
 
     const metadata = {
       supervisorPid: process.pid,
@@ -451,6 +465,253 @@ function attachExitHandlers(child, label) {
       cleanupAndExit();
     }
   });
+}
+
+// ── CP-81 Task-419: lifecycle-aware runner ownership ─────────────────────────
+// The supervisor is a controller, not a user client: it never registers a
+// lease and never blocks idle shutdown. It launches the runner in supervised
+// mode, honors only fenced commands matching the live runnerInstanceId, and
+// distinguishes the runner's planned self-exit (drain → fenced restart cmd)
+// from unexpected death (no ghost respawn — the stack exits, clients see the
+// unplanned-loss path).
+
+// startRunnerProcess spawns the runner child in supervised lifecycle mode.
+// Extracted so planned restarts can respawn ONLY the runner while web/desktop
+// stay up and their clients reconnect to the new generation.
+function startRunnerProcess() {
+  const runnerCmd = process.platform === 'win32' ? 'go.exe' : 'go';
+  const hasCodexAppServerFlag = Object.prototype.hasOwnProperty.call(
+    process.env,
+    'FLOWPILOT_CODEX_APPSERVER',
+  );
+  const runnerEnv = {
+    ...process.env,
+    GOCACHE: goCacheDir,
+    FLOWPILOT_RUNNER_PORT: runnerPort,
+    FLOWPILOT_RUNNER_URL: runnerUrl,
+    GOOGLE_DRIVE_REDIRECT_URI: googleDriveRedirectUri,
+    FLOWPILOT_CODEX_APPSERVER: hasCodexAppServerFlag
+      ? process.env.FLOWPILOT_CODEX_APPSERVER
+      : '1',
+    // CP-81: supervised mode — the runner exposes the lifecycle API but never
+    // idle-exits; shutdown/restart authority is coordinated via fenced
+    // supervisor.cmd records. Both spellings are set: the runner reads
+    // FLOWPILOT_LIFECYCLE_MODE (root.go resolveLifecycleMode); the *_RUNNER_*
+    // name documents the supervisor contract.
+    FLOWPILOT_LIFECYCLE_MODE: 'supervised',
+    FLOWPILOT_RUNNER_LIFECYCLE_MODE: 'supervised',
+    SUPERVISOR_PID: String(process.pid),
+    FLOWPILOT_SUPERVISOR_PID: String(process.pid),
+  };
+  runnerProcess = spawn(runnerCmd, ['run', './cmd/flowpilot', 'runner', 'serve', '--port', runnerPort], {
+    cwd: path.join(rootDir, 'apps', 'local-runner'),
+    shell: true,
+    stdio: 'inherit',
+    detached: process.platform !== 'win32',
+    env: runnerEnv,
+  });
+  runnerProcess.detached = process.platform !== 'win32';
+  currentRunnerInstanceId = null;
+  attachRunnerExitHandler(runnerProcess);
+}
+
+// attachRunnerExitHandler splits runner exit into planned (a fenced restart
+// command was consumed → respawn only the runner) and unexpected death.
+function attachRunnerExitHandler(child) {
+  child.on('exit', (code, signal) => {
+    if (isExiting) return;
+    if (plannedRunnerRestart || isRestarting) {
+      // Expected during a planned restart — respawn happens in
+      // handlePlannedRunnerRestart, not here.
+      return;
+    }
+    handleRunnerExitUnexpected(code, signal);
+  });
+}
+
+// handleRunnerExitUnexpected is the frozen no-ghost-restart policy (T-5): log
+// the death and tear the stack down — never silently spawn a hidden new
+// generation behind clients that still believe the old runner is alive.
+function handleRunnerExitUnexpected(code, signal) {
+  console.log(
+    `[Supervisor] Runner exited unexpectedly (code=${code} signal=${signal} pid=${runnerProcess && runnerProcess.pid}). ` +
+      'No silent respawn — shutting down stack so clients see the loss.',
+  );
+  cleanupAndExit();
+}
+
+// fetchRunnerInstanceId asks the live runner for its instance identity.
+// Returns null when the runner is down (normal mid-drain).
+function fetchRunnerInstanceId() {
+  return new Promise((resolve) => {
+    const req = http.request(
+      {
+        hostname: '127.0.0.1',
+        port: parseInt(runnerPort, 10),
+        path: '/health',
+        method: 'GET',
+        timeout: 2000,
+      },
+      (res) => {
+        let raw = '';
+        res.on('data', (chunk) => (raw += chunk));
+        res.on('end', () => {
+          try {
+            const body = JSON.parse(raw);
+            resolve(typeof body.runnerInstanceId === 'string' ? body.runnerInstanceId : null);
+          } catch (e) {
+            resolve(null);
+          }
+        });
+      },
+    );
+    req.on('error', () => resolve(null));
+    req.on('timeout', () => {
+      req.destroy();
+      resolve(null);
+    });
+    req.end();
+  });
+}
+
+// refreshRunnerInstanceId learns the current generation's instance ID for
+// command fencing; called after spawn once /health is reachable.
+async function refreshRunnerInstanceId() {
+  const id = await fetchRunnerInstanceId();
+  if (id) currentRunnerInstanceId = id;
+  return currentRunnerInstanceId;
+}
+
+// readSupervisorCommand parses the control file. Two shapes are accepted:
+//   - legacy plain text ("shutdown"|"restart") from unmanaged/legacy runners
+//   - fenced JSON {action, runnerInstanceId, restartId, requestedAt,
+//     expiresAt, requester} written by the CP-81 drain path
+function readSupervisorCommand() {
+  if (!fs.existsSync(controlPath)) return null;
+  let raw;
+  try {
+    raw = fs.readFileSync(controlPath, 'utf8').trim();
+  } catch (e) {
+    return null; // transient read lock — retry next tick
+  }
+  if (!raw) return null;
+  if (raw.startsWith('{')) {
+    try {
+      const cmd = JSON.parse(raw);
+      if (typeof cmd === 'object' && cmd !== null && typeof cmd.action === 'string') {
+        return cmd;
+      }
+    } catch (e) {
+      return { action: '__invalid__' };
+    }
+    return null;
+  }
+  return { action: raw.toLowerCase(), legacy: true };
+}
+
+// validateSupervisorCommand fences a parsed record against the live (or last
+// known) runner instance: stale/expired/unknown commands are never honored.
+function validateSupervisorCommand(cmd, liveInstanceId) {
+  if (!cmd || typeof cmd.action !== 'string') {
+    return { valid: false, reason: 'empty' };
+  }
+  if (cmd.legacy) {
+    // Pre-lifecycle writers carry no fence — honored under the old contract.
+    return { valid: cmd.action === 'shutdown' || cmd.action === 'restart', reason: 'legacy' };
+  }
+  if (cmd.action !== 'shutdown' && cmd.action !== 'restart' && cmd.action !== 'restart-runner') {
+    return { valid: false, reason: 'unknown_action' };
+  }
+  if (cmd.expiresAt && Date.parse(cmd.expiresAt) <= Date.now()) {
+    return { valid: false, reason: 'expired' };
+  }
+  // Fenced records must name the generation that wrote them.
+  if (!cmd.runnerInstanceId) {
+    return { valid: false, reason: 'missing_instance' };
+  }
+  // Instance fence: the live /health value wins; the cached value covers the
+  // mid-drain window where the writer has already exited.
+  const expected = liveInstanceId || currentRunnerInstanceId;
+  if (!expected) {
+    // Cannot verify the fence at all — fail closed rather than let an old
+    // record act on an unverified generation.
+    return { valid: false, reason: 'unverifiable_instance' };
+  }
+  if (cmd.runnerInstanceId !== expected) {
+    return { valid: false, reason: 'stale_instance' };
+  }
+  return { valid: true };
+}
+
+// clearStaleSupervisorCommand removes control files that failed validation
+// (stale generation, expired, malformed) so they cannot fire later (T-6).
+function clearStaleSupervisorCommand() {
+  try {
+    if (fs.existsSync(controlPath)) fs.unlinkSync(controlPath);
+  } catch (e) {}
+}
+
+// handlePlannedRunnerRestart performs T-3: the runner already drained and is
+// self-exiting; wait for the old process to die, then respawn ONLY the runner
+// — web/desktop processes stay up and their clients reconnect to the new
+// runner generation.
+async function handlePlannedRunnerRestart(cmd) {
+  plannedRunnerRestart = true;
+  console.log(
+    `[Supervisor] Planned runner restart (restartId=${cmd.restartId || 'n/a'} requester=${cmd.requester || 'unknown'}). ` +
+      'Waiting for the old runner to exit, then respawning the runner only.',
+  );
+  const deadline = Date.now() + 15000;
+  while (runnerProcess && runnerProcess.pid && isPidAlive(runnerProcess.pid) && Date.now() < deadline) {
+    await sleep(200);
+  }
+  if (runnerProcess && runnerProcess.pid && isPidAlive(runnerProcess.pid)) {
+    console.log('[Supervisor] Old runner did not exit in 15s — killing its tree before respawn.');
+    killProcessTree(runnerProcess);
+    await sleep(300);
+  }
+  startRunnerProcess();
+  plannedRunnerRestart = false;
+  void refreshRunnerInstanceId();
+}
+
+// shutdownRunnerTree is the explicit-stack-shutdown path (BUG-240 preserved):
+// on Windows it tree-kills the go.exe wrapper AND the compiled runner child.
+function shutdownRunnerTree(child) {
+  killProcessTree(child);
+}
+
+// pollSupervisorCommand replaces the old raw-text watcher: parse, fence-check
+// against the runner instance, consume valid commands, clear stale ones.
+async function pollSupervisorCommand() {
+  if (isExiting || plannedRunnerRestart) return;
+  const cmd = readSupervisorCommand();
+  if (!cmd) return;
+  const liveInstanceId = await fetchRunnerInstanceId();
+  const verdict = validateSupervisorCommand(cmd, liveInstanceId);
+  if (!verdict.valid) {
+    console.log(`[Supervisor] Ignoring control command (${verdict.reason}): ${JSON.stringify(cmd)}`);
+    clearStaleSupervisorCommand();
+    return;
+  }
+  // Consume before acting so a retried poll cannot replay it.
+  clearStaleSupervisorCommand();
+  if (cmd.action === 'shutdown') {
+    console.log('[Supervisor] Shutdown command detected. Waiting 200ms for response flush...');
+    setTimeout(() => {
+      cleanupAndExit();
+    }, 200);
+  } else if (cmd.action === 'restart' && cmd.legacy) {
+    console.log('[Supervisor] Legacy restart command detected — full stack restart.');
+    setTimeout(() => {
+      handleRestart();
+    }, 200);
+  } else if (cmd.action === 'restart' || cmd.action === 'restart-runner') {
+    // Fenced runner restart (Task-419 T-3): runner-only respawn.
+    setTimeout(() => {
+      void handlePlannedRunnerRestart(cmd);
+    }, 200);
+  }
 }
 
 async function startServicesFresh(existing = {}) {
@@ -502,31 +763,16 @@ async function startServicesFresh(existing = {}) {
   // Spawn runner if not running
   if (!runnerInUse) {
     console.log(`[Supervisor] Starting runner service on port ${runnerPort}...`);
-    const runnerCmd = process.platform === 'win32' ? 'go.exe' : 'go';
-    const hasCodexAppServerFlag = Object.prototype.hasOwnProperty.call(
-      process.env,
-      'FLOWPILOT_CODEX_APPSERVER',
-    );
-    const runnerEnv = {
-      ...process.env,
-      GOCACHE: goCacheDir,
-      FLOWPILOT_RUNNER_PORT: runnerPort,
-      FLOWPILOT_RUNNER_URL: runnerUrl,
-      GOOGLE_DRIVE_REDIRECT_URI: googleDriveRedirectUri,
-      FLOWPILOT_CODEX_APPSERVER: hasCodexAppServerFlag
-        ? process.env.FLOWPILOT_CODEX_APPSERVER
-        : '1',
-    };
-    runnerProcess = spawn(runnerCmd, ['run', './cmd/flowpilot', 'runner', 'serve', '--port', runnerPort], {
-      cwd: path.join(rootDir, 'apps', 'local-runner'),
-      shell: true,
-      stdio: 'inherit',
-      detached: process.platform !== 'win32',
-      env: runnerEnv,
-    });
-    runnerProcess.detached = process.platform !== 'win32';
-
-    attachExitHandlers(runnerProcess, 'Runner');
+    startRunnerProcess();
+    // Learn the new generation's runnerInstanceId once /health comes up so
+    // fenced commands validate against it (go run compiles — boot takes a
+    // moment, so poll in the background).
+    void (async () => {
+      for (let i = 0; i < 60 && !isExiting; i++) {
+        if (await refreshRunnerInstanceId()) return;
+        await sleep(500);
+      }
+    })();
   } else {
     console.log(`[Supervisor] Runner service is already running on port ${runnerPort}, skipping start.`);
     if (adoptedRunnerPid) {
@@ -709,6 +955,11 @@ function cleanupAndExit() {
   }, 200);
 }
 
+// Test seam (Task-419): when noExit is set, finishExit records the exit
+// instead of calling process.exit so tests can drive shutdown paths.
+let noExit = false;
+let exitedForTest = false;
+
 function finishExit() {
   try {
     if (fs.existsSync(controlPath)) fs.unlinkSync(controlPath);
@@ -716,6 +967,10 @@ function finishExit() {
   try {
     if (fs.existsSync(metadataPath)) fs.unlinkSync(metadataPath);
   } catch (e) {}
+  if (noExit) {
+    exitedForTest = true;
+    return;
+  }
   process.exit(0);
 }
 
@@ -761,37 +1016,80 @@ function handleRestart() {
   }, 200);
 }
 
-// Watch control file
-setInterval(() => {
-  if (isExiting) return;
-  if (fs.existsSync(controlPath)) {
-    try {
-      const command = fs.readFileSync(controlPath, 'utf8').trim().toLowerCase();
-      if (command === 'shutdown') {
-        console.log('[Supervisor] Shutdown command detected. Waiting 200ms for response flush...');
-        setTimeout(() => {
-          cleanupAndExit();
-        }, 200);
-      } else if (command === 'restart') {
-        console.log('[Supervisor] Restart command detected. Waiting 200ms for response flush...');
-        setTimeout(() => {
-          handleRestart();
-        }, 200);
-      }
-    } catch (e) {
-      // File might be locked temporarily, ignore
-    }
-  }
+// Watch control file — fenced commands only (Task-419 T-2): the poll parses,
+// validates against the live/cached runnerInstanceId + expiry, consumes valid
+// commands once, and removes stale ones so an old generation's record can
+// never fire against a new runner.
+const commandWatchInterval = setInterval(() => {
+  void pollSupervisorCommand();
 }, 500);
 
 // Capture signals
-process.on('SIGINT', cleanupAndExit);
-process.on('SIGTERM', cleanupAndExit);
-// Terminal window closed (SIGHUP) must also tear down: managed children are
-// spawned detached (own process groups), so without this they outlive the
-// supervisor as unkillable-by-Ctrl+C orphans that keep holding ports and
-// dispatch.lock files.
-process.on('SIGHUP', cleanupAndExit);
+function installSignalHandlers() {
+  process.on('SIGINT', cleanupAndExit);
+  process.on('SIGTERM', cleanupAndExit);
+  // Terminal window closed (SIGHUP) must also tear down: managed children are
+  // spawned detached (own process groups), so without this they outlive the
+  // supervisor as unkillable-by-Ctrl+C orphans that keep holding ports and
+  // dispatch.lock files.
+  process.on('SIGHUP', cleanupAndExit);
+}
 
-// Start
-startServices();
+// ── module seam (Task-419 tests) ────────────────────────────────────────────
+// Required as a library in tests: no auto-start, no signal handlers, and the
+// command watcher stays silent until started.
+if (require.main === module) {
+  installSignalHandlers();
+  // T-6 startup hygiene: a control file left by a dead generation is stale by
+  // definition — clear it before the first poll can act on it.
+  clearStaleSupervisorCommand();
+  startServices();
+} else {
+  clearInterval(commandWatchInterval);
+}
+
+module.exports = {
+  startRunnerProcess,
+  readSupervisorCommand,
+  validateSupervisorCommand,
+  handlePlannedRunnerRestart,
+  handleRunnerExitUnexpected,
+  shutdownRunnerTree,
+  clearStaleSupervisorCommand,
+  pollSupervisorCommand,
+  fetchRunnerInstanceId,
+  cleanupAndExit,
+  // Test seams — the internals tests legitimately manipulate.
+  _internals: {
+    getRunnerProcess: () => runnerProcess,
+    setRunnerProcess: (p) => {
+      runnerProcess = p;
+    },
+    setWebProcess: (p) => {
+      webProcess = p;
+    },
+    setDesktopProcess: (p) => {
+      desktopProcess = p;
+    },
+    setLibreProcess: (p) => {
+      libreProcess = p;
+    },
+    setRunnerInstanceId: (id) => {
+      currentRunnerInstanceId = id;
+    },
+    setNoExit: (v) => {
+      noExit = v;
+      exitedForTest = false;
+    },
+    getExitedForTest: () => exitedForTest,
+    installSignalHandlers,
+    getPlannedRunnerRestart: () => plannedRunnerRestart,
+    setControlPath: (p) => {
+      controlPath = p;
+    },
+    setRunnerPort: (p) => {
+      runnerPort = String(p);
+    },
+    isExitingRef: () => isExiting,
+  },
+};

@@ -113,8 +113,9 @@ func TestA6b_FindWorkspaceRoot_AgentsDir(t *testing.T) {
 
 // A6c: FindWorkspaceRoot — if a fresh isolated dir has no markers, returns start or a parent with markers.
 // On developer machines the home dir may contain .agents (FlowPilot workspace), so we accept either:
-//   (a) the result equals startDir (true fallback), OR
-//   (b) the result is a parent that actually contains a FlowPilot marker.
+//
+//	(a) the result equals startDir (true fallback), OR
+//	(b) the result is a parent that actually contains a FlowPilot marker.
 func TestA6c_FindWorkspaceRoot_IsolatedDirNoMarker(t *testing.T) {
 	// Create a temp dir with no FlowPilot markers of its own.
 	dir := t.TempDir()

@@ -315,6 +315,9 @@ export type RunStatus =
   | "starting"
   | "running"
   | "waiting_approval"
+  /** Emitted by the runner while a run is parked at a user-confirm gate
+   *  (e.g. SS-Lock, Task-333). Backend RunStatus: waiting_user_approval. */
+  | "waiting_user_approval"
   | "waiting_question"
   /** BUG-231: the flow's agent loop paused awaiting the user (escalate or round-cap reached) — distinct from "running" so the composer unlocks and a recovery affordance can render. */
   | "blocked"
@@ -347,6 +350,8 @@ export interface StartRunInput {
   chatId?: string;
   switchFromRunId?: string;
   legSeq?: number;
+  /** CP-71: run this chat/flow inside an isolated git worktree (opt-in). */
+  worktree?: boolean;
 }
 
 export interface RunHandle {
@@ -396,6 +401,9 @@ export interface RunHistoryItem {
    */
   subMode?: string;
   flowRef?: string;
+  /** CP-71: present when the run owns/shares a worktree binding. */
+  worktreeState?: string;
+  worktreeSlug?: string;
 }
 
 export interface ChatSessionSyncRequest {
@@ -958,10 +966,12 @@ export interface RunnerClient {
   /** PUT /client/chat-posture — persists the active posture + profile pins. */
   setChatPosture?(config: ChatPostureConfig): Promise<ChatPostureConfig>;
   openProviderAccountTerminal(accountId: string): Promise<void>;
-  /** System control — mirrors admin-web's runner gateway (`POST /system/restart`). */
+  /** System control — mirrors admin-web's runner gateway (`POST /system/restart`). CP-81: fenced + lease-scoped inside Electron when the lifecycle bridge is present. */
   restartStack(): Promise<void>;
-  /** System control — mirrors admin-web's runner gateway (`POST /system/shutdown`). */
+  /** System control — mirrors admin-web's runner gateway (`POST /system/shutdown`). CP-81: fenced + lease-scoped inside Electron when the lifecycle bridge is present. */
   shutdownStack(): Promise<void>;
+  /** CP-81: GET /system/lifecycle (or bridge snapshot) — lease/workload/phase view for status UI. Optional so mocks/legacy transports degrade. */
+  getLifecycleSnapshot?(): Promise<unknown>;
   /**
    * Submit a user decision for the r-reg gate block card (Task-155).
    * option: "keep-test-fix-code" | "suggest-requirement-change" | "custom"
@@ -988,6 +998,8 @@ export interface IdeBridge {
   openInIde(file: string, line?: number): Promise<void>;
   /** Open a URL in the user's default browser (e.g. the admin-web app). */
   openExternal(url: string): Promise<void>;
+  /** CP-71: whether the project directory is a git repository (worktree toggle gating). */
+  isGitRepo?(path: string): Promise<boolean>;
 }
 
 

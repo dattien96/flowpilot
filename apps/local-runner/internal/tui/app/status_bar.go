@@ -81,6 +81,11 @@ func (m *AppModel) renderStatusLine0(sep string, w int) string {
 		parts = append(parts, styleError.Render("[stop]"))
 	}
 	parts = append(parts, statusStyle.Render(m.statusReadyLabel()))
+	// CP-81 T-5: compact lifecycle fragment — shared client count, idle
+	// countdown, update pending, restart banner.
+	if chip := m.lifecycleStatusChip(); chip != "" {
+		parts = append(parts, styleStatus.Render(chip))
+	}
 	if m.authNeedLogin {
 		parts = append(parts, styleStatusErr.Render("SIGN-IN"))
 	}
@@ -186,6 +191,10 @@ func (m *AppModel) renderStatusModelLine(sep string) string {
 	// Posture chip — dedicated hue per posture (not styleStatusHi accent).
 	if posture := m.activePosture(); m.mode == ModeChat {
 		parts = append(parts, styleStatus.Render("mode: ")+postureStyle(posture).Render(posture))
+	}
+	// CP-71 worktree chip — armed flag or live binding state.
+	if badge := m.worktreeBadge(); badge != "" {
+		parts = append(parts, styleStatus.Render("wt: ")+styleStatusHi.Render(strings.TrimPrefix(badge, "wt:")))
 	}
 	if sk := formatAttachedSkillsChip(len(attachedSkillNames(m.selectedSkills)), false, m.asciiMode); sk != "" {
 		parts = append(parts, styleStatusHi.Render(sk))

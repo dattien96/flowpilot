@@ -110,11 +110,11 @@ func TestCreateRunChatHandleEchoProviderAgnostic(t *testing.T) {
 func registryWithFake(pk ProviderKey) *ProviderRegistry {
 	reg := DefaultProviderRegistry()
 	reg.register(ProviderRegistration{
-		Key:         pk,
-		DisplayName: string(pk),
-		Status:      ProviderStatusAvailable,
+		Key:          pk,
+		DisplayName:  string(pk),
+		Status:       ProviderStatusAvailable,
 		Capabilities: ProviderCapabilities{Streaming: true, Resume: true, Interrupt: true},
-		newAdapter:  func() ProviderRuntimeAdapter { return newFakeProviderAdapter(pk) },
+		newAdapter:   func() ProviderRuntimeAdapter { return newFakeProviderAdapter(pk) },
 	})
 	return reg
 }

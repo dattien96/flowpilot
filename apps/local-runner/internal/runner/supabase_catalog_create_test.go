@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"log"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -69,6 +70,41 @@ func TestCreateProjectSuccessAndBindingRequest(t *testing.T) {
 	}
 	if !strings.Contains(string(bind.body), `"project_id":"proj-1"`) || !strings.Contains(string(bind.body), `"local_path":"/tmp/acme"`) {
 		t.Fatalf("binding body = %s", string(bind.body))
+	}
+}
+
+// The projects table keeps legacy_id + created_by NOT NULL with no default
+// (BUG-135/BUG-136 fixed the TS insert paths); the Go store must supply the
+// same fields or PostgREST rejects the insert with 23502.
+func TestCreateProjectSendsLegacyIDAndCreatedBy(t *testing.T) {
+	store := newCreateStore()
+	captured := withScriptedHTTP(t, []scriptedResponse{
+		{status: 201, body: []byte(`[{"id":"proj-1","name":"Acme","directory_path":"/tmp/acme","default_model":null,"platform":null}]`)},
+		{status: 201, body: []byte(`[]`)},
+	})
+
+	_, err := store.CreateProject(context.Background(), CreateProjectInput{
+		Name:          "Acme",
+		DirectoryPath: "/tmp/acme",
+	})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	body := string((*captured)[0].body)
+	legacyRe := regexp.MustCompile(`"legacy_id":"project_[0-9a-f]{18}"`)
+	if !legacyRe.MatchString(body) {
+		t.Fatalf("projects insert missing generated legacy_id, body = %s", body)
+	}
+	if !strings.Contains(body, `"created_by":"supabase-admin"`) {
+		t.Fatalf("projects insert missing created_by, body = %s", body)
+	}
+	// description / repository_url are NOT NULL without defaults — absent
+	// input must still send them as empty strings, never omit them.
+	if !strings.Contains(body, `"description":""`) {
+		t.Fatalf("projects insert missing description, body = %s", body)
+	}
+	if !strings.Contains(body, `"repository_url":""`) {
+		t.Fatalf("projects insert missing repository_url, body = %s", body)
 	}
 }
 

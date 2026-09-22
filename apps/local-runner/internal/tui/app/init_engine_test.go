@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -204,6 +205,41 @@ func TestInitEngine_ScaffoldFailureRendersErrorWithLog(t *testing.T) {
 	last := final.(*AppModel).messages[len(final.(*AppModel).messages)-1].Content
 	if !strings.Contains(last, "scaffold: failed") || !strings.Contains(last, "FAILED after 3 attempt(s)") {
 		t.Fatalf("failure message = %q, want the surfaced runner detail", last)
+	}
+}
+
+func TestInitEngine_ScaffoldDispatchForwardsSessionProviderAndModel(t *testing.T) {
+	// The auto scaffold dispatch must carry the session's provider/model so the
+	// runner resolves the same provider the user picked — not the registry
+	// default.
+	var captured map[string]any
+	srv := newInitTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&captured)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"done","platform":"react-native","message":"scaffold: done"}`))
+	})
+
+	m := newInitTestModel(t, srv.URL, "p1", "react-native")
+	m.provider = "devin"
+	m.model = "devin/swe-2-max"
+
+	initMsg := m.cmdInitEngine("all")().(EngineInitMsg)
+	if initMsg.Err != nil {
+		t.Fatalf("engine init failed: %v", initMsg.Err)
+	}
+	_, scaffoldCmd := m.handleEngineInitMsg(initMsg)
+	if scaffoldCmd == nil {
+		t.Fatal("capable platform must auto-trigger the scaffold turn")
+	}
+	scaffoldMsg := scaffoldCmd().(EngineScaffoldMsg)
+	if scaffoldMsg.Err != nil {
+		t.Fatalf("scaffold dispatch failed: %v", scaffoldMsg.Err)
+	}
+	if captured["providerKey"] != "devin" {
+		t.Fatalf("providerKey = %v, want the session provider devin (%v)", captured["providerKey"], captured)
+	}
+	if captured["modelName"] != "devin/swe-2-max" {
+		t.Fatalf("modelName = %v, want the session model devin/swe-2-max (%v)", captured["modelName"], captured)
 	}
 }
 

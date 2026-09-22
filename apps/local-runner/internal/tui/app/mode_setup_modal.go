@@ -490,7 +490,7 @@ func (m *AppModel) renderModeSetupModal(width int) string {
 	hintStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Italic(true)
 	btnActive := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("0")).Background(lipgloss.Color("82"))
 	btnInactive := lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Background(lipgloss.Color("238"))
-	sb.WriteString(border.Render("╭" + strings.Repeat("─", width-2) + "╮") + "\n")
+	sb.WriteString(border.Render("╭"+strings.Repeat("─", width-2)+"╮") + "\n")
 	title := " Configure postures "
 	sb.WriteString(border.Render("│"))
 	sb.WriteString(titleStyle.Render(lipgloss.PlaceHorizontal(innerW, lipgloss.Center, title)))
@@ -512,7 +512,7 @@ func (m *AppModel) renderModeSetupModal(width int) string {
 	}
 	sb.WriteString(tabRow)
 	sb.WriteString(border.Render(" │") + "\n")
-	sb.WriteString(border.Render("├" + strings.Repeat("─", width-2) + "┤") + "\n")
+	sb.WriteString(border.Render("├"+strings.Repeat("─", width-2)+"┤") + "\n")
 	prof := m.modeSetupModalDraft.Profiles[m.modeSetupModalTab]
 	inferredProv := prof.Provider
 	if inferredProv == "" && prof.Model != "" {
@@ -571,7 +571,7 @@ func (m *AppModel) renderModeSetupModal(width int) string {
 	}
 	sb.WriteString(border.Render(" │") + "\n")
 	if m.modeSetupModalPickerOpen {
-		sb.WriteString(border.Render("├" + strings.Repeat("─", width-2) + "┤") + "\n")
+		sb.WriteString(border.Render("├"+strings.Repeat("─", width-2)+"┤") + "\n")
 		opts := m.modalPickerVisibleOptions()
 		if m.modeSetupModalPickerKind == "model" {
 			// Type-to-filter search row (same UX as /model): the live query is
@@ -639,7 +639,7 @@ func (m *AppModel) renderModeSetupModal(width int) string {
 			sb.WriteString(border.Render(" │") + "\n")
 		}
 	}
-	sb.WriteString(border.Render("├" + strings.Repeat("─", width-2) + "┤") + "\n")
+	sb.WriteString(border.Render("├"+strings.Repeat("─", width-2)+"┤") + "\n")
 	sb.WriteString(border.Render("│ "))
 	saveLbl := " Save "
 	cancelLbl := " Cancel "

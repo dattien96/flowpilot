@@ -11,13 +11,13 @@ import (
 
 // fakeBridge is a minimal TurnBridge for adapter tests.
 type fakeOpencodeBridge struct {
-	events []ProviderEvent
+	events    []ProviderEvent
 	approvals []ApprovalDetails
 }
 
-func (b *fakeOpencodeBridge) Emit(ev ProviderEvent) { b.events = append(b.events, ev) }
+func (b *fakeOpencodeBridge) Emit(ev ProviderEvent)            { b.events = append(b.events, ev) }
 func (b *fakeOpencodeBridge) Accepted(receipt ReceiptEvidence) {}
-func (b *fakeOpencodeBridge) Terminal(proof TerminalEvidence) {}
+func (b *fakeOpencodeBridge) Terminal(proof TerminalEvidence)  {}
 func (b *fakeOpencodeBridge) RequestApproval(details ApprovalDetails) (string, error) {
 	b.approvals = append(b.approvals, details)
 	return "approve", nil
@@ -252,8 +252,8 @@ func TestOpencodeProviderKeyFromModelRouting(t *testing.T) {
 func TestOpencodeProviderKeyFromModelBaseRegressionPlusOpencode(t *testing.T) {
 	cases := []struct {
 		model string
-		want ProviderKey
-		ok   bool
+		want  ProviderKey
+		ok    bool
 	}{
 		{"gpt-5.5", ProviderKeyCodex, true},
 		{"claude-opus-4", ProviderKeyClaude, true},
@@ -326,9 +326,9 @@ func TestProviderRegistryForOpencodeOptOut(t *testing.T) {
 
 func TestOpencodeTokenUsageReporting(t *testing.T) {
 	usage := map[string]any{
-		"inputTokens":  float64(100),
-		"outputTokens": float64(20),
-		"totalTokens":  float64(120),
+		"inputTokens":   float64(100),
+		"outputTokens":  float64(20),
+		"totalTokens":   float64(120),
 		"thoughtTokens": float64(5),
 	}
 	snap := opencodePromptResultTokenUsage(usage, nil)

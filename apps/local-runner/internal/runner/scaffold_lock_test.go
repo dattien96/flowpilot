@@ -104,7 +104,7 @@ func TestScaffoldBodyViolationFeedsGateSignal(t *testing.T) {
 	}
 	// Sanity: the language router knows all four CP-67 language families.
 	for _, ext := range []string{".go", ".tsx", ".kt", ".cpp"} {
-		if flowgate.LangForPath("x" + ext) == "" {
+		if flowgate.LangForPath("x"+ext) == "" {
 			t.Fatalf("LangForPath must map %s", ext)
 		}
 	}

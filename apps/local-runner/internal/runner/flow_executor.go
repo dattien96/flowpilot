@@ -1013,6 +1013,7 @@ func (s *InteractiveService) workspaceCwdFor(runID string) string {
 //   - (c) first-match fallback, which reproduces the pre-Task-304 behavior
 //     exactly when from is omitted (every pre-existing call site and every
 //     single-loop built-in flow).
+//
 // negotiationHubNodeFor finds the declared CP-67 negotiation hub: a
 // hub.inline node that is the target of ANOTHER hub.inline node's
 // (when:continue, kind:forward) edge. Edge-declared, not activeHubNodeID-

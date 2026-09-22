@@ -67,22 +67,22 @@ type dbWorkflowStepRow struct {
 }
 
 type dbStepDefinitionRow struct {
-	StepType          string                     `json:"step_type"`
-	NodeID            *string                    `json:"node_id"`
-	NodeLifecycle     *string                    `json:"node_lifecycle"`
-	BehaviorID        *string                    `json:"behavior_id"`
-	AgentRef          *string                    `json:"agent_ref"`
-	JoinMode          *string                    `json:"join_mode"`
-	Cohort            *string                    `json:"cohort"`
-	PromptTemplateRef *string                    `json:"prompt_template_ref"`
+	StepType          string  `json:"step_type"`
+	NodeID            *string `json:"node_id"`
+	NodeLifecycle     *string `json:"node_lifecycle"`
+	BehaviorID        *string `json:"behavior_id"`
+	AgentRef          *string `json:"agent_ref"`
+	JoinMode          *string `json:"join_mode"`
+	Cohort            *string `json:"cohort"`
+	PromptTemplateRef *string `json:"prompt_template_ref"`
 	// Model carries the admin-set per-node model tier (Task-320) into
 	// recordFromWorkflowRow's FlowNode so cloned/DB-backed flows resolve it
 	// exactly like pack-YAML node.Model (read-only here; mirror sync never
 	// writes it, so re-sync cannot clobber admin values).
-	Model             *string                    `json:"model"`
-	ContextRef        *string                    `json:"context_ref"`
-	ContextSources    []string                   `json:"context_sources"`
-	ArtifactBindings  []dbStepArtifactBindingRow `json:"step_artifact_bindings"`
+	Model            *string                    `json:"model"`
+	ContextRef       *string                    `json:"context_ref"`
+	ContextSources   []string                   `json:"context_sources"`
+	ArtifactBindings []dbStepArtifactBindingRow `json:"step_artifact_bindings"`
 }
 
 // dbStepArtifactBindingRow mirrors one `step_artifact_bindings` row joined

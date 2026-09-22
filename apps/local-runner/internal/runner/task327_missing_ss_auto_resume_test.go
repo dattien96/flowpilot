@@ -149,7 +149,7 @@ func TestTask327_ContinueMissingSSRecoversIngestNotCpWriter(t *testing.T) {
 // Task-327 T-1: empty cwd is unknown — do not treat as missing (keeps CA-770 shape).
 func TestTask327_EmptyCwdDoesNotTreatSSAsMissing(t *testing.T) {
 	rs := &interactiveRun{
-		workingMode: workingmode.Vibe,
+		workingMode:  workingmode.Vibe,
 		vibeLockedSS: "requirements/05-System-Specs/SS-18-x.md",
 	}
 	if !vibeSSLockArtifactsPresent("", rs) {

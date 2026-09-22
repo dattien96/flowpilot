@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"os"
@@ -562,6 +563,8 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// catalog (project bound or failed) — typing stays interactive, send
 			// stays blocked (CA-514). The 45s safety net is the only bail-out.
 			tea.Tick(45*time.Second, func(time.Time) tea.Msg { return sessionLoadTimeoutMsg{} }),
+			// CP-81: register this TUI's lifecycle lease right after attach.
+			m.cmdRegisterLease(),
 		}
 		if m.cfg.ResumeRunID != "" {
 			cmds = append(cmds, m.cmdResume(m.cfg.ResumeRunID))
@@ -1119,6 +1122,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			handle.Status = st
 		}
 		m.runHandle = &handle
+		m.noteWorktreeBinding(handle.WorktreeState, handle.WorktreeSlug)
 		m.stepID = handle.StepID
 		m.pendingPrompt = ""
 		m.firstTurnPending = false
@@ -1446,6 +1450,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case RunStartedMsg:
 		handle := msg.Handle
 		m.runHandle = &handle
+		m.noteWorktreeBinding(handle.WorktreeState, handle.WorktreeSlug)
 		m.runnerPollFailStreak = 0
 		m.stepsPollInFlight = false
 		m.agentsHydrateInFlight = false
@@ -1504,6 +1509,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		h := msg.Handle
 		m.runHandle = &h
+		m.noteWorktreeBinding(h.WorktreeState, h.WorktreeSlug)
 		if h.ProviderKey != "" {
 			m.provider = string(h.ProviderKey)
 		}
@@ -1589,7 +1595,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					Round:       0,
 					RoundCap:    0,
 				})
-		var cmds []tea.Cmd
+				var cmds []tea.Cmd
 				if m.runHandle != nil {
 					cmds = append(cmds, m.cmdHydrateAgentGraph(m.runHandle.RunID))
 					cmds = append(cmds, m.cmdHydrateAgentRuns(m.runHandle.RunID))
@@ -2014,6 +2020,30 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.quitting = true
 		return m, tea.Quit
 
+	// ── CP-81 runner lifecycle (Task-417) ────────────────────────────────
+	case leaseRegisteredMsg:
+		return m.applyLeaseRegistered(msg)
+	case LifecycleHeartbeatTickMsg:
+		return m, m.cmdHeartbeat()
+	case LifecycleSnapshotMsg:
+		m.applyLifecycleSnapshot(msg.Snapshot)
+		if m.reconnect != nil {
+			return m, m.cmdReconnectPoll()
+		}
+		return m, nil
+	case heartbeatErrMsg:
+		return m.applyHeartbeatErr(msg)
+	case reconnectPollMsg:
+		return m.applyReconnectPoll(msg)
+	case LifecycleLostMsg:
+		return m.runnerLost(msg.Reason)
+	case ExitIntentMsg:
+		return m, m.cmdExitIntent(msg.Source)
+	case exitDecisionMsg:
+		return m.applyExitDecision(msg)
+	case CloseChoiceMsg:
+		return m.applyCloseChoice(msg.Choice)
+
 	case wheelFlushMsg:
 		return m.flushPendingWheel()
 
@@ -2278,12 +2308,25 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.insertInputAtCursor("O")
 		m.suggIdx = 0
 	}
+	// CP-81: while the shared-runner close dialog is open it owns all keys.
+	if m.closeDialog != nil {
+		return m.handleCloseDialogKey(msg)
+	}
 	// Never hard-block keyboard while loading — a hung runner previously made
 	// the TUI feel fully frozen. processInput still rejects non-slash *send*.
 	if m.sessionLoading && msg.Type == tea.KeyCtrlC {
 		// Allow quit during load without waiting for catalog.
 		m.quitting = true
-		return m, m.cmdShutdownAndQuit()
+		return m, m.cmdExitIntent("ctrlc")
+	}
+	if m.scaffoldBusy {
+		switch msg.Type {
+		case tea.KeyCtrlC, tea.KeyEsc, tea.KeyF2, tea.KeyF3, tea.KeyF4,
+			tea.KeyUp, tea.KeyDown, tea.KeyLeft, tea.KeyRight,
+			tea.KeyPgUp, tea.KeyPgDown, tea.KeyHome, tea.KeyEnd:
+		default:
+			return m, nil
+		}
 	}
 
 	if m.authPhase == AuthNone && !m.viewingChild() {
@@ -2410,7 +2453,7 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.quitting = true
-			return m, m.cmdShutdownAndQuit()
+			return m, m.cmdExitIntent("ctrlc")
 		case tea.KeyRunes:
 			if len(msg.Runes) == 1 {
 				r := msg.Runes[0]
@@ -2482,7 +2525,7 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.quitting = true
-		return m, m.cmdShutdownAndQuit()
+		return m, m.cmdExitIntent("ctrlc")
 
 	case tea.KeyF2:
 		// Task-311: F2 is the /info alias — prints the session/status dump as a
@@ -3793,6 +3836,9 @@ func (m *AppModel) turnIsActive() bool {
 // ConnConnecting/session-loading is deliberately not "live": those phases already
 // surface their own "connecting…"/"loading…" labels.
 func (m *AppModel) workIsLive() bool {
+	if m.scaffoldBusy {
+		return true
+	}
 	// A completed flow loop is not live work — stop spinner / thinking immediately.
 	if m.flowLoopDone() {
 		return false
@@ -3833,6 +3879,12 @@ func (m *AppModel) workIsLive() bool {
 }
 
 func (m *AppModel) processInput(input string) (tea.Model, tea.Cmd) {
+	if m.scaffoldBusy {
+		msg := "AI Scaffold is still running — chat is disabled until it finishes."
+		m.addMessage("system", msg, "error")
+		tuiLog("processInput blocked: scaffoldBusy")
+		return m, nil
+	}
 	if (m.sessionLoading || m.chatWaitPending) && !strings.HasPrefix(strings.TrimSpace(input), "/") {
 		msg := "Still loading session — chat is disabled until ready. (F2/F4 still work)"
 		if !m.sessionLoading && m.chatWaitPending {
@@ -4280,7 +4332,7 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 
 	case "/exit", "/quit":
 		m.quitting = true
-		return m, m.cmdShutdownAndQuit()
+		return m, m.cmdExitIntent("slash")
 
 	case "/scan":
 		if m.mode != ModeChat {
@@ -4405,6 +4457,11 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 				m.addMessage("system", fmt.Sprintf("SS ingest armed: %s. Send a prompt to start vibe-ingest.", rest), "")
 			}
 		}
+
+	case "/worktree", "/wt":
+		// CP-71: arm the next run for worktree isolation (per-chat toggle —
+		// a live binding pins the flag until merged/discarded).
+		return m, m.toggleWorktree()
 
 	case "/yolo":
 		if m.mode != ModeChat || m.launch.IsArmed() {
@@ -4887,6 +4944,10 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		m.lastEventSeq = 0
 		m.lastTurnError = ""
 		m.lastTokens = nil
+		// CP-71: a new chat starts with worktree isolation off.
+		m.worktree = false
+		m.liveWorktree = ""
+		m.worktreeSlug = ""
 		// Keep provider/model/reasoning + armed flow (clear flow with /chat).
 		m.firstTurnPending = m.launch.IsBuiltin()
 		m.persistSessionPrefs()
@@ -6159,6 +6220,12 @@ func (m *AppModel) renderInputLine() string {
 		msg := " Child transcript is read-only — chat continues on main (/agent main or Esc) "
 		return styleSystem.Render(truncateVisual(msg, w))
 	}
+	if m.scaffoldBusy {
+		frames := []string{"|", "/", "-", "\\"}
+		spin := frames[m.thinkingFrame%len(frames)]
+		msg := fmt.Sprintf(" %s AI Scaffold running… (chat disabled) ", spin)
+		return styleLoading.Render(truncateVisual(msg, w))
+	}
 	if m.sessionLoading && !strings.HasPrefix(strings.TrimSpace(m.slashSuggestLine()), "/") {
 		frames := []string{"|", "/", "-", "\\"}
 		spin := frames[m.loadingFrame%len(frames)]
@@ -6738,16 +6805,35 @@ func (m *AppModel) cmdConnect() tea.Cmd {
 	}
 }
 
+// cmdShutdownAndQuit is the explicit "Turn off FlowPilot" path (CP-81 D-4):
+// a fenced two-phase shutdown — lease + instance fencing first, and on a
+// 409 lifecycle_confirmation_required the single-use token is replayed with
+// confirm=true (the dialog choice WAS the confirmation). Ordinary TUI close
+// never reaches here; it goes through cmdExitIntent → cmdReleaseAndQuit.
 func (m *AppModel) cmdShutdownAndQuit() tea.Cmd {
 	runnerURL := m.runnerURL
+	lease := m.lease
 	return func() tea.Msg {
-		// Always stop the local runner on TUI exit, including a reused process
-		// (CA-445 skip-kill leaked runners across just chat-dev sessions).
 		cl := client.New(runnerURL)
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 		defer cancel()
-		_ = cl.ShutdownStack(ctx)
-		_ = killRunnerByURL(runnerURL)
+		in := client.SystemActionRequest{
+			RequesterLeaseID:   lease.LeaseID,
+			LeaseToken:         lease.Token,
+			ExpectedInstanceID: lease.RunnerInstanceID,
+			Reason:             "user_exit",
+		}
+		_, err := cl.RequestRunnerShutdown(ctx, in)
+		var le *client.LifecycleError
+		if errors.As(err, &le) && le.Code == "lifecycle_confirmation_required" && le.ConfirmToken != "" {
+			in.Confirm = true
+			in.ConfirmToken = le.ConfirmToken
+			_, _ = cl.RequestRunnerShutdown(ctx, in)
+		} else if err != nil && !lease.Registered {
+			// Unmanaged/legacy runner (no lifecycle): keep the CA-445 contract
+			// of best-effort plain shutdown for the explicit turn-off intent.
+			_ = cl.ShutdownStack(ctx)
+		}
 		return QuitMsg{}
 	}
 }
@@ -7121,6 +7207,7 @@ func (m *AppModel) cmdStartRun() tea.Cmd {
 		}
 		input := launch.ToStartRunInput(projectID, provider, model, reasoning, cwd, yolo)
 		input.WorkingMode = workingMode
+		input.Worktree = m.worktreeEnabled()
 		if launch.IsBuiltin() {
 			input.FlowRef = launch.FlowRef
 		}
@@ -7507,7 +7594,11 @@ func Run(cfg config.ChatConfig, runnerURL string) error {
 		runtime.GOOS == "windows")
 
 	if cfg.Print {
+		// CP-81: even headless runs hold a lease so a client-managed runner
+		// does not idle-drain between the turn and exit.
+		m.registerLeaseSync()
 		err := runHeadless(m, cfg.Prompt)
+		m.releaseLeaseSync()
 		tuiLog("Run() headless done err=%v", err)
 		tuiLogClose()
 		return err
@@ -7522,6 +7613,9 @@ func Run(cfg config.ChatConfig, runnerURL string) error {
 	out := newQueuedOutput(os.Stdout)
 	p := tea.NewProgram(m, append(tuiRunProgramOpts(), tea.WithOutput(out))...)
 	_, err := p.Run()
+	// CP-81 epilogue: release this TUI's lease no matter how the loop ended —
+	// ordinary close is always a client release, never a global shutdown.
+	m.releaseLeaseSync()
 	restoreWindowsStdin()
 	_, _ = os.Stdout.WriteString(decawmOn)
 	tuiLog("Run() exit err=%v", err)
@@ -7550,6 +7644,7 @@ func runHeadless(m *AppModel, prompt string) error {
 		YoloMode:        m.yolo,
 		Cwd:             m.cfg.ProjectPath,
 		ChatMode:        "normal_chat",
+		Worktree:        m.worktreeEnabled(),
 	}
 	if input.Cwd == "" {
 		projects, err := cl.ListProjects(ctx)

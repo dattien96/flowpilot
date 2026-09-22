@@ -16,17 +16,17 @@ type memoryDispatchStore struct {
 	// now is overridable for lease/attach TTL tests.
 	now func() time.Time
 
-	records    map[string]*DispatchRecord // run\0turn
-	envelopes  map[string]*DispatchEnvelope
-	runStop    map[string]*RunStopState
-	activation map[string]int // runID -> protocol version
-	effects    map[string]*EffectDone
-	releases   map[string]*ReleaseManifestItem // effect key for release:*
-	repairs    map[string]*RepairRecord        // runID (open only kept; resolved retained for audit)
-	clears     map[intentClearKey]struct{}
-	audits     []AuditEntry
+	records     map[string]*DispatchRecord // run\0turn
+	envelopes   map[string]*DispatchEnvelope
+	runStop     map[string]*RunStopState
+	activation  map[string]int // runID -> protocol version
+	effects     map[string]*EffectDone
+	releases    map[string]*ReleaseManifestItem // effect key for release:*
+	repairs     map[string]*RepairRecord        // runID (open only kept; resolved retained for audit)
+	clears      map[intentClearKey]struct{}
+	audits      []AuditEntry
 	resolutions map[string]*ResolutionResult
-	seq        int64
+	seq         int64
 
 	// intentLive tracks live outer intent gen+envelope for supersede guard.
 	// Keyed by ownerRunID\0intentKey.
@@ -991,20 +991,20 @@ func (s *memoryDispatchStore) RetryAsNew(ctx context.Context, runID, oldTurnID s
 	succEnv := *env
 	succEnv.TurnID = newTurnID
 	succ := DispatchRecord{
-		ProtocolVersion:  DispatchProtocolV2,
-		TurnID:           newTurnID,
-		RunID:            runID,
-		IntentOwnerRunID: owner,
-		State:            DispatchPrepared,
-		Revision:         1,
-		OuterIntentKey:   r.OuterIntentKey,
-		OuterIntentGen:   expectedIntentGen,
-		EnvelopeHash:     succEnv.EnvelopeHash,
-		SettleOwed:       false, // successor settles only if prepare recomputes; inherit from env context later
+		ProtocolVersion:   DispatchProtocolV2,
+		TurnID:            newTurnID,
+		RunID:             runID,
+		IntentOwnerRunID:  owner,
+		State:             DispatchPrepared,
+		Revision:          1,
+		OuterIntentKey:    r.OuterIntentKey,
+		OuterIntentGen:    expectedIntentGen,
+		EnvelopeHash:      succEnv.EnvelopeHash,
+		SettleOwed:        false, // successor settles only if prepare recomputes; inherit from env context later
 		PredecessorTurnID: oldTurnID,
-		ParentStopFence:  r.ParentStopFence,
-		CreatedAt:        s.clockStr(),
-		UpdatedAt:        s.clockStr(),
+		ParentStopFence:   r.ParentStopFence,
+		CreatedAt:         s.clockStr(),
+		UpdatedAt:         s.clockStr(),
 	}
 	// Preserve settle owed from original prepare if it was true and not forced off by supersede semantics:
 	// table says only successor may settle — recompute from original record's pre-force value is unavailable;
@@ -1492,18 +1492,18 @@ var _ DispatchStore = (*memoryDispatchStore)(nil)
 
 // dispatchLogLine is the local commit-log line shape (also used as afterCommit payload).
 type dispatchLogLine struct {
-	Kind       string               `json:"kind"`
-	Seq        int64                `json:"seq"`
-	At         string               `json:"at"`
-	Record     *DispatchRecord      `json:"record,omitempty"`
-	Envelope   *DispatchEnvelope    `json:"envelope,omitempty"`
-	IntentClear *intentClearPayload `json:"intent_clear,omitempty"`
-	Effect     *EffectDone          `json:"effect,omitempty"`
-	Release    *ReleaseManifestItem `json:"release,omitempty"`
-	Repair     *RepairRecord        `json:"repair,omitempty"`
-	RunStop    *RunStopState        `json:"run_stop,omitempty"`
-	Activation *dispatchActivation  `json:"activation,omitempty"`
-	Successor  *DispatchRecord      `json:"successor,omitempty"`
+	Kind        string               `json:"kind"`
+	Seq         int64                `json:"seq"`
+	At          string               `json:"at"`
+	Record      *DispatchRecord      `json:"record,omitempty"`
+	Envelope    *DispatchEnvelope    `json:"envelope,omitempty"`
+	IntentClear *intentClearPayload  `json:"intent_clear,omitempty"`
+	Effect      *EffectDone          `json:"effect,omitempty"`
+	Release     *ReleaseManifestItem `json:"release,omitempty"`
+	Repair      *RepairRecord        `json:"repair,omitempty"`
+	RunStop     *RunStopState        `json:"run_stop,omitempty"`
+	Activation  *dispatchActivation  `json:"activation,omitempty"`
+	Successor   *DispatchRecord      `json:"successor,omitempty"`
 }
 
 type intentClearPayload struct {
@@ -1513,7 +1513,6 @@ type intentClearPayload struct {
 }
 
 type dispatchActivation struct {
-
 	RunID           string `json:"run_id"`
 	ProtocolVersion int    `json:"protocol_version"`
 }

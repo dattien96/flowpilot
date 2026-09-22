@@ -37,8 +37,8 @@ var chatPostureProfiles = []string{ChatPostureScan, ChatPosturePlan, ChatPosture
 // fields mean "inherit the current session selection" (the composer keeps its
 // own provider/model/reasoning/yolo until the user pins a value here).
 type ChatPostureProfile struct {
-	Provider        string `json:"provider,omitempty"`
-	Model           string `json:"model,omitempty"`
+	Provider string `json:"provider,omitempty"`
+	Model    string `json:"model,omitempty"`
 	// Wire name is reasoningEffort (matches the turn body + Desktop contract);
 	// the "reasoning" alias is also accepted on decode for older files.
 	ReasoningEffort string `json:"reasoningEffort,omitempty"`

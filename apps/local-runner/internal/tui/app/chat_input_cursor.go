@@ -383,4 +383,3 @@ func (m *AppModel) tryPlaceInputCursor(x, y int) bool {
 	}
 	return true
 }
-

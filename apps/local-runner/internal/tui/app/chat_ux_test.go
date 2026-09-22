@@ -147,7 +147,7 @@ func TestWrapText_WrapsLongLines(t *testing.T) {
 }
 
 func TestWrapText_PreservesNewlinesAndHardBreaks(t *testing.T) {
-	lines := wrapText("abc\n" + strings.Repeat("x", 20), 10)
+	lines := wrapText("abc\n"+strings.Repeat("x", 20), 10)
 	if lines[0] != "abc" {
 		t.Fatalf("first=%q", lines[0])
 	}

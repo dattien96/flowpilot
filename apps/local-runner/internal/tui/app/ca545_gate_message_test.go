@@ -80,7 +80,7 @@ func TestGateViolation_RepromptMessageHasNoOptions(t *testing.T) {
 		t.Run(pk, func(t *testing.T) {
 			m := gateViolationModel(pk)
 			m2, _ := m.Update(EventMsg{Ev: client.ProviderEvent{
-				Type:  "flow_gate_violation",
+				Type:   "flow_gate_violation",
 				Status: "reprompt",
 				Error:  "Flow gate: Missing Change Contract. Before your next edit...",
 			}})
@@ -117,7 +117,7 @@ func TestGateViolation_WarnMessageHasNoOptions(t *testing.T) {
 			m.launch = LaunchArm{Mode: ModeFlow, WorkflowID: "wf", Label: pk + "-flow"}
 			m.runHandle = &client.RunHandle{RunID: "run-warn", Status: "running"}
 			m2, _ := m.Update(EventMsg{Ev: client.ProviderEvent{
-				Type:  "flow_gate_violation",
+				Type:   "flow_gate_violation",
 				Status: "warn",
 				Error:  "Flow gate: some warning detail",
 			}})

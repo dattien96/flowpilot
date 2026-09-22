@@ -143,4 +143,3 @@ func TestRestartDuringTerminalFinalizationConverges(t *testing.T) {
 		t.Fatalf("loop status = %q, want done after the retried finalize converges", got)
 	}
 }
-

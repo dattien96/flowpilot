@@ -18,11 +18,11 @@ func TestTask329_MissingTasksRestartsSlicerNotTddResume(t *testing.T) {
 	runID := "run-task329-missing"
 	svc.mu.Lock()
 	svc.runs[runID] = &interactiveRun{
-		id:           runID,
-		providerKey:  ProviderKeyCodex,
-		workingMode:  workingmode.Vibe,
-		workspaceCwd: cwd,
-		chatFlowRef:  workingmode.PackPrefix + vibeSprintFlowID,
+		id:                 runID,
+		providerKey:        ProviderKeyCodex,
+		workingMode:        workingmode.Vibe,
+		workspaceCwd:       cwd,
+		chatFlowRef:        workingmode.PackPrefix + vibeSprintFlowID,
 		vibeCheckpointNode: "tdd",
 		vibeTaskPlan: []string{
 			"requirements/08-Task/todo/Task-904-snake-core.md",

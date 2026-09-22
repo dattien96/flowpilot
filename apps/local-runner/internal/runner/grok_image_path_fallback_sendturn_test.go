@@ -15,8 +15,8 @@ func TestGrokSendTurn_ImagePathFallbackInPrompt(t *testing.T) {
 	cwd := t.TempDir()
 
 	var (
-		mu         sync.Mutex
-		promptText string
+		mu          sync.Mutex
+		promptText  string
 		promptCount int
 	)
 

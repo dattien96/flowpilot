@@ -141,6 +141,7 @@ func TestRecordFromWorkflowRowDropsNonDelegateStaleModel(t *testing.T) {
 		t.Fatalf("ValidateFlowDefinition = %v, want nil (dropped model must not trip T-3)", err)
 	}
 }
+
 // TestRecordFromWorkflowRowCarriesNodeModel pins Task-320 T-6: a DB-backed
 // (cloned) flow's admin-set step model lands on FlowNode.Model so resolution
 // treats it exactly like a pack-YAML default.

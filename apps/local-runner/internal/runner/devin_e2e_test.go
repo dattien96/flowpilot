@@ -204,7 +204,7 @@ func TestDevinE2EPermissionRequestFlowsToBridge(t *testing.T) {
 						"sessionId": slug,
 						"toolCall": map[string]any{"toolCallId": "tc-1", "title": "Run command", "kind": "execute",
 							"rawInput": map[string]any{"command": "weird-unrecognized-tool-xyz --frobnicate"}},
-						"options":   []any{map[string]any{"optionId": "allow", "name": "Allow"}, map[string]any{"optionId": "reject", "name": "Reject"}},
+						"options": []any{map[string]any{"optionId": "allow", "name": "Allow"}, map[string]any{"optionId": "reject", "name": "Reject"}},
 					},
 				})
 			}()

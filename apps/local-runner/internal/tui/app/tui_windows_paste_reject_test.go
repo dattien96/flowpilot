@@ -184,5 +184,3 @@ func TestWindowsReject_KeyRunesCtrlVBlockedAndHints(t *testing.T) {
 		t.Fatalf("must show Alt+V hint message on KeyRunes ctrl+v, got %+v", am.messages)
 	}
 }
-
-

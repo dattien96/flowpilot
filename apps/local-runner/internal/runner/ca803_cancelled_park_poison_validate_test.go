@@ -138,4 +138,3 @@ func TestCA803_FailedHubStalledRetryDoesNotClaimHandled(t *testing.T) {
 		t.Fatal("Failed run must not claim hub_stalled Retry as handled")
 	}
 }
-

@@ -7,7 +7,6 @@ import (
 	"flowpilot-runner/internal/workingmode"
 )
 
-
 func requireGateOK(t *testing.T, err error) {
 	t.Helper()
 	if err != nil {
@@ -93,6 +92,7 @@ func TestFlowAllowed_NormalAliasRejectedOnWire(t *testing.T) {
 func TestFlowAllowed_UnknownModeRejected(t *testing.T) {
 	requireGateCode(t, workingmode.FlowAllowedForWorkingMode("prod", "task-harness", "user"), workingmode.CodeInvalidMode)
 }
+
 // Scenario: vibe-cp-ingest is user-startable after Task-321.
 // Input: mode=vibe startKind=user flowID=vibe-cp-ingest
 // Expect: nil error

@@ -6,6 +6,7 @@ const LABEL: Record<RunStatusValue, string> = {
   starting: "Starting",
   running: "Running",
   waiting_approval: "Waiting · approval",
+  waiting_user_approval: "Waiting · your approval",
   waiting_question: "Waiting · question",
   blocked: "Waiting · your input",
   completed: "Completed",

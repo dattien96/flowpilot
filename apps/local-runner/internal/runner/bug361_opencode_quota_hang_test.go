@@ -158,7 +158,6 @@ func TestBug361OpencodeSendTurnNoPaymentMethodFailsFast(t *testing.T) {
 	}
 }
 
-
 func TestBug361OpencodeSendTurnNonQuotaRPCErrorUnchanged(t *testing.T) {
 	d, fg := startFakeOpencode(t, nil)
 	fg.serve(bug361ServeQuotaRPCError(fg, "boom"))

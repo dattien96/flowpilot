@@ -5,8 +5,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"flowpilot-runner/internal/tui/prefs"
 	"flowpilot-runner/internal/tui/config"
+	"flowpilot-runner/internal/tui/prefs"
 )
 
 // CA-641 history: /new used to preserve the user's /reasoning choice.

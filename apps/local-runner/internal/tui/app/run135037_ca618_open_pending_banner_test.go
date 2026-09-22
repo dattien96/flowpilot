@@ -63,7 +63,7 @@ func TestCA618_BannerTruncatesRunesNotBytes(t *testing.T) {
 	gate := strings.Repeat("á", 130) + " gpt-5.4"
 	m.applyAgentGraph(&client.AgentGraphSnapshot{
 		LoopState: client.AgentLoopState{Status: "blocked", BlockReason: "delegate_failed", GateReason: gate},
-		Runs: []client.AgentRunSummary{{RunID: "run-1", Status: "completed"}},
+		Runs:      []client.AgentRunSummary{{RunID: "run-1", Status: "completed"}},
 	})
 	// find banner
 	var banner string
@@ -88,7 +88,7 @@ func TestCA618_BannerReasonEmptyGatePresent(t *testing.T) {
 	m := New(config.ChatConfig{}, "http://127.0.0.1:4317")
 	m.applyAgentGraph(&client.AgentGraphSnapshot{
 		LoopState: client.AgentLoopState{Status: "blocked", BlockReason: "", GateReason: "gpt-5.4 not supported"},
-		Runs: []client.AgentRunSummary{{RunID: "run-1", Status: "completed"}},
+		Runs:      []client.AgentRunSummary{{RunID: "run-1", Status: "completed"}},
 	})
 	var banner string
 	for _, msg := range m.messages {

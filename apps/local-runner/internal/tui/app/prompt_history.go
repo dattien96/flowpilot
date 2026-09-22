@@ -69,4 +69,3 @@ func (m *AppModel) navigatePromptHistory(dir int) bool {
 	}
 	return true
 }
-

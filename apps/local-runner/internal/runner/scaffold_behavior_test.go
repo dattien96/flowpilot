@@ -88,7 +88,7 @@ func TestParseCoderBatchSignatureRequestsValidation(t *testing.T) {
 		"batch_signature_requests": []any{
 			map[string]any{
 				"symbol": "GetUser", "file": "service.go",
-				"current_signature": "func GetUser(id string) (*User, error)",
+				"current_signature":  "func GetUser(id string) (*User, error)",
 				"proposed_signature": "func GetUser(id string, forceRefresh bool) (*User, error)",
 				"rationale":          "cache bypass",
 			},

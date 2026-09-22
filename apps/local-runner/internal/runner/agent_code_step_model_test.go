@@ -189,4 +189,3 @@ func TestSpawnFrozenWriterChildEmptyStepModelInheritsParent(t *testing.T) {
 		t.Fatalf("empty step model must inherit parent %q, got %q", "claude-sonnet", child.modelName)
 	}
 }
-

@@ -3,6 +3,7 @@ import { useStore } from "@/state/store";
 import type { RemoteChatSessionSummary, RunHistoryItem } from "@/types/contract";
 import { filterVisibleHistory, isAgentHistoryItem, isProjectSyncing, isSyncableRun } from "@/components/navigatorHistory";
 import { flattenGroupedHistory, groupRunsByChatId } from "../state/chatHistory";
+import { AttentionQueue } from "@/components/AttentionQueue";
 
 const HISTORY_LIMIT = 5;
 const REMOTE_CHATS_LIMIT = 4;
@@ -19,6 +20,7 @@ const RUN_LABEL: Record<RunHistoryItem["status"], string> = {
   starting: "Starting",
   running: "Running",
   waiting_approval: "Waiting · approval",
+  waiting_user_approval: "Waiting · your approval",
   waiting_question: "Waiting · question",
   // BUG-231: a persisted RunHistoryItem's status is sourced from the Go
   // runner's own RunStatus enum, which has no "blocked" value (only the
@@ -132,6 +134,7 @@ export function Navigator(): React.ReactElement {
   const loadRunHistory = useStore((s) => s.loadRunHistory);
   const loadRemoteChatSessions = useStore((s) => s.loadRemoteChatSessions);
   const openHistoryRun = useStore((s) => s.openHistoryRun);
+  const openRunAtAttention = useStore((s) => s.openRunAtAttention);
   const syncRuns = useStore((s) => s.syncRuns);
   const syncAllInProject = useStore((s) => s.syncAllInProject);
   const syncBatchProgress = useStore((s) => s.syncBatchProgress);
@@ -463,6 +466,12 @@ export function Navigator(): React.ReactElement {
         )}
       </section>
 
+      <AttentionQueue
+        onOpenRun={(runId, chatId) => {
+          void openRunAtAttention(runId, chatId);
+        }}
+      />
+
       <section className="project-history-section">
         <div className="project-rail-head">
           <div>
@@ -626,6 +635,14 @@ export function Navigator(): React.ReactElement {
                           {item.legsCount && item.legsCount > 1 ? (
                             <span className="project-history-legs-count">{item.legsCount} legs</span>
                           ) : null}
+                          {item.worktreeState ? (
+                            <span
+                              className="project-history-worktree-badge"
+                              title={`Isolated worktree (${item.worktreeState})${item.worktreeSlug ? ` — ${item.worktreeSlug}` : ""}`}
+                            >
+                              ⎇ {item.worktreeSlug ?? "worktree"}
+                            </span>
+                          ) : null}
                         </span>
                       </span>
                       <span className="project-history-item-meta">
@@ -682,6 +699,14 @@ export function Navigator(): React.ReactElement {
                       {showRowSpinner ? <span className="history-status-spinner" aria-hidden="true" /> : <HistoryStatusIcon status={effectiveStatus} isNew={isNew} />}
                       <span className="project-history-item-title">
                         {runTitle(item.lastPrompt || item.lastMessage)}
+                        {item.worktreeState ? (
+                          <span
+                            className="project-history-worktree-badge"
+                            title={`Isolated worktree (${item.worktreeState})${item.worktreeSlug ? ` — ${item.worktreeSlug}` : ""}`}
+                          >
+                            ⎇ {item.worktreeSlug ?? "worktree"}
+                          </span>
+                        ) : null}
                       </span>
                     </span>
                     <span className="project-history-item-meta">

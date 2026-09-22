@@ -390,14 +390,14 @@ type devinProcessHandle struct {
 	// for spawned child runs, "probe" for catalog probes, "" for chat turns)
 	// — the BUG-334 rule: a child process must never tear down a live parent
 	// process whose in-flight MCP tool call would die with it.
-	scopeBase    string
-	scopeSegment string
-	model        string
+	scopeBase      string
+	scopeSegment   string
+	model          string
 	permissionMode string
-	dispatcher   *devinDispatcher
-	adapter      *devinAdapter
-	initResult   map[string]any
-	kill         func()
+	dispatcher     *devinDispatcher
+	adapter        *devinAdapter
+	initResult     map[string]any
+	kill           func()
 }
 
 func (h *devinProcessHandle) close() {
@@ -610,6 +610,14 @@ func devinProcessEnv(extraEnv map[string]string) []string {
 		// Strip host secrets: every DEVIN_* variable (DEVIN_API_KEY etc.) and
 		// the Windsurf key the Devin credential store shares a field name with.
 		if strings.HasPrefix(kv, "DEVIN_") || strings.HasPrefix(kv, "WINDSURF_API_KEY=") {
+			continue
+		}
+		// CA-912: ACP_BACKEND marks "running inside a host that owns
+		// credentials" — inherited from Windsurf-owned shells it makes the
+		// server refuse the on-disk store, so authenticate never refreshes
+		// credentials.toml and `devin -p` turns starve. The runner always
+		// calls authenticate itself; the flag must not propagate.
+		if strings.HasPrefix(kv, "ACP_BACKEND=") {
 			continue
 		}
 		filtered = append(filtered, kv)

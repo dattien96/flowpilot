@@ -22,7 +22,7 @@ func TestInputWatchdog_StallDetectedOnce(t *testing.T) {
 	m := New(configForWatchdogTest(), "http://127.0.0.1:9")
 	now := time.Now()
 	m.approval = &ApprovalState{ID: "ap-1", RunID: "run-1"} // input-requiring state
-	m.lastInputAt = now.Add(-60 * time.Second)               // no input for 60s > 45s threshold
+	m.lastInputAt = now.Add(-60 * time.Second)              // no input for 60s > 45s threshold
 
 	first, _ := m.Update(inputWatchdogMsg{at: now})
 	m2 := first.(*AppModel)
@@ -116,8 +116,8 @@ func TestInputWatchdog_NoStallBeforeThreshold(t *testing.T) {
 	m := New(configForWatchdogTest(), "http://127.0.0.1:9")
 	now := time.Now()
 	m.approval = &ApprovalState{ID: "ap-1", RunID: "run-1"} // input-requiring state
-	m.lastInputAt = now.Add(-10 * time.Second)               // under threshold
-	before := m.statusMsg                                    // New() seeds "connecting..."
+	m.lastInputAt = now.Add(-10 * time.Second)              // under threshold
+	before := m.statusMsg                                   // New() seeds "connecting..."
 
 	updated, _ := m.Update(inputWatchdogMsg{at: now})
 	m2 := updated.(*AppModel)

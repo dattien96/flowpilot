@@ -183,6 +183,15 @@ type ProviderSessionState struct {
 	TurnStartGitHead        string
 	TurnStartWorktree       map[string]string
 	PendingGateChangedFiles []string
+	// CP-71 run worktree binding (local-only, sessions.ndjson — no Supabase
+	// columns). Empty on toggle-off runs.
+	WorktreeOwnerID    string `json:"worktreeOwnerId,omitempty"`
+	WorktreePath       string `json:"worktreePath,omitempty"`
+	WorktreeBranch     string `json:"worktreeBranch,omitempty"`
+	WorktreeBaseCommit string `json:"worktreeBaseCommit,omitempty"`
+	WorktreeSlug       string `json:"worktreeSlug,omitempty"`
+	WorktreeState      string `json:"worktreeState,omitempty"`
+	WorktreeEnabled    bool   `json:"worktreeEnabled,omitempty"`
 	// StepID / LastTurnStepID persist the execution-step context needed to
 	// restart a rehydrated approval/question turn after restart (V10R P1).
 	StepID         string

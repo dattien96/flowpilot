@@ -55,10 +55,10 @@ func TestWorktreeMutatedSincePathsIgnoresSkillpackScaffold(t *testing.T) {
 	cur := map[string]string{
 		"src/calc.go": "a",
 		// Mid-flow skillpack install — must be invisible to the planner guard.
-		".claude/skills/gitnexus/gitnexus-cli/SKILL.md": "s1",
+		".claude/skills/gitnexus/gitnexus-cli/SKILL.md":   "s1",
 		".claude/skills/gitnexus/gitnexus-guide/SKILL.md": "s2",
-		"AGENTS.md": "a1",
-		"CLAUDE.md": "a2",
+		"AGENTS.md":  "a1",
+		"CLAUDE.md":  "a2",
 		".gitignore": "i1",
 	}
 	if got := worktreeMutatedSincePaths(base, cur); len(got) != 0 {

@@ -25,4 +25,14 @@ export const ideBridge: IdeBridge = {
     // Browser fallback (renderer running in a plain tab during dev).
     window.open(url, "_blank", "noopener");
   },
+
+  async isGitRepo(path: string): Promise<boolean> {
+    const bridge = window as Window & { flowpilot?: { isGitRepo?: (path: string) => Promise<boolean> } };
+    if (bridge.flowpilot?.isGitRepo) {
+      return bridge.flowpilot.isGitRepo(path);
+    }
+    // Browser/dev fallback: optimistic — the runner still rejects
+    // worktree:true on a non-git cwd with worktree_unavailable.
+    return true;
+  },
 };

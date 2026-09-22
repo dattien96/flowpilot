@@ -30,10 +30,10 @@ import (
 )
 
 const (
-	maxEdgePx     = 1568
-	maxSizeBytes  = 2 * 1024 * 1024 // 2 MiB
+	maxEdgePx      = 1568
+	maxSizeBytes   = 2 * 1024 * 1024 // 2 MiB
 	maxAttachments = 6
-	jpegQuality   = 80
+	jpegQuality    = 80
 )
 
 // SupportsImages reports whether providerKey accepts image attachments.

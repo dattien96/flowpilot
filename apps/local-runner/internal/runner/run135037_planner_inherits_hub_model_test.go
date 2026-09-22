@@ -30,10 +30,10 @@ func TestRun135037_DelegateSpawnModel_PlannerInheritsHub(t *testing.T) {
 	})
 	svc := newInteractiveService(DefaultProviderRegistry(), catalog, newFakeWorkflowStore())
 	for _, tc := range []struct {
-		name     string
-		provider ProviderKey
-		model    string
-		wantProv string
+		name      string
+		provider  ProviderKey
+		model     string
+		wantProv  string
 		wantModel string
 	}{
 		{"grok", ProviderKeyGrok, "grok-4.5", "grok", "grok-4.5"},

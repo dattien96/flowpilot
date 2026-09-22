@@ -736,6 +736,26 @@ export class MockRunnerClient implements RunnerClient {
     console.log("[MockRunnerClient] shutdownStack (stub)");
   }
 
+  // CP-81 parity: the mock exposes the same lifecycle surface as the HTTP
+  // client — a canned ready/idle snapshot, no lease token material.
+  async getLifecycleSnapshot(): Promise<unknown> {
+    await delay(40);
+    return {
+      runnerInstanceId: "mock-runner",
+      generation: 1,
+      protocolVersion: 1,
+      lifecycleMode: "client-managed",
+      phase: "ready",
+      clients: [
+        { leaseId: "l-desktop", clientInstanceId: "desktop-mock", kind: "desktop", label: "Desktop" },
+      ],
+      workload: { items: [] },
+      updatePending: false,
+      inventoryRevision: 1,
+      serverNow: new Date().toISOString(),
+    };
+  }
+
   async activateProviderAccount(accountId: string): Promise<void> {
     await delay(60);
     const target = MOCK_PROVIDER_ACCOUNTS.find((account) => account.id === accountId);

@@ -28,6 +28,7 @@ Source of truth for stable `feature_key` values used by:
 - google-drive — Google Drive connection, artifact/chat sync, and restore
 - supabase-config — Supabase connection, RLS policies, runtime config, schema constraints
 - terminal-session — terminal/process lifecycle, dev-stack controls, thinking-stream rendering
+- runner-lifecycle — SS-24/SD-28/CP-81 shared local runner lifecycle: client leases, heartbeat/TTL, idle shutdown, force stop, restart reconnect, stale replacement
 - context-regression-engine — SD-17 context + regression engine (Plane C): gate, resolver, requirements scaffold, flow rules
 - cross-provider-handoff — cross-provider chat handoff: provider-neutral transcript transfer + summary-based hybrid
 - token-usage
@@ -52,3 +53,7 @@ Source of truth for stable `feature_key` values used by:
 - living-knowledge-base — CP-66 Living knowledge base & execution flow context source (knowledge.flow) distilled from GitNexus and LSP
 - contract-first-tdd — CP-67 Contract-First Scaffold TDD, AST Signature Lock (r-signature-lock), and batch renegotiation via Main Agent
 - skill-anchored-init — CP-68 Skill-Anchored Project Scaffolding & AI-Guided Init Engine
+- run-worktree — SS-23/SD-27/CP-71 opt-in per-run git worktree isolation: start toggle, run binding, patch-based merge-back card, conflict evidence, recovery & GC
+- attention-queue — cross-run pending-action inbox: desktop Attention Queue aggregating waiting runs via a singleton observer store (Task-404)
+- desktop-ui-consistency — desktop design-token revamp: spacing/elevation/radius/motion scales, icon unification, token guardrails (Task-405)
+- dev-infra — developer tooling/build infra: test harness artifacts, gitignore, CI plumbing

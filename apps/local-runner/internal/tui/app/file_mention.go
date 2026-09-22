@@ -312,4 +312,3 @@ func (m *AppModel) applyFileMention(path string) {
 		m.syncTextareaValue()
 	}
 }
-

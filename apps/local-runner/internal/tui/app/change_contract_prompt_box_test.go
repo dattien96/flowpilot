@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/lipgloss"
 	"flowpilot-runner/internal/tui/config"
+	"github.com/charmbracelet/lipgloss"
 )
 
 func TestRegression_ChangeContractPromptBoxWrapsAtInnerWidth(t *testing.T) {

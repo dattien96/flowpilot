@@ -3,6 +3,14 @@ export interface RunnerHealth {
   os: string | null;
   startedAt: string | null;
   version: string | null;
+  // CP-81 additive identity (SD-28 §6.2): present only when the runner has a
+  // lifecycle manager attached; undefined on unmanaged/legacy runners.
+  runnerInstanceId?: string;
+  generation?: number;
+  protocolVersion?: number;
+  buildId?: string;
+  lifecycleMode?: string;
+  phase?: string;
 }
 
 export interface CompatVersionInfo {

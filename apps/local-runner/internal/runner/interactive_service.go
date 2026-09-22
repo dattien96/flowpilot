@@ -18,6 +18,7 @@ import (
 
 	"flowpilot-runner/internal/agentpack"
 	"flowpilot-runner/internal/flowgate"
+	"flowpilot-runner/internal/lifecycle"
 	"flowpilot-runner/internal/promptpacker"
 	"flowpilot-runner/internal/workingmode"
 )
@@ -93,10 +94,19 @@ type InteractiveService struct {
 	// NewScaffoldDispatcher(s.runner); tests inject a dispatcher backed by a fake
 	// prompt executor so no real provider CLI is ever spawned.
 	scaffoldDispatcherFactory func() *ScaffoldDispatcher
-	// scaffoldInFlight debounces the CP-68 passive scaffold trigger so the same
-	// project gets at most one background AI scaffold turn at a time; guarded by
+	// scaffoldInFlight debounces scaffold turns so the same project gets at most
+	// one AI scaffold turn at a time — claimed by the CP-68 passive trigger and
+	// by the HTTP dispatch handler via claimScaffold/releaseScaffold; guarded by
 	// s.mu, lazily initialized, entries are released when the turn finishes.
 	scaffoldInFlight map[string]bool
+	// scaffoldCancels holds the cancel func for each in-flight scaffold so a
+	// CP-81 confirmed drain (StopAllForSystemAction) can terminate them; same
+	// lifecycle/locking as scaffoldInFlight.
+	scaffoldCancels map[string]context.CancelFunc
+	// lifecycleMgr is the CP-81 shared-lifecycle authority attached by
+	// `runner serve`; used only for the drain gate (reject new work while
+	// draining). nil in unmanaged contexts. Guarded by s.mu.
+	lifecycleMgr *lifecycle.Manager
 
 	// dispatchLogSyncMu guards dispatchLogSyncHash, kept separate from the main
 	// s.mu since a Drive upload is slow network I/O unrelated to run-state locking.
@@ -174,12 +184,15 @@ type interactiveRun struct {
 	lastOpencodeTurnSessionID string
 	// lastDevinTurnSessionID is the Devin twin (CP-70): newest slug session id
 	// observed this turn so model-switch resume re-loads the real session.
-	lastDevinTurnSessionID    string
-	providerAccountID         string
-	workspaceCwd              string
-	stepID                    string
-	modelName                 string
-	yolo                      bool
+	lastDevinTurnSessionID string
+	providerAccountID      string
+	workspaceCwd           string
+	// worktree is the CP-71 binding when the run opted into worktree
+	// isolation; nil for normal runs.
+	worktree  *worktreeBinding
+	stepID    string
+	modelName string
+	yolo      bool
 	// workingMode is Task-326 local SSOT ("dev"|"vibe"); empty reconstructs as dev.
 	workingMode string
 	// Task-321: CP lock + sequential vibe-sprint queue (local only).
@@ -4109,7 +4122,6 @@ func (s *InteractiveService) persistenceStore() InteractiveStateStore {
 
 func (s *InteractiveService) AttachRunner(r *Runner) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.runner = r
 	s.agentCatalog.providerHomeFn = func() []AgentDefinition {
 		return discoverActiveProviderHomeAgents(r)
@@ -4134,6 +4146,9 @@ func (s *InteractiveService) AttachRunner(r *Runner) {
 	// DefaultContextSourceRegistry().SetJiraIssueAdapter(&jiraRestIssueAdapter{runner: r})
 	// DefaultContextSourceRegistry().SetJiraSprintAdapter(&jiraRestSprintAdapter{runner: r})
 	// DefaultContextSourceRegistry().SetFirebaseCrashlyticsAdapter(newFirebaseToolsMcpAdapter(r))
+	s.mu.Unlock()
+	// CP-71: boot-time worktree GC runs off-lock after s.runner is set.
+	go s.sweepOrphanedWorktrees(context.Background())
 }
 
 // SetFlowDefinitionStore attaches the FlowDefinitionStore startResolvedFlow
@@ -4190,7 +4205,7 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 	if rs.realProviderSessionID != "" {
 		providerSessionID = rs.realProviderSessionID
 	}
-	return ProviderSessionState{
+	st := ProviderSessionState{
 		RunID:                           rs.id,
 		ProjectID:                       rs.projectID,
 		WorkflowID:                      rs.workflowID,
@@ -4306,6 +4321,11 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 		LastFailedDelegateNodeID:  rs.lastFailedDelegateNodeID,
 		LastEscalatedInlineNodeID: rs.lastEscalatedInlineNodeID,
 	}
+	// The binding rides every status write: sessions are append-only with
+	// last-wins reads, so a row missing the fields erases the binding and
+	// boot GC prunes the worktree as an orphan (CP-81 live regression).
+	worktreeFieldsToSession(&st, rs.worktree)
+	return st
 }
 
 // sessionStateOfProtectingIdem builds a session snapshot that always retains
@@ -5867,6 +5887,12 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 			default: // subscriber slow/full — it reconnects via afterSeq, no gap
 			}
 		}
+	}
+	// CP-71: terminal non-chat runs with an active worktree binding emit the
+	// merge-back card once (SD-27 D-4c flow trigger; chat runs resolve via the
+	// user-initiated control instead — ongoing chats have no terminal point).
+	if worktreeTerminal(rs.status) {
+		s.maybeEmitWorktreeMergeRequest(rs)
 	}
 	return ev
 }

@@ -388,9 +388,9 @@ func devinUsageUpdateToSnapshot(update map[string]any) *TokenUsageSnapshot {
 		total = input + output
 	}
 	breakdown := &TokenUsageBreakdown{
-		TotalTokens:   total,
-		InputTokens:   input,
-		OutputTokens:  output,
+		TotalTokens:  total,
+		InputTokens:  input,
+		OutputTokens: output,
 	}
 	return &TokenUsageSnapshot{
 		Last:               breakdown,

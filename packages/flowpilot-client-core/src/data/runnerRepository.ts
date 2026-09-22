@@ -17,6 +17,13 @@ interface RunnerHealthPayload {
   os?: string | null;
   startedAt?: string | null;
   version?: string | null;
+  // CP-81 additive identity fields (present only on lifecycle-managed runners).
+  runnerInstanceId?: string;
+  generation?: number;
+  protocolVersion?: number;
+  buildId?: string;
+  lifecycleMode?: string;
+  phase?: string;
 }
 
 export class HttpRunnerRepository implements RunnerRepository {
@@ -40,6 +47,12 @@ export class HttpRunnerRepository implements RunnerRepository {
       os: payload.os ?? null,
       startedAt: payload.startedAt ?? null,
       version: payload.version ?? null,
+      runnerInstanceId: payload.runnerInstanceId,
+      generation: payload.generation,
+      protocolVersion: payload.protocolVersion,
+      buildId: payload.buildId,
+      lifecycleMode: payload.lifecycleMode,
+      phase: payload.phase,
     };
   }
 

@@ -104,6 +104,7 @@ func (m *AppModel) handleEngineInitMsg(msg EngineInitMsg) (tea.Model, tea.Cmd) {
 	if m.project != nil && strings.TrimSpace(m.project.Name) != "" {
 		label = strings.TrimSpace(m.project.Name)
 	}
+	m.scaffoldBusy = true
 	m.addMessage("system", fmt.Sprintf("Starting AI Scaffold turn for %s…", label), "")
 	return m, m.cmdDispatchScaffold()
 }
@@ -133,15 +134,18 @@ func (m *AppModel) cmdDispatchScaffold() tea.Cmd {
 		cwd = strings.TrimSpace(m.project.Path)
 	}
 	cl := m.client
+	provider := strings.TrimSpace(m.provider)
+	model := strings.TrimSpace(m.model)
 	return func() tea.Msg {
 		ctx := context.Background()
-		res, err := cl.DispatchScaffold(ctx, projectID, cwd, platform)
+		res, err := cl.DispatchScaffold(ctx, projectID, cwd, platform, provider, model)
 		return EngineScaffoldMsg{ProjectID: projectID, Result: res, Err: err}
 	}
 }
 
 // handleEngineScaffoldMsg renders the scaffold outcome in the chat timeline.
 func (m *AppModel) handleEngineScaffoldMsg(msg EngineScaffoldMsg) (tea.Model, tea.Cmd) {
+	m.scaffoldBusy = false
 	if msg.Err != nil {
 		m.addMessage("system", fmt.Sprintf("scaffold: failed: %v", msg.Err), "error")
 		return m, nil

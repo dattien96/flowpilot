@@ -57,6 +57,9 @@ func DetectPlatform(dir string) string {
 		if strings.Contains(s, "\"next\"") {
 			return "nextjs"
 		}
+		if strings.Contains(s, "\"react-native\"") {
+			return "react-native"
+		}
 		if strings.Contains(s, "\"react\"") {
 			return "reactjs"
 		}

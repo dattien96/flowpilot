@@ -67,6 +67,7 @@ func (s *InteractiveService) RegisterInteractiveRoutes(mux *http.ServeMux) {
 	// BUG-355 F2: run-scoped transcript for chat-less workflow runs.
 	mux.HandleFunc("GET /client/workflow-runs/{runId}/timeline", s.handleGetRunTimeline)
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/resume", s.handleResumeRun)
+	mux.HandleFunc("POST /client/workflow-runs/{runId}/worktree/resolve", s.handleWorktreeResolve)
 	mux.HandleFunc("DELETE /client/workflow-runs/{runId}", s.handleDeleteRun)
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/sync-chat", s.handleSyncChatRun)
 	mux.HandleFunc("POST /client/chat-sessions/restore", s.handleRestoreChatRun)
@@ -309,6 +310,11 @@ func (s *InteractiveService) handleListRemoteChatSessions(w http.ResponseWriter,
 // ---- run lifecycle handlers ------------------------------------------------
 
 func (s *InteractiveService) handleStartRun(w http.ResponseWriter, r *http.Request) {
+	// CP-81 D-3: no new work once the lifecycle manager begins draining.
+	if e := s.drainingErr(); e != nil {
+		writeInteractiveError(w, e)
+		return
+	}
 	var in StartRunInput
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "invalid_request", "invalid request body"))
@@ -333,6 +339,10 @@ func (s *InteractiveService) handleGetRun(w http.ResponseWriter, r *http.Request
 }
 
 func (s *InteractiveService) handleResumeRun(w http.ResponseWriter, r *http.Request) {
+	if e := s.drainingErr(); e != nil {
+		writeInteractiveError(w, e)
+		return
+	}
 	runID := r.PathValue("runId")
 	log.Printf("[chat-history-open] request run_id=%q remote_addr=%q", runID, r.RemoteAddr)
 	handle, e := s.resumeRun(runID)
@@ -346,7 +356,14 @@ func (s *InteractiveService) handleResumeRun(w http.ResponseWriter, r *http.Requ
 }
 
 func (s *InteractiveService) handleDeleteRun(w http.ResponseWriter, r *http.Request) {
-	if e := s.deleteChatSession(r.PathValue("runId")); e != nil {
+	runID := r.PathValue("runId")
+	// CP-71 E-3: deleting a run/chat with a live worktree binding surfaces the
+	// merge decision first; ?worktree=<mode> resolves it inline before delete.
+	if e := s.worktreeDeleteGate(runID, r.URL.Query().Get("worktree")); e != nil {
+		writeInteractiveError(w, e)
+		return
+	}
+	if e := s.deleteChatSession(runID); e != nil {
 		writeInteractiveError(w, e)
 		return
 	}
@@ -412,6 +429,11 @@ type turnBody struct {
 }
 
 func (s *InteractiveService) handleStartTurn(w http.ResponseWriter, r *http.Request) {
+	// CP-81 D-3: no new work once the lifecycle manager begins draining.
+	if e := s.drainingErr(); e != nil {
+		writeInteractiveError(w, e)
+		return
+	}
 	// Task-333 SS-Lock (CP-49 P-3): while a run is parked at the
 	// non-bypassable SS-Lock gate, no new AI/provider turn may start. The
 	// only continuation path is the human-driven confirm endpoint
@@ -716,6 +738,9 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 	if e := s.enforceWorkingModeStart(&in); e != nil {
 		return RunHandle{}, e
 	}
+	if e := s.enforceWorktreeStart(&in); e != nil {
+		return RunHandle{}, e
+	}
 	// CA-638: ensure the target workspace is GitNexus-indexed so scope-drift
 	// HighSeverity and source.dependence can query real dependents. Runs once
 	// per process per workspace; non-blocking.
@@ -961,18 +986,31 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 		rs.switchFromRunID = switchFrom
 		s.chatRuns.register(runID, chatID)
 	}
+	// CP-71 (SS-23/SD-27 D-8): chat owner = chatID, flow owner = runID. A new
+	// leg in a chat with a live binding inherits it (binding wins over an
+	// unset flag so legs never silently escape isolation).
+	var inheritedWt *worktreeBinding
+	if runKind == "chat" && chatID != "" {
+		inheritedWt = s.findChatWorktreeBindingLocked(chatID)
+	}
+	if in.Worktree || inheritedWt != nil {
+		ownerID := worktreeOwnerIDFor(chatID, runID, runKind)
+		if e := s.provisionRunWorktree(rs, s.worktreeRepoDir(in), ownerID, inheritedWt); e != nil {
+			return RunHandle{}, e
+		}
+	}
 	s.runs[runID] = rs
 	if seeder, ok := s.workflowStore.(workflowRunSeeder); ok {
 		seeder.seed(runID, seedSteps)
 	}
-	if err := s.persistProviderSession(ProviderSessionState{
+	st := ProviderSessionState{
 		RunID:             runID,
 		ProjectID:         in.ProjectID,
 		WorkflowID:        in.WorkflowID,
 		ProviderSessionID: sessionID,
 		ProviderKey:       providerKey,
 		ProviderAccountID: stampAccount,
-		WorkingDirectory:  in.Cwd,
+		WorkingDirectory:  rs.workspaceCwd,
 		Status:            rs.status,
 		StartedAt:         now,
 		UpdatedAt:         now,
@@ -984,11 +1022,18 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 		Yolo:              resolvedYolo,
 		WorkingMode:       in.WorkingMode,
 		ChatFlowRef:       rs.chatFlowRef,
-	}); err != nil {
+	}
+	worktreeFieldsToSession(&st, rs.worktree)
+	if err := s.persistProviderSession(st); err != nil {
 		delete(s.runs, runID)
 		return RunHandle{}, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
 	}
-	return RunHandle{RunID: runID, ProviderSessionID: sessionID, ProviderKey: providerKey, Status: rs.status, StepID: stepID, RunKind: runKind, ChatID: chatID, LegSeq: legSeq}, nil
+	handle := RunHandle{RunID: runID, ProviderSessionID: sessionID, ProviderKey: providerKey, Status: rs.status, StepID: stepID, RunKind: runKind, ChatID: chatID, LegSeq: legSeq}
+	if rs.worktree != nil {
+		handle.WorktreeState = rs.worktree.State
+		handle.WorktreeSlug = rs.worktree.Slug
+	}
+	return handle, nil
 }
 
 // skipsResumeSessionValidation reports whether resumeRun should skip the
@@ -1046,6 +1091,7 @@ func (s *InteractiveService) resumeRun(runID string) (RunHandle, *apiErr) {
 	}
 	s.seedTranscriptFromDisk(rs)
 	s.healVibeFailedForReopenPark(rs.id)
+	s.validateWorktreeBindingOnResume(rs)
 	// Boundary first (same order as reconstruct): resume-confirm no-ops
 	// while boundary is pending, but not vice versa.
 	s.maybeReparkVibeSprintBoundary(rs.id)
@@ -1072,6 +1118,10 @@ func (s *InteractiveService) resumeRun(runID string) (RunHandle, *apiErr) {
 		FlowRef:           rs.chatFlowRef,
 		ChatID:            rs.chatID,
 		LegSeq:            rs.legSeq,
+	}
+	if rs.worktree != nil {
+		handle.WorktreeState = rs.worktree.State
+		handle.WorktreeSlug = rs.worktree.Slug
 	}
 	// Surface the synthetic chat step so the desktop can continue a resumed normal_chat
 	// run; its turns need a stepId and the chat step id is deterministic (T-7). Workflow
@@ -1117,6 +1167,10 @@ type runSnapshotView struct {
 	PendingApproval   *pendingApprovalView `json:"pendingApproval,omitempty"`
 	PendingQuestion   *pendingQuestionView `json:"pendingQuestion,omitempty"`
 	PendingGate       *pendingGateView     `json:"pendingGate,omitempty"`
+	// WorkingDirectory is the run's effective cwd (worktree path when opted in).
+	WorkingDirectory string `json:"workingDirectory,omitempty"`
+	// Worktree is the CP-71 binding projection; absent for normal runs.
+	Worktree *worktreeView `json:"worktree,omitempty"`
 }
 
 type runHistoryItem struct {
@@ -1148,6 +1202,9 @@ type runHistoryItem struct {
 	// selection instead of silently falling back to "Normal".
 	SubMode string `json:"subMode,omitempty"`
 	FlowRef string `json:"flowRef,omitempty"`
+	// CP-71 worktree badge fields (omitempty — absent for normal runs).
+	WorktreeState string `json:"worktreeState,omitempty"`
+	WorktreeSlug  string `json:"worktreeSlug,omitempty"`
 }
 
 func (s *InteractiveService) projectRunHistory(projectID string) []runHistoryItem {
@@ -1198,6 +1255,10 @@ func (s *InteractiveService) projectRunHistory(projectID string) []runHistoryIte
 			AgentStatus: rs.agentStatus,
 			SubMode:     rs.chatSubMode,
 			FlowRef:     rs.chatFlowRef,
+		}
+		if rs.worktree != nil {
+			item.WorktreeState = rs.worktree.State
+			item.WorktreeSlug = rs.worktree.Slug
 		}
 		if sess, ok := persistedSyncByRunID[rs.id]; ok {
 			item.SourceMachineID = sess.SourceMachineID
@@ -1251,6 +1312,8 @@ func (s *InteractiveService) projectRunHistory(projectID string) []runHistoryIte
 					AgentStatus:     sess.AgentStatus,
 					SubMode:         sess.ChatSubMode,
 					FlowRef:         sess.ChatFlowRef,
+					WorktreeState:   sess.WorktreeState,
+					WorktreeSlug:    sess.WorktreeSlug,
 				})
 			}
 		}
@@ -1383,6 +1446,8 @@ func (s *InteractiveService) runSnapshot(runID string) (runSnapshotView, *apiErr
 		ProviderSessionID: rs.providerSessionID,
 		ProviderKey:       rs.providerKey,
 		Status:            rs.status,
+		WorkingDirectory:  rs.workspaceCwd,
+		Worktree:          worktreeViewOf(rs.worktree),
 	}
 	// Sprint boundary wins over resume-confirm when both are somehow set
 	// (same order as SubmitGateDecision): one gate on screen, one router.
