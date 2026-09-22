@@ -43,6 +43,7 @@ func (s *InteractiveService) RegisterInteractiveRoutes(mux *http.ServeMux) {
 	// read by Desktop to hide the option entirely when the platform is not
 	// capable; dispatch runs the recipe-gated scaffold turn.
 	mux.HandleFunc("GET /client/projects/{projectId}/scaffold/status", s.handleScaffoldStatus)
+	mux.HandleFunc("GET /client/projects/{projectId}/scaffold/progress", s.handleScaffoldProgress)
 	mux.HandleFunc("POST /client/projects/{projectId}/scaffold", s.handleDispatchScaffold)
 	mux.HandleFunc("GET /client/projects/{projectId}/engine/gate-config", s.handleGetEngineGateConfig)
 	mux.HandleFunc("POST /client/projects/{projectId}/engine/gate-config", s.handleSetEngineGateConfig)

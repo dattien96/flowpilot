@@ -563,6 +563,10 @@ type PromptExecutionRequest struct {
 	AccountHomePath   string            `json:"accountHomePath,omitempty"`
 	ProxyURL          string            `json:"proxyUrl,omitempty"`
 	CustomEnv         map[string]string `json:"customEnv,omitempty"`
+	// OnStdoutDelta streams provider stdout as it lands in the artifact file
+	// (CA-916 scaffold observability). In-process only — never serialized.
+	// Providers with buffered capture (Gemini Agy) deliver one delta at the end.
+	OnStdoutDelta func(chunk string) `json:"-"`
 }
 
 type PromptExecutionResult struct {

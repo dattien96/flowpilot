@@ -1302,6 +1302,14 @@ func (r *Runner) ExecutePrompt(ctx context.Context, request PromptExecutionReque
 	}
 	cmd.Dir = workspace
 
+	// CA-916: stream stdout to the scaffold progress feed while the provider
+	// runs. Gemini's Agy capture writes stdout only at the end, so it flushes
+	// once below instead of tailing.
+	var stopStdoutTail func()
+	if request.OnStdoutDelta != nil && !isGemini {
+		stopStdoutTail = tailPromptStdout(execCtx, stdoutPath, request.OnStdoutDelta)
+	}
+
 	startedAt := time.Now().UTC()
 	var runErr error
 	if isGemini {
@@ -1316,8 +1324,14 @@ func (r *Runner) ExecutePrompt(ctx context.Context, request PromptExecutionReque
 		_, _ = stdoutFile.WriteString(stdoutText)
 		_, _ = stderrFile.WriteString(stderrText)
 		runErr = err
+		if request.OnStdoutDelta != nil && strings.TrimSpace(stdoutText) != "" {
+			request.OnStdoutDelta(stdoutText)
+		}
 	} else {
 		runErr = cmd.Run()
+		if stopStdoutTail != nil {
+			stopStdoutTail()
+		}
 	}
 	completedAt := time.Now().UTC()
 
@@ -4840,4 +4854,56 @@ func HasLocalAuthAtPath(providerKey string, homePath string) bool {
 	}
 
 	return false
+}
+
+// tailPromptStdout streams bytes appended to path via emit while a provider
+// process writes them (CA-916). The returned stop func blocks until the tailer
+// has flushed any remaining bytes — call it right after cmd.Run() returns so no
+// trailing output is lost. Poll-based (150ms) and provider-agnostic: it reads
+// the same stdout.txt artifact every file-stdout provider writes.
+func tailPromptStdout(ctx context.Context, path string, emit func(string)) func() {
+	done := make(chan struct{})
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		var offset int64
+		flush := func() {
+			f, err := os.Open(path)
+			if err != nil {
+				return
+			}
+			defer f.Close()
+			if _, err := f.Seek(offset, io.SeekStart); err != nil {
+				return
+			}
+			data, err := io.ReadAll(f)
+			if err != nil || len(data) == 0 {
+				return
+			}
+			offset += int64(len(data))
+			emit(string(data))
+		}
+		ticker := time.NewTicker(150 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				flush()
+				return
+			case <-ctx.Done():
+				flush()
+				return
+			case <-ticker.C:
+				flush()
+			}
+		}
+	}()
+	return func() {
+		select {
+		case <-done:
+		default:
+			close(done)
+		}
+		<-finished
+	}
 }

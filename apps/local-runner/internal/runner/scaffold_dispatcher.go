@@ -65,6 +65,10 @@ type ScaffoldRequest struct {
 	Force bool
 	// Trigger records who asked ("manual" | "init_all" | "create_project").
 	Trigger string
+	// OnProgress is the CA-916 observability sink: the dispatcher reports phase
+	// milestones and the AI turn's stdout deltas through it so clients can render
+	// the scaffold like a chat run. Nil is fine — progress is advisory only.
+	OnProgress func(ScaffoldProgressEvent)
 }
 
 // ScaffoldDispatchResult is the API/UI-facing outcome of a dispatch.
@@ -117,6 +121,20 @@ func NewScaffoldDispatcher(r *Runner) *ScaffoldDispatcher {
 		loadRecipe: skillpack.LoadScaffoldRecipe,
 		loadPrompt: loadBuiltinPromptText,
 	}
+}
+
+// emitProgress reports one observable scaffold moment to the CA-916 feed sink.
+// Nil-safe: progress is advisory and never alters dispatch control flow.
+func (d *ScaffoldDispatcher) emitProgress(req ScaffoldRequest, kind, phase string, attempt int, text string) {
+	if req.OnProgress == nil {
+		return
+	}
+	req.OnProgress(ScaffoldProgressEvent{
+		Kind:    kind,
+		Phase:   phase,
+		Attempt: attempt,
+		Text:    text,
+	})
 }
 
 // Dispatch runs the full scaffold orchestration. It never returns a transport
@@ -178,6 +196,8 @@ func (d *ScaffoldDispatcher) Dispatch(ctx context.Context, req ScaffoldRequest) 
 		return result, nil
 	}
 	result.SkillsAttached = append([]string(nil), recipe.ScaffoldSkills...)
+	d.emitProgress(req, "phase", "recipe", 0, fmt.Sprintf(
+		"recipe verified: %s (%d skills attached)", result.Platform, len(result.SkillsAttached)))
 
 	// CP-68 §6 replay guard: a previously completed scaffold for the same platform
 	// is not re-run (the generated files are the user's now, not ours).
@@ -205,7 +225,9 @@ func (d *ScaffoldDispatcher) Dispatch(ctx context.Context, req ScaffoldRequest) 
 		return result, nil
 	}
 
-	turn, turnErr := d.executeTurn(ctx, req, workspace, recipe, prompt)
+	d.emitProgress(req, "phase", "ai_turn", 1, fmt.Sprintf(
+		"AI scaffold turn started (%s/%s)", firstNonEmptyLineOf(req.ProviderKey, "auto"), firstNonEmptyLineOf(req.ModelName, "default")))
+	turn, turnErr := d.executeTurn(ctx, req, workspace, recipe, prompt, 1)
 	result.RunID = turn.RunID
 	if providerKey := strings.TrimSpace(turn.ProviderKey); providerKey != "" {
 		result.ProviderKey = providerKey
@@ -254,6 +276,7 @@ func (d *ScaffoldDispatcher) runCompilerGateLoop(
 	gate := NewCompilerGate(workspace, gateCommand, gateTimeout)
 
 	for attempt := 1; ; attempt++ {
+		d.emitProgress(req, "phase", "gate", attempt, fmt.Sprintf("compiler gate attempt %d: %s", attempt, gateCommand))
 		gateResult, gateErr := gate.Run(ctx)
 		if gateErr != nil {
 			result.Status = ScaffoldStatusError
@@ -264,6 +287,7 @@ func (d *ScaffoldDispatcher) runCompilerGateLoop(
 		result.Attempts = attempt
 
 		if gateResult.Passed {
+			d.emitProgress(req, "phase", "gate", attempt, fmt.Sprintf("compiler gate PASS (%s)", gateCommand))
 			result.Status = ScaffoldStatusDone
 			result.Message = fmt.Sprintf("scaffold: done — compiler gate PASS (%s)", gateCommand)
 			d.persistStatus(workspace, req, recipe, result)
@@ -291,8 +315,10 @@ func (d *ScaffoldDispatcher) runCompilerGateLoop(
 		}
 
 		// Heal: hand the structured diagnostics back to the same provider.
+		d.emitProgress(req, "phase", "heal", attempt+1, fmt.Sprintf(
+			"compiler gate FAIL — AI repair turn %d: %s", attempt+1, firstCompilerError(gateResult)))
 		feedback := buildCompilerFeedbackPrompt(gateCommand, gateResult)
-		repairTurn, repairErr := d.executeTurn(ctx, req, workspace, recipe, feedback)
+		repairTurn, repairErr := d.executeTurn(ctx, req, workspace, recipe, feedback, attempt+1)
 		if repairTurn.RunID != "" {
 			result.RunID = repairTurn.RunID
 		}
@@ -321,18 +347,29 @@ func (d *ScaffoldDispatcher) executeTurn(
 	workspace string,
 	recipe *skillpack.ScaffoldRecipe,
 	prompt string,
+	attempt int,
 ) (PromptExecutionResult, error) {
-	return d.executor.ExecutePrompt(ctx, PromptExecutionRequest{
+	execReq := PromptExecutionRequest{
 		ProviderKey:      strings.TrimSpace(req.ProviderKey),
 		ModelName:        strings.TrimSpace(req.ModelName),
 		ReasoningEffort:  strings.TrimSpace(req.ReasoningEffort),
 		Prompt:           prompt,
 		SkillIds:         append([]string(nil), recipe.ScaffoldSkills...),
+
 		WorkingDirectory: workspace,
 		AllowWrite:       true,
 		YoloMode:         true,
 		TimeoutMs:        scaffoldTurnTimeoutMs,
-	})
+	}
+	// CA-916: stream the provider's stdout into the progress feed so the turn
+	// renders like a chat response while it runs. Only attach when a sink exists
+	// so the tailer goroutine never spawns for unobserved dispatches.
+	if req.OnProgress != nil {
+		execReq.OnStdoutDelta = func(chunk string) {
+			d.emitProgress(req, "output", "ai_turn", attempt, chunk)
+		}
+	}
+	return d.executor.ExecutePrompt(ctx, execReq)
 }
 
 // scaffoldTurnFailure collapses the many ways a one-shot AI turn can fail into a
