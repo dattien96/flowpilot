@@ -16,9 +16,11 @@ import (
 	"runtime/debug"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
+	"flowpilot-runner/internal/lifecycle"
 	"flowpilot-runner/internal/runner"
 
 	"github.com/spf13/cobra"
@@ -28,6 +30,11 @@ type config struct {
 	workspace string
 	host      string
 	port      int
+	// lifecycleMode selects the CP-81 runner lifecycle authority mode
+	// (persistent|client-managed|supervised) for `runner serve`; empty falls
+	// back to FLOWPILOT_LIFECYCLE_MODE, then "persistent" (legacy behavior —
+	// a bare `runner serve` must not idle-exit on its own).
+	lifecycleMode string
 }
 
 func NewRootCommand() *cobra.Command {
@@ -89,7 +96,7 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 		},
 	})
 
-	runnerCmd.AddCommand(&cobra.Command{
+	serveCmd := &cobra.Command{
 		Use:   "serve",
 		Short: "Start the local HTTP server",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -149,6 +156,55 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 				go interactive.ScanDispatchRecoveryOnBoot(ctx)
 			}
 			interactive.AttachRunner(instance)
+
+			// CP-81 (SS-24/SD-28): attach the shared lifecycle authority. The
+			// manager owns leases/phases; on a draining transition it hands off
+			// to runSystemDrain, which performs the durable stop-all, writes the
+			// fenced supervisor command, runs bounded provider cleanup, and
+			// exits. Persistent mode keeps legacy behavior: no idle exit.
+			lifecycleMode := resolveLifecycleMode(cfg.lifecycleMode)
+			// drainOnceFn serializes the two drain entry points — the accepted
+			// HTTP response path and the OnPhase callback both reach here, but
+			// the process drains exactly once.
+			var lifecycleMgr *lifecycle.Manager
+			var drainOnce sync.Once
+			drainOnceFn := func(in runner.LifecycleDrainInput) {
+				drainOnce.Do(func() {
+					go runSystemDrain(instance, interactive, lifecycleMgr, in)
+				})
+			}
+			lifecycleMgr = lifecycle.NewManager(lifecycle.Config{
+				Mode:            lifecycleMode,
+				ProtocolVersion: runner.ProtocolVersion,
+				BuildID:         runner.EffectiveBuildID(),
+				WorkSnapshot:    interactive.LiveWorkSnapshot,
+				OnPhase: func(phase lifecycle.RunnerPhase, snap lifecycle.LifecycleSnapshot) {
+					log.Printf("[lifecycle] phase=%s clients=%d work=%d instance=%s",
+						phase, len(snap.Clients), snap.Workload.ActiveCount(), snap.RunnerInstanceID)
+					if phase == lifecycle.PhaseDrainingShutdown || phase == lifecycle.PhaseDrainingRestart {
+						action := "shutdown"
+						if phase == lifecycle.PhaseDrainingRestart && snap.Restart != nil {
+							action = "restart"
+						}
+						var restartID string
+						if snap.Restart != nil {
+							restartID = snap.Restart.RestartID
+						}
+						requester := lifecycleMgr.DrainRequester()
+						if requester == "" {
+							requester = "lifecycle-manager"
+						}
+						drainOnceFn(runner.LifecycleDrainInput{
+							Action:    action,
+							Reason:    "lifecycle:" + string(phase),
+							Requester: requester,
+							RestartID: restartID,
+						})
+					}
+				},
+			})
+			instance.AttachLifecycle(lifecycleMgr)
+			interactive.AttachLifecycle(lifecycleMgr)
 			// flowDefStore backs both built-in mirror sync and startResolvedFlow's
 			// flowRef resolution (CP-42/Task-175/177), mirrored into the existing
 			// workflows/workflow_steps tables. Requires Supabase to be configured
@@ -1779,68 +1835,32 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 				}
 				writeHTTPJSON(w, instance.RunCompatDeepCheck(r.Context()))
 			})
+			// CP-81 lease surface: /system/lifecycle + client register/
+			// heartbeat/release. /system/shutdown + /system/restart stay as
+			// handlers below so the CA-911/CA-913 requester-attribution
+			// contract (and its source-scanning test) is preserved.
+			instance.RegisterLifecycleRoutes(mux, runner.LifecycleRouteOptions{})
+
 			mux.HandleFunc("/system/shutdown", func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodPost {
 					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 					return
 				}
-
 				// This endpoint exits the process with no other trace — always record
 				// who asked before tearing down (runner vanished mid-scaffold twice
 				// with no caller attribution).
 				// describeRequester resolves remote port → owning local PID +
-			// X-Client marker (CA-913).
-			log.Printf("[runner] /system/shutdown requested %s", describeRequester(r))
-
-				err := writeSupervisorCommand(instance.Health().Cwd, "shutdown")
-				if err != nil {
-					// Never block shutdown on the supervisor handshake: the
-					// supervisor also tears down via child-exit detection, and
-					// a failed write must not leave the runner alive while the
-					// desktop reports "Turn off" did nothing.
-					log.Printf("[runner] supervisor shutdown command write failed: %v — exiting anyway", err)
-				}
-
-				w.WriteHeader(http.StatusAccepted)
-				w.Write([]byte(`{"status":"accepted"}`))
-				if f, ok := w.(http.Flusher); ok {
-					f.Flush()
-				}
-				// Supervisor (just dev) also watches supervisor.cmd. TUI-spawned
-				// runners have no supervisor — exit this process so POST
-				// /system/shutdown actually stops the listener. Cleanup runs
-				// bounded and async: a wedged provider teardown (e.g. an ACP
-				// handshake holding a process mutex) must never leave the
-				// endpoint hanging with the runner still serving.
-				go func() {
-					cleanupSessionsBounded(instance)
-					time.Sleep(150 * time.Millisecond)
-					os.Exit(0)
-				}()
+				// X-Client marker (CA-913).
+				log.Printf("[runner] /system/shutdown requested %s", describeRequester(r))
+				instance.HandleSystemActionRequest(w, r, runner.LifecycleRouteOptions{Drain: drainOnceFn}, "shutdown", describeRequester(r))
 			})
 			mux.HandleFunc("/system/restart", func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodPost {
 					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 					return
 				}
-
 				log.Printf("[runner] /system/restart requested %s", describeRequester(r))
-
-				err := writeSupervisorCommand(instance.Health().Cwd, "restart")
-				if err != nil {
-					writeHTTPError(w, http.StatusInternalServerError, err)
-					return
-				}
-
-				w.WriteHeader(http.StatusAccepted)
-				w.Write([]byte(`{"status":"accepted"}`))
-				if f, ok := w.(http.Flusher); ok {
-					f.Flush()
-				}
-				// Cleanup is best-effort here: the supervisor SIGINTs this
-				// process next, whose own handler re-runs bounded cleanup and
-				// exits. Keep the endpoint responsive even if teardown stalls.
-				go cleanupSessionsBounded(instance)
+				instance.HandleSystemActionRequest(w, r, runner.LifecycleRouteOptions{Drain: drainOnceFn}, "restart", describeRequester(r))
 			})
 
 			mux.HandleFunc("GET /translate", func(w http.ResponseWriter, r *http.Request) {
@@ -1861,25 +1881,13 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 				writeHTTPJSON(w, result)
 			})
 
-			// Graceful shutdown on SIGINT/SIGTERM
-			sigChan := make(chan os.Signal, 1)
+			// Graceful shutdown on SIGINT/SIGTERM — CP-81 F-6: with a managed
+			// lifecycle the first signal while busy prints the inventory and
+			// opens a 5s confirm window; a second signal inside the window
+			// force-drains. Unmanaged runners keep the legacy cleanup+exit.
+			sigChan := make(chan os.Signal, 2)
 			signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-			go func() {
-				<-sigChan
-				fmt.Println("\nShutting down local runner. Cleaning up active sessions...")
-				// A second Ctrl+C while cleanup runs force-exits immediately —
-				// signal.Notify swallows repeats otherwise, leaving the process
-				// unkillable from the keyboard if a session ever stalls teardown.
-				go func() {
-					<-sigChan
-					fmt.Println("\nForce exit.")
-					os.Exit(1)
-				}()
-				if !cleanupSessionsBounded(instance) {
-					fmt.Println("\nSession cleanup timed out — exiting anyway.")
-				}
-				os.Exit(0)
-			}()
+			go runSignalDrain(sigChan, instance, interactive, lifecycleMgr)
 
 			addr := netJoinHostPort(cfg.host, cfg.port)
 			// Loopback base URL the Claude adapter uses to build per-turn --mcp-config URLs (07).
@@ -1889,7 +1897,13 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 			instance.CleanupSessions()
 			return listenErr
 		},
-	})
+	}
+	// CP-81: the lifecycle authority mode this serve boots with. runnerboot
+	// spawns client-managed, the supervisor supervised, bare serve defaults
+	// to persistent (legacy: never idle-exits).
+	serveCmd.Flags().StringVar(&cfg.lifecycleMode, "lifecycle-mode", "",
+		"Lifecycle mode: persistent|client-managed|supervised (default: FLOWPILOT_LIFECYCLE_MODE env, then persistent)")
+	runnerCmd.AddCommand(serveCmd)
 
 	return runnerCmd
 }
@@ -2203,6 +2217,183 @@ func writeSupervisorCommand(workspace string, command string) error {
 		return err
 	}
 	return os.WriteFile(cmdPath, []byte(command), 0644)
+}
+
+// supervisorCommandRecord is the CP-81 Task-419 fenced command envelope: the
+// supervisor honors a command only while runnerInstanceId matches the live
+// runner and expiresAt has not passed — a stale record from a dead generation
+// can never kill a new one (SS-24 E-19, F-9).
+type supervisorCommandRecord struct {
+	Action           string `json:"action"` // "shutdown" | "restart"
+	RunnerInstanceID string `json:"runnerInstanceId"`
+	RestartID        string `json:"restartId,omitempty"`
+	RequestedAt      string `json:"requestedAt"`
+	ExpiresAt        string `json:"expiresAt"`
+	Requester        string `json:"requester"`
+}
+
+// writeSupervisorCommandFenced writes the fenced JSON command record. The
+// 60s expiry bounds how long the supervisor may act on it.
+func writeSupervisorCommandFenced(workspace string, rec supervisorCommandRecord) error {
+	if rec.RequestedAt == "" {
+		rec.RequestedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+	if rec.ExpiresAt == "" {
+		rec.ExpiresAt = time.Now().UTC().Add(60 * time.Second).Format(time.RFC3339Nano)
+	}
+	payload, err := json.Marshal(rec)
+	if err != nil {
+		return err
+	}
+	cmdPath := filepath.Join(workspace, ".flowpilot", "supervisor.cmd")
+	if err := os.MkdirAll(filepath.Dir(cmdPath), 0755); err != nil {
+		return err
+	}
+	return os.WriteFile(cmdPath, payload, 0644)
+}
+
+// resolveLifecycleMode picks the serve mode: explicit --lifecycle-mode flag,
+// then FLOWPILOT_LIFECYCLE_MODE, then persistent (a bare `runner serve` must
+// not idle-exit — that would break scripts and supervisor-less launches).
+func resolveLifecycleMode(flag string) lifecycle.LifecycleMode {
+	raw := strings.TrimSpace(strings.ToLower(flag))
+	if raw == "" {
+		raw = strings.TrimSpace(strings.ToLower(os.Getenv("FLOWPILOT_LIFECYCLE_MODE")))
+	}
+	switch lifecycle.LifecycleMode(raw) {
+	case lifecycle.ModeClientManaged:
+		return lifecycle.ModeClientManaged
+	case lifecycle.ModeSupervised:
+		return lifecycle.ModeSupervised
+	default:
+		return lifecycle.ModePersistent
+	}
+}
+
+// stopAllBudget bounds the durable stop-all inside a drain: cancel funcs and
+// fence writes are normally microseconds, but a wedged durable store must not
+// pin the process alive forever — bounded like the CA-901 provider cleanup.
+const stopAllBudget = 10 * time.Second
+
+// runSystemDrain performs the confirmed/accepted drain: durable stop-all →
+// fenced supervisor command → bounded provider cleanup → MarkStopped → exit.
+// Invoked exactly once per process via drainOnceFn.
+func runSystemDrain(instance *runner.Runner, interactive *runner.InteractiveService, mgr *lifecycle.Manager, in runner.LifecycleDrainInput) {
+	log.Printf("[lifecycle] drain start action=%s reason=%q restartId=%q requester=%s",
+		in.Action, in.Reason, in.RestartID, in.Requester)
+
+	// 1. Durable stop-all FIRST (Task-415): provider-agnostic — fences + cancels
+	//    every active run/turn/child/scaffold before process teardown so no
+	//    orphaned provider execution outlives the runner.
+	if interactive != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), stopAllBudget)
+		res, err := interactive.StopAllForSystemAction(ctx, in.Reason)
+		cancel()
+		if err != nil {
+			log.Printf("[lifecycle] stop-all incomplete action=%s: %v", in.Action, err)
+		}
+		log.Printf("[lifecycle] stop-all done action=%s stoppedRoots=%v cancelledScaffolds=%v",
+			in.Action, res.StoppedRoots, res.CancelledScaffolds)
+	}
+
+	// 2. Fenced supervisor command — the supervisor only honors it while the
+	//    runnerInstanceId matches the generation it spawned. Best-effort: a
+	//    failed write must not leave the runner alive while a client reports
+	//    "Turn off" did nothing (same rule as the legacy path).
+	if instance != nil {
+		rec := supervisorCommandRecord{
+			Action:           in.Action,
+			RunnerInstanceID: mgrIdentity(mgr),
+			RestartID:        in.RestartID,
+			Requester:        in.Requester,
+		}
+		if err := writeSupervisorCommandFenced(instance.Health().Cwd, rec); err != nil {
+			log.Printf("[runner] supervisor %s command write failed: %v — exiting anyway", in.Action, err)
+		}
+	}
+
+	// 3. Bounded provider/process cleanup (CA-901 budget preserved).
+	if instance != nil && !cleanupSessionsBounded(instance) {
+		log.Printf("[lifecycle] session cleanup timed out during %s — exiting anyway", in.Action)
+	}
+	if mgr != nil {
+		mgr.MarkStopped()
+	}
+	log.Printf("[lifecycle] drain complete action=%s — exiting", in.Action)
+	// Small settle so in-flight 202 responses flush before the socket dies.
+	time.Sleep(150 * time.Millisecond)
+	os.Exit(0)
+}
+
+func mgrIdentity(mgr *lifecycle.Manager) string {
+	if mgr == nil {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	snap, err := mgr.Snapshot(ctx)
+	if err != nil {
+		return ""
+	}
+	return snap.RunnerInstanceID
+}
+
+// signalConfirmWindow is the F-6 warn window: the first SIGINT/SIGTERM on a
+// busy/shared runner prints the inventory and arms this window; a second
+// signal inside it force-drains, after it a fresh warn cycle begins.
+const signalConfirmWindow = 5 * time.Second
+
+// runSignalDrain owns SIGINT/SIGTERM for `runner serve`. Unmanaged runners
+// keep the legacy cleanup+exit; managed runners route through the lifecycle
+// manager's two-phase shutdown (F-6 warn-then-force).
+func runSignalDrain(sigChan chan os.Signal, instance *runner.Runner, interactive *runner.InteractiveService, mgr *lifecycle.Manager) {
+	if mgr == nil {
+		<-sigChan
+		fmt.Println("\nShutting down local runner. Cleaning up active sessions...")
+		go func() {
+			<-sigChan
+			fmt.Println("\nForce exit.")
+			os.Exit(1)
+		}()
+		if !cleanupSessionsBounded(instance) {
+			fmt.Println("\nSession cleanup timed out — exiting anyway.")
+		}
+		os.Exit(0)
+		return
+	}
+
+	var warnUntil time.Time
+	draining := false
+	for range sigChan {
+		if draining {
+			fmt.Println("\nForce exit.")
+			os.Exit(1)
+		}
+		now := time.Now()
+		force := !warnUntil.IsZero() && now.Before(warnUntil)
+		res, err := mgr.RequestShutdown(context.Background(), lifecycle.SystemActionInput{
+			Reason:    "signal",
+			Requester: "signal",
+			Force:     force,
+		})
+		if err != nil {
+			log.Printf("[lifecycle] signal shutdown rejected: %v", err)
+			continue
+		}
+		if res.ConfirmationRequired {
+			warnUntil = now.Add(signalConfirmWindow)
+			fmt.Printf("\nRunner is busy: %d client(s), %d work item(s). Press Ctrl+C again within %s to force shutdown.\n",
+				len(res.Snapshot.Clients), res.Snapshot.Workload.ActiveCount(), signalConfirmWindow)
+			for _, it := range res.Snapshot.Workload.Items {
+				fmt.Printf("  - %s run=%s %s\n", it.Kind, it.RunID, it.Detail)
+			}
+			continue
+		}
+		// Accepted — OnPhase already launched the drain goroutine. Stay in the
+		// loop so a second signal during cleanup still force-exits.
+		draining = true
+		fmt.Println("\nShutting down local runner. Cleaning up active sessions...")
+	}
 }
 
 // shutdownCleanupBudget bounds graceful session teardown during shutdown,
