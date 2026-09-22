@@ -315,6 +315,9 @@ export type RunStatus =
   | "starting"
   | "running"
   | "waiting_approval"
+  /** Emitted by the runner while a run is parked at a user-confirm gate
+   *  (e.g. SS-Lock, Task-333). Backend RunStatus: waiting_user_approval. */
+  | "waiting_user_approval"
   | "waiting_question"
   /** BUG-231: the flow's agent loop paused awaiting the user (escalate or round-cap reached) — distinct from "running" so the composer unlocks and a recovery affordance can render. */
   | "blocked"

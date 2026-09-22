@@ -1778,6 +1778,96 @@ input {
   gap: var(--space-3);
 }
 .project-rail-section,
+/* Task-404: attention queue — pinned above history groups in the navigator. */
+.attention-queue {
+  display: grid;
+  gap: var(--space-2);
+}
+.attention-queue-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.attention-queue-head label {
+  display: block;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--warn);
+  margin-bottom: 2px;
+}
+.attention-queue-badge {
+  min-width: 16px;
+  height: 16px;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-md);
+  background: var(--warn);
+  color: #1a1a1a;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+  text-align: center;
+}
+.attention-queue-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-1);
+}
+.attention-queue-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-2) var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-2);
+  color: var(--text);
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+.attention-queue-item:hover {
+  border-color: var(--warn);
+  background: var(--bg-3);
+}
+.attention-kind {
+  flex-shrink: 0;
+  padding: 1px var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  background: var(--bg-3);
+  color: var(--text-dim);
+}
+.attention-kind--approval,
+.attention-kind--ss_lock,
+.attention-kind--cp_lock {
+  background: rgba(240, 180, 41, 0.16);
+  color: var(--warn);
+}
+.attention-kind--question,
+.attention-kind--r_requirement,
+.attention-kind--decision {
+  background: rgba(176, 124, 255, 0.16);
+  color: var(--ask);
+}
+.attention-kind--gate,
+.attention-kind--dispatch_attention {
+  background: rgba(76, 141, 255, 0.16);
+  color: var(--accent);
+}
+.attention-queue-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .project-history-section {
   display: grid;
   gap: var(--space-2);
@@ -1844,6 +1934,7 @@ input {
 .project-history-more,
 .project-rail-more,
 .project-history-group-head,
+.attention-queue-item,
 .card {
   transition: border-color var(--dur-fast) var(--ease-standard),
     background-color var(--dur-fast) var(--ease-standard);

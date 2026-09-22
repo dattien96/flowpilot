@@ -1,0 +1,131 @@
+// Task-404 (T-1/T-1b): client-side attention queue — a singleton observer that
+// aggregates pending user actions across all runs of the ACTIVE project into a
+// flat, ordered list for the Navigator. Pure derivation: no new backend calls,
+// fed by run-history polling (ingestHistory), focused-run snapshot caching
+// (ingestSnapshot), and the dispatch-attention card (ingestDispatch).
+
+import type { RunHistoryItem } from "@/types/contract";
+import type { PendingApproval, PendingQuestion } from "@/state/timelineReducer";
+
+export type AttentionKind =
+  | "approval"
+  | "question"
+  | "gate"
+  | "ss_lock"
+  | "cp_lock"
+  | "r_requirement"
+  | "decision"
+  | "dispatch_attention";
+
+export interface AttentionItem {
+  runId: string;
+  chatId: string;
+  runTitle: string;
+  kind: AttentionKind;
+  waitingSince: string;
+  providerKey?: string;
+}
+
+/** Minimal pending-fields projection — satisfied by the internal RunSnapshot
+ *  cache and by the /client/workflow-runs/{id} snapshot view. */
+export interface RunSnapshotAttentionView {
+  status?: string;
+  pendingApprovals?: PendingApproval[];
+  pendingQuestions?: PendingQuestion[];
+  dispatchAttention?: Array<{ kind?: string }>;
+}
+
+// RunStatus strings that mean "a human must act before this run can proceed".
+const WAITING_STATUS: Record<string, AttentionKind> = {
+  waiting_approval: "approval",
+  waiting_user_approval: "approval",
+  waiting_user_confirm: "ss_lock",
+  waiting_question: "question",
+  blocked: "gate",
+};
+
+export function deriveAttentionItems(
+  history: RunHistoryItem[],
+  snapshots: Record<string, RunSnapshotAttentionView | undefined>,
+  activeProjectId: string,
+): AttentionItem[] {
+  const items: AttentionItem[] = [];
+  for (const h of history) {
+    if (h.projectId !== activeProjectId) continue;
+    const base = WAITING_STATUS[h.status];
+    if (!base) continue;
+    items.push({
+      runId: h.runId,
+      chatId: h.chatId || h.runId,
+      runTitle: (h.lastPrompt || h.lastMessage || "").trim() || h.runId,
+      kind: refineKind(base, snapshots[h.runId]),
+      waitingSince: h.updatedAt,
+      providerKey: h.providerKey,
+    });
+  }
+  // Oldest waiting runs first (spec AC).
+  items.sort((a, b) => (a.waitingSince < b.waitingSince ? -1 : a.waitingSince > b.waitingSince ? 1 : 0));
+  return items;
+}
+
+function refineKind(base: AttentionKind, snap: RunSnapshotAttentionView | undefined): AttentionKind {
+  if (!snap) return base;
+  if (snap.dispatchAttention && snap.dispatchAttention.length > 0) return "dispatch_attention";
+  if (snap.pendingApprovals && snap.pendingApprovals.length > 0) return "approval";
+  if (snap.pendingQuestions && snap.pendingQuestions.length > 0) {
+    const prompt = (snap.pendingQuestions[0].prompt ?? "").toLowerCase();
+    if (prompt.includes("ss-lock") || prompt.includes("ss lock")) return "ss_lock";
+    if (prompt.includes("cp-lock") || prompt.includes("cp lock")) return "cp_lock";
+    return "question";
+  }
+  return base;
+}
+
+type Listener = () => void;
+
+const listeners = new Set<Listener>();
+let historyItems: RunHistoryItem[] = [];
+const snapshotViews: Record<string, RunSnapshotAttentionView | undefined> = {};
+const dispatchViews: Record<string, Array<{ kind?: string }>> = {};
+let activeProjectId = "";
+
+function mergedSnapshots(): Record<string, RunSnapshotAttentionView | undefined> {
+  const out: Record<string, RunSnapshotAttentionView | undefined> = { ...snapshotViews };
+  for (const [runId, items] of Object.entries(dispatchViews)) {
+    out[runId] = { ...(out[runId] ?? {}), dispatchAttention: items };
+  }
+  return out;
+}
+
+function recompute(): void {
+  attentionQueue.items = deriveAttentionItems(historyItems, mergedSnapshots(), activeProjectId);
+  for (const fn of listeners) fn();
+}
+
+export const attentionQueue: {
+  items: AttentionItem[];
+  ingestHistory(items: RunHistoryItem[], projectId?: string): void;
+  ingestSnapshot(runId: string, snap: RunSnapshotAttentionView): void;
+  ingestDispatch(runId: string, items: Array<{ kind?: string }>): void;
+  subscribe(fn: Listener): () => void;
+} = {
+  items: [],
+  ingestHistory(items, projectId) {
+    historyItems = items;
+    if (projectId !== undefined) activeProjectId = projectId;
+    recompute();
+  },
+  ingestSnapshot(runId, snap) {
+    snapshotViews[runId] = snap;
+    recompute();
+  },
+  ingestDispatch(runId, items) {
+    if (items.length === 0) delete dispatchViews[runId];
+    else dispatchViews[runId] = items;
+    recompute();
+  },
+  subscribe(fn) {
+    listeners.add(fn);
+    return () => listeners.delete(fn);
+  },
+};

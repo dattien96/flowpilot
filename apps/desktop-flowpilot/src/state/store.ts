@@ -36,6 +36,7 @@ import { ideBridge } from "@/client/ideBridge";
 import { getAdminUseCases } from "@/clientCore";
 import { ADMIN_WEB_URL } from "@/config";
 import { isSyncableRun } from "@/components/navigatorHistory";
+import { attentionQueue, type AttentionItem } from "@/state/attentionQueue";
 import {
   mapNavigatorStep,
   mapNavigatorWorkflow,
@@ -420,6 +421,9 @@ interface AppState {
   syncBatchProgress?: { projectId: string; done: number; total: number };
   historyLoading: boolean;
   historyLoadError?: string;
+  /** Task-404: derived attention-queue items for the active project (singleton
+   *  observer mirrors into the store so components re-render). */
+  attentionItems: AttentionItem[];
   remoteHistoryLoading: boolean;
   remoteHistoryLoadError?: string;
   pendingApprovals: PendingApproval[];
@@ -573,6 +577,9 @@ interface AppState {
     options?: { refresh?: boolean; open?: boolean },
   ): Promise<void>;
   openHistoryRun(runId: string): Promise<void>;
+  /** Task-404: open the run that owns an attention-queue item — reuses the
+   *  existing history-picker path (openHistoryRun), no new navigation. */
+  openRunAtAttention(runId: string, chatId: string): Promise<void>;
   resetRun(): void;
   openInIde(path: string, line?: number): void;
   openAdminWeb(): void;
@@ -614,6 +621,7 @@ export const useStore = create<AppState>((set, get) => ({
   workflowStepRuntimeMeta: {},
   historyLoading: false,
   remoteHistoryLoading: false,
+  attentionItems: [],
   latestTokenUsage: undefined,
   recoverable: false,
   scenario: "normal",
@@ -2284,6 +2292,7 @@ export const useStore = create<AppState>((set, get) => ({
   async loadRunHistory() {
     const { client, selectedProjectId } = get();
     if (!selectedProjectId) {
+      attentionQueue.ingestHistory([], "");
       set({ runHistory: [], historyLoading: false, historyLoadError: undefined });
       return;
     }
@@ -2293,6 +2302,7 @@ export const useStore = create<AppState>((set, get) => ({
     try {
       const runHistory = await client.listRunHistory(selectedProjectId);
       if (get()._historyLoadSeq !== seq) return;
+      attentionQueue.ingestHistory(runHistory, selectedProjectId);
       set({ runHistory, historyLoading: false, historyLoadError: undefined });
     } catch (err) {
       if (get()._historyLoadSeq !== seq) return;
@@ -2682,6 +2692,12 @@ export const useStore = create<AppState>((set, get) => ({
     startOrchestrationStream(handle.runId, client, set, get);
     void get().refreshAgentRuns();
     void get().refreshWorkflowStepRuntime();
+  },
+
+  // Task-404: attention items carry the run that is blocked; opening it goes
+  // through the exact same history-picker path as clicking a history row.
+  async openRunAtAttention(runId, _chatId) {
+    await get().openHistoryRun(runId);
   },
 
   resetRun() {
@@ -3652,5 +3668,15 @@ function emptyRunSnapshot(status: RunStatus): Partial<AppState> {
 
 function cacheRunSnapshot(state: AppState, runId?: string): void {
   if (!runId) return;
-  state._runSnapshots[runId] = snapshotRunState(state);
+  const snap = snapshotRunState(state);
+  state._runSnapshots[runId] = snap;
+  // Task-404: feed the attention-queue observer with the focused run's pending
+  // fields so its queue entry refines to the right kind (approval/question).
+  attentionQueue.ingestSnapshot(runId, snap);
 }
+
+// Task-404: mirror the singleton observer's derived items into zustand so the
+// Navigator queue re-renders whenever a producer ingests new state.
+attentionQueue.subscribe(() => {
+  useStore.setState({ attentionItems: attentionQueue.items });
+});
