@@ -141,7 +141,7 @@ func writeInteractiveError(w http.ResponseWriter, e *apiErr) {
 // ---- catalog handlers ------------------------------------------------------
 
 func (s *InteractiveService) handleListProjects(w http.ResponseWriter, r *http.Request) {
-	projects, err := s.catalog.ListProjects(r.Context())
+	projects, err := s.currentCatalog().ListProjects(r.Context())
 	if err != nil {
 		writeInteractiveError(w, newAPIErr(http.StatusBadGateway, "catalog_unavailable", err.Error()))
 		return
@@ -150,7 +150,7 @@ func (s *InteractiveService) handleListProjects(w http.ResponseWriter, r *http.R
 }
 
 func (s *InteractiveService) handleCreateProject(w http.ResponseWriter, r *http.Request) {
-	creator, ok := s.catalog.(ProjectCreatorStore)
+	creator, ok := s.currentCatalog().(ProjectCreatorStore)
 	if !ok {
 		writeInteractiveError(w, newAPIErr(http.StatusNotImplemented, "not_implemented", "current catalog store does not support creating projects"))
 		return
@@ -205,7 +205,7 @@ func (s *InteractiveService) handleCreateProject(w http.ResponseWriter, r *http.
 }
 
 func (s *InteractiveService) handleListWorkflows(w http.ResponseWriter, r *http.Request) {
-	workflows, err := s.catalog.ListWorkflows(r.Context())
+	workflows, err := s.currentCatalog().ListWorkflows(r.Context())
 	if err != nil {
 		writeInteractiveError(w, newAPIErr(http.StatusBadGateway, "catalog_unavailable", err.Error()))
 		return
@@ -214,7 +214,7 @@ func (s *InteractiveService) handleListWorkflows(w http.ResponseWriter, r *http.
 }
 
 func (s *InteractiveService) handleListSteps(w http.ResponseWriter, r *http.Request) {
-	steps, err := s.catalog.ListSteps(r.Context())
+	steps, err := s.currentCatalog().ListSteps(r.Context())
 	if err != nil {
 		writeInteractiveError(w, newAPIErr(http.StatusBadGateway, "catalog_unavailable", err.Error()))
 		return
@@ -866,7 +866,7 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 	resolvedModel := in.Model
 	resolvedYolo := in.YoloMode
 	if in.WorkflowID != "" && (stepID == "" || stepID == in.WorkflowID) {
-		stepCatalog, ok := s.catalog.(WorkflowStepCatalogStore)
+		stepCatalog, ok := s.currentCatalog().(WorkflowStepCatalogStore)
 		if !ok {
 			return RunHandle{}, newAPIErr(http.StatusBadGateway, "catalog_unavailable", "workflow step catalog is unavailable")
 		}
@@ -917,7 +917,7 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 		// execution inherits YOLO from the workflow definition itself, while a direct
 		// single-step execution inherits from that selected step. Do not let the entry
 		// step's yolo_mode override a workflow launch.
-		if catalog, ok := s.catalog.(CatalogStore); ok {
+		if catalog, ok := s.currentCatalog().(CatalogStore); ok {
 			if workflows, err := catalog.ListWorkflows(context.Background()); err == nil {
 				for _, wf := range workflows {
 					if wf.ID != in.WorkflowID {
@@ -932,7 +932,7 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 			}
 		}
 		if resolvedModel == "" {
-			if catalog, ok := s.catalog.(CatalogStore); ok {
+			if catalog, ok := s.currentCatalog().(CatalogStore); ok {
 				if projects, err := catalog.ListProjects(context.Background()); err == nil {
 					for _, proj := range projects {
 						if proj.ID == in.ProjectID {
@@ -953,7 +953,7 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 		// fallback either. Falling back to the project default here let a
 		// step with no model configured silently run on an unrelated
 		// project-wide model instead of surfacing as non-runnable.
-		if catalog, ok := s.catalog.(CatalogStore); ok {
+		if catalog, ok := s.currentCatalog().(CatalogStore); ok {
 			if steps, err := catalog.ListSteps(context.Background()); err == nil {
 				for _, step := range steps {
 					if step.ID != stepID {

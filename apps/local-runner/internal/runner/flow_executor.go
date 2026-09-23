@@ -1886,9 +1886,7 @@ func (s *InteractiveService) resolveConfiguredModelForAgent(ctx context.Context,
 	if agentName == "" {
 		return ""
 	}
-	s.mu.Lock()
-	catalog := s.catalog
-	s.mu.Unlock()
+	catalog := s.currentCatalog()
 	if catalog == nil {
 		return ""
 	}

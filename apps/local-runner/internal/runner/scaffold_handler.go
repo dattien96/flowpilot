@@ -211,10 +211,11 @@ func (s *InteractiveService) resolveScaffoldProviderKey(providerKey, modelName s
 // lookupProject resolves a project row by id via the catalog. Best-effort: a
 // catalog that cannot list projects yields no project, never an error.
 func (s *InteractiveService) lookupProject(projectID string) (Project, bool) {
-	if strings.TrimSpace(projectID) == "" || s.catalog == nil {
+	catalog := s.currentCatalog()
+	if strings.TrimSpace(projectID) == "" || catalog == nil {
 		return Project{}, false
 	}
-	projects, err := s.catalog.ListProjects(context.Background())
+	projects, err := catalog.ListProjects(context.Background())
 	if err != nil {
 		return Project{}, false
 	}
