@@ -13,6 +13,8 @@ const KIND_LABEL: Record<AttentionKind, string> = {
   r_requirement: "Requirement",
   decision: "Decision",
   dispatch_attention: "Dispatch",
+  worktree_merge: "Merge",
+  quota: "Quota",
 };
 
 const STATUS_LABEL: Record<string, string> = {

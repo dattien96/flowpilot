@@ -37,8 +37,16 @@ contextBridge.exposeInMainWorld("flowpilot", {
     headers: Array<[string, string]>;
     body: string;
   }> => ipcRenderer.invoke("http:request", payload),
-  showNotification: (title: string, body: string): Promise<{ ok: boolean }> =>
-    ipcRenderer.invoke("notification:show", { title, body }),
+  showNotification: (title: string, body: string, runId?: string): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke("notification:show", { title, body, runId }),
+  // CP-84 (Task-431 T-5): notification click → deep-link into the run.
+  onNotificationClick: (cb: (runId: string) => void): (() => void) => {
+    const listener = (_e: unknown, payload: { runId?: string }): void => {
+      if (payload?.runId) cb(payload.runId);
+    };
+    ipcRenderer.on("notification:clicked", listener);
+    return () => ipcRenderer.removeListener("notification:clicked", listener);
+  },
   isGitRepo: (path: string): Promise<boolean> => ipcRenderer.invoke("project:isGitRepo", { path }),
   // Task-427 (CP-83): VS Code-style embedded terminal. Fully isolated from the
   // runner — the renderer resolves cwd (worktreePath ?? project.path) and the

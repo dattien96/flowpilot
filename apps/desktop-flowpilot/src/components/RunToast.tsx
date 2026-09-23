@@ -8,22 +8,34 @@ import { CloseIcon, DisclosureCaret } from "@/components/icons";
 interface Toast {
   id: number;
   message: string;
-  kind: "done" | "approval" | "question" | "blocked";
+  kind: "done" | "approval" | "question" | "blocked" | "error";
 }
 
 let seq = 0;
 const ACTIVE_STATUSES: RunStatus[] = ["starting", "running", "waiting_approval", "waiting_question", "blocked", "completed", "failed"];
 
-function fireNative(title: string, body: string) {
+function fireNative(title: string, body: string, runId?: string) {
   console.log("[RunToast] fireNative", title, body);
-  void window.flowpilot?.showNotification(title, body);
+  void window.flowpilot?.showNotification(title, body, runId);
 }
 
 export function RunToast(): React.ReactElement | null {
   const status = useStore((s) => s.status);
+  const runToast = useStore((s) => s.runToast);
   const prevRef = useRef<RunStatus>(status);
+  const seenToastRef = useRef(0);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [modalOpen, setModalOpen] = useState(false);
+
+  // CP-84 (Task-431 T-4): store-driven toasts — e.g. stale/409 inbox submits.
+  useEffect(() => {
+    if (!runToast || runToast.id <= seenToastRef.current) return;
+    seenToastRef.current = runToast.id;
+    const toast: Toast = { id: ++seq, message: runToast.text, kind: "error" };
+    setToasts((ts) => [...ts, toast]);
+    const tid = setTimeout(() => setToasts((ts) => ts.filter((t) => t.id !== toast.id)), 8000);
+    return () => clearTimeout(tid);
+  }, [runToast]);
 
   useEffect(() => {
     if (toasts.length === 0) {
@@ -44,7 +56,7 @@ export function RunToast(): React.ReactElement | null {
     if (status === "completed" && ACTIVE_STATUSES.includes(prev) && prev !== "completed") {
       const toast: Toast = { id: ++seq, message: "AI response complete", kind: "done" };
       setToasts((ts) => [...ts, toast]);
-      fireNative("FlowPilot", "AI response complete");
+      fireNative("FlowPilot", "AI response complete", useStore.getState().runId);
       const tid = setTimeout(() => setToasts((ts) => ts.filter((t) => t.id !== toast.id)), 4000);
       return () => clearTimeout(tid);
     }
@@ -52,7 +64,7 @@ export function RunToast(): React.ReactElement | null {
     if (status === "waiting_approval" && prev !== "waiting_approval") {
       const toast: Toast = { id: ++seq, message: "Approval required — AI is waiting for you", kind: "approval" };
       setToasts((ts) => [...ts, toast]);
-      fireNative("FlowPilot", "Approval required — AI is waiting for your input");
+      fireNative("FlowPilot", "Approval required — AI is waiting for your input", useStore.getState().runId);
       const tid = setTimeout(() => setToasts((ts) => ts.filter((t) => t.id !== toast.id)), 8000);
       return () => clearTimeout(tid);
     }
@@ -60,7 +72,7 @@ export function RunToast(): React.ReactElement | null {
     if (status === "waiting_question" && prev !== "waiting_question") {
       const toast: Toast = { id: ++seq, message: "AI has a question for you", kind: "question" };
       setToasts((ts) => [...ts, toast]);
-      fireNative("FlowPilot", "AI has a question for you");
+      fireNative("FlowPilot", "AI has a question for you", useStore.getState().runId);
       const tid = setTimeout(() => setToasts((ts) => ts.filter((t) => t.id !== toast.id)), 8000);
       return () => clearTimeout(tid);
     }
@@ -71,7 +83,7 @@ export function RunToast(): React.ReactElement | null {
     if (status === "blocked" && prev !== "blocked") {
       const toast: Toast = { id: ++seq, message: "Flow paused — needs your input", kind: "blocked" };
       setToasts((ts) => [...ts, toast]);
-      fireNative("FlowPilot", "Flow paused — needs your input");
+      fireNative("FlowPilot", "Flow paused — needs your input", useStore.getState().runId);
       const tid = setTimeout(() => setToasts((ts) => ts.filter((t) => t.id !== toast.id)), 8000);
       return () => clearTimeout(tid);
     }

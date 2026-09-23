@@ -370,6 +370,9 @@ func (s *InteractiveService) handleSSLockConfirm(w http.ResponseWriter, r *http.
 			fmt.Sprintf("unknown ss-lock action %q (want approve|reject)", body.Action)))
 		return
 	}
+	// CP-84 (Task-429): the gate mutation above ran under the gate mutex —
+	// mark the decision dirty now that it is released (s.mu order is safe here).
+	s.markRunRealtimeDirty(runID)
 	snap, ok := s.SSLockSnapshot(runID)
 	if !ok {
 		writeInteractiveError(w, newAPIErr(http.StatusNotFound, "ss_lock_not_found", runID))

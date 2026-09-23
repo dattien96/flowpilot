@@ -2,6 +2,14 @@ import { useEffect, useRef, useState } from "react";
 import { useStore } from "@/state/store";
 import type { AttentionItem, AttentionKind } from "@/state/attentionQueue";
 import { InboxIcon, EyeIcon } from "@/components/icons";
+import {
+  DecisionControls,
+  DecisionPreview,
+  batchChoiceFor,
+  filterAttentionItems,
+  isBatchEligible,
+  isHeavyKind,
+} from "@/components/DecisionControls";
 
 const KIND_LABEL: Record<AttentionKind, string> = {
   approval: "Approval",
@@ -12,6 +20,8 @@ const KIND_LABEL: Record<AttentionKind, string> = {
   r_requirement: "Requirement",
   decision: "Decision",
   dispatch_attention: "Dispatch",
+  worktree_merge: "Merge",
+  quota: "Quota",
 };
 
 function truncate(text: string, max = 72): string {
@@ -47,11 +57,16 @@ export function AttentionInbox(): React.ReactElement {
   const approveAttentionItem = useStore((s) => s.approveAttentionItem);
   const answerAttentionItem = useStore((s) => s.answerAttentionItem);
   const openSpectator = useStore((s) => s.openSpectator);
+  const submitAttentionDecision = useStore((s) => s.submitAttentionDecision);
   const focusedRunId = useStore((s) => s.runId);
   const projects = useStore((s) => s.projects);
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState<Set<string>>(new Set());
   const [errors, setErrors] = useState<Record<string, string>>({});
+  // CP-84 (Task-431): local triage state — never persisted to the store.
+  const [kindFilter, setKindFilter] = useState<string>("");
+  const [projectFilter, setProjectFilter] = useState<string>("");
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const rootRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -166,6 +181,55 @@ export function AttentionInbox(): React.ReactElement {
     return <div className="inbox-actions">{blocks}</div>;
   };
 
+  // ---- Task-431: triage + per-kind controls --------------------------------
+  const visible = filterAttentionItems(items, kindFilter || undefined, projectFilter || undefined);
+  const eligible = visible.filter(isBatchEligible);
+  const toggleExpanded = (runId: string) =>
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(runId)) next.delete(runId);
+      else next.add(runId);
+      return next;
+    });
+
+  const batchApprove = async () => {
+    // Sequential submits — never a bulk endpoint; partial failures reported
+    // per-item and the items stay in the queue (T-3/T-4).
+    for (const item of eligible) {
+      const d = item.decision;
+      const choice = d ? batchChoiceFor(item) : undefined;
+      if (!d || !choice) continue;
+      const key = `${item.runId}:${d.id}`;
+      // act() records a per-item error on failure — the partial-failure report.
+      await act(item, key, () => submitAttentionDecision(item.runId, d, choice));
+    }
+  };
+
+  const renderDecision = (item: AttentionItem) => {
+    const d = item.decision;
+    if (!d) return renderActions(item);
+    const acting = busy.has(`${item.runId}:${d.id}`);
+    const showPreview = expanded.has(item.runId);
+    return (
+      <div className="inbox-actions">
+        <DecisionControls
+          item={item}
+          acting={acting}
+          onAct={(choice, customText) =>
+            void act(item, `${item.runId}:${d.id}`, () =>
+              submitAttentionDecision(item.runId, d, choice, customText),
+            )
+          }
+          onOpen={() => {
+            setOpen(false);
+            void openRunAtAttention(item.runId, item.chatId, item.projectId);
+          }}
+        />
+        {showPreview && <DecisionPreview item={item} />}
+      </div>
+    );
+  };
+
   return (
     <div className="attention-inbox" ref={rootRef}>
       <button
@@ -185,14 +249,72 @@ export function AttentionInbox(): React.ReactElement {
       </button>
       {open && (
         <div className="attention-inbox-pop" role="menu" aria-label="Runs needing attention">
-          <div className="attention-inbox-head">Needs attention</div>
+          <div className="attention-inbox-head">
+            <span>Needs attention</span>
+            {eligible.length >= 2 && (
+              <button
+                type="button"
+                className="inbox-act inbox-act--approve inbox-batch-approve"
+                onClick={() => void batchApprove()}
+              >
+                Approve all ({eligible.length})
+              </button>
+            )}
+          </div>
+          {items.length > 0 && (
+            <div className="attention-inbox-filters">
+              <select
+                className="attention-filter"
+                aria-label="Filter by kind"
+                value={kindFilter}
+                onChange={(e) => setKindFilter(e.target.value)}
+              >
+                <option value="">All kinds</option>
+                {Object.entries(KIND_LABEL).map(([k, label]) => (
+                  <option key={k} value={k}>{label}</option>
+                ))}
+              </select>
+              <select
+                className="attention-filter"
+                aria-label="Filter by project"
+                value={projectFilter}
+                onChange={(e) => setProjectFilter(e.target.value)}
+              >
+                <option value="">All projects</option>
+                {projects.map((p) => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </select>
+            </div>
+          )}
           {items.length === 0 ? (
             <div className="attention-inbox-empty">Nothing is waiting on you.</div>
           ) : (
             <ul className="attention-inbox-list">
-              {items.map((item: AttentionItem) => (
+              {visible.map((item: AttentionItem) => (
                 <li key={item.runId} className="attention-inbox-li">
                   <div className="attention-inbox-item">
+                    {isHeavyKind(item) && (
+                      <button
+                        type="button"
+                        className="attention-inbox-expand"
+                        aria-expanded={expanded.has(item.runId)}
+                        aria-label={`${expanded.has(item.runId) ? "Collapse" : "Expand"} details for ${item.runTitle}`}
+                        onClick={() => toggleExpanded(item.runId)}
+                      >
+                        ▸
+                      </button>
+                    )}
+                    {isBatchEligible(item) && (
+                      <input
+                        type="checkbox"
+                        className="attention-inbox-check"
+                        aria-label={`Eligible for batch approve`}
+                        checked
+                        readOnly
+                        title="Eligible for batch approve"
+                      />
+                    )}
                     <span className={`attention-kind attention-kind--${item.kind}`}>
                       {KIND_LABEL[item.kind]}
                     </span>
@@ -223,7 +345,7 @@ export function AttentionInbox(): React.ReactElement {
                       </button>
                     )}
                   </div>
-                  {renderActions(item)}
+                  {renderDecision(item)}
                   {errors[item.runId] && (
                     <div className="inbox-error" role="alert">
                       {errors[item.runId]}

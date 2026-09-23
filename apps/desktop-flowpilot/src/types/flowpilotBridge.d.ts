@@ -77,7 +77,10 @@ declare global {
         headers: Array<[string, string]>;
         body: string;
       }>;
-      showNotification(title: string, body: string): Promise<{ ok: boolean }>;
+      showNotification(title: string, body: string, runId?: string): Promise<{ ok: boolean }>;
+      /** CP-84 (Task-431): notification click deep-link — carries the runId
+       *  passed to showNotification. Absent outside Electron. */
+      onNotificationClick?(cb: (runId: string) => void): () => void;
       lifecycle?: RunnerLifecycleBridge;
       /** CP-83: absent when the renderer runs outside Electron (plain browser). */
       term?: TermBridge;

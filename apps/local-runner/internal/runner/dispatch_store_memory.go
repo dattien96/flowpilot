@@ -1381,6 +1381,7 @@ func (s *memoryDispatchStore) ListAttention(ctx context.Context) ([]AttentionIte
 		if r.State == DispatchUncertain {
 			out = append(out, AttentionItem{
 				Kind: "uncertain", RunID: r.RunID, TurnID: r.TurnID, UpdatedAt: r.UpdatedAt,
+				Revision: r.Revision,
 			})
 		}
 		// BUG-289 A2/F-7: surface Stop-then-crash stranded send_started /
@@ -1388,7 +1389,8 @@ func (s *memoryDispatchStore) ListAttention(ctx context.Context) ([]AttentionIte
 		if r.CancelRequested && (r.State == DispatchSendStarted || r.State == DispatchProviderAccepted) {
 			out = append(out, AttentionItem{
 				Kind: "cancel_required", RunID: r.RunID, TurnID: r.TurnID, UpdatedAt: r.UpdatedAt,
-				Reason: "stop-then-crash: provider cancel required",
+				Reason:   "stop-then-crash: provider cancel required",
+				Revision: r.Revision,
 			})
 		}
 		// Terminal bookkeeping remains visible until the durable settle driver
@@ -1397,7 +1399,8 @@ func (s *memoryDispatchStore) ListAttention(ctx context.Context) ([]AttentionIte
 		if r.State.IsTerminal() && r.SettleOwed && !r.SettlePhase.IsSettleFinal() {
 			out = append(out, AttentionItem{
 				Kind: "settle_pending", RunID: r.RunID, TurnID: r.TurnID, UpdatedAt: r.UpdatedAt,
-				Reason: "terminal bookkeeping is awaiting durable settlement",
+				Reason:   "terminal bookkeeping is awaiting durable settlement",
+				Revision: r.Revision,
 			})
 		}
 	}
@@ -1405,6 +1408,7 @@ func (s *memoryDispatchStore) ListAttention(ctx context.Context) ([]AttentionIte
 		if rep.State == "open" {
 			out = append(out, AttentionItem{
 				Kind: "repair_required", RunID: rep.RunID, Reason: rep.Reason, UpdatedAt: rep.CreatedAt,
+				Revision: rep.RepairRevision,
 			})
 		}
 	}

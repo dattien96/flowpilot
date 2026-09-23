@@ -292,6 +292,10 @@ type AttentionItem struct {
 	TurnID    string `json:"turn_id,omitempty"`
 	Reason    string `json:"reason,omitempty"`
 	UpdatedAt string `json:"updated_at,omitempty"`
+	// Revision is the source record's durable CAS revision (DispatchRecord.
+	// Revision for turn-scoped kinds, RepairRecord.RepairRevision for repairs).
+	// CP-84 (Task-430): lets the decision plane ship a stable expectedRevision.
+	Revision int64 `json:"revision,omitempty"`
 }
 
 // AuditEntry is an immutable audit row co-committed with store mutations.

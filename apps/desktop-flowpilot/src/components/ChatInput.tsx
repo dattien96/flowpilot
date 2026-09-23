@@ -15,6 +15,7 @@ import {
   type PendingAttachment,
 } from "@/lib/normalizeImage";
 import { supportsVisionFor } from "./visionProviders";
+import { draftKeyFor } from "@/state/drafts";
 import { BotIcon, CaretIcon, CheckIcon, CloseIcon, MenuIcon, PaperclipIcon, SendIcon } from "@/components/icons";
 
 function CodexIcon(): React.ReactElement {
@@ -308,6 +309,8 @@ export function ChatInput(): React.ReactElement {
   const sendPrompt = useStore((s) => s.sendPrompt);
   const status = useStore((s) => s.status);
   const runId = useStore((s) => s.runId);
+  const chatId = useStore((s) => s.chatId);
+  const setDraft = useStore((s) => s.setDraft);
   const chatMode = useStore((s) => s.chatMode);
   const launchMode = useStore((s) => s.launchMode);
   const supportedModels = useStore((s) => s.supportedModels);
@@ -581,11 +584,27 @@ export function ChatInput(): React.ReactElement {
     setDisplayedTokenUsage(undefined);
   }, [selectedProvider]);
 
+  // Task-432 (CP-84 P-4): per-chat draft. The composer still owns its local
+  // state; the draft map is hydrated on key change (chat/run/project switch)
+  // and mirrored back on every edit, so text/mentions/attachments survive
+  // navigation + reload without touching the focused-run model.
+  const draftKey = draftKeyFor(chatId ?? null, runId ?? null, selectedProjectId ?? null);
+  const suppressMirrorKeyRef = useRef<string | null>(null);
+
   useEffect(() => {
-    setText("");
-    setSelectedSkills([]);
+    const draft = useStore.getState().drafts[draftKey];
+    // Tell the mirror effect below to skip the stale write that would fire in
+    // this same commit with the OLD lane's values under the NEW key.
+    suppressMirrorKeyRef.current = draftKey;
+    setText(draft?.text ?? "");
+    setSelectedSkills(draft?.selectedSkills ?? []);
     setSkillTokens([]);
-    setAttachments([]);
+    setAttachments(
+      (draft?.attachments ?? []).map((a) => ({
+        ...a,
+        previewUrl: `data:${a.mimeType};base64,${a.data}`,
+      })),
+    );
     setAttachError(null);
     setPreviewAtt(null);
     setSkillPickerOpen(false);
@@ -594,7 +613,26 @@ export function ChatInput(): React.ReactElement {
     setWorkspaceFiles([]);
     setFileHighlightIndex(0);
     setPickerHighlightIndex(-1);
-  }, [runId]);
+    // Also reset cursor: the restored text's length differs from the previous
+    // lane's, so a stale cursor offset would break fragment detection.
+    setCursorPos(0);
+  }, [draftKey]);
+
+  // Mirror composer → draft. Empty drafts are dropped by setDraft (clearComposer
+  // on send naturally removes the entry; a failed send re-populates it from
+  // sendPrompt's catch path).
+  useEffect(() => {
+    if (suppressMirrorKeyRef.current === draftKey) {
+      suppressMirrorKeyRef.current = null;
+      return;
+    }
+    setDraft(draftKey, {
+      text,
+      selectedSkills: selectedSkills.length > 0 ? [...selectedSkills] : undefined,
+      attachments: attachments.length > 0 ? attachments.map(toWire) : undefined,
+      updatedAt: Date.now(),
+    });
+  }, [draftKey, text, selectedSkills, attachments, setDraft]);
 
   const hasBetterAccount = useMemo(
     () =>

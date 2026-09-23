@@ -138,6 +138,18 @@ export function App(): React.ReactElement {
     return unsubscribe;
   }, []);
 
+  // CP-84 (Task-431 T-5): notification click deep-links into the originating
+  // run — resolve the attention item for project/chat context, then open.
+  useEffect(() => {
+    const subscribe = window.flowpilot?.onNotificationClick;
+    if (!subscribe) return;
+    return subscribe((runId) => {
+      const st = useStore.getState();
+      const item = st.attentionItems.find((i) => i.runId === runId);
+      void st.openRunAtAttention(runId, item?.chatId ?? runId, item?.projectId);
+    });
+  }, []);
+
   // On every authenticated boot, run a bind-time engine init for all projects so
   // the change ledger picks up commits made since the last session — without the
   // user having to click "Re-init" or save project settings.

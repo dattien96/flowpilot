@@ -277,6 +277,8 @@ func (s *InteractiveService) standardizeGenerate(ctx context.Context, root, reqR
 		if err := s.EmitSSLockEvent(ctx, SSLockState{RunID: runID, DraftSSPath: ssPath, Locked: true}); err != nil {
 			return nil, err
 		}
+		// CP-84 (Task-429): surface the freshly-armed gate on the mux plane.
+		s.markRunRealtimeDirty(runID)
 		result.RunID = runID
 		result.Status = StandardizeStatusWaitingSSLock
 	}

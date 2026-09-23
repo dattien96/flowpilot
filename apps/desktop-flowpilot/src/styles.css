@@ -7868,6 +7868,83 @@ body.is-resizing-sidebar {
   color: #ff7a7a;
 }
 
+/* CP-84 (Task-431): triage filters + per-kind controls */
+.attention-inbox-filters {
+  display: flex;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2) var(--space-2);
+}
+
+.attention-filter {
+  flex: 1 1 0;
+  min-width: 0;
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: var(--font-size-xs);
+  padding: 2px var(--space-1);
+}
+
+.attention-inbox-expand {
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 0 var(--space-1);
+  font-size: var(--font-size-xs);
+}
+
+.attention-inbox-check {
+  margin: 0;
+  align-self: center;
+}
+
+.inbox-batch-approve {
+  margin-left: auto;
+}
+
+.inbox-gate-radio {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--font-size-xs);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.inbox-gate-custom {
+  flex: 1 1 100%;
+  min-width: 0;
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: var(--font-size-xs);
+  padding: 2px var(--space-1);
+}
+
+.decision-preview {
+  flex: 1 1 100%;
+  padding: var(--space-1) 0;
+  font-size: var(--font-size-xs);
+  color: var(--text-dim);
+  border-top: 1px dashed var(--border);
+}
+
+.decision-preview-line {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.decision-preview-quickview {
+  white-space: pre-wrap;
+  max-height: 120px;
+  overflow-y: auto;
+  font-family: var(--font-mono, monospace);
+}
+
 /* Task-425: spectator pane — read-only glance at one non-focused run */
 .spectator-pane {
   width: 240px;

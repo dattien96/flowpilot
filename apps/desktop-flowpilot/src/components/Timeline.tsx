@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { providerLabel, useStore, type TimelineItem } from "@/state/store";
+import { noteTimelineScrollAnchor, providerLabel, useStore, type TimelineItem } from "@/state/store";
 import { MentionText } from "@/components/MentionText";
 import type { AgentRunSummary } from "@/types/contract";
 
@@ -708,6 +708,8 @@ function Item({ it }: { it: TimelineGroup }): React.ReactElement | null {
 
 export function Timeline(): React.ReactElement {
   const timeline = useStore((s) => s.timeline);
+  const runId = useStore((s) => s.runId);
+  const pendingScrollAnchor = useStore((s) => s._pendingScrollAnchor);
   const mainRunId = useStore((s) => s.mainRunId ?? s.runId);
   const activeAgentRunId = useStore((s) => s.activeAgentRunId);
   const agentRuns = useStore((s) => s.agentRuns);
@@ -715,6 +717,7 @@ export function Timeline(): React.ReactElement {
   const focusAgentRun = useStore((s) => s.focusAgentRun);
   const endRef = useRef<HTMLDivElement>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
+  const anchorRafRef = useRef(0);
 
   const totalPromptCount = countPrompts(timeline);
   const [visiblePromptCount, setVisiblePromptCount] = useState(TIMELINE_PAGE_SIZE);
@@ -749,7 +752,26 @@ export function Timeline(): React.ReactElement {
     const el = timelineRef.current;
     if (!el) return;
     stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    // Task-433: capture a stable scroll anchor (first visible item + its pixel
+    // offset) so switching away and back restores position even after
+    // revalidation changes timeline heights. rAF-throttled, module-ref only —
+    // no store churn per scroll event.
+    if (anchorRafRef.current) return;
+    anchorRafRef.current = requestAnimationFrame(() => {
+      anchorRafRef.current = 0;
+      const box = timelineRef.current;
+      if (!box) return;
+      const top = box.getBoundingClientRect().top;
+      const first = Array.from(box.querySelectorAll<HTMLElement>("[data-item-id]"))
+        .find((node) => node.getBoundingClientRect().bottom > top);
+      noteTimelineScrollAnchor(
+        first?.dataset.itemId
+          ? { itemId: first.dataset.itemId, offsetPx: first.getBoundingClientRect().top - top }
+          : undefined,
+      );
+    });
   };
+  useEffect(() => () => cancelAnimationFrame(anchorRafRef.current), []);
   useEffect(() => {
     if (timeline[timeline.length - 1]?.kind === "prompt") {
       stickToBottomRef.current = true;
@@ -763,6 +785,22 @@ export function Timeline(): React.ReactElement {
     });
     return () => cancelAnimationFrame(id);
   }, [timeline]);
+
+  // Task-433: restore a cached snapshot's scroll anchor once the anchored item
+  // exists in the DOM. Runs AFTER the stick-to-bottom effect so the anchor
+  // wins; stays pending while replay/revalidation may still materialize it.
+  useEffect(() => {
+    if (!pendingScrollAnchor || pendingScrollAnchor.runId !== runId) return;
+    const box = timelineRef.current;
+    const node = box?.querySelector<HTMLElement>(
+      `[data-item-id="${CSS.escape(pendingScrollAnchor.itemId)}"]`,
+    );
+    if (!box || !node) return;
+    stickToBottomRef.current = false;
+    const top = box.getBoundingClientRect().top;
+    box.scrollTop += node.getBoundingClientRect().top - top - pendingScrollAnchor.offsetPx;
+    useStore.setState({ _pendingScrollAnchor: undefined });
+  }, [pendingScrollAnchor, runId, timeline]);
 
   return (
     <div
@@ -824,7 +862,9 @@ export function Timeline(): React.ReactElement {
         </button>
       )}
       {timelineGroups.map((it) => (
-        <Item key={it.id} it={it} />
+        <div key={it.id} data-item-id={it.id}>
+          <Item it={it} />
+        </div>
       ))}
 
       {(!activeAgentRunId || activeAgentRunId === mainRunId) &&

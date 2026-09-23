@@ -192,6 +192,9 @@ func (s *InteractiveService) pruneDeletedRunState(runIDs []string) {
 
 	s.mu.Lock()
 	for _, id := range runIDs {
+		// CP-84 (Task-429): tombstone the run on the mux plane so subscribed
+		// clients drop its lane immediately — drain sees rs gone -> remove.
+		s.markRunRealtimeDirtyLocked(id)
 		delete(s.runs, id)
 	}
 	s.mu.Unlock()

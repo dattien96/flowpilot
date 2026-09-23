@@ -23,6 +23,7 @@ import type {
   RemoteChatSessionSummary,
   RunHandle,
   RunHistoryItem,
+  RunRealtimeFrame,
   RunnerClient,
   ReviewOutcomeInput,
   SpawnAgentInput,
@@ -382,6 +383,20 @@ export class HttpWsRunnerClient implements RunnerClient {
       { testNames },
     );
   }
+  // CP-84 (Task-431): ID-scoped worktree merge resolution for inbox actions.
+  resolveWorktreeMerge(runId: string, mode: string, confirm?: boolean): Promise<unknown> {
+    return this.postJSON<unknown>(
+      `/client/workflow-runs/${encodeURIComponent(runId)}/worktree/resolve`,
+      { mode, confirm: confirm === true },
+    );
+  }
+  // CP-84 (Task-431): ID-scoped SS-lock gate answer for inbox actions.
+  confirmSSLock(runId: string, action: "approve" | "reject", edits?: string): Promise<unknown> {
+    return this.postJSON<unknown>(
+      `/client/workflow-runs/${encodeURIComponent(runId)}/confirm`,
+      { action, ...(edits ? { edits } : {}) },
+    );
+  }
   async connectProviderAccount(providerKey: string): Promise<void> {
     await this.postJSON<unknown>("/provider-accounts/connect", { providerKey });
   }
@@ -487,6 +502,64 @@ export class HttpWsRunnerClient implements RunnerClient {
     for await (const ev of this.openStream(runId, afterSeq, signal)) {
       this.lastSeq.set(runId, Math.max(this.lastSeq.get(runId) ?? 0, ev.seq));
       yield ev;
+    }
+  }
+
+  // CP-84 / Task-429 T-5: one multiplexed lane stream. Same fetch+SSE parser
+  // shape as openStream (left byte-identical for compat); frames are
+  // level-triggered RunRealtimeProjection envelopes — the consumer owns
+  // reconnect/backoff (store.ts consumeRunUpdatesLoop).
+  async *streamRunUpdates(signal?: AbortSignal): AsyncIterable<RunRealtimeFrame> {
+    const ctrl = new AbortController();
+    if (signal?.aborted) return;
+    const abort = () => ctrl.abort();
+    signal?.addEventListener("abort", abort, { once: true });
+    let resp: Response;
+    try {
+      resp = await fetch(`${this.base}/client/events/stream`, {
+        headers: { Accept: "text/event-stream" },
+        signal: ctrl.signal,
+      });
+    } catch (err) {
+      if (ctrl.signal.aborted) return;
+      throw err;
+    }
+    if (!resp.ok || !resp.body) {
+      ctrl.abort();
+      throw new RunnerApiError(resp.status, "stream_failed", `run-updates stream failed: ${resp.status}`);
+    }
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    try {
+      for (;;) {
+        let chunk: ReadableStreamReadResult<Uint8Array>;
+        try {
+          chunk = await reader.read();
+        } catch (err) {
+          if (ctrl.signal.aborted) return;
+          throw err;
+        }
+        const { done, value } = chunk;
+        if (done) return;
+        buf += decoder.decode(value, { stream: true });
+        let idx: number;
+        while ((idx = buf.indexOf("\n\n")) >= 0) {
+          const frame = buf.slice(0, idx);
+          buf = buf.slice(idx + 2);
+          const dataLine = frame.split("\n").find((l) => l.startsWith("data:"));
+          if (!dataLine) continue;
+          const json = dataLine.slice(dataLine.indexOf(":") + 1).trim();
+          try {
+            yield JSON.parse(json) as RunRealtimeFrame;
+          } catch {
+            // skip malformed frame
+          }
+        }
+      }
+    } finally {
+      signal?.removeEventListener("abort", abort);
+      ctrl.abort();
     }
   }
 

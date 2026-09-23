@@ -24,6 +24,7 @@ test("resolveProviderKeyForModel falls back to supported model registry", () => 
         isEnabled: true,
         sortOrder: 1,
         source: "manual",
+        inputImage: null,
         detectionMethod: null,
         detectedCliVersion: null,
         lastDetectedAt: null,

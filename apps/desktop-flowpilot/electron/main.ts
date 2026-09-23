@@ -228,10 +228,19 @@ ipcMain.handle("auth-session:clear", async () => {
   await clearPersistedAuthSession();
   return { ok: true };
 });
-ipcMain.handle("notification:show", (_event, payload: { title: string; body: string }) => {
+ipcMain.handle("notification:show", (_event, payload: { title: string; body: string; runId?: string }) => {
   console.log("[notification] isSupported:", Notification.isSupported(), "payload:", payload);
   try {
-    new Notification({ title: payload.title, body: payload.body }).show();
+    const n = new Notification({ title: payload.title, body: payload.body });
+    // CP-84 (Task-431 T-5): clicking a notification deep-links to the run it
+    // came from — the renderer resolves the attention item and opens it.
+    n.on("click", () => {
+      if (payload.runId) {
+        mainWindow?.show();
+        mainWindow?.webContents.send("notification:clicked", { runId: payload.runId });
+      }
+    });
+    n.show();
   } catch (err) {
     console.error("[notification] show failed:", err);
   }

@@ -164,6 +164,13 @@ type InteractiveService struct {
 	// dispatchStore is the dedicated durable turn-dispatch store (CP-51 / SD-24).
 	// Nil keeps V1 prep:/bare idempotency behavior until V2 is activated per run.
 	dispatchStore DispatchStore
+
+	// CP-84 (Task-429): multiplexed realtime run-updates plane. runUpdateSubs
+	// holds open /client/events/stream subscribers; each carries a per-
+	// subscriber dirty SET of runIDs drained into latest-projection frames —
+	// memory bounded by run count, never event count. Guarded by s.mu.
+	runUpdateSubs   map[int64]*runUpdateSub
+	runUpdateNextID int64
 }
 
 type interactiveRun struct {
@@ -747,6 +754,11 @@ type interactiveRun struct {
 	// no longer renders pinned above the entire prior conversation after a
 	// full server restart (see reorderSidecarPrefixToEnd).
 	sidecarPrefixCount int64
+
+	// muxFingerprint is the change-detector for the Task-429 mux plane: a
+	// drained run re-projects and emits an upsert only when its meaningful
+	// lane state (status, last summary, leg id, decision set) moved.
+	muxFingerprint string
 }
 
 type approvalRecord struct {
@@ -782,6 +794,13 @@ type approvalRecord struct {
 	resolvingRestartPrompt string
 	resolvingRestartGen    int64
 	resolvingRememberCwd   string
+	// revision/createdAt are the durable identity for the CP-84 decision
+	// payload (Task-430): revision mints at 1 on creation and bumps on every
+	// status transition so a stale client frame is detectable; createdAt is
+	// the RFC3339Nano arming stamp. Both round-trip through
+	// ProviderApprovalState.
+	revision  int64
+	createdAt string
 }
 
 type questionRecord struct {
@@ -816,6 +835,10 @@ type questionRecord struct {
 	resolvingRestartStepID string
 	resolvingRestartPrompt string
 	resolvingRestartGen    int64
+	// revision/createdAt mirror approvalRecord's CP-84 durable identity
+	// (Task-430); they round-trip through ProviderQuestionState.
+	revision  int64
+	createdAt string
 }
 
 // questionResolveResult is the typed payload sent on questionRecord.resolve
@@ -841,6 +864,8 @@ func approvalStateFromRecord(rs *interactiveRun, rec *approvalRecord, expiresAt 
 		Decision:   rec.decision,
 		Policy:     rec.policy,
 		ExpiresAt:  expiresAt,
+		Revision:   rec.revision,
+		CreatedAt:  rec.createdAt,
 	}
 	if rs != nil {
 		state.ProviderKey = rs.providerKey
@@ -869,6 +894,8 @@ func questionStateFromRecord(rec *questionRecord, providerTurnID, expiresAt stri
 		Status:         persistedGateStatus(rec.status),
 		Choice:         rec.choice,
 		ExpiresAt:      expiresAt,
+		Revision:       rec.revision,
+		CreatedAt:      rec.createdAt,
 	}
 }
 
@@ -1371,6 +1398,7 @@ func (s *InteractiveService) cancelPendingGatesForRunsLocked(runIDs []string) (a
 			continue
 		}
 		rec.status = "expired"
+		rec.revision++
 		// Unblock any live waiter so the turn can observe cancellation.
 		select {
 		case rec.resolve <- "deny":
@@ -1395,6 +1423,7 @@ func (s *InteractiveService) cancelPendingGatesForRunsLocked(runIDs []string) (a
 			continue
 		}
 		rec.status = "expired"
+		rec.revision++
 		// BUG-288 P2-02: signal interruption distinctly from a real empty
 		// multi-select submission so a live AskQuestion waiter cannot observe
 		// a fabricated "success" if select{} races this against ctx.Done().
@@ -4614,6 +4643,8 @@ func (s *InteractiveService) rehydratePendingGatesLocked(runID string) {
 						},
 						resolve:    make(chan string, 1),
 						rehydrated: true,
+						revision:   st.Revision + 1,
+						createdAt:  st.CreatedAt,
 					}
 					s.approvals[st.ApprovalID] = rec
 					repairApprovals = append(repairApprovals, approvalStateFromRecord(rs, rec, st.ExpiresAt))
@@ -4631,7 +4662,9 @@ func (s *InteractiveService) rehydratePendingGatesLocked(runID string) {
 							Kind: "exec", Command: st.Command, Cwd: st.Cwd, Reason: st.Reason,
 							Decisions: []ApprovalDecisionOption{{Value: "approve", Label: "Approve"}, {Value: "deny", Label: "Deny"}},
 						},
-						resolve: make(chan string, 1),
+						resolve:   make(chan string, 1),
+						revision:  st.Revision + 1,
+						createdAt: st.CreatedAt,
 					}
 					s.approvals[st.ApprovalID] = expiredRec
 					repairApprovals = append(repairApprovals, approvalStateFromRecord(rs, expiredRec, st.ExpiresAt))
@@ -4664,6 +4697,8 @@ func (s *InteractiveService) rehydratePendingGatesLocked(runID string) {
 					resolve:    make(chan string, 1),
 					rehydrated: true,
 					expiresAt:  st.ExpiresAt,
+					revision:   st.Revision,
+					createdAt:  st.CreatedAt,
 				}
 				s.approvals[st.ApprovalID] = rec
 				if rs.pendingApprovalID == "" {
@@ -4706,6 +4741,8 @@ func (s *InteractiveService) rehydratePendingGatesLocked(runID string) {
 						choice:      choice,
 						resolve:     make(chan questionResolveResult, 1),
 						rehydrated:  true,
+						revision:    st.Revision + 1,
+						createdAt:   st.CreatedAt,
 					}
 					s.questions[st.QuestionID] = rec
 					repairQuestions = append(repairQuestions, questionStateFromRecord(rec, "", st.ExpiresAt))
@@ -4717,6 +4754,7 @@ func (s *InteractiveService) rehydratePendingGatesLocked(runID string) {
 						id: st.QuestionID, runID: st.RunID, prompt: st.Prompt,
 						options: st.Options, multiSelect: st.MultiSelect,
 						status: "expired", resolve: make(chan questionResolveResult, 1),
+						revision: st.Revision + 1, createdAt: st.CreatedAt,
 					}
 					s.questions[st.QuestionID] = expiredRec
 					repairQuestions = append(repairQuestions, questionStateFromRecord(expiredRec, "", st.ExpiresAt))
@@ -4741,6 +4779,8 @@ func (s *InteractiveService) rehydratePendingGatesLocked(runID string) {
 					resolve:     make(chan questionResolveResult, 1),
 					rehydrated:  true,
 					expiresAt:   st.ExpiresAt,
+					revision:    st.Revision,
+					createdAt:   st.CreatedAt,
 				}
 				if rs.pendingQuestionID == "" {
 					rs.pendingQuestionID = st.QuestionID
@@ -5898,6 +5938,11 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 	if worktreeTerminal(rs.status) {
 		s.maybeEmitWorktreeMergeRequest(rs)
 	}
+	// CP-84 (Task-429): every emitted event can change the run's lane
+	// projection (status flips, vibe gates, worktree_terminal arming the
+	// merge decision above, approval/question events arming records). The
+	// dirty mark is O(1) per subscriber; the drain fingerprint-gates pushes.
+	s.markRunRealtimeDirtyLocked(rs.id)
 	return ev
 }
 
@@ -6125,6 +6170,8 @@ func (b *turnBridge) RequestApproval(details ApprovalDetails) (string, error) {
 		status:    "pending",
 		resolve:   make(chan string, 1),
 		expiresAt: expiresAt,
+		revision:  1,
+		createdAt: time.Now().UTC().Format(time.RFC3339Nano),
 	}
 	s.approvals[rec.id] = rec
 	b.rs.pendingApprovalID = rec.id
@@ -6201,6 +6248,8 @@ func (b *turnBridge) askQuestion(extraCtx context.Context, prompt string, option
 		status:      "pending",
 		resolve:     make(chan questionResolveResult, 1),
 		expiresAt:   expiresAt,
+		revision:    1,
+		createdAt:   time.Now().UTC().Format(time.RFC3339Nano),
 	}
 	s.questions[rec.id] = rec
 	b.rs.pendingQuestionID = rec.id
@@ -7221,6 +7270,7 @@ func (s *InteractiveService) expireApproval(id string) {
 	s.mu.Lock()
 	if rec := s.approvals[id]; rec != nil && rec.status == "pending" {
 		rec.status = "expired"
+		rec.revision++
 		rs := s.runs[rec.runID]
 		if rs != nil && rs.pendingApprovalID == id {
 			rs.pendingApprovalID = ""
@@ -7262,6 +7312,7 @@ func (s *InteractiveService) clearPendingApproval(id string) {
 	s.mu.Lock()
 	if rec := s.approvals[id]; rec != nil && rec.status == "pending" {
 		rec.status = "expired"
+		rec.revision++
 		if rs := s.runs[rec.runID]; rs != nil {
 			state := approvalStateFromRecord(rs, rec, "")
 			snapshot = &state
@@ -7308,6 +7359,7 @@ func (s *InteractiveService) expireQuestion(id string) {
 	s.mu.Lock()
 	if rec := s.questions[id]; rec != nil && rec.status == "pending" {
 		rec.status = "expired"
+		rec.revision++
 		if rs := s.runs[rec.runID]; rs != nil && rs.pendingQuestionID == id {
 			rs.pendingQuestionID = ""
 			// BUG-289 H4/F-4: flip off WAITING (mirror expireApproval).
@@ -7339,6 +7391,7 @@ func (s *InteractiveService) clearPendingQuestion(id string) {
 	s.mu.Lock()
 	if rec := s.questions[id]; rec != nil && rec.status == "pending" {
 		rec.status = "expired"
+		rec.revision++
 		state := questionStateFromRecord(rec, "", "")
 		snapshot = &state
 	}
@@ -9802,6 +9855,7 @@ func (s *InteractiveService) submitApprovalDecision(approvalID, decision string,
 	// deadline has already passed (e.g. immediately after restart).
 	if rec.status == "pending" && approvalExpiryElapsed(rec.expiresAt) {
 		rec.status = "expired"
+		rec.revision++
 		state := approvalStateFromRecord(s.runs[rec.runID], rec, rec.expiresAt)
 		s.mu.Unlock()
 		if err := s.persistApproval(state); err != nil {
@@ -9855,6 +9909,7 @@ func (s *InteractiveService) submitApprovalDecision(approvalID, decision string,
 		// (which short-circuits future calls to a bare nil success). Only a
 		// confirmed durable write below advances to "resolved".
 		rec.status = "resolving"
+		rec.revision++
 		rec.decision = decision
 		details = rec.details
 		rehydrated := rec.rehydrated
@@ -9975,6 +10030,7 @@ func (s *InteractiveService) submitApprovalDecision(approvalID, decision string,
 	s.mu.Lock()
 	if rec.status == "resolving" {
 		rec.status = "resolved"
+		rec.revision++
 		rec.resolvingSnapshot = nil
 		rec.resolvingSession = nil
 	}
@@ -10032,6 +10088,7 @@ func (s *InteractiveService) AnswerQuestion(questionID string, choice []string) 
 	// BUG-288 P1-08: see submitApprovalDecision's mirrored comment.
 	if rec.status == "pending" && approvalExpiryElapsed(rec.expiresAt) {
 		rec.status = "expired"
+		rec.revision++
 		state := questionStateFromRecord(rec, "", rec.expiresAt)
 		s.mu.Unlock()
 		if err := s.persistQuestion(state); err != nil {
@@ -10062,6 +10119,7 @@ func (s *InteractiveService) AnswerQuestion(questionID string, choice []string) 
 		}
 		// BUG-288 P1-01: transitional state — see submitApprovalDecision.
 		rec.status = "resolving"
+		rec.revision++
 		rec.choice = choice
 		rehydrated := rec.rehydrated
 		runID = rec.runID
@@ -10163,6 +10221,7 @@ func (s *InteractiveService) AnswerQuestion(questionID string, choice []string) 
 	s.mu.Lock()
 	if rec.status == "resolving" {
 		rec.status = "resolved"
+		rec.revision++
 		rec.resolvingSnapshot = nil
 		rec.resolvingSession = nil
 	}
