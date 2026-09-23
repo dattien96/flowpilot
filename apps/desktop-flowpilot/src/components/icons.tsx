@@ -47,6 +47,13 @@ export const PanelRightIcon = icon(
   </>,
 );
 
+export const EyeIcon = icon(
+  <>
+    <path d="M2 8s2.2-3.8 6-3.8S14 8 14 8s-2.2 3.8-6 3.8S2 8 2 8z" />
+    <circle cx="8" cy="8" r="1.6" />
+  </>,
+);
+
 export const TerminalIcon = icon(
   <>
     <rect x="2" y="3" width="12" height="10" rx="1.5" />

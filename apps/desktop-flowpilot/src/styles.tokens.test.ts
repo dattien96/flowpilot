@@ -93,6 +93,8 @@ test("chrome components carry no emoji glyphs", () => {
     "src/components/TranslatePopup.tsx",
     "src/components/DispatchAttentionCard.tsx",
     "src/components/TerminalPanel.tsx",
+    "src/components/SessionsBoard.tsx",
+    "src/components/SpectatorPane.tsx",
     "src/App.tsx",
   ]) {
     const src = fs.readFileSync(path.resolve(process.cwd(), file), "utf8");

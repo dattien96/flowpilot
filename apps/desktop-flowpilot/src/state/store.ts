@@ -395,11 +395,19 @@ interface AppState {
   activeWorktreePath: string;
   /** Task-428: bottom terminal dock visibility (session-only, not persisted). */
   terminalOpen: boolean;
+  /**
+   * Task-425 (CP-82 P-4): one watched non-focused run — the spectator pane's
+   * read-only glance. Cleared automatically when the run becomes focused.
+   */
+  spectatorRunId: string | null;
+  spectatorProjectId: string | null;
   /** False when the selected project directory is not a git repo (IPC probe). */
   worktreeAvailable: boolean;
   /** Binding state of the active run: "" when the run has no worktree. */
   activeWorktreeState: string;
   toggleTerminal(): void;
+  openSpectator(runId: string, projectId: string): void;
+  closeSpectator(): void;
   setWorktreeEnabled(on: boolean): void;
   refreshWorktreeAvailability(): void;
   /** True while toggleYoloForActiveProvider's Grok-only async path is applying
@@ -589,6 +597,14 @@ interface AppState {
   sendPrompt(prompt: string, skills?: string[], attachments?: PromptAttachment[]): Promise<void>;
   approve(approvalId: string, decision: string, remember?: boolean): Promise<void>;
   answer(questionId: string, choice: string | string[]): Promise<void>;
+  /**
+   * Task-423 (CP-82 P-2): act on a NON-focused run's wait from the inbox —
+   * direct ID-scoped RPC + attention-queue update; never writes the focused
+   * slot's pendingApprovals/status/timeline. Returns false on failure; the
+   * caller renders the error inline.
+   */
+  approveAttentionItem(runId: string, approvalId: string, decision: string, remember?: boolean): Promise<boolean>;
+  answerAttentionItem(runId: string, questionId: string, choice: string | string[]): Promise<boolean>;
   /** CP-62 P-3 (Task-345): answer a structured escalation card by sending the option id as the next prompt. */
   chooseDecisionOption(itemId: string, optionId: string): Promise<void>;
   stop(): Promise<void>;
@@ -714,6 +730,8 @@ export const useStore = create<AppState>((set, get) => ({
   worktreeAvailable: true,
   activeWorktreePath: "",
   terminalOpen: false,
+  spectatorRunId: null,
+  spectatorProjectId: null,
   activeWorktreeState: "",
   grokYoloPostureLoading: false,
   summaryGenerating: false,
@@ -2221,6 +2239,40 @@ export const useStore = create<AppState>((set, get) => ({
     }
   },
 
+  async approveAttentionItem(runId, approvalId, decision, remember) {
+    try {
+      await get().client.submitApproval(approvalId, decision, remember);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[FlowPilot] approveAttentionItem failed:", err);
+      return false;
+    }
+    const item = attentionQueue.items.find((i) => i.runId === runId);
+    const remaining =
+      (item?.pending?.approvals.filter((a) => a.approvalId !== approvalId).length ?? 0) +
+      (item?.pending?.questions.length ?? 0);
+    attentionQueue.resolvedPending(runId, { approvalId });
+    if (remaining === 0) attentionQueue.evict(runId);
+    return true;
+  },
+
+  async answerAttentionItem(runId, questionId, choice) {
+    try {
+      await get().client.answerQuestion(questionId, choice);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[FlowPilot] answerAttentionItem failed:", err);
+      return false;
+    }
+    const item = attentionQueue.items.find((i) => i.runId === runId);
+    const remaining =
+      (item?.pending?.approvals.length ?? 0) +
+      (item?.pending?.questions.filter((q) => q.questionId !== questionId).length ?? 0);
+    attentionQueue.resolvedPending(runId, { questionId });
+    if (remaining === 0) attentionQueue.evict(runId);
+    return true;
+  },
+
   async chooseDecisionOption(itemId, optionId) {
     // CP-62 P-3 (Task-345/350): a card-parked run is SEALED against new
     // turns (POST /turns answers 409 flow_awaiting_user), so the answer MUST
@@ -2696,6 +2748,11 @@ export const useStore = create<AppState>((set, get) => ({
       sourceMachineId: historyItem?.sourceMachineId,
       sourceRunId: historyItem?.sourceRunId,
     });
+    // Task-425 T-3: opening the watched run promotes it — drop the spectator
+    // pane so the focused run never appears twice.
+    if (get().spectatorRunId === runId) {
+      set({ spectatorRunId: null, spectatorProjectId: null });
+    }
     let handle;
     try {
       handle = await client.resumeRun(runId);
@@ -2943,6 +3000,17 @@ export const useStore = create<AppState>((set, get) => ({
 
   toggleTerminal() {
     set((s) => ({ terminalOpen: !s.terminalOpen }));
+  },
+
+  openSpectator(runId, projectId) {
+    // Never watch the run that is already focused — the pane is for the
+    // OTHER run (T-3).
+    if (runId && runId === get().runId) return;
+    set({ spectatorRunId: runId || null, spectatorProjectId: projectId || null });
+  },
+
+  closeSpectator() {
+    set({ spectatorRunId: null, spectatorProjectId: null });
   },
 
   openInIde(path, line) {

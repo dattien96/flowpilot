@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useStore } from "@/state/store";
 import type { AttentionItem, AttentionKind } from "@/state/attentionQueue";
-import { InboxIcon } from "@/components/icons";
+import { InboxIcon, EyeIcon } from "@/components/icons";
 
 const KIND_LABEL: Record<AttentionKind, string> = {
   approval: "Approval",
@@ -34,12 +34,24 @@ function waitingLabel(iso: string): string {
  * Header inbox affordance for the attention queue (replaces the always-visible
  * Navigator panel). Badge shows the pending count; the popover lists each
  * waiting run oldest-first and opens it in place.
+ *
+ * Task-423: items with a pending payload expose inline actions — approve/deny
+ * and question option chips — executed against the run's IDs without
+ * switching workspace focus (approveAttentionItem/answerAttentionItem never
+ * touch the focused run's slots). Kinds without a safe payload keep the
+ * Open-only affordance.
  */
 export function AttentionInbox(): React.ReactElement {
   const items = useStore((s) => s.attentionItems);
   const openRunAtAttention = useStore((s) => s.openRunAtAttention);
+  const approveAttentionItem = useStore((s) => s.approveAttentionItem);
+  const answerAttentionItem = useStore((s) => s.answerAttentionItem);
+  const openSpectator = useStore((s) => s.openSpectator);
+  const focusedRunId = useStore((s) => s.runId);
   const projects = useStore((s) => s.projects);
   const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState<Set<string>>(new Set());
+  const [errors, setErrors] = useState<Record<string, string>>({});
   const rootRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -62,6 +74,97 @@ export function AttentionInbox(): React.ReactElement {
   useEffect(() => {
     if (items.length === 0) setOpen(false);
   }, [items.length]);
+
+  const setBusyKey = (key: string, on: boolean) => {
+    setBusy((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(key);
+      else next.delete(key);
+      return next;
+    });
+  };
+
+  const act = async (item: AttentionItem, key: string, run: () => Promise<boolean>) => {
+    setBusyKey(key, true);
+    setErrors((prev) => ({ ...prev, [item.runId]: "" }));
+    const ok = await run();
+    setBusyKey(key, false);
+    if (!ok) {
+      setErrors((prev) => ({ ...prev, [item.runId]: "Action failed — open the run to retry." }));
+    }
+  };
+
+  const renderActions = (item: AttentionItem) => {
+    const pending = item.pending;
+    if (!pending) return null;
+    const blocks: React.ReactNode[] = [];
+
+    for (const approval of pending.approvals) {
+      const key = `${item.runId}:${approval.approvalId}`;
+      const decisions =
+        approval.details?.decisions?.length
+          ? approval.details.decisions
+          : [
+              { value: "approved", label: "Approve" },
+              { value: "denied", label: "Deny" },
+            ];
+      blocks.push(
+        <div className="inbox-act-group" key={approval.approvalId}>
+          {approval.details?.command && (
+            <span className="inbox-act-cmd" title={approval.details.command}>
+              {truncate(approval.details.command, 48)}
+            </span>
+          )}
+          {decisions.map((d) => (
+            <button
+              key={d.value}
+              type="button"
+              className={`inbox-act${d.value === "denied" || /deny|reject/i.test(d.value) ? " inbox-act--deny" : " inbox-act--approve"}`}
+              disabled={busy.has(key)}
+              onClick={() =>
+                void act(item, key, () =>
+                  approveAttentionItem(item.runId, approval.approvalId, d.value),
+                )
+              }
+            >
+              {d.label}
+            </button>
+          ))}
+        </div>,
+      );
+    }
+
+    for (const question of pending.questions) {
+      // Multi-select questions need composed answers — Open-only (T-3).
+      if (question.multiSelect || !question.options?.length) continue;
+      const key = `${item.runId}:${question.questionId}`;
+      blocks.push(
+        <div className="inbox-act-group" key={question.questionId}>
+          <span className="inbox-act-cmd" title={question.prompt}>
+            {truncate(question.prompt, 48)}
+          </span>
+          {question.options.map((opt) => (
+            <button
+              key={opt.value ?? opt.label}
+              type="button"
+              className="inbox-act"
+              disabled={busy.has(key)}
+              onClick={() =>
+                void act(item, key, () =>
+                  answerAttentionItem(item.runId, question.questionId, opt.value ?? opt.label),
+                )
+              }
+            >
+              {truncate(opt.label, 24)}
+            </button>
+          ))}
+        </div>,
+      );
+    }
+
+    if (blocks.length === 0) return null;
+    return <div className="inbox-actions">{blocks}</div>;
+  };
 
   return (
     <div className="attention-inbox" ref={rootRef}>
@@ -88,25 +191,44 @@ export function AttentionInbox(): React.ReactElement {
           ) : (
             <ul className="attention-inbox-list">
               {items.map((item: AttentionItem) => (
-                <li key={item.runId}>
-                  <button
-                    type="button"
-                    className="attention-inbox-item"
-                    title={`${item.runTitle} — ${KIND_LABEL[item.kind]}`}
-                    onClick={() => {
-                      setOpen(false);
-                      void openRunAtAttention(item.runId, item.chatId, item.projectId);
-                    }}
-                  >
+                <li key={item.runId} className="attention-inbox-li">
+                  <div className="attention-inbox-item">
                     <span className={`attention-kind attention-kind--${item.kind}`}>
                       {KIND_LABEL[item.kind]}
                     </span>
-                    <span className="attention-inbox-title">{truncate(item.runTitle)}</span>
+                    <button
+                      type="button"
+                      className="attention-inbox-title"
+                      title={`${item.runTitle} — ${KIND_LABEL[item.kind]}`}
+                      onClick={() => {
+                        setOpen(false);
+                        void openRunAtAttention(item.runId, item.chatId, item.projectId);
+                      }}
+                    >
+                      {truncate(item.runTitle)}
+                    </button>
                     <span className="attention-inbox-project">
                       {projects.find((p) => p.id === item.projectId)?.name ?? ""}
                     </span>
                     <span className="attention-inbox-waiting">{waitingLabel(item.waitingSince)}</span>
-                  </button>
+                    {item.runId !== focusedRunId && (
+                      <button
+                        type="button"
+                        className="inbox-watch"
+                        aria-label={`Watch ${item.runTitle}`}
+                        title="Watch in spectator pane"
+                        onClick={() => openSpectator(item.runId, item.projectId)}
+                      >
+                        <EyeIcon size={12} />
+                      </button>
+                    )}
+                  </div>
+                  {renderActions(item)}
+                  {errors[item.runId] && (
+                    <div className="inbox-error" role="alert">
+                      {errors[item.runId]}
+                    </div>
+                  )}
                 </li>
               ))}
             </ul>

@@ -7,7 +7,8 @@ import type {
   SupabaseConfigValidation,
   SupabaseRuntimeStatus,
 } from "@flowpilot/client-core";
-import { PanelLeftIcon, PanelRightIcon, TerminalIcon } from "@/components/icons";
+import { PanelLeftIcon, PanelRightIcon, TerminalIcon, BoardIcon } from "@/components/icons";
+import { SessionsBoard } from "@/components/SessionsBoard";
 import { RunStatus } from "@/components/RunStatus";
 import { RunnerStatusIndicator } from "@/components/RunnerStatusIndicator";
 import { RunToast } from "@/components/RunToast";
@@ -57,6 +58,7 @@ export function App(): React.ReactElement {
   const [leftSidebarVisible, setLeftSidebarVisible] = useState(true);
   const [rightSidebarVisible, setRightSidebarVisible] = useState(true);
   const terminalOpen = useStore((s) => s.terminalOpen);
+  const [boardOpen, setBoardOpen] = useState(false);
 
   // Auto-collapse side rails at narrow widths so columns never overlap or
   // force a horizontal scrollbar. Remembers the user's choice and restores it
@@ -353,6 +355,15 @@ export function App(): React.ReactElement {
         </div>
 
         <div className="header-actions">
+          <button
+            type="button"
+            className="icon-btn"
+            aria-label="Sessions monitor"
+            title="All runs across projects"
+            onClick={() => setBoardOpen(true)}
+          >
+            <BoardIcon size={15} />
+          </button>
           <AttentionInbox />
           <div className="header-tabs" role="tablist" aria-label="Desktop mode">
             <button
@@ -387,6 +398,7 @@ export function App(): React.ReactElement {
       </header>
 
         <RunToast />
+      {boardOpen && <SessionsBoard onClose={() => setBoardOpen(false)} />}
       {authenticatedView === "chat" ? (
           runtimeStatus.runnerReachable ? (
           <ChatWorkspace

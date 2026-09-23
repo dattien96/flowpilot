@@ -4,6 +4,7 @@ import { filterNavigatorWorkflows } from "@/app/navigatorCatalog";
 import { Navigator } from "@/components/Navigator";
 import { ChatInput } from "@/components/ChatInput";
 import { TerminalPanel } from "@/components/TerminalPanel";
+import { SpectatorPane } from "@/components/SpectatorPane";
 import { Timeline } from "@/components/Timeline";
 import { ScenarioSwitcher } from "@/components/ScenarioSwitcher";
 import { SystemControls } from "@/components/SystemControls";
@@ -629,6 +630,8 @@ export function ChatWorkspace({
         )}
         <TerminalPanel />
       </main>
+
+      <SpectatorPane />
 
       <FlowTimelineSidebar />
 
