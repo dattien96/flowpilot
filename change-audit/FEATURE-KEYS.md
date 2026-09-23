@@ -59,3 +59,4 @@ Source of truth for stable `feature_key` values used by:
 - event-plane — realtime run-events transport: multiplexed level-triggered SSE `/client/events/stream`, chunked atomic snapshots, resync/reconnect, durable DecisionPayload projection (CP-84 Task-429/430)
 - desktop-ui-consistency — desktop design-token revamp: spacing/elevation/radius/motion scales, icon unification, token guardrails (Task-405)
 - dev-infra — developer tooling/build infra: test harness artifacts, gitignore, CI plumbing
+- flow-gates — flow-mode gate enforcement: tier-1 doc-scope rules, tier-2/3 audit gates, oracle/reproduce/replay gates, gate-mode config and reprompt wiring
