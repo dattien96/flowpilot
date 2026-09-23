@@ -149,6 +149,12 @@ func (d *ScaffoldDispatcher) Dispatch(ctx context.Context, req ScaffoldRequest) 
 		SkillsAttached: []string{},
 	}
 
+	// CA-921: providers like `devin -p` write each narration/status update to
+	// stdout back-to-back with no separator, so the feed re-inserts line
+	// boundaries here — one wrap for the whole dispatch keeps the joiner state
+	// across turns and heal attempts.
+	req.OnProgress = wrapScaffoldProgressSink(req.OnProgress, nil)
+
 	workspace := strings.TrimSpace(req.WorkspaceDir)
 	if workspace == "" {
 		result.Status = ScaffoldStatusError
@@ -350,11 +356,11 @@ func (d *ScaffoldDispatcher) executeTurn(
 	attempt int,
 ) (PromptExecutionResult, error) {
 	execReq := PromptExecutionRequest{
-		ProviderKey:      strings.TrimSpace(req.ProviderKey),
-		ModelName:        strings.TrimSpace(req.ModelName),
-		ReasoningEffort:  strings.TrimSpace(req.ReasoningEffort),
-		Prompt:           prompt,
-		SkillIds:         append([]string(nil), recipe.ScaffoldSkills...),
+		ProviderKey:     strings.TrimSpace(req.ProviderKey),
+		ModelName:       strings.TrimSpace(req.ModelName),
+		ReasoningEffort: strings.TrimSpace(req.ReasoningEffort),
+		Prompt:          prompt,
+		SkillIds:        append([]string(nil), recipe.ScaffoldSkills...),
 
 		WorkingDirectory: workspace,
 		AllowWrite:       true,

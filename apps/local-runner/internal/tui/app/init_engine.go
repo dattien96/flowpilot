@@ -262,7 +262,7 @@ func (m *AppModel) handleEngineScaffoldProgressMsg(msg EngineScaffoldProgressMsg
 		m.scaffoldProgressSeq = ev.Seq
 		switch ev.Kind {
 		case "output":
-			m.appendAssistantDelta(ev.Text)
+			m.appendScaffoldDelta(ev.Text)
 		case "phase":
 			if ev.Phase != "" {
 				m.scaffoldPhase = ev.Phase
@@ -279,4 +279,22 @@ func (m *AppModel) handleEngineScaffoldProgressMsg(msg EngineScaffoldProgressMsg
 		m.addMessage("system", text, style)
 	}
 	return m, nil
+}
+
+// appendScaffoldDelta appends one scaffold output event to the scaffold stream
+// message. CA-921: the feed is process narration (provider stdout), not a
+// markdown document — the "scaffold" hint keeps it on the plain wrapText path
+// so the line boundaries the dispatcher re-inserts render as real newlines
+// instead of markdown soft-break spaces. It never glues onto a preceding
+// plain assistant message, and it deliberately does not consume a thinking
+// placeholder — the scaffold stream is not the chat turn's answer.
+func (m *AppModel) appendScaffoldDelta(text string) {
+	if len(m.messages) > 0 {
+		last := &m.messages[len(m.messages)-1]
+		if last.Role == "assistant" && last.FormatHint == "scaffold" {
+			last.Content += text
+			return
+		}
+	}
+	m.addMessage("assistant", text, "scaffold")
 }
