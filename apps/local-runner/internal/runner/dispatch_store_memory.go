@@ -116,6 +116,16 @@ func (s *memoryDispatchStore) appendAuditLocked(runID, turnID, kind, detail, act
 	})
 }
 
+// uncommitAudit rolls back an appendAuditLocked allocation when the following
+// commitLine fails (BUG-449): the seq must not stay burned (the durable log's
+// seq column is verified contiguous) and the phantom audit entry must not
+// claim an operation that never landed on disk. Callers capture
+// (s.seq, len(s.audits)) before appendAuditLocked and restore on failure.
+func (s *memoryDispatchStore) uncommitAudit(seqBefore int64, auditLenBefore int) {
+	s.seq = seqBefore
+	s.audits = s.audits[:auditLenBefore]
+}
+
 func (s *memoryDispatchStore) ensureActivationLocked(runID string) {
 	if _, ok := s.activation[runID]; !ok {
 		s.activation[runID] = DispatchProtocolV2
@@ -541,20 +551,29 @@ func (s *memoryDispatchStore) CommitReceiptAndClearIntent(ctx context.Context, r
 	if err := r.canTransition(DispatchProviderAccepted); err != nil && r.State != DispatchProviderAccepted {
 		return r.Revision, err
 	}
-	cpReceipt := receipt
-	r.ReceiptEvidence = &cpReceipt
-	if r.State == DispatchSendStarted {
-		r.State = DispatchProviderAccepted
-	}
-	r.Revision++
-	r.UpdatedAt = s.clockStr()
-	s.clearIntentLocked(intentOwnerRunID, intentKey, intentGen)
-	s.appendAuditLocked(runID, turnID, "commit_receipt", "provider_accepted", "system")
+	// BUG-448: disk-before-RAM — the previous order mutated r, cleared the
+	// intent, and appended the audit BEFORE fsync. A persist failure left RAM
+	// at provider_accepted with a receipt the log never recorded; the retry
+	// then no-oped on receiptEqual and the durable receipt was lost for the
+	// life of the process. Build the post-state on a clone, fsync, and only
+	// then apply to RAM — a failure leaves the op fully retryable.
 	cp := s.cloneRec(r)
+	cpReceipt := receipt
+	cp.ReceiptEvidence = &cpReceipt
+	if cp.State == DispatchSendStarted {
+		cp.State = DispatchProviderAccepted
+	}
+	cp.Revision++
+	cp.UpdatedAt = s.clockStr()
+	seqBefore, auditLen := s.seq, len(s.audits)
+	s.appendAuditLocked(runID, turnID, "commit_receipt", "provider_accepted", "system")
 	clear := &intentClearPayload{OwnerRunID: intentOwnerRunID, Key: intentKey, Gen: intentGen}
-	if err := s.commitLine(dispatchLogLine{Kind: "record", Seq: s.seq, At: r.UpdatedAt, Record: &cp, IntentClear: clear}); err != nil {
+	if err := s.commitLine(dispatchLogLine{Kind: "record", Seq: s.seq, At: cp.UpdatedAt, Record: &cp, IntentClear: clear}); err != nil {
+		s.uncommitAudit(seqBefore, auditLen)
 		return r.Revision, err
 	}
+	*r = cp
+	s.clearIntentLocked(intentOwnerRunID, intentKey, intentGen)
 	return r.Revision, nil
 }
 
@@ -630,7 +649,17 @@ func (s *memoryDispatchStore) commitTerminal(ctx context.Context, runID, turnID 
 	cp.Revision = r.Revision + 1
 	cp.UpdatedAt = s.clockStr()
 	clear := &intentClearPayload{OwnerRunID: intentOwnerRunID, Key: intentKey, Gen: intentGen}
+	// BUG-406: append the audit BEFORE commitLine like every other mutation
+	// path — appendAuditLocked is the seq allocator, so the record line must
+	// take the post-increment value. The previous order wrote the line with
+	// the pre-increment seq (duplicating the previous line) and burned the
+	// fresh seq on an audit that never lands in the durable log (gap).
+	seqBefore, auditLen := s.seq, len(s.audits)
+	s.appendAuditLocked(runID, turnID, "commit_terminal", string(next)+":"+outcome, "system")
 	if err := s.commitLine(dispatchLogLine{Kind: "record", Seq: s.seq, At: cp.UpdatedAt, Record: &cp, IntentClear: clear}); err != nil {
+		// BUG-449: un-burn the seq + drop the phantom audit — the terminal
+		// record is untouched in RAM, so the whole attempt is invisible.
+		s.uncommitAudit(seqBefore, auditLen)
 		return r.Revision, err
 	}
 	// Disk durable — now mutate RAM to match.
@@ -651,7 +680,6 @@ func (s *memoryDispatchStore) commitTerminal(ctx context.Context, runID, turnID 
 	r.Revision = cp.Revision
 	r.UpdatedAt = cp.UpdatedAt
 	s.clearIntentLocked(intentOwnerRunID, intentKey, intentGen)
-	s.appendAuditLocked(runID, turnID, "commit_terminal", string(next)+":"+outcome, "system")
 	return r.Revision, nil
 }
 
@@ -1208,8 +1236,16 @@ func (s *memoryDispatchStore) OpenRepair(ctx context.Context, runID, reason stri
 	if rawHash == "" {
 		rawHash = HashBytes(rawBlob)
 	}
+	// BUG-408: a genuinely NEW repair episode continues the revision sequence
+	// rather than resetting to 1 — overwriting a resolved repair at rev=1 made
+	// the durable log read "resolved rev=3 → open rev=1" and discarded the
+	// resolution's revision history.
+	nextRev := int64(1)
+	if existing, ok := s.repairs[runID]; ok && existing != nil {
+		nextRev = existing.RepairRevision + 1
+	}
 	rec := &RepairRecord{
-		RunID: runID, RepairRevision: 1, Reason: reason,
+		RunID: runID, RepairRevision: nextRev, Reason: reason,
 		QuarantineBlob: append([]byte(nil), rawBlob...), QuarantineHash: rawHash,
 		State: "open", CreatedAt: s.clockStr(),
 	}
@@ -1241,6 +1277,15 @@ func (s *memoryDispatchStore) BeginRepairResolution(ctx context.Context, runID s
 	_ = ctx
 	r := s.repairs[runID]
 	if r == nil || r.State != "open" {
+		// BUG-407: replaying a resolutionId whose outcome is already recorded
+		// must surface the recorded outcome (contract row RR), not a bare
+		// ErrRepairNotOpen that falls through to HTTP 502. The repair record
+		// carries ResolutionID/ResolvedAction durably, so this idempotency
+		// survives restart. A replay with a DIFFERENT resolutionID is a real
+		// conflict and still fails closed.
+		if r != nil && r.State == "resolved" && resolutionID != "" && r.ResolutionID == resolutionID {
+			return 0, nil, &RepairResolutionReplay{Revision: r.RepairRevision, Outcome: r.ResolvedAction}
+		}
 		return 0, nil, ErrRepairNotOpen
 	}
 	if r.RepairRevision != expectedRepairRev {
@@ -1280,22 +1325,80 @@ func (s *memoryDispatchStore) CommitRepairResolution(ctx context.Context, runID 
 		return r.RepairRevision, ErrStaleDispatch
 	}
 	switch outcome {
-	case RepairResolvedRetryLoad, RepairResolvedAbandon:
-		r.State = "resolved"
-		r.ResolvedAction = string(outcome)
-		r.ResolvedAt = s.clockStr()
-	case RepairFailedStillOpen:
-		r.State = "open"
-		r.AttemptClaim = ""
-		r.AttemptExpiresAt = ""
+	case RepairResolvedRetryLoad, RepairResolvedAbandon, RepairFailedStillOpen:
 	default:
 		return r.RepairRevision, fmt.Errorf("unknown repair outcome %q", outcome)
 	}
-	r.RepairRevision++
+	// BUG-447: terminalize the stranded dispatch records BEFORE persisting the
+	// repair resolution. The previous order committed "resolved" first and then
+	// wrote each record line — a mid-loop fsync failure (or crash) left a
+	// resolved repair over live records, and resolution replay only answers
+	// on an OPEN repair, so no retry path could ever reach them. Records-first
+	// means every failure mode keeps the repair open and safely retryable.
+	// BUG-408 stands: without terminalization the boot scanner re-opens the
+	// repair forever.
+	if outcome == RepairResolvedAbandon {
+		keys := make([]string, 0, len(s.records))
+		for k, rec := range s.records {
+			if rec != nil && rec.RunID == runID && !rec.State.IsTerminal() {
+				keys = append(keys, k)
+			}
+		}
+		sort.Strings(keys) // deterministic write order for a readable log
+		for _, k := range keys {
+			rec := s.records[k]
+			if cerr := rec.canTransition(DispatchTerminalCancelled); cerr != nil {
+				// Fail closed: never persist "resolved" while a live record
+				// cannot be terminalized.
+				return r.RepairRevision, fmt.Errorf("repair abandon cannot terminalize %s: %w", rec.TurnID, cerr)
+			}
+			cp := s.cloneRec(rec)
+			cp.State = DispatchTerminalCancelled
+			cp.Outcome = "abandoned,resolved_by=operator"
+			cp.SettleOwed = false
+			cp.SettlePhase = SettleNone
+			cp.RecoveryAttachEpoch = rec.RecoveryAttachEpoch + 1
+			cp.RecoveryAttachOwner = ""
+			cp.RecoveryAttachExpiresAt = ""
+			cp.ClaimOwner = ""
+			cp.ClaimExpiresAt = ""
+			cp.Revision++
+			cp.UpdatedAt = s.clockStr()
+			seqBefore, auditLen := s.seq, len(s.audits)
+			s.appendAuditLocked(rec.RunID, rec.TurnID, "repair_abandon_terminalize", "abandoned,resolved_by=operator", "operator")
+			if err := s.commitLine(dispatchLogLine{Kind: "record", Seq: s.seq, At: cp.UpdatedAt, Record: &cp}); err != nil {
+				s.uncommitAudit(seqBefore, auditLen)
+				return r.RepairRevision, err
+			}
+			*rec = cp
+			owner := rec.IntentOwnerRunID
+			if owner == "" {
+				owner = rec.RunID
+			}
+			s.clearIntentLocked(owner, rec.OuterIntentKey, rec.OuterIntentGen)
+		}
+	}
+	// All records durable (or none were stranded) — persist the resolution,
+	// again disk-before-RAM so a failed fsync leaves the claim retryable.
+	rp := *r
+	switch outcome {
+	case RepairResolvedRetryLoad, RepairResolvedAbandon:
+		rp.State = "resolved"
+		rp.ResolvedAction = string(outcome)
+		rp.ResolvedAt = s.clockStr()
+	case RepairFailedStillOpen:
+		rp.State = "open"
+		rp.AttemptClaim = ""
+		rp.AttemptExpiresAt = ""
+	}
+	rp.RepairRevision++
+	seqBefore, auditLen := s.seq, len(s.audits)
 	s.appendAuditLocked(runID, "", "commit_repair", string(outcome)+":"+detail, "operator")
-	if err := s.commitLine(dispatchLogLine{Kind: "repair", Seq: s.seq, At: s.clockStr(), Repair: r}); err != nil {
+	if err := s.commitLine(dispatchLogLine{Kind: "repair", Seq: s.seq, At: s.clockStr(), Repair: &rp}); err != nil {
+		s.uncommitAudit(seqBefore, auditLen)
 		return r.RepairRevision, err
 	}
+	*r = rp
 	return r.RepairRevision, nil
 }
 

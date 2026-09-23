@@ -131,9 +131,14 @@ func (r *FlowDefinitionResolver) ResolveFlowRef(ctx context.Context, flowRef str
 	if flowRef == "" {
 		return FlowDefinitionRecord{}, fmt.Errorf("flow definition resolver: empty flowRef")
 	}
+	var storeErr error
 	if r.store != nil {
 		if record, ok, err := r.store.GetByRef(ctx, flowRef); err != nil {
-			return FlowDefinitionRecord{}, fmt.Errorf("flow definition resolver: store lookup for %q: %w", flowRef, err)
+			// BUG-409: remember the store failure but keep going — a built-in
+			// ref still resolves from the embedded pack below. Non-builtin
+			// refs re-surface the store error (fail closed, never silent).
+			storeErr = err
+			log.Printf("[flow-resolver] store lookup for %q failed; trying embedded pack: %v", flowRef, err)
 		} else if ok {
 			if err := agentpack.ValidateFlowDefinition(record.Definition); err != nil {
 				return FlowDefinitionRecord{}, &ErrFlowDefinitionInvalid{FlowRef: flowRef, err: fmt.Errorf("flow definition resolver: stored definition for %q failed validation: %w", flowRef, err)}
@@ -150,9 +155,15 @@ func (r *FlowDefinitionResolver) ResolveFlowRef(ctx context.Context, flowRef str
 	packID, flowID, ok := splitFlowRef(flowRef)
 	if !ok {
 		// TUI /flow sends bare pack flow ids (vibe-ingest, task-harness).
-		return r.ResolveBuiltin(ctx, strings.TrimSuffix(workingmode.PackPrefix, "/"), flowRef)
+		packID, flowID = strings.TrimSuffix(workingmode.PackPrefix, "/"), flowRef
 	}
-	return r.ResolveBuiltin(ctx, packID, flowID)
+	rec, err := r.ResolveBuiltin(ctx, packID, flowID)
+	if err != nil && storeErr != nil {
+		// Not resolvable from the embedded pack either — surface the store
+		// error so the caller sees the real failure (never silently degrade).
+		return FlowDefinitionRecord{}, fmt.Errorf("flow definition resolver: store lookup for %q: %w", flowRef, storeErr)
+	}
+	return rec, err
 }
 
 // ResolveBuiltin resolves a built-in flow directly, preferring a mirrored row
@@ -161,7 +172,11 @@ func (r *FlowDefinitionResolver) ResolveFlowRef(ctx context.Context, flowRef str
 func (r *FlowDefinitionResolver) ResolveBuiltin(ctx context.Context, packID, flowID string) (FlowDefinitionRecord, error) {
 	if r.store != nil {
 		if record, ok, err := r.store.GetByPackFlow(ctx, packID, flowID); err != nil {
-			return FlowDefinitionRecord{}, fmt.Errorf("flow definition resolver: mirror lookup for %s/%s: %w", packID, flowID, err)
+			// BUG-409: a configured-but-dead mirror must not disable built-in
+			// flows — the embedded pack is the authoritative fallback per this
+			// function's contract ("or is unavailable"). Three live sessions
+			// degraded to ungated chat turns before this.
+			log.Printf("[flow-resolver] mirror lookup for %s/%s failed; falling back to embedded pack: %v", packID, flowID, err)
 		} else if ok {
 			mirrorRef := canonicalFlowRef(packID, flowID)
 			if err := agentpack.ValidateFlowDefinition(record.Definition); err != nil {

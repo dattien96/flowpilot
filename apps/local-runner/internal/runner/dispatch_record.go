@@ -348,6 +348,19 @@ var (
 	ErrDispatchLocked        = errors.New("dispatch store lock held by another process")
 )
 
+// RepairResolutionReplay reports an idempotent replay of a repair resolution
+// that was already recorded under the same resolutionID (BUG-407, contract
+// row RR). The operator surface converts it to HTTP 200 with the recorded
+// outcome instead of a 5xx.
+type RepairResolutionReplay struct {
+	Revision int64
+	Outcome  string
+}
+
+func (e *RepairResolutionReplay) Error() string {
+	return fmt.Sprintf("repair resolution already recorded: outcome=%s rev=%d", e.Outcome, e.Revision)
+}
+
 // dispatchLegal is the CLOSED forward-only edge set (SD-24 §5.2).
 var dispatchLegal = map[DispatchState][]DispatchState{
 	DispatchPrepared:         {DispatchSendClaimed, DispatchTerminalCancelled},
