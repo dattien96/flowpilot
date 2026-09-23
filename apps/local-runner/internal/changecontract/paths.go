@@ -86,7 +86,25 @@ func NormalizeDeclaredCodePaths(workspace string, paths []string) ([]string, err
 		if err != nil {
 			return nil, fmt.Errorf("changecontract: resolve workspace %q: %w", workspace, err)
 		}
+		// BUG-396: resolve the workspace root itself before comparing resolved
+		// declared paths against it. Each existing declared path is
+		// EvalSymlinks-resolved below, so under a symlinked workspace root
+		// (macOS /var->/private/var TMPDIR, /tmp, symlinked project dirs) an
+		// unresolved absWorkspace makes every real file appear to escape via
+		// "../". EvalSymlinks failure (root not yet created) falls back to the
+		// unresolved abs — same "when resolvable" contract as the per-path
+		// check.
+		if resolved, resErr := filepath.EvalSymlinks(abs); resErr == nil {
+			abs = resolved
+		}
 		absWorkspace = abs
+	}
+	// Keep the unresolved form as a fallback: a caller-supplied absolute
+	// declared path may itself arrive in unresolved (symlinked) form and must
+	// still relativize — try resolved first, then raw.
+	rawAbsWorkspace := ""
+	if strings.TrimSpace(workspace) != "" {
+		rawAbsWorkspace, _ = filepath.Abs(workspace)
 	}
 
 	seen := make(map[string]bool, len(paths))
@@ -104,6 +122,12 @@ func NormalizeDeclaredCodePaths(workspace string, paths []string) ([]string, err
 				return nil, fmt.Errorf("changecontract: declared path %q is absolute but no workspace was given", raw)
 			}
 			rel, err := filepath.Rel(absWorkspace, native)
+			if (err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator))) && rawAbsWorkspace != "" && rawAbsWorkspace != absWorkspace {
+				// The workspace resolved through a symlink but the declared
+				// path did not (or vice versa) — retry in unresolved space
+				// before declaring escape.
+				rel, err = filepath.Rel(rawAbsWorkspace, native)
+			}
 			if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 				return nil, fmt.Errorf("changecontract: declared path %q escapes workspace %q", raw, workspace)
 			}
