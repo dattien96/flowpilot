@@ -388,8 +388,10 @@ func renderConversationTurn(turn transcriptTurn, maxBytes int, truncatedMarker s
 	if userTruncated {
 		return appendTurnMarker(sb.String(), truncatedMarker, maxBytes), true
 	}
+	// BUG-385b: an assistant-less turn (failed/quota) is not truncated — do not
+	// stamp the truncation marker while reporting truncated=false.
 	if assistant == "" {
-		return appendTurnMarker(sb.String(), truncatedMarker, maxBytes), false
+		return sb.String(), false
 	}
 
 	sb.WriteString("\n\nAssistant:\n")

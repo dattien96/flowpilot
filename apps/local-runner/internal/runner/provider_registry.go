@@ -478,7 +478,7 @@ func ProviderRegistryFor(r *Runner) *ProviderRegistry {
 			Status:      ProviderStatusAvailable,
 			Capabilities: ProviderCapabilities{
 				Streaming: true, Resume: true, ApprovalEvents: true, FileEvents: true, Interrupt: true,
-				SkillSelection: true,
+				SkillSelection: true, Mcp: true,
 			},
 			newAdapterForTurn: func(model, reasoningEffort, childScope string) ProviderRuntimeAdapter {
 				_ = childScope // Grok keys its process by model/variant; child isolation is opencode-only (BUG-334)
@@ -571,10 +571,16 @@ func ProviderRegistryFor(r *Runner) *ProviderRegistry {
 	}
 	if opencodeAgentEnabled() {
 		reg.register(ProviderRegistration{
-			Key:          ProviderKeyOpencode,
-			DisplayName:  "Opencode",
-			Status:       ProviderStatusAvailable,
-			Capabilities: (&opencodeAdapter{}).Capabilities(),
+			Key:         ProviderKeyOpencode,
+			DisplayName: "Opencode",
+			Status:      ProviderStatusAvailable,
+			// BUG-383: registration advertises provider-level capability — a
+			// zero-value adapter reports ApprovalEvents/Mcp=false because its
+			// mcpServer is only wired per turn. Both are live-verified.
+			Capabilities: ProviderCapabilities{
+				Streaming: true, Resume: true, ApprovalEvents: true, FileEvents: true,
+				Interrupt: true, SkillSelection: true, Mcp: true,
+			},
 			newAdapterForTurn: func(model, reasoningEffort, childScope string) ProviderRuntimeAdapter {
 				// CA-689c: env/scope resolution shared with the variants prober.
 				scopeKey, env, envErr := r.opencodeLaunchEnv()
@@ -635,10 +641,15 @@ func ProviderRegistryFor(r *Runner) *ProviderRegistry {
 	// Appended last — existing registrations above are unchanged.
 	if devinAgentEnabled() {
 		reg.register(ProviderRegistration{
-			Key:          ProviderKeyDevin,
-			DisplayName:  "Devin",
-			Status:       ProviderStatusAvailable,
-			Capabilities: (&devinAdapter{}).Capabilities(),
+			Key:         ProviderKeyDevin,
+			DisplayName: "Devin",
+			Status:      ProviderStatusAvailable,
+			// BUG-383: same zero-value-adapter defect as opencode — advertise
+			// the wired capability set, not an unwired instance's.
+			Capabilities: ProviderCapabilities{
+				Streaming: true, Resume: true, ApprovalEvents: true, FileEvents: true,
+				Interrupt: true, SkillSelection: true, Mcp: true,
+			},
 			newAdapterForTurn: func(model, reasoningEffort, childScope string) ProviderRuntimeAdapter {
 				scopeKey, env, envErr := r.devinLaunchEnv()
 				if envErr != nil {
