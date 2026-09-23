@@ -322,10 +322,30 @@ func (m *AppModel) applyChatSwitched(msg ChatSwitchedMsg) {
 	if msg.Resp.Model != "" {
 		m.model = msg.Resp.Model
 		m.modelContextWin = contextWindowForModel(m.providers, m.provider, m.model)
+	} else if msg.TargetModel != "" {
+		// BUG-452: the requested target model is a stronger claim than catalog
+		// index 0 — the new leg was created asking for it; catalog order is not
+		// the session's resolved model.
+		m.model = msg.TargetModel
+		m.modelContextWin = contextWindowForModel(m.providers, m.provider, m.model)
+	} else if models := modelsForProvider(m.providers, m.provider); len(models) > 0 {
+		// BUG-430(b): the switch response echoes the request model — an empty
+		// one must not leave the previous provider's model id on the new leg
+		// (live: "devin · opencode/muse-spark-…"). Fall back to the catalog
+		// default, matching the pre-run /provider path.
+		m.model = models[0]
+		m.modelContextWin = contextWindowForModel(m.providers, m.provider, m.model)
+	} else {
+		m.model = ""
+		m.modelContextWin = 0
 	}
 	m.lastEventSeq = h.LastEventSeq
 	m.turnStream = nil
 	m.turnSendPending = false
+	// BUG-428: the old leg's orchestration stream must not survive adoption —
+	// cmdStartOrchestrationStream bails while orchStream is set, so the new
+	// leg's seed turn (its approvals, /stop surface) streamed nowhere.
+	m.stopOrchestrationStream()
 	m.client.NoteLastSeq(h.RunID, h.LastEventSeq)
 	m.bindActiveAccountForProvider()
 	m.skillsCatalog = nil
