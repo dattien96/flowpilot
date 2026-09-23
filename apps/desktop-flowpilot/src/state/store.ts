@@ -3130,7 +3130,11 @@ export const useStore = create<AppState>((set, get) => ({
 
 // ── Account-switch helpers ─────────────────────────────────────────────────
 
-function isUsageLimitMessage(msg: string): boolean {
+// BUG-375: token set mirrors the runner's isProviderUsageLimitError
+// (interactive_service.go) — the two classifiers gate the same quota flow
+// (runner → run status; desktop → account-switch surface), so they must
+// agree on every billing/quota signature or one side silently drops it.
+export function isUsageLimitMessage(msg: string): boolean {
   const lower = msg.toLowerCase();
   return (
     lower.includes("usage limit reached") ||
@@ -3138,7 +3142,23 @@ function isUsageLimitMessage(msg: string): boolean {
     lower.includes("out of credits") ||
     lower.includes("out_of_credits") ||
     lower.includes("quota reset") ||
-    lower.includes("rate limit")
+    lower.includes("rate limit") ||
+    lower.includes("rate_limit") ||
+    lower.includes("rate-limit") ||
+    lower.includes("rate_limited") ||
+    lower.includes("quota exceeded") ||
+    lower.includes("quota_exceeded") ||
+    lower.includes("insufficient credit") ||
+    lower.includes("insufficient_credit") ||
+    lower.includes("usage_limit") ||
+    lower.includes("usage-limit") ||
+    lower.includes("payment required") ||
+    lower.includes("payment_required") ||
+    lower.includes("no payment method") ||
+    lower.includes("add a payment method") ||
+    lower.includes("personal-team-blocked") ||
+    lower.includes("spending-limit") ||
+    lower.includes("spending_limit")
   );
 }
 

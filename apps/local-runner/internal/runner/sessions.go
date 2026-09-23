@@ -266,6 +266,9 @@ func extractCodexMcpResponse(result map[string]interface{}) (string, string) {
 func jsonRpcErrorMessage(message map[string]interface{}) string {
 	if errObj, ok := message["error"].(map[string]interface{}); ok {
 		if msg, ok := errObj["message"].(string); ok && strings.TrimSpace(msg) != "" {
+			if detail := jsonRpcErrorDataDetail(errObj["data"]); detail != "" && !strings.Contains(msg, detail) {
+				return msg + ": " + detail
+			}
 			return msg
 		}
 	}
@@ -274,6 +277,25 @@ func jsonRpcErrorMessage(message map[string]interface{}) string {
 		return errStr
 	}
 
+	return ""
+}
+
+// jsonRpcErrorDataDetail extracts the human-readable detail from a JSON-RPC
+// error's `data` field (spec: "additional information about the error"). Grok
+// ACP sends {"http_status":402,"message":"API error (status 402 ...)"} — the
+// quota/billing text lives there while `message` is just "Internal error"
+// (BUG-374). Returns "" when no usable detail exists.
+func jsonRpcErrorDataDetail(data interface{}) string {
+	switch v := data.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	case map[string]interface{}:
+		for _, key := range []string{"message", "details", "detail", "reason"} {
+			if s, ok := v[key].(string); ok && strings.TrimSpace(s) != "" {
+				return strings.TrimSpace(s)
+			}
+		}
+	}
 	return ""
 }
 
