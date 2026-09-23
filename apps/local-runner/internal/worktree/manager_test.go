@@ -281,3 +281,60 @@ func TestSlugify(t *testing.T) {
 		}
 	}
 }
+
+// BUG-378: work committed INSIDE the worktree on its branch (providers can
+// `git commit` when instructed) is invisible to a bare `git diff` — the
+// merge-back reported applied:true while silently dropping the commit.
+// Diff must cover committed-branch + staged + unstaged + untracked vs the
+// recorded base commit.
+func TestManager_DiffIncludesCommittedBranchWork(t *testing.T) {
+	r := repo(t)
+	base := git(t, r, "rev-parse", "HEAD")
+	m := NewManager()
+	info, err := m.Create(context.Background(), r, "o1", "", base, "x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate a provider committing inside the worktree.
+	if err := os.WriteFile(filepath.Join(info.Path, "committed.txt"), []byte("committed work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, info.Path, "add", "committed.txt")
+	git(t, info.Path, "commit", "-m", "provider commit inside worktree")
+	// Plus an uncommitted change for good measure.
+	if err := os.WriteFile(filepath.Join(info.Path, "seed.txt"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	patch, err := m.Diff(context.Background(), r, "o1", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(patch), "committed.txt") {
+		t.Fatalf("committed branch work dropped from patch:\n%s", patch)
+	}
+	if !strings.Contains(string(patch), "seed.txt") {
+		t.Fatalf("uncommitted work dropped from patch:\n%s", patch)
+	}
+}
+
+func TestManager_ApplyCarriesCommittedBranchWork(t *testing.T) {
+	r := repo(t)
+	base := git(t, r, "rev-parse", "HEAD")
+	m := NewManager()
+	info, err := m.Create(context.Background(), r, "o2", "", base, "x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(info.Path, "committed.txt"), []byte("committed work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, info.Path, "add", "committed.txt")
+	git(t, info.Path, "commit", "-m", "provider commit inside worktree")
+	if err := m.ApplyWithOptions(context.Background(), r, "o2", "", ApplyOptions{StrictHead: false}); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(r, "committed.txt"))
+	if err != nil || string(got) != "committed work\n" {
+		t.Fatalf("committed worktree change not applied: %v %q", err, got)
+	}
+}
