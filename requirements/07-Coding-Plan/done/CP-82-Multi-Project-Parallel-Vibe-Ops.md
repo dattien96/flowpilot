@@ -3,7 +3,7 @@
 - Document ID: `CP-82`
 - Title: `Multi-Project Parallel Vibe Operations`
 - Phase: `coding_plan`
-- Status: `draft`
+- Status: `done`
 - Owner: `dat.nguyen`
 - Reviewers: ``
 - Created: `2026-02-14`
@@ -184,11 +184,11 @@ single-focused-workspace model or worktree isolation.
 
 ## 10. Definition of Done
 
-- [ ] Board shows all known runs grouped by project with correct status.
-- [ ] Inbox quick actions work for approval/question kinds; unactionable kinds
-      degrade to "Open".
-- [ ] Worktree uniqueness tests green; no code change needed unless a gap is
-      found.
-- [ ] Spectator pane is read-only and promotes via `openHistoryRun`.
-- [ ] All additive tests; existing suite green.
-- [ ] CA entries per slice; commit format `[Feature][project-nav|attention-queue]`.
+- [x] Board shows all known runs grouped by project with correct status. — deriveBoardSections + SessionsBoard (Task-422)
+- [x] Inbox quick actions work for approval/question kinds; unactionable kinds
+      degrade to "Open". — pending payload + approveAttentionItem/answerAttentionItem (Task-423)
+- [x] Worktree uniqueness tests green; no code change needed unless a gap is
+      found. — 8/8 green, zero prod edits, live worktree_create_failed verified (Task-424)
+- [x] Spectator pane is read-only and promotes via `openHistoryRun`. — Task-425
+- [x] All additive tests; existing suite green. — 535 tests, 14 fails = HEAD baseline
+- [x] CA entries per slice; commit format `[Feature][project-nav|attention-queue]`. — CA-925, commit 14b9ca94

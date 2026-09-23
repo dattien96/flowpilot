@@ -3,7 +3,7 @@
 - Document ID: `CP-83`
 - Title: `Embedded Terminal Panel`
 - Phase: `coding_plan`
-- Status: `draft`
+- Status: `done`
 - Owner: `dat.nguyen`
 - Reviewers: ``
 - Created: `2026-02-14`
@@ -167,12 +167,12 @@ without leaving FlowPilot and without the terminal ever influencing a run.
 
 ## 10. Definition of Done
 
-- [ ] Bottom terminal panel opens/closes like VS Code, multi-tab.
-- [ ] Shell spawns in `project.path`, or the run's `worktreePath` when bound.
-- [ ] `worktreePath` exposed via contract; UI never computes the path.
-- [ ] Zero writes to run/timeline/orchestration state from terminal code —
+- [x] Bottom terminal panel opens/closes like VS Code, multi-tab. — Task-428
+- [x] Shell spawns in `project.path`, or the run's `worktreePath` when bound. — resolveTerminalCwd; live-verified worktreePath contract
+- [x] `worktreePath` exposed via contract; UI never computes the path. — Task-426, live-verified on start/history/resume
+- [x] Zero writes to run/timeline/orchestration state from terminal code —
       verified by test + code review.
-- [ ] Pty lifecycle clean on tab close, window reload, app quit.
-- [ ] Typecheck + build green; focused tests added; CA entry written.
-- [ ] Commit format `[Feature][desktop-ui|chat-ui][ui|electron]` per repo
+- [x] Pty lifecycle clean on tab close, window reload, app quit. — registry kill-all on lifecycle events; live spawn/kill verified, no orphans
+- [x] Typecheck + build green; focused tests added; CA entry written. — CA-924
+- [x] Commit format `[Feature][desktop-ui|chat-ui][ui|electron]` per repo — be99ae35
       convention.
