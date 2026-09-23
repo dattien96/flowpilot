@@ -227,6 +227,14 @@ submitApproval
       failures matching HEAD baseline exactly). — 535 tests, 14 fails = baseline
 - [ ] M-1..M-7 observed PASS. — pending operator UI pass
 - [x] L-1 verified with HTTP + on-disk evidence (run-257829); L-3 PASS live
-      (worktree_create_failed on pre-created dir); L-2 covered by Go test;
-      L-4/L-5 pending a real waiting_approval run (manual pass).
+      (worktree_create_failed on pre-created dir); L-2 covered by Go test.
+      L-4 PASS live 2026-09-23 (macOS, runner build dd2ad5d1): mux snapshot on
+      /client/events/stream surfaces actionable attention items across 4
+      distinct projects in one stream; per-project workflow-runs endpoint
+      feeds board data. L-5 PASS-equivalent live: pending dispatch_attention
+      on run-959553/turn-959555 settled via POST dispatches/resolve
+      (confirm_cancelled, expectedRev 26) → 200 + state terminal_cancelled →
+      lane removed from next mux snapshot. A genuine waiting_approval could
+      not be forced in this env (codex auto-approves; grok 402; claude no
+      account) — same limitation as CP-84 live notes.
 - [x] CA entries for each slice written. — CA-925
