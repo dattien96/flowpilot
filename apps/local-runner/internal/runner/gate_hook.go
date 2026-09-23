@@ -41,6 +41,12 @@ const maxGateFixCodeAutoReprompts = 2
 type gateBlockInfo struct {
 	regressedTests []string
 	stepID         string
+	// CP-84 (Task-430): message/options/createdAt let the decision projection
+	// render the armed gate without re-walking rs.events. createdAt is the
+	// RFC3339Nano arming stamp and doubles as the decision revision.
+	message   string
+	options   []string
+	createdAt string
 }
 
 // gateEpochStillValid reports whether Stop has not invalidated the gate claim
@@ -465,6 +471,9 @@ func (s *InteractiveService) runFlowGateAtEpoch(
 		rs.pendingGateBlock = &gateBlockInfo{
 			regressedTests: gateRegressedTests,
 			stepID:         rs.lastTurnStepID,
+			message:        result.Message,
+			options:        append([]string(nil), gateOptions...),
+			createdAt:      time.Now().UTC().Format(time.RFC3339Nano),
 		}
 	}
 	s.emitLocked(rs, ProviderEvent{
@@ -1433,6 +1442,9 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 		rs.pendingGateBlock = &gateBlockInfo{
 			regressedTests: gateRegressedTests,
 			stepID:         rs.lastTurnStepID,
+			message:        result.Message,
+			options:        append([]string(nil), emitOptions...),
+			createdAt:      time.Now().UTC().Format(time.RFC3339Nano),
 		}
 	}
 	// Auto fix-code path: emit as reprompt (not block) so desktop does not open
@@ -2098,6 +2110,7 @@ func (s *InteractiveService) SubmitGateDecision(runID, option, customText string
 	}
 	info := rs.pendingGateBlock
 	rs.pendingGateBlock = nil
+	s.markRunRealtimeDirtyLocked(runID)
 	stepID := rs.lastTurnStepID
 	cwd := rs.workspaceCwd
 	s.mu.Unlock()

@@ -43,6 +43,43 @@ type ChatTranscriptStore interface {
 	LatestChatSeq(ctx context.Context, chatID string) (int64, error)
 }
 
+// ChatTranscriptBackwardReader is an optional ChatTranscriptStore capability
+// (Task-421): serves the tail-bounded page of records with chatSeq <
+// beforeSeq, in ascending order. Stores without it fall back to a forward
+// read + in-memory slice via readChatRecordsBefore.
+type ChatTranscriptBackwardReader interface {
+	ReadChatRecordsBefore(ctx context.Context, chatID string, beforeSeq int64, limit int) ([]ChatTranscriptRecord, error)
+}
+
+// readChatRecordsBefore returns up to `limit` records with chatSeq <
+// beforeSeq in ascending order (limit 0 = all older records). Native paging
+// when the store supports it; otherwise a full forward read is sliced.
+func readChatRecordsBefore(ctx context.Context, store ChatTranscriptStore, chatID string, beforeSeq int64, limit int) ([]ChatTranscriptRecord, error) {
+	if br, ok := store.(ChatTranscriptBackwardReader); ok {
+		return br.ReadChatRecordsBefore(ctx, chatID, beforeSeq, limit)
+	}
+	all, err := store.ReadChatRecords(ctx, chatID, 0, 0)
+	if err != nil {
+		return nil, err
+	}
+	return tailBefore(all, beforeSeq, limit), nil
+}
+
+// tailBefore slices the oldest-to-newest `all` list down to the last `limit`
+// records strictly before beforeSeq.
+func tailBefore(all []ChatTranscriptRecord, beforeSeq int64, limit int) []ChatTranscriptRecord {
+	older := all[:0:0]
+	for _, rec := range all {
+		if rec.ChatSeq < beforeSeq {
+			older = append(older, rec)
+		}
+	}
+	if limit > 0 && len(older) > limit {
+		older = older[len(older)-limit:]
+	}
+	return older
+}
+
 // localFileChatTranscriptStore — one NDJSON file per chat at
 // <dir>/chats/<chatId>/transcript.ndjson (SD-26 §5.3). Single-process writer;
 // appends serialize on the store mutex. Corrupt trailing lines are skipped with
@@ -135,6 +172,19 @@ func (l *localFileChatTranscriptStore) ReadChatRecords(_ context.Context, chatID
 		out = append(out, rec)
 	}
 	return out, nil
+}
+
+// ReadChatRecordsBefore returns the tail-bounded page of records with
+// chatSeq < beforeSeq, ascending (Task-421 windowed timeline paging).
+func (l *localFileChatTranscriptStore) ReadChatRecordsBefore(_ context.Context, chatID string, beforeSeq int64, limit int) ([]ChatTranscriptRecord, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	all, err := l.readAll(chatID)
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].ChatSeq < all[j].ChatSeq })
+	return tailBefore(all, beforeSeq, limit), nil
 }
 
 func (l *localFileChatTranscriptStore) LatestChatSeq(_ context.Context, chatID string) (int64, error) {

@@ -82,10 +82,50 @@ test("chrome components carry no emoji glyphs", () => {
   for (const file of [
     "src/components/Navigator.tsx",
     "src/components/AttentionQueue.tsx",
+    "src/components/AttentionInbox.tsx",
     "src/components/ChatPosturePanel.tsx",
+    "src/components/AgentsPanel.tsx",
+    "src/components/ChatInput.tsx",
+    "src/components/ChatWorkspace.tsx",
+    "src/components/Timeline.tsx",
+    "src/components/RunToast.tsx",
+    "src/components/LSPStatusNotice.tsx",
+    "src/components/TranslatePopup.tsx",
+    "src/components/DispatchAttentionCard.tsx",
+    "src/components/TerminalPanel.tsx",
+    "src/components/SessionsBoard.tsx",
+    "src/components/SpectatorPane.tsx",
+    "src/App.tsx",
   ]) {
     const src = fs.readFileSync(path.resolve(process.cwd(), file), "utf8");
     const stripped = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
     assert.equal(emojiRe.test(stripped), false, `emoji glyph found in ${file}`);
   }
+});
+
+test("right-sidebar-stack pins rows to content height", () => {
+  // BUG: with grid's default align-content (normal => stretch), auto-sized
+  // tracks absorb the aside's leftover height on first paint — before all
+  // panels mount — inflating tab rows (measured 174px-tall .tab buttons).
+  // The stack must pack rows at the start edge instead.
+  const m = CSS.match(/\.right-sidebar-stack\s*\{([\s\S]*?)\n\}/);
+  assert.ok(m, ".right-sidebar-stack rule not found");
+  assert.match(m![1], /align-content\s*:\s*start/);
+});
+
+test("navigator never scrolls horizontally (M-7)", () => {
+  // BUG: a long nowrap project name propagated min-content width through
+  // .project-group-head → .project-groups → the section's implicit auto
+  // column, making the navigator ~19px wider than the sidebar — an
+  // h-scrollbar appeared at narrow windows (measured nav.scrollWidth 240 >
+  // clientWidth 229 at 960px). .project-groups is the grid item that carries
+  // the propagation; it must be allowed to shrink to the track.
+  const groups = CSS.match(/\.project-groups\s*\{([\s\S]*?)\n\}/);
+  assert.ok(groups, ".project-groups rule not found");
+  assert.match(groups![1], /min-width\s*:\s*0/);
+  // Backstop: the nav's scroll container must clip horizontal overflow — a
+  // horizontal scrollbar in the sidebar is a layout bug, not content.
+  const nav = CSS.match(/\.navigator\s*\{([\s\S]*?)\n\}/);
+  assert.ok(nav, ".navigator rule not found");
+  assert.match(nav![1], /overflow-x\s*:\s*hidden/);
 });

@@ -54,6 +54,8 @@ Source of truth for stable `feature_key` values used by:
 - contract-first-tdd — CP-67 Contract-First Scaffold TDD, AST Signature Lock (r-signature-lock), and batch renegotiation via Main Agent
 - skill-anchored-init — CP-68 Skill-Anchored Project Scaffolding & AI-Guided Init Engine
 - run-worktree — SS-23/SD-27/CP-71 opt-in per-run git worktree isolation: start toggle, run binding, patch-based merge-back card, conflict evidence, recovery & GC
-- attention-queue — cross-run pending-action inbox: desktop Attention Queue aggregating waiting runs via a singleton observer store (Task-404)
+- attention-queue — cross-run pending-action inbox: desktop Attention Queue aggregating waiting runs via a singleton observer store (Task-404); CP-84 realtime mux lanes, per-kind decision controls, triage filters, batch approve, modal routing for non-focused runs (Task-429/430/431/434)
+- chat-drafts — per-chat composer drafts keyed by chatId/runId/project:new, localStorage-persisted with LRU cap (CP-84 Task-432)
+- event-plane — realtime run-events transport: multiplexed level-triggered SSE `/client/events/stream`, chunked atomic snapshots, resync/reconnect, durable DecisionPayload projection (CP-84 Task-429/430)
 - desktop-ui-consistency — desktop design-token revamp: spacing/elevation/radius/motion scales, icon unification, token guardrails (Task-405)
 - dev-infra — developer tooling/build infra: test harness artifacts, gitignore, CI plumbing

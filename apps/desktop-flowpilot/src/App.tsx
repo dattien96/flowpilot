@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type {
   DesktopBootstrapState,
   SupabaseConfigInput,
@@ -7,9 +7,12 @@ import type {
   SupabaseConfigValidation,
   SupabaseRuntimeStatus,
 } from "@flowpilot/client-core";
+import { PanelLeftIcon, PanelRightIcon, TerminalIcon, BoardIcon } from "@/components/icons";
+import { SessionsBoard } from "@/components/SessionsBoard";
 import { RunStatus } from "@/components/RunStatus";
 import { RunnerStatusIndicator } from "@/components/RunnerStatusIndicator";
 import { RunToast } from "@/components/RunToast";
+import { AttentionInbox } from "@/components/AttentionInbox";
 import { ChatWorkspace } from "@/components/ChatWorkspace";
 import { LoginScreen } from "@/components/LoginScreen";
 import { SettingsShell, type SettingsSection } from "@/components/SettingsShell";
@@ -54,6 +57,47 @@ export function App(): React.ReactElement {
   const [busy, setBusy] = useState(false);
   const [leftSidebarVisible, setLeftSidebarVisible] = useState(true);
   const [rightSidebarVisible, setRightSidebarVisible] = useState(true);
+  const terminalOpen = useStore((s) => s.terminalOpen);
+  const [boardOpen, setBoardOpen] = useState(false);
+
+  // Auto-collapse side rails at narrow widths so columns never overlap or
+  // force a horizontal scrollbar. Remembers the user's choice and restores it
+  // when the window widens again; manual toggles still work while narrow.
+  const sidebarMemory = useRef<{ left?: boolean; right?: boolean }>({});
+  const leftVisRef = useRef(leftSidebarVisible);
+  const rightVisRef = useRef(rightSidebarVisible);
+  leftVisRef.current = leftSidebarVisible;
+  rightVisRef.current = rightSidebarVisible;
+  useEffect(() => {
+    const rightMq = window.matchMedia("(max-width: 1240px)");
+    const leftMq = window.matchMedia("(max-width: 880px)");
+    const syncRight = () => {
+      if (rightMq.matches) {
+        if (sidebarMemory.current.right === undefined) sidebarMemory.current.right = rightVisRef.current;
+        setRightSidebarVisible(false);
+      } else if (sidebarMemory.current.right !== undefined) {
+        setRightSidebarVisible(sidebarMemory.current.right);
+        sidebarMemory.current.right = undefined;
+      }
+    };
+    const syncLeft = () => {
+      if (leftMq.matches) {
+        if (sidebarMemory.current.left === undefined) sidebarMemory.current.left = leftVisRef.current;
+        setLeftSidebarVisible(false);
+      } else if (sidebarMemory.current.left !== undefined) {
+        setLeftSidebarVisible(sidebarMemory.current.left);
+        sidebarMemory.current.left = undefined;
+      }
+    };
+    syncRight();
+    syncLeft();
+    rightMq.addEventListener("change", syncRight);
+    leftMq.addEventListener("change", syncLeft);
+    return () => {
+      rightMq.removeEventListener("change", syncRight);
+      leftMq.removeEventListener("change", syncLeft);
+    };
+  }, []);
   const [runtimeStatus, setRuntimeStatus] = useState<SupabaseRuntimeStatus>(emptyRuntimeStatus);
   const [unauthenticatedView, setUnauthenticatedView] =
     useState<UnauthenticatedView>("login");
@@ -65,6 +109,18 @@ export function App(): React.ReactElement {
   useEffect(() => {
     document.title = `FlowPilot Desktop (${modeLabel})`;
   }, [modeLabel]);
+
+  // Task-428: Ctrl+` toggles the bottom terminal dock (VS Code convention).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key === "`") {
+        e.preventDefault();
+        useStore.getState().toggleTerminal();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   useEffect(() => {
     void refreshBootstrap();
@@ -80,6 +136,18 @@ export function App(): React.ReactElement {
       useStore.getState().setLifecycleStatus(status);
     });
     return unsubscribe;
+  }, []);
+
+  // CP-84 (Task-431 T-5): notification click deep-links into the originating
+  // run — resolve the attention item for project/chat context, then open.
+  useEffect(() => {
+    const subscribe = window.flowpilot?.onNotificationClick;
+    if (!subscribe) return;
+    return subscribe((runId) => {
+      const st = useStore.getState();
+      const item = st.attentionItems.find((i) => i.runId === runId);
+      void st.openRunAtAttention(runId, item?.chatId ?? runId, item?.projectId);
+    });
   }, []);
 
   // On every authenticated boot, run a bind-time engine init for all projects so
@@ -271,9 +339,7 @@ export function App(): React.ReactElement {
             title={leftSidebarVisible ? "Hide left sidebar" : "Show left sidebar"}
             aria-label={leftSidebarVisible ? "Hide left sidebar" : "Show left sidebar"}
           >
-            <span className="sidebar-toggle-icon" aria-hidden="true">
-              ◧
-            </span>
+            <PanelLeftIcon size={15} />
           </button>
           <button
             className={`sidebar-toggle ${rightSidebarVisible ? "active" : ""}`}
@@ -283,9 +349,17 @@ export function App(): React.ReactElement {
             title={rightSidebarVisible ? "Hide right sidebar" : "Show right sidebar"}
             aria-label={rightSidebarVisible ? "Hide right sidebar" : "Show right sidebar"}
           >
-            <span className="sidebar-toggle-icon" aria-hidden="true">
-              ◨
-            </span>
+            <PanelRightIcon size={15} />
+          </button>
+          <button
+            className={`sidebar-toggle ${terminalOpen ? "active" : ""}`}
+            onClick={() => useStore.getState().toggleTerminal()}
+            type="button"
+            aria-pressed={terminalOpen}
+            title="Toggle terminal (Ctrl+`)"
+            aria-label="Toggle terminal panel"
+          >
+            <TerminalIcon size={15} />
           </button>
         </div>
         <div className="brand">
@@ -293,6 +367,16 @@ export function App(): React.ReactElement {
         </div>
 
         <div className="header-actions">
+          <button
+            type="button"
+            className="icon-btn"
+            aria-label="Sessions monitor"
+            title="All runs across projects"
+            onClick={() => setBoardOpen(true)}
+          >
+            <BoardIcon size={15} />
+          </button>
+          <AttentionInbox />
           <div className="header-tabs" role="tablist" aria-label="Desktop mode">
             <button
               className={`header-tab ${authenticatedView === "chat" ? "active" : ""}`}
@@ -326,6 +410,7 @@ export function App(): React.ReactElement {
       </header>
 
         <RunToast />
+      {boardOpen && <SessionsBoard onClose={() => setBoardOpen(false)} />}
       {authenticatedView === "chat" ? (
           runtimeStatus.runnerReachable ? (
           <ChatWorkspace

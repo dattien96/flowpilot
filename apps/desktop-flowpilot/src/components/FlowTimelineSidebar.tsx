@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { FlowStepTimeline } from "@/components/FlowStepTimeline";
 import { activeWorkflowStep, isFlowModeRun, useStore } from "@/state/store";
+import { ChevronLeftIcon, ChevronRightIcon } from "@/components/icons";
 
 // BUG-156: dedicated collapsible middle sidebar for Flow Mode's step timeline,
 // carved out of the right-sidebar-stack (where WorkflowStepRuntimePanel used to
@@ -26,6 +27,26 @@ export function FlowTimelineSidebar(): React.ReactElement | null {
     return ls?.cap ?? ls?.roundCap ?? 0;
   });
   const [expanded, setExpanded] = useState(true);
+  // Auto-collapse the step rail on narrow windows; restores the user's choice
+  // when the window widens back past the breakpoint.
+  const remembered = useRef<boolean | undefined>(undefined);
+  const expandedRef = useRef(expanded);
+  expandedRef.current = expanded;
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 1180px)");
+    const sync = () => {
+      if (mq.matches) {
+        if (remembered.current === undefined) remembered.current = expandedRef.current;
+        setExpanded(false);
+      } else if (remembered.current !== undefined) {
+        setExpanded(remembered.current);
+        remembered.current = undefined;
+      }
+    };
+    sync();
+    mq.addEventListener("change", sync);
+    return () => mq.removeEventListener("change", sync);
+  }, []);
 
   // BUG-175: once a flow run has actually started, keep the step-timeline
   // sidebar mounted for its entire lifetime — running, paused on an approval or
@@ -92,7 +113,7 @@ export function FlowTimelineSidebar(): React.ReactElement | null {
           aria-expanded={expanded}
           onClick={() => setExpanded((v) => !v)}
         >
-          {expanded ? "❮" : "❯"}
+          {expanded ? <ChevronLeftIcon size={11} /> : <ChevronRightIcon size={11} />}
         </button>
       </div>
 

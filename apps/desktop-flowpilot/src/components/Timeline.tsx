@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react";
-import { providerLabel, useStore, type TimelineItem } from "@/state/store";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { noteTimelineScrollAnchor, providerLabel, useStore, type TimelineItem } from "@/state/store";
 import { MentionText } from "@/components/MentionText";
 import type { AgentRunSummary } from "@/types/contract";
 
@@ -226,11 +226,36 @@ import { ApprovalCard } from "./ApprovalCard";
 import { QuestionCard } from "./QuestionCard";
 import { DecisionCard } from "./DecisionCard";
 import { TranslatePopup } from "./TranslatePopup";
+import {
+  ArrowRightIcon,
+  BanIcon,
+  CheckIcon,
+  CloseIcon,
+  CopyIcon,
+  DisclosureCaret,
+  ExternalIcon,
+  GearIcon,
+  MinusIcon,
+  PaperclipIcon,
+  PencilIcon,
+  PlusIcon,
+  SpinnerIcon,
+} from "@/components/icons";
 
 const shortName = (path: string): string => path.split("/").pop() ?? path;
 
-const TOOL_ICON: Record<string, string> = { running: "⏳", success: "✓", failed: "✕", cancelled: "⊘" };
-const FILE_ICON: Record<string, string> = { created: "＋", modified: "✎", deleted: "－", renamed: "→" };
+const TOOL_ICON: Record<string, React.ReactElement> = {
+  running: <SpinnerIcon size={11} className="spin-icon" />,
+  success: <CheckIcon size={11} />,
+  failed: <CloseIcon size={11} />,
+  cancelled: <BanIcon size={11} />,
+};
+const FILE_ICON: Record<string, React.ReactElement> = {
+  created: <PlusIcon size={11} />,
+  modified: <PencilIcon size={11} />,
+  deleted: <MinusIcon size={11} />,
+  renamed: <ArrowRightIcon size={11} />,
+};
 
 import { buildTimelineGroups, type ApprovalItem, type QuestionItem, type TimelineGroup, type ToolItem } from "./timelineGrouping";
 
@@ -325,7 +350,7 @@ function CopyBubble({
         aria-label={copied ? "Copied" : "Copy message"}
         title={copied ? "Copied" : "Copy"}
       >
-        {copied ? "✓" : "⧉"}
+        {copied ? <CheckIcon size={12} /> : <CopyIcon size={12} />}
       </button>
       {children}
     </div>
@@ -376,7 +401,7 @@ function PromptCard({ it }: { it: Extract<TimelineItem, { kind: "prompt" }> }): 
               />
             ) : (
               <span key={att.id} className="prompt-attachment-chip" title={att.originalName}>
-                🖼 {att.originalName}
+                <PaperclipIcon size={10} /> {att.originalName}
               </span>
             ),
           )}
@@ -415,7 +440,7 @@ function PromptSkillsSummary({ skills }: { skills: string[] }): React.ReactEleme
         title={summary}
         onClick={() => setOpen((value) => !value)}
       >
-        <span className="prompt-skills-caret" aria-hidden="true">{open ? "▾" : "▸"}</span>
+        <span className="prompt-skills-caret" aria-hidden="true"><DisclosureCaret open={open} /></span>
         <span className="prompt-skills-title">{summary}</span>
         <span className="prompt-skills-preview">
           {preview}
@@ -443,13 +468,13 @@ function ToolRow({ it }: { it: Extract<TimelineItem, { kind: "tool" }> }): React
   if (isSpawn) {
     return (
       <div className="toolrow spawn">
-        ⚙ <b>spawn_agent</b>({label})
+        <GearIcon size={11} /> <b>spawn_agent</b>({label})
       </div>
     );
   }
   return (
     <div className={`row tool-row tool-${status}`}>
-      <span className="row-icon">{TOOL_ICON[status] ?? "•"}</span>
+      <span className="row-icon">{TOOL_ICON[status] ?? null}</span>
       <span className="row-main">
         <code className="tool-label">{label}</code>
         {status !== "running" && <span className="row-status">{status}</span>}
@@ -479,7 +504,7 @@ function ToolGroup({ tools }: { tools: ToolItem[] }): React.ReactElement {
         title={label}
         onClick={() => setOpen((value) => !value)}
       >
-        <span className="tool-group-caret">{open ? "▾" : "▸"}</span>
+        <span className="tool-group-caret"><DisclosureCaret open={open} /></span>
         <span className="tool-group-title">{label}</span>
       </button>
       {open && (
@@ -529,7 +554,7 @@ function ApprovalGroup({ items }: { items: ApprovalItem[] }): React.ReactElement
           title={label}
           onClick={() => setOpen((value) => !value)}
         >
-          <span className="card-group-caret" aria-hidden="true">{open ? "▾" : "▸"}</span>
+          <span className="card-group-caret" aria-hidden="true"><DisclosureCaret open={open} /></span>
           <span className={`approval-group-label ${resolved ? "is-resolved" : "is-pending"}`}>{label}</span>
         </button>
         {unresolved.length > 0 && (
@@ -571,7 +596,7 @@ function QuestionGroup({ items }: { items: QuestionItem[] }): React.ReactElement
         title={label}
         onClick={() => setOpen((value) => !value)}
       >
-        <span className="card-group-caret">{open ? "▾" : "▸"}</span>
+        <span className="card-group-caret"><DisclosureCaret open={open} /></span>
         <span className="badge badge-ask">{label}</span>
       </button>
       {open && (
@@ -596,12 +621,12 @@ function FileRow({ it }: { it: Extract<TimelineItem, { kind: "file" }> }): React
   const openInIde = useStore((s) => s.openInIde);
   return (
     <button className="row file-row" title={it.path} onClick={() => openInIde(it.path)}>
-      <span className="row-icon">{FILE_ICON[it.changeType ?? "modified"] ?? "✎"}</span>
+      <span className="row-icon">{FILE_ICON[it.changeType ?? "modified"] ?? <PencilIcon size={11} />}</span>
       <span className="row-main">
         <span className="file-name">{shortName(it.path)}</span>
         <span className="file-change">{it.changeType ?? "modified"}</span>
       </span>
-      <span className="row-hint">open in IDE ↗</span>
+      <span className="row-hint">open in IDE <ExternalIcon size={9} /></span>
     </button>
   );
 }
@@ -629,7 +654,7 @@ function AgentTimelineCard({ it }: { it: Extract<TimelineItem, { kind: "agent" }
         {it.finalMessage && <span className="agent-timeline-result"> — completed</span>}
       </span>
       <button type="button" className="abanner-open-btn" onClick={() => void focusAgentRun(it.childRunId)}>
-        Open ↗
+        Open <ExternalIcon size={9} />
       </button>
     </div>
   );
@@ -683,6 +708,8 @@ function Item({ it }: { it: TimelineGroup }): React.ReactElement | null {
 
 export function Timeline(): React.ReactElement {
   const timeline = useStore((s) => s.timeline);
+  const runId = useStore((s) => s.runId);
+  const pendingScrollAnchor = useStore((s) => s._pendingScrollAnchor);
   const mainRunId = useStore((s) => s.mainRunId ?? s.runId);
   const activeAgentRunId = useStore((s) => s.activeAgentRunId);
   const agentRuns = useStore((s) => s.agentRuns);
@@ -690,6 +717,7 @@ export function Timeline(): React.ReactElement {
   const focusAgentRun = useStore((s) => s.focusAgentRun);
   const endRef = useRef<HTMLDivElement>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
+  const anchorRafRef = useRef(0);
 
   const totalPromptCount = countPrompts(timeline);
   const [visiblePromptCount, setVisiblePromptCount] = useState(TIMELINE_PAGE_SIZE);
@@ -704,23 +732,82 @@ export function Timeline(): React.ReactElement {
   }, [totalPromptCount]);
 
   const hiddenPromptCount = Math.max(totalPromptCount - visiblePromptCount, 0);
-  const visibleTimeline = sliceTimelineFromPrompt(timeline, visiblePromptCount);
-  const timelineGroups = buildTimelineGroups(visibleTimeline);
+  const timelineHasOlder = useStore((s) => s.timelineHasOlder);
+  const timelineLoadingEarlier = useStore((s) => s._timelineLoadingEarlier);
+  const loadEarlierTimeline = useStore((s) => s.loadEarlierTimeline);
+  const visibleTimeline = useMemo(
+    () => sliceTimelineFromPrompt(timeline, visiblePromptCount),
+    [timeline, visiblePromptCount],
+  );
+  const timelineGroups = useMemo(() => buildTimelineGroups(visibleTimeline), [visibleTimeline]);
   const liveAgentRuns = liveAgentRunsWithoutVisibleCard(agentRuns, visibleTimeline);
   const showAgentHeader = shouldShowAgentTimelineHeader(activeAgentRunId, mainRunId, agentRuns.length);
 
+  // Long-chat autoscroll: only pin to the bottom while the user is already
+  // near it — a smooth scrollIntoView on every streamed token both thrashes
+  // layout and yanks the view away from anyone reading earlier output.
+  // Sending a new prompt re-engages the pin so the user's own message is seen.
+  const stickToBottomRef = useRef(true);
+  const handleTimelineScroll = () => {
+    const el = timelineRef.current;
+    if (!el) return;
+    stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    // Task-433: capture a stable scroll anchor (first visible item + its pixel
+    // offset) so switching away and back restores position even after
+    // revalidation changes timeline heights. rAF-throttled, module-ref only —
+    // no store churn per scroll event.
+    if (anchorRafRef.current) return;
+    anchorRafRef.current = requestAnimationFrame(() => {
+      anchorRafRef.current = 0;
+      const box = timelineRef.current;
+      if (!box) return;
+      const top = box.getBoundingClientRect().top;
+      const first = Array.from(box.querySelectorAll<HTMLElement>("[data-item-id]"))
+        .find((node) => node.getBoundingClientRect().bottom > top);
+      noteTimelineScrollAnchor(
+        first?.dataset.itemId
+          ? { itemId: first.dataset.itemId, offsetPx: first.getBoundingClientRect().top - top }
+          : undefined,
+      );
+    });
+  };
+  useEffect(() => () => cancelAnimationFrame(anchorRafRef.current), []);
   useEffect(() => {
+    if (timeline[timeline.length - 1]?.kind === "prompt") {
+      stickToBottomRef.current = true;
+    }
+    if (!stickToBottomRef.current) return;
     // Defer scroll one rAF so any layout shift from pagination (e.g. "Load earlier"
     // button inserted at the top when a gate reprompt pushes totalPromptCount over
     // TIMELINE_PAGE_SIZE) is fully committed before we measure the scroll target. (BUG-146)
     const id = requestAnimationFrame(() => {
-      endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+      endRef.current?.scrollIntoView({ behavior: "auto", block: "end" });
     });
     return () => cancelAnimationFrame(id);
   }, [timeline]);
 
+  // Task-433: restore a cached snapshot's scroll anchor once the anchored item
+  // exists in the DOM. Runs AFTER the stick-to-bottom effect so the anchor
+  // wins; stays pending while replay/revalidation may still materialize it.
+  useEffect(() => {
+    if (!pendingScrollAnchor || pendingScrollAnchor.runId !== runId) return;
+    const box = timelineRef.current;
+    const node = box?.querySelector<HTMLElement>(
+      `[data-item-id="${CSS.escape(pendingScrollAnchor.itemId)}"]`,
+    );
+    if (!box || !node) return;
+    stickToBottomRef.current = false;
+    const top = box.getBoundingClientRect().top;
+    box.scrollTop += node.getBoundingClientRect().top - top - pendingScrollAnchor.offsetPx;
+    useStore.setState({ _pendingScrollAnchor: undefined });
+  }, [pendingScrollAnchor, runId, timeline]);
+
   return (
-    <div ref={timelineRef} className={`timeline ${activeAgentRunId && mainRunId && activeAgentRunId !== mainRunId ? "timeline-agent-focused" : ""}`}>
+    <div
+      ref={timelineRef}
+      className={`timeline ${activeAgentRunId && mainRunId && activeAgentRunId !== mainRunId ? "timeline-agent-focused" : ""}`}
+      onScroll={handleTimelineScroll}
+    >
       <TranslatePopup containerRef={timelineRef} />
       {activeAgentRunId && mainRunId && activeAgentRunId !== mainRunId ? (
         <div className="crumb ring">
@@ -750,21 +837,34 @@ export function Timeline(): React.ReactElement {
         </div>
       ) : null}
       {timeline.length === 0 && <div className="empty">Select a project, choose your chat controls, and send a prompt to begin.</div>}
-      {hiddenPromptCount > 0 && (
+      {(hiddenPromptCount > 0 || timelineHasOlder) && (
         <button
           type="button"
           className="load-earlier-btn"
-          onClick={() =>
-            setVisiblePromptCount((current) =>
-              Math.min(totalPromptCount, current + TIMELINE_PAGE_SIZE),
-            )
-          }
+          disabled={timelineLoadingEarlier}
+          onClick={() => {
+            // In-memory prompts first; when the window's retained prompts are
+            // all visible, fall through to server-side backward paging (T-421).
+            if (hiddenPromptCount > 0) {
+              setVisiblePromptCount((current) =>
+                Math.min(totalPromptCount, current + TIMELINE_PAGE_SIZE),
+              );
+            } else {
+              void loadEarlierTimeline();
+            }
+          }}
         >
-          ↑ Load earlier prompts ({hiddenPromptCount})
+          {timelineLoadingEarlier
+            ? "Loading…"
+            : hiddenPromptCount > 0
+              ? `↑ Load earlier prompts (${hiddenPromptCount})`
+              : "↑ Load earlier history"}
         </button>
       )}
       {timelineGroups.map((it) => (
-        <Item key={it.id} it={it} />
+        <div key={it.id} data-item-id={it.id}>
+          <Item it={it} />
+        </div>
       ))}
 
       {(!activeAgentRunId || activeAgentRunId === mainRunId) &&
@@ -783,7 +883,7 @@ export function Timeline(): React.ReactElement {
                   {run.agentStatus && <span style={{ color: "var(--text-dim)" }}> — {run.agentStatus}</span>}
                 </span>
                 <button type="button" className="abanner-open-btn" onClick={() => void focusAgentRun(run.runId)}>
-                  Open ↗
+                  Open <ExternalIcon size={9} />
                 </button>
               </div>
             );

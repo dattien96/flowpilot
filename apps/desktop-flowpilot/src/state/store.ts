@@ -9,6 +9,7 @@ import type {
   ChatPostureConfig,
   ChatPostureProfile,
   ChatSessionRestoreRequest,
+  DecisionPayload,
   Project,
   ProviderAccountSummary,
   ProviderEventDTO,
@@ -18,6 +19,7 @@ import type {
   PromptAttachment,
   RemoteChatSessionSummary,
   RunHistoryItem,
+  RunRealtimeProjection,
   RunStatus,
   Step,
   TokenUsageSnapshot,
@@ -38,11 +40,19 @@ import { ADMIN_WEB_URL } from "@/config";
 import { isSyncableRun } from "@/components/navigatorHistory";
 import { attentionQueue, type AttentionItem } from "@/state/attentionQueue";
 import {
+  draftKeyFor,
+  isEmptyDraft,
+  loadDrafts,
+  saveDrafts,
+  type DraftState,
+} from "@/state/drafts";
+import {
   mapNavigatorStep,
   mapNavigatorWorkflow,
 } from "@/app/navigatorCatalog";
 import {
   applyTimelineEvent,
+  applyTimelineWindow,
   shouldApplyRunEvent,
   type PendingApproval,
   type PendingQuestion,
@@ -56,6 +66,10 @@ const HANDOFF_PROMPT_PREFIX = "[FlowPilot cross-provider chat handoff]";
 function buildPriorChatTimeline(
   records: import("@/types/contract").ChatTranscriptRecord[],
   currentRunId: string,
+  /** Task-421: when paging backward (loadEarlierTimeline) the current leg's
+   *  records must materialize too — the live replay only covers the in-memory
+   *  window. Se duplicates are filtered by the caller. */
+  includeCurrentLeg = false,
 ): TimelineItem[] {
   // CP-59 F4 / CA-699: provider-agnostic join (chatId only, no providerKey branch).
   const out: TimelineItem[] = [];
@@ -65,7 +79,7 @@ function buildPriorChatTimeline(
   // turn_started lands on it. The switch divider already represents the seed.
   let skipLeg = "";
   for (const rec of records) {
-    if (rec.legRunId === currentRunId && rec.type !== "chat_provider_switch") {
+    if (!includeCurrentLeg && rec.legRunId === currentRunId && rec.type !== "chat_provider_switch") {
       continue;
     }
     switch (rec.type) {
@@ -120,18 +134,57 @@ function buildPriorChatTimeline(
 
 const LAST_PROJECT_KEY = "fp:lastProjectId";
 const LAST_CHAT_MODE_KEY = "fp:lastChatMode";
+/** Task-421: transcript records fetched per backward page / open tail page. */
+const TIMELINE_TRANSCRIPT_PAGE = 400;
+/** Task-421: monotonic id source for optimistic prompt bubbles. The old
+ *  `prompt-${timeline.length}` scheme collides once the windowed timeline
+ *  stops growing (length stays ~TIMELINE_WINDOW_MAX forever). */
+let localPromptSeq = 0;
+
+/** Task-421: reset the window bookkeeping wherever the timeline array is
+ *  wholesale replaced (new run, resetRun, reconnect, open). */
+function resetTimelineWindow(): Pick<AppState, "timelineHasOlder" | "_timelineAnchorSeq" | "_timelineLoadingEarlier" | "_timelineEvictedIds"> {
+  return {
+    timelineHasOlder: false,
+    _timelineAnchorSeq: undefined,
+    _timelineLoadingEarlier: false,
+    _timelineEvictedIds: new Set<string>(),
+  };
+}
 
 let loadProjectsInFlight: Promise<void> | null = null;
+// Dedupe for loadProjectHistory cache-warmer — one fetch per project at a time.
+const projectHistoryInflight = new Set<string>();
 let activeHistoryReplayController: AbortController | undefined;
 let activeOrchestrationStreamController: AbortController | undefined;
 let activeAgentFocusStreamController: AbortController | undefined;
+
+// Task-432: debounced localStorage flush for the drafts map — keystroke-level
+// setDraft calls coalesce into one write per quiet window; clearDraft flushes
+// immediately so a send can't lose the clear to an app kill inside the window.
+let draftPersistTimer: ReturnType<typeof setTimeout> | undefined;
+function scheduleDraftPersist(drafts: Record<string, DraftState>): void {
+  if (draftPersistTimer) clearTimeout(draftPersistTimer);
+  draftPersistTimer = setTimeout(() => {
+    draftPersistTimer = undefined;
+    saveDrafts(drafts);
+  }, 300);
+}
 
 export type LaunchMode = "workflow" | "step";
 export type ChatMode = "normal_chat" | "workflow_step_auto";
 export type WorkspaceMainView = "chat" | "board";
 export type ChatStartMode = "normal" | "task" | "bugfix";
 
-interface RunSnapshot {
+/** Task-433 (CP-84 P-5): stable scroll anchor — an item id plus the pixel
+ *  offset of its top edge below the viewport top. Survives timeline height
+ *  changes during revalidation, unlike a raw scrollTop. */
+interface TimelineScrollAnchor {
+  itemId: string;
+  offsetPx: number;
+}
+
+export interface RunSnapshot {
   timeline: TimelineItem[];
   artifacts: Artifact[];
   status: RunStatus;
@@ -143,6 +196,33 @@ interface RunSnapshot {
   _streamingAssistantId?: string;
   activeStepId?: string;
   lastEventSeq?: number;
+  /** Task-421: window bookkeeping follows the run's snapshot so focusing a
+   *  child agent and coming back preserves paging state. */
+  timelineHasOlder?: boolean;
+  _timelineAnchorSeq?: number;
+  _timelineEvictedIds?: Set<string>;
+  /** Task-433: LRU/freshness metadata — the snapshot is a render hint, never
+   *  authority; every hit revalidates against the runner. Optional so
+   *  pre-existing test fixtures and legacy call sites still typecheck; a
+   *  missing stamp sorts as oldest (0) under the LRU. */
+  projectId?: string;
+  cachedAt?: number;
+  lastAccessedAt?: number;
+  /** Mux upsert advanced past this revision — revalidation must settle it. */
+  dirtyRevision?: number;
+  scrollAnchor?: TimelineScrollAnchor;
+}
+
+/** Task-433: cap on EVICTABLE history-view snapshots. The pinned active
+ *  ancestry (current run, main run, focused child) never counts against it. */
+export const RUN_SNAPSHOT_LRU_CAP = 5;
+
+/** The live scroll anchor of the currently-rendered timeline, maintained by
+ *  Timeline's scroll handler. cacheRunSnapshot copies it into the outgoing
+ *  run's snapshot — no store churn per scroll event. */
+const liveScrollAnchor: { current?: TimelineScrollAnchor } = {};
+export function noteTimelineScrollAnchor(anchor: TimelineScrollAnchor | undefined): void {
+  liveScrollAnchor.current = anchor;
 }
 
 function sanitizePendingSnapshotState(
@@ -329,7 +409,9 @@ function cancelAgentFocusStream(): void {
   activeAgentFocusStreamController = undefined;
 }
 
-interface AppState {
+// Exported for CP-84 Task-434: isFocusedRun takes AppState and tests/other
+// modules need to name the type. `useStore` already exposes it via inference.
+export interface AppState {
   client: RunnerClient;
 
   // navigator
@@ -358,10 +440,27 @@ interface AppState {
   /** CP-71: opt the next run into an isolated git worktree. Persisted per
    *  chat via the run record — restored from the opened run's binding. */
   worktreeEnabled: boolean;
+  /**
+   * Task-426/428: filesystem path of the focused run's bound worktree
+   * ("" when unbound) — set from RunHandle/RunHistoryItem so the embedded
+   * terminal can resolve cwd without recomputing runner internals.
+   */
+  activeWorktreePath: string;
+  /** Task-428: bottom terminal dock visibility (session-only, not persisted). */
+  terminalOpen: boolean;
+  /**
+   * Task-425 (CP-82 P-4): one watched non-focused run — the spectator pane's
+   * read-only glance. Cleared automatically when the run becomes focused.
+   */
+  spectatorRunId: string | null;
+  spectatorProjectId: string | null;
   /** False when the selected project directory is not a git repo (IPC probe). */
   worktreeAvailable: boolean;
   /** Binding state of the active run: "" when the run has no worktree. */
   activeWorktreeState: string;
+  toggleTerminal(): void;
+  openSpectator(runId: string, projectId: string): void;
+  closeSpectator(): void;
   setWorktreeEnabled(on: boolean): void;
   refreshWorktreeAvailability(): void;
   /** True while toggleYoloForActiveProvider's Grok-only async path is applying
@@ -413,8 +512,23 @@ interface AppState {
   activeStepId?: string;
   status: RunStatus;
   timeline: TimelineItem[];
+  /** Task-421: true when the persisted transcript still holds records older
+   *  than the in-memory window — drives the "Load earlier" affordance. */
+  timelineHasOlder: boolean;
+  /** Task-421: smallest materialized chatSeq — backward-paging anchor. */
+  _timelineAnchorSeq?: number;
+  _timelineLoadingEarlier?: boolean;
+  /** Task-421: ids evicted by the timeline window (replay dedup guard). */
+  _timelineEvictedIds: Set<string>;
+  /** Task-433: scroll anchor handed to the Timeline after a cached-snapshot
+   *  restore; consumed (and cleared) once the anchored item is in the DOM. */
+  _pendingScrollAnchor?: { runId: string; itemId: string; offsetPx: number };
   artifacts: Artifact[];
   runHistory: RunHistoryItem[];
+  /** Per-project run-history cache powering the Navigator's project groups and
+   *  the cross-project attention inbox. The selected project's slot is kept in
+   *  sync with runHistory; other slots fill via loadProjectHistory. */
+  projectHistoryById: Record<string, RunHistoryItem[]>;
   remoteChatSessions: RemoteChatSessionSummary[];
   /** Progress of an in-flight batch sync-to-Drive (syncAllInProject / selection-mode
    *  "Sync" confirm), so the Navigator can show "Syncing x/y…" instead of a bare spinner. */
@@ -539,11 +653,37 @@ interface AppState {
   sendPrompt(prompt: string, skills?: string[], attachments?: PromptAttachment[]): Promise<void>;
   approve(approvalId: string, decision: string, remember?: boolean): Promise<void>;
   answer(questionId: string, choice: string | string[]): Promise<void>;
+  /**
+   * Task-423 (CP-82 P-2): act on a NON-focused run's wait from the inbox —
+   * direct ID-scoped RPC + attention-queue update; never writes the focused
+   * slot's pendingApprovals/status/timeline. Returns false on failure; the
+   * caller renders the error inline.
+   */
+  approveAttentionItem(runId: string, approvalId: string, decision: string, remember?: boolean): Promise<boolean>;
+  answerAttentionItem(runId: string, questionId: string, choice: string | string[]): Promise<boolean>;
+  /** CP-84 (Task-431 T-3): submit one inbox decision — ID-scoped to the
+   *  decision's own runId/id, never the focused run. On failure: toast +
+   *  history refresh; the item stays in the queue. */
+  submitAttentionDecision(runId: string, decision: DecisionPayload, choice: string, customText?: string): Promise<boolean>;
+  /** CP-84 (Task-434 T-3): push a synthetic attention item for a non-focused
+   *  modal-source event — the inbox replaces a would-be modal hijack. */
+  ingestAttentionItem(item: AttentionItem): void;
+  /** CP-84 (Task-431 T-4): transient toast surfaced by RunToast. */
+  runToast?: { id: number; text: string };
+  setRunToast(text: string): void;
   /** CP-62 P-3 (Task-345): answer a structured escalation card by sending the option id as the next prompt. */
   chooseDecisionOption(itemId: string, optionId: string): Promise<void>;
   stop(): Promise<void>;
   reconnect(): Promise<void>;
   loadRunHistory(): Promise<void>;
+  /** Fetch+cache one project's history without touching the active project —
+   *  used by the Navigator's project groups and the attention inbox so runs
+   *  outside the selected project still show counts and attention items. */
+  loadProjectHistory(projectId: string): Promise<void>;
+  /** Warm projectHistoryById (+ attention queue) for every known project. */
+  loadAllProjectHistories(): Promise<void>;
+  /** Task-421: page older transcript records into the windowed timeline. */
+  loadEarlierTimeline(): Promise<void>;
   loadRemoteChatSessions(): Promise<void>;
   refreshAgentRuns(): Promise<void>;
   refreshWorkflowStepRuntime(): Promise<void>;
@@ -576,10 +716,17 @@ interface AppState {
     cwd?: string,
     options?: { refresh?: boolean; open?: boolean },
   ): Promise<void>;
-  openHistoryRun(runId: string): Promise<void>;
+  openHistoryRun(runId: string, item?: RunHistoryItem): Promise<void>;
   /** Task-404: open the run that owns an attention-queue item — reuses the
    *  existing history-picker path (openHistoryRun), no new navigation. */
-  openRunAtAttention(runId: string, chatId: string): Promise<void>;
+  openRunAtAttention(runId: string, chatId: string, projectId?: string): Promise<void>;
+  /** Task-432 (CP-84 P-4): per-chat composer drafts, keyed by draftKeyFor().
+   *  Device-local intent — persisted to localStorage only, survives
+   *  selectProject/resetRun/reload. */
+  drafts: Record<string, DraftState>;
+  /** Write/replace a draft; empty drafts are dropped so the map stays small. */
+  setDraft(key: string, draft: DraftState): void;
+  clearDraft(key: string): void;
   resetRun(): void;
   openInIde(path: string, line?: number): void;
   openAdminWeb(): void;
@@ -620,10 +767,15 @@ export const useStore = create<AppState>((set, get) => ({
   supportedModels: [],
   status: "idle",
   timeline: [],
+  timelineHasOlder: false,
+  _timelineAnchorSeq: undefined,
+  _timelineLoadingEarlier: false,
+  _timelineEvictedIds: new Set<string>(),
   artifacts: [],
   pendingApprovals: [],
   pendingQuestions: [],
   runHistory: [],
+  projectHistoryById: {},
   remoteChatSessions: [],
   syncBatchProgress: undefined,
   agentRuns: [],
@@ -649,6 +801,10 @@ export const useStore = create<AppState>((set, get) => ({
   workingMode: loadWorkingMode(),
   worktreeEnabled: false,
   worktreeAvailable: true,
+  activeWorktreePath: "",
+  terminalOpen: false,
+  spectatorRunId: null,
+  spectatorProjectId: null,
   activeWorktreeState: "",
   grokYoloPostureLoading: false,
   summaryGenerating: false,
@@ -678,6 +834,38 @@ export const useStore = create<AppState>((set, get) => ({
   _orchestrationStreamSeq: 0,
   agentSpawnGuideAgentName: undefined,
   agentSpawnGuideOpen: false,
+  drafts: loadDrafts(),
+
+  setDraft(key, draft) {
+    set((s) => {
+      const next = { ...s.drafts };
+      // Empty drafts are never persisted — keeps the map (and the storage
+      // shard) small per the OQ resolution in Task-432.
+      if (isEmptyDraft(draft)) {
+        delete next[key];
+      } else {
+        next[key] = draft;
+      }
+      scheduleDraftPersist(next);
+      return { drafts: next };
+    });
+  },
+
+  clearDraft(key) {
+    set((s) => {
+      if (!s.drafts[key]) return {};
+      const next = { ...s.drafts };
+      delete next[key];
+      // Flush now: a send clears its draft right before the network call —
+      // debouncing would risk losing the clear on an immediate app kill.
+      if (draftPersistTimer) {
+        clearTimeout(draftPersistTimer);
+        draftPersistTimer = undefined;
+      }
+      saveDrafts(next);
+      return { drafts: next };
+    });
+  },
 
   async loadProjects() {
     if (loadProjectsInFlight) return loadProjectsInFlight;
@@ -708,6 +896,9 @@ export const useStore = create<AppState>((set, get) => ({
 
       try {
         const projects = await withRetry(() => client.listProjects());
+        // CP-84 (Task-429): arm the app-lifetime mux lane stream once the
+        // runner is confirmed reachable — the poll loop stays as fallback.
+        startRunUpdatesStream(client, set, get);
         set((s) => ({ projects, ...(s.runId ? {} : { status: "idle" }) }));
         if (!get().selectedProjectId && projects.length > 0) {
           const saved = localStorage.getItem(LAST_PROJECT_KEY);
@@ -945,7 +1136,7 @@ export const useStore = create<AppState>((set, get) => ({
     const mainRunId = get().mainRunId ?? currentRunId;
     if (!mainRunId) return;
     cacheRunSnapshot(get(), currentRunId);
-    const restore = get()._runSnapshots[runId];
+    const restore = touchRunSnapshot(get(), runId);
     const streamRunSeq = get()._streamRunSeq + 1;
     const afterSeq = restore ? get()._runReplaySeq[runId] ?? restore.lastEventSeq ?? 0 : 0;
     cancelHistoryReplayStream();
@@ -958,6 +1149,7 @@ export const useStore = create<AppState>((set, get) => ({
       workspaceMainView: "chat",
       runId,
       ...(restore ? restoreRunSnapshot(restore) : emptyRunSnapshot("running")),
+      _pendingScrollAnchor: restore?.scrollAnchor ? { runId, ...restore.scrollAnchor } : undefined,
       agentSpawnGuideOpen: false,
       agentSpawnGuideAgentName: undefined,
       _streamRunSeq: streamRunSeq,
@@ -1009,13 +1201,12 @@ export const useStore = create<AppState>((set, get) => ({
     void get().refreshWorkflowStepRuntime();
   },
 
-  backToMainRun() {
+  async backToMainRun() {
     const currentRunId = get().runId;
-    const { mainRunId, _runSnapshots } = get();
+    const { mainRunId } = get();
     if (!mainRunId) return;
     cacheRunSnapshot(get(), currentRunId);
-    const restore = _runSnapshots[mainRunId];
-    if (!restore) return;
+    const restore = touchRunSnapshot(get(), mainRunId);
     cancelAgentFocusStream();
     const agentFocusController = new AbortController();
     activeAgentFocusStreamController = agentFocusController;
@@ -1024,21 +1215,48 @@ export const useStore = create<AppState>((set, get) => ({
     // start point. _runReplaySeq[mainRunId] can be inflated by consumeOrchestrationStream
     // processing agent_graph_updated events while viewing the child — using it would
     // skip real timeline events interleaved with those orchestration events. (BUG-109)
-    const afterSeq = restore.lastEventSeq ?? 0;
+    const afterSeq = restore?.lastEventSeq ?? 0;
     set({
       runId: mainRunId,
       mainRunId,
       activeAgentRunId: undefined,
       workspaceMainView: "chat",
-      ...restoreRunSnapshot(restore),
+      ...(restore ? restoreRunSnapshot(restore) : emptyRunSnapshot("running")),
+      // Task-433: restore the saved scroll anchor after the cached timeline paints.
+      _pendingScrollAnchor: restore?.scrollAnchor ? { runId: mainRunId, ...restore.scrollAnchor } : undefined,
       _streamRunSeq: streamRunSeq,
     });
+    // Task-433 T-2: a pinned-but-missing snapshot must not silently no-op —
+    // fall back to resume + full replay.
+    let resumedStatus: RunStatus = restore?.status ?? "running";
+    if (!restore) {
+      try {
+        const handle = await get().client.resumeRun(mainRunId);
+        resumedStatus = handle.status;
+        if (shouldApplyRunEvent(get().runId, mainRunId) && get()._streamRunSeq === streamRunSeq) {
+          set({ status: handle.status, activeStepId: handle.stepId });
+        }
+      } catch (err) {
+        if (activeAgentFocusStreamController === agentFocusController) {
+          activeAgentFocusStreamController = undefined;
+        }
+        if (!shouldApplyRunEvent(get().runId, mainRunId) || get()._streamRunSeq !== streamRunSeq) return;
+        set((s) => ({
+          status: "failed",
+          timeline: [
+            ...s.timeline,
+            { kind: "system", id: `back-main-error-${s.timeline.length}`, text: runErrorMessage(err), tone: "error" },
+          ],
+        }));
+        return;
+      }
+    }
     void consumeAgentStream(
       mainRunId,
       get().client.streamRun(mainRunId, afterSeq, agentFocusController.signal),
       streamRunSeq,
       afterSeq,
-      restore.status,
+      resumedStatus,
       set,
       get,
     ).finally(() => {
@@ -1074,6 +1292,9 @@ export const useStore = create<AppState>((set, get) => ({
   async selectProject(projectId) {
     localStorage.setItem(LAST_PROJECT_KEY, projectId);
     const projectChanged = get().selectedProjectId !== projectId;
+    // Task-433: cache the outgoing run under its CURRENT project before the
+    // projectId flips — snapshot.projectId is stamped from selectedProjectId.
+    if (projectChanged) cacheRunSnapshot(get(), get().runId);
     set({
       selectedProjectId: projectId,
       selectedWorkflowId: undefined,
@@ -1085,6 +1306,18 @@ export const useStore = create<AppState>((set, get) => ({
     });
     if (projectChanged) {
       get().resetRun();
+      // Task-433: snapshots of other projects are dead weight — prune them
+      // (the map stays bounded regardless via the LRU cap).
+      set((s) => ({
+        _runSnapshots: Object.fromEntries(
+          Object.entries(s._runSnapshots).filter(
+            ([, snap]) => !snap.projectId || snap.projectId === projectId,
+          ),
+        ),
+      }));
+      // Worktree intent is scoped to the project — a stale true would send
+      // worktree:true to a project that may not be a git repo.
+      set({ worktreeEnabled: false });
     }
     get().refreshWorktreeAvailability();
     void get().loadSkills(get().selectedProvider ?? "codex");
@@ -1293,6 +1526,7 @@ export const useStore = create<AppState>((set, get) => ({
         activeStepId: handle.stepId,
         status: handle.status,
         timeline: [],
+        ...resetTimelineWindow(),
         artifacts: [],
         pendingApprovals: [],
         pendingQuestions: [],
@@ -1797,10 +2031,16 @@ export const useStore = create<AppState>((set, get) => ({
     }
 
     const launchTargetId = launchMode === "workflow" ? selectedWorkflowId : selectedStepId;
+    // Task-432: capture the draft key BEFORE the send mints/mutates chatId or
+    // runId — a first send's draft lives under "<projectId>:new" and must be
+    // cleared (on success) or restored (on failure) under that same key.
+    const draftKeyAtSend = draftKeyFor(
+      get().chatId ?? null,
+      get().runId ?? null,
+      selectedProjectId ?? null,
+    );
     // In normal_chat the runner mints one synthetic step ("chat-<runId>") for the whole
     // run and surfaces it via startRun (turn 1) / resumeRun (from history). It is held in
-    // `activeStepId` so follow-up turns reuse it instead of sending an empty stepId, which
-    // startTurn rejects with 400. Workflow/step mode keeps using its stable launchTargetId.
     let turnStepId =
       chatMode === "normal_chat"
         ? get().activeStepId ?? launchTargetId ?? ""
@@ -1820,7 +2060,7 @@ export const useStore = create<AppState>((set, get) => ({
         ...s.timeline,
         {
           kind: "prompt",
-          id: `prompt-${s.timeline.length}`,
+          id: `prompt-local-${++localPromptSeq}`,
           text: prompt,
           selectedSkills: skills && skills.length > 0 ? [...skills] : undefined,
           attachments:
@@ -1889,6 +2129,7 @@ export const useStore = create<AppState>((set, get) => ({
           chatId: handle.chatId ?? existingChatId,
           chatDetached: false,
           activeAgentRunId: undefined,
+          activeWorktreePath: handle.worktreePath ?? "",
         });
         if (get().worktreeEnabled) set({ activeWorktreeState: "active" });
       } else if (!runId) {
@@ -1925,6 +2166,7 @@ export const useStore = create<AppState>((set, get) => ({
           chatId: handle.chatId,
           chatDetached: false,
           activeAgentRunId: undefined,
+          activeWorktreePath: handle.worktreePath ?? "",
         });
         if (get().worktreeEnabled) set({ activeWorktreeState: "active" });
       }
@@ -2039,9 +2281,23 @@ export const useStore = create<AppState>((set, get) => ({
       }
       void get().refreshAgentRuns();
     void get().refreshWorkflowStepRuntime();
+    // Task-432: send succeeded — drop the draft for the key it was composed
+    // under. Other lanes' drafts are untouched.
+    get().clearDraft(draftKeyAtSend);
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error("[FlowPilot] sendPrompt failed:", err);
+      // Task-432: the composer cleared optimistically before the call — put the
+      // text back into the draft map so a failed send never loses the prompt.
+      // A draft the user re-typed mid-flight (same key) wins over the restore.
+      if (!get().drafts[draftKeyAtSend]) {
+        get().setDraft(draftKeyAtSend, {
+          text: prompt,
+          selectedSkills: skills && skills.length > 0 ? [...skills] : undefined,
+          attachments: attachments && attachments.length > 0 ? [...attachments] : undefined,
+          updatedAt: Date.now(),
+        });
+      }
       if (runId && !shouldApplyRunEvent(get().runId, runId)) {
         return;
       }
@@ -2150,6 +2406,132 @@ export const useStore = create<AppState>((set, get) => ({
           { kind: "system", id: `err-answer-${s.timeline.length}`, text: runErrorMessage(err), tone: "error" },
         ],
       }));
+    }
+  },
+
+  async approveAttentionItem(runId, approvalId, decision, remember) {
+    try {
+      await get().client.submitApproval(approvalId, decision, remember);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[FlowPilot] approveAttentionItem failed:", err);
+      return false;
+    }
+    const item = attentionQueue.items.find((i) => i.runId === runId);
+    const remaining =
+      (item?.pending?.approvals.filter((a) => a.approvalId !== approvalId).length ?? 0) +
+      (item?.pending?.questions.length ?? 0);
+    attentionQueue.resolvedPending(runId, { approvalId });
+    if (remaining === 0) attentionQueue.evict(runId);
+    return true;
+  },
+
+  async answerAttentionItem(runId, questionId, choice) {
+    try {
+      await get().client.answerQuestion(questionId, choice);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[FlowPilot] answerAttentionItem failed:", err);
+      return false;
+    }
+    const item = attentionQueue.items.find((i) => i.runId === runId);
+    const remaining =
+      (item?.pending?.approvals.length ?? 0) +
+      (item?.pending?.questions.filter((q) => q.questionId !== questionId).length ?? 0);
+    attentionQueue.resolvedPending(runId, { questionId });
+    if (remaining === 0) attentionQueue.evict(runId);
+    return true;
+  },
+
+  setRunToast(text) {
+    set((s) => ({ runToast: { id: (s.runToast?.id ?? 0) + 1, text } }));
+  },
+
+  ingestAttentionItem(item) {
+    attentionQueue.ingestAttentionItem(item);
+  },
+
+  async submitAttentionDecision(runId, decision, choice, customText) {
+    const { client } = get();
+    // ID-scoped: every call targets `runId`/the decision's own record id —
+    // never get().runId (the focused run). (Task-431 constraint)
+    const fail = async (err: unknown) => {
+      // eslint-disable-next-line no-console
+      console.error("[FlowPilot] submitAttentionDecision failed:", err);
+      // T-4: toast + refresh histories; the item stays in the queue so the
+      // user decides retry vs open. 409/stale lands here identically.
+      get().setRunToast(`Could not submit decision: ${String(err)}`);
+      void get().loadRunHistory();
+      void get().loadAllProjectHistories();
+      return false;
+    };
+    if (decision.kind === "quota") {
+      const candidate = get().providerAccounts.find(
+        (a) => a.id === decision.quota?.candidateAccountId,
+      );
+      if (!candidate) return fail(new Error("no candidate account for quota switch"));
+      set({
+        pendingAccountSwitch: {
+          providerKey: candidate.providerKey,
+          failedAccountId: "",
+          failedAccountLabel: "current account",
+          candidateAccount: candidate,
+          reason: "usage_limit",
+        },
+      });
+      // The confirm modal now owns the decision — retire the inbox item.
+      attentionQueue.evict(runId);
+      return true;
+    }
+    if (decision.kind === "dispatch_attention") return false;
+    attentionQueue.markActing(runId);
+    try {
+      switch (decision.kind) {
+        case "approval": {
+          const approvalId = decision.id.replace(/^approval:/, "");
+          await client.submitApproval(approvalId, choice);
+          const item = attentionQueue.items.find((i) => i.runId === runId);
+          const remaining =
+            (item?.pending?.approvals.filter((a) => a.approvalId !== approvalId).length ?? 0) +
+            (item?.pending?.questions.length ?? 0);
+          attentionQueue.resolvedPending(runId, { approvalId });
+          if (remaining === 0) attentionQueue.evict(runId);
+          return true;
+        }
+        case "question": {
+          const questionId = decision.id.replace(/^question:/, "");
+          await client.answerQuestion(questionId, choice);
+          const item = attentionQueue.items.find((i) => i.runId === runId);
+          const remaining =
+            (item?.pending?.approvals.length ?? 0) +
+            (item?.pending?.questions.filter((q) => q.questionId !== questionId).length ?? 0);
+          attentionQueue.resolvedPending(runId, { questionId });
+          if (remaining === 0) attentionQueue.evict(runId);
+          return true;
+        }
+        case "gate":
+        case "r_requirement":
+          if (!client.submitGateDecision) return fail(new Error("client lacks submitGateDecision"));
+          await client.submitGateDecision(runId, choice, customText);
+          attentionQueue.evict(runId);
+          return true;
+        case "ss_lock":
+          if (!client.confirmSSLock) return fail(new Error("client lacks confirmSSLock"));
+          await client.confirmSSLock(runId, choice === "reject" ? "reject" : "approve", customText);
+          attentionQueue.evict(runId);
+          return true;
+        case "worktree_merge":
+          if (!client.resolveWorktreeMerge) return fail(new Error("client lacks resolveWorktreeMerge"));
+          await client.resolveWorktreeMerge(runId, choice);
+          attentionQueue.evict(runId);
+          return true;
+        default:
+          return false;
+      }
+    } catch (err) {
+      return fail(err);
+    } finally {
+      attentionQueue.clearActing(runId);
     }
   },
 
@@ -2297,7 +2679,7 @@ export const useStore = create<AppState>((set, get) => ({
     await client.resumeRun(runId);
     // Clear the timeline so the replay visibly rebuilds it from persisted events
     // via the run's event stream (attach + replay from seq 0).
-    set({ timeline: [], recoverable: false, status: "running", _streamingAssistantId: undefined, _streamRunSeq: get()._streamRunSeq + 1 });
+    set({ timeline: [], recoverable: false, status: "running", _streamingAssistantId: undefined, _streamRunSeq: get()._streamRunSeq + 1, ...resetTimelineWindow() });
     await consumeStream(runId, client.streamRun(runId, 0), set, get);
     startOrchestrationStream(runId, client, set, get);
   },
@@ -2316,13 +2698,99 @@ export const useStore = create<AppState>((set, get) => ({
       const runHistory = await client.listRunHistory(selectedProjectId);
       if (get()._historyLoadSeq !== seq) return;
       attentionQueue.ingestHistory(runHistory, selectedProjectId);
-      set({ runHistory, historyLoading: false, historyLoadError: undefined });
+      set((s) => ({
+        runHistory,
+        projectHistoryById: { ...s.projectHistoryById, [selectedProjectId]: runHistory },
+        historyLoading: false,
+        historyLoadError: undefined,
+      }));
     } catch (err) {
       if (get()._historyLoadSeq !== seq) return;
       // eslint-disable-next-line no-console
       console.error("[FlowPilot] listRunHistory failed:", err);
       // F-4: surface error in the history panel instead of injecting into the chat timeline
       set({ historyLoading: false, historyLoadError: String(err) });
+    }
+  },
+
+  async loadProjectHistory(projectId) {
+    const { client } = get();
+    if (!projectId || projectHistoryInflight.has(projectId)) return;
+    projectHistoryInflight.add(projectId);
+    try {
+      const items = await client.listRunHistory(projectId);
+      attentionQueue.ingestHistory(items, projectId);
+      set((s) => ({
+        projectHistoryById: { ...s.projectHistoryById, [projectId]: items },
+        // The active project's slice also feeds runHistory — keep it in sync
+        // when a stale cache warmer resolves after the user switched to it.
+        ...(s.selectedProjectId === projectId && s.runHistory.length === 0 && !s.historyLoading
+          ? { runHistory: items }
+          : {}),
+      }));
+    } catch {
+      // Best-effort warm — a failed project simply shows no chats/attention
+      // until its next refresh; never surface cross-project fetch errors.
+    } finally {
+      projectHistoryInflight.delete(projectId);
+    }
+  },
+
+  async loadAllProjectHistories() {
+    const { projects, selectedProjectId } = get();
+    // Selected project's slice is owned by loadRunHistory's own poll loop —
+    // skip it here so a slow warm can't clobber a fresher in-flight result.
+    for (const project of projects) {
+      if (project.id === selectedProjectId) continue;
+      await get().loadProjectHistory(project.id);
+    }
+  },
+
+  async loadEarlierTimeline() {
+    const s0 = get();
+    const runIdAtStart = s0.runId;
+    // Chats page through the chat-keyed transcript; workflow runs through the
+    // run-keyed one (records persist under the run id — run_timeline.go).
+    const key = s0.chatId ?? s0.runId;
+    if (!key || s0._timelineLoadingEarlier) return;
+    // Known exhausted: a completed backward page sets hasOlder=false.
+    if (!s0.timelineHasOlder && s0._timelineAnchorSeq !== undefined) return;
+    set({ _timelineLoadingEarlier: true });
+    const beforeSeq = s0._timelineAnchorSeq ?? -1; // -1 = latest page
+    try {
+      const tl = s0.chatId
+        ? await s0.client.chatTimeline(s0.chatId, undefined, TIMELINE_TRANSCRIPT_PAGE, beforeSeq)
+        : s0.client.runTimeline
+          ? await s0.client.runTimeline(key, { beforeSeq, limit: TIMELINE_TRANSCRIPT_PAGE })
+          : { chatId: "", legs: [], records: [], nextSeq: 0, truncated: false, degraded: false };
+      const records = tl.records ?? [];
+      // includeCurrentLeg=true: the window may have evicted current-leg rows —
+      // paged transcript records re-materialize them as pinned history.
+      const built = buildPriorChatTimeline(records, runIdAtStart ?? "", true);
+      set((s) => {
+        if (s.runId !== runIdAtStart) return { _timelineLoadingEarlier: false };
+        // Seam dedup: a paged transcript item must not duplicate a retained
+        // live-rendered row (live ids differ from chat-<seq>-<leg> ids).
+        const seen = new Set(
+          s.timeline.map((it) => `${it.kind}:${"text" in it ? it.text : it.id}`),
+        );
+        const fresh = built
+          .filter((it) => !seen.has(`${it.kind}:${"text" in it ? it.text : it.id}`))
+          // Paged-back rows are user-requested history — pin them so ingest
+          // eviction never silently drops what the user is reading.
+          .map((it) => ({ ...it, pinned: true } as TimelineItem));
+        const win = applyTimelineWindow([...fresh, ...s.timeline], s._timelineEvictedIds);
+        return {
+          timeline: win.timeline,
+          _timelineEvictedIds: win.evictedIds,
+          _timelineAnchorSeq: records.length > 0 ? records[0].chatSeq : s._timelineAnchorSeq,
+          timelineHasOlder: records.length > 0 && tl.truncated === true,
+          _timelineLoadingEarlier: false,
+        };
+      });
+    } catch (err) {
+      console.warn("[FlowPilot][timeline] loadEarlier failed", err);
+      set((s) => (s.runId === runIdAtStart ? { _timelineLoadingEarlier: false } : {}));
     }
   },
 
@@ -2437,6 +2905,19 @@ export const useStore = create<AppState>((set, get) => ({
   async deleteHistoryRun(runId) {
     const { client } = get();
     const wasActive = get().runId === runId;
+    // Task-432: the deleted run/chat's drafts go with it — prune both possible
+    // keys (runId for workflow runs, chatId for chats) before the optimistic
+    // history update drops the lookup.
+    const doomedChatId = get().runHistory.find((item) => item.runId === runId)?.chatId;
+    get().clearDraft(runId);
+    if (doomedChatId) get().clearDraft(doomedChatId);
+    // Task-433: the deleted run's cached view goes with it.
+    set((s) => {
+      if (!s._runSnapshots[runId]) return {};
+      const next = { ...s._runSnapshots };
+      delete next[runId];
+      return { _runSnapshots: next };
+    });
     // Optimistically remove from local history so the UI responds immediately.
     set((s) => ({ runHistory: s.runHistory.filter((item) => item.runId !== runId) }));
     // If the deleted run was the active session, reset the whole workspace back to
@@ -2527,9 +3008,17 @@ export const useStore = create<AppState>((set, get) => ({
     }
   },
 
-  async openHistoryRun(runId) {
+  async openHistoryRun(runId, itemOverride) {
     const { client } = get();
-    const historyItem = get().runHistory.find((item) => item.runId === runId);
+    // Task-433: cache the outgoing run BEFORE switching so switching back
+    // paints instantly; the reopened run's own snapshot seeds the timeline and
+    // is then revalidated by the replay below (authority always wins).
+    cacheRunSnapshot(get(), get().runId);
+    const cached = touchRunSnapshot(get(), runId);
+    // itemOverride lets callers open a run that is not in the current project's
+    // polled runHistory (e.g. a cached row from another project group in the
+    // Navigator) — it supplies the same provider/chatId hints the lookup would.
+    const historyItem = itemOverride ?? get().runHistory.find((item) => item.runId === runId);
     const historyProvider = historyItem?.providerKey;
     console.info("[FlowPilot][history-open] start", {
       runId,
@@ -2539,6 +3028,11 @@ export const useStore = create<AppState>((set, get) => ({
       sourceMachineId: historyItem?.sourceMachineId,
       sourceRunId: historyItem?.sourceRunId,
     });
+    // Task-425 T-3: opening the watched run promotes it — drop the spectator
+    // pane so the focused run never appears twice.
+    if (get().spectatorRunId === runId) {
+      set({ spectatorRunId: null, spectatorProjectId: null });
+    }
     let handle;
     try {
       handle = await client.resumeRun(runId);
@@ -2577,11 +3071,22 @@ export const useStore = create<AppState>((set, get) => ({
     // chatId only). Best effort: timeline fetch failures keep current-leg replay.
     // Fallback to historyItem.chatId when ResumeRun's handle lacks it (BUG-338).
     let priorTimeline: TimelineItem[] = [];
+    // Task-421: fetch only the transcript TAIL page on open — the durable
+    // store is the source of truth and older pages are pulled on demand via
+    // loadEarlierTimeline. Keeps reopen memory bounded for long chats.
+    let timelineAnchorSeq: number | undefined;
+    let timelineHasOlder = false;
     const effectiveChatId = (handle.chatId as string) || (historyItem?.chatId as string) || "";
     if (effectiveChatId && historyItem?.runKind !== "workflow" && (handle as { runKind?: string }).runKind !== "workflow") {
       try {
-        const tl = await client.chatTimeline(effectiveChatId);
-        priorTimeline = buildPriorChatTimeline(tl.records ?? [], handle.runId);
+        const tl = await client.chatTimeline(effectiveChatId, undefined, TIMELINE_TRANSCRIPT_PAGE, -1);
+        const records = tl.records ?? [];
+        timelineAnchorSeq = records.length > 0 ? records[0].chatSeq : undefined;
+        timelineHasOlder = tl.truncated === true;
+        priorTimeline = applyTimelineWindow(
+          buildPriorChatTimeline(records, handle.runId),
+          undefined,
+        ).timeline;
       } catch (e) {
         console.warn("[FlowPilot][history-open] chatTimeline failed, falling back to single-leg replay", e);
       }
@@ -2623,6 +3128,7 @@ export const useStore = create<AppState>((set, get) => ({
       // all legs of a chat share one worktree, so the newest leg's record
       // is the chat-level value.
       worktreeEnabled: Boolean(historyItem?.worktreeState),
+      activeWorktreePath: historyItem?.worktreePath ?? handle.worktreePath ?? "",
       activeWorktreeState: historyItem?.worktreeState ?? "",
       chatMode: isWorkflowHistoryItem ? "workflow_step_auto" : "normal_chat",
       ...(isWorkflowHistoryItem && historyItem?.workflowId
@@ -2630,8 +3136,17 @@ export const useStore = create<AppState>((set, get) => ({
         : {}),
       chatStartMode,
       flowRef: chatStartMode === "bugfix" ? historyItem?.flowRef : undefined,
-      timeline: priorTimeline,
-      artifacts: [],
+      // Task-433: a cached snapshot of THIS run paints instantly (transient
+      // optimistic rows dropped — replay re-appends them with durable ids);
+      // the replay stream below remains the authority and revalidates it.
+      timeline: cached
+        ? cached.timeline.filter((it) => !it.id.startsWith("prompt-local-") && it.kind !== "thinking")
+        : priorTimeline,
+      timelineHasOlder: cached?.timelineHasOlder ?? timelineHasOlder,
+      _timelineAnchorSeq: cached?._timelineAnchorSeq ?? timelineAnchorSeq,
+      _timelineLoadingEarlier: false,
+      _timelineEvictedIds: new Set(cached?._timelineEvictedIds ?? []),
+      artifacts: cached?.artifacts ?? [],
       pendingApprovals: [],
       pendingQuestions: [],
       gateBlock: undefined,
@@ -2650,9 +3165,10 @@ export const useStore = create<AppState>((set, get) => ({
       agentSpawnGuideOpen: false,
       agentSpawnGuideAgentName: undefined,
       _runReplaySeq: {},
-      // Drop snapshots from the previously-open run so a later focus/back round-trip
-      // can't restore a stale timeline from an unrelated chat. (BUG-111)
-      _runSnapshots: {},
+      _pendingScrollAnchor: cached?.scrollAnchor ? { runId, ...cached.scrollAnchor } : undefined,
+      // Task-433: keep _runSnapshots across opens (LRU-bounded, keyed by runId)
+      // — the BUG-111 wipe is superseded by per-run restore + mandatory replay
+      // revalidation, which cannot surface a stale lane.
       // Suppress the "AI response complete" toast while the transcript replays. (BUG-118)
       _historyReplaying: true,
       _streamRunSeq: get()._streamRunSeq + 1,
@@ -2709,12 +3225,23 @@ export const useStore = create<AppState>((set, get) => ({
 
   // Task-404: attention items carry the run that is blocked; opening it goes
   // through the exact same history-picker path as clicking a history row.
-  async openRunAtAttention(runId, _chatId) {
-    await get().openHistoryRun(runId);
+  // Inbox: items may belong to another project — switch to it first so the
+  // opened chat lands in the right workspace context.
+  async openRunAtAttention(runId, _chatId, projectId) {
+    if (projectId && projectId !== get().selectedProjectId) {
+      await get().selectProject(projectId);
+    }
+    const item =
+      (projectId ? get().projectHistoryById[projectId]?.find((h) => h.runId === runId) : undefined) ??
+      get().runHistory.find((h) => h.runId === runId);
+    await get().openHistoryRun(runId, item);
   },
 
   resetRun() {
     const { selectedProvider, supportedModels } = get();
+    // Task-433: cache the outgoing run before clearing — reopening it later
+    // hits the LRU cache instead of a cold replay.
+    cacheRunSnapshot(get(), get().runId);
     cancelHistoryReplayStream();
     cancelOrchestrationStream();
     cancelAgentFocusStream();
@@ -2727,6 +3254,7 @@ export const useStore = create<AppState>((set, get) => ({
       activeStepId: undefined,
       status: "idle",
       timeline: [],
+      ...resetTimelineWindow(),
       artifacts: [],
       agentRuns: [],
       agentGraphSnapshot: undefined,
@@ -2746,16 +3274,36 @@ export const useStore = create<AppState>((set, get) => ({
       providerSwitchLoading: false,
       _accountSwitchTriedIds: [],
       _streamingAssistantId: undefined,
-      _runSnapshots: {},
+      _pendingScrollAnchor: undefined,
       _runReplaySeq: {},
       chatStartMode: "normal",
       chatSourceDocId: "",
       flowRef: undefined,
       builtinOrchestrationOptions: [],
-      worktreeEnabled: false,
+      // worktreeEnabled intentionally survives reset: the toggle is a next-run
+      // intent (like yoloMode/workingMode), not per-run state — clearing it here
+      // silently dropped worktree:true when "New run"/new-chat called resetRun
+      // before sendPrompt (M-3 regression). selectProject clears it explicitly
+      // on project change so a stale flag can't hit a non-git project.
+      activeWorktreePath: "",
       activeWorktreeState: "",
       selectedModel: pickDefaultModel(selectedProvider, supportedModels),
     });
+  },
+
+  toggleTerminal() {
+    set((s) => ({ terminalOpen: !s.terminalOpen }));
+  },
+
+  openSpectator(runId, projectId) {
+    // Never watch the run that is already focused — the pane is for the
+    // OTHER run (T-3).
+    if (runId && runId === get().runId) return;
+    set({ spectatorRunId: runId || null, spectatorProjectId: projectId || null });
+  },
+
+  closeSpectator() {
+    set({ spectatorRunId: null, spectatorProjectId: null });
   },
 
   openInIde(path, line) {
@@ -2868,7 +3416,11 @@ export const useStore = create<AppState>((set, get) => ({
 
 // ── Account-switch helpers ─────────────────────────────────────────────────
 
-function isUsageLimitMessage(msg: string): boolean {
+// BUG-375: token set mirrors the runner's isProviderUsageLimitError
+// (interactive_service.go) — the two classifiers gate the same quota flow
+// (runner → run status; desktop → account-switch surface), so they must
+// agree on every billing/quota signature or one side silently drops it.
+export function isUsageLimitMessage(msg: string): boolean {
   const lower = msg.toLowerCase();
   return (
     lower.includes("usage limit reached") ||
@@ -2876,7 +3428,23 @@ function isUsageLimitMessage(msg: string): boolean {
     lower.includes("out of credits") ||
     lower.includes("out_of_credits") ||
     lower.includes("quota reset") ||
-    lower.includes("rate limit")
+    lower.includes("rate limit") ||
+    lower.includes("rate_limit") ||
+    lower.includes("rate-limit") ||
+    lower.includes("rate_limited") ||
+    lower.includes("quota exceeded") ||
+    lower.includes("quota_exceeded") ||
+    lower.includes("insufficient credit") ||
+    lower.includes("insufficient_credit") ||
+    lower.includes("usage_limit") ||
+    lower.includes("usage-limit") ||
+    lower.includes("payment required") ||
+    lower.includes("payment_required") ||
+    lower.includes("no payment method") ||
+    lower.includes("add a payment method") ||
+    lower.includes("personal-team-blocked") ||
+    lower.includes("spending-limit") ||
+    lower.includes("spending_limit")
   );
 }
 
@@ -3029,16 +3597,48 @@ async function consumeStream(
             const providerKey = s.selectedProvider;
             const failedId = failedAccount.id;
             const failedLbl = accountLabel(failedAccount);
-            set((_) => ({
-              pendingAccountSwitch: {
+            // CP-84 (Task-434 T-2): quota prompt routes by source runId —
+            // focused → the existing AccountSwitchModal; non-focused → a
+            // synthetic inbox item carrying the quota decision (same
+            // account-switch confirm path, different surface).
+            if (isFocusedRun(get(), runId)) {
+              set((_) => ({
+                pendingAccountSwitch: {
+                  providerKey,
+                  failedAccountId: failedId,
+                  failedAccountLabel: failedLbl,
+                  candidateAccount: candidate,
+                  reason: "usage_limit" as const,
+                },
+                _accountSwitchTriedIds: tried,
+              }));
+            } else {
+              const laneItem = attentionQueue.items.find((i) => i.runId === runId);
+              get().ingestAttentionItem({
+                runId,
+                chatId: laneItem?.chatId ?? runId,
+                projectId: laneItem?.projectId ?? get().selectedProjectId ?? "",
+                runTitle: laneItem?.runTitle ?? runId,
+                kind: "quota",
+                waitingSince: new Date().toISOString(),
                 providerKey,
-                failedAccountId: failedId,
-                failedAccountLabel: failedLbl,
-                candidateAccount: candidate,
-                reason: "usage_limit" as const,
-              },
-              _accountSwitchTriedIds: tried,
-            }));
+                decision: {
+                  version: 1,
+                  id: `quota:${runId}`,
+                  runId,
+                  kind: "quota",
+                  revision: `quota:${runId}`,
+                  status: "pending",
+                  actionable: true,
+                  providerKey,
+                  prompt: `Usage limit reached on ${failedLbl}`,
+                  quota: {
+                    candidateAccountId: candidate.id,
+                    candidateLabel: accountLabel(candidate),
+                  },
+                },
+              });
+            }
           }
         }
       }
@@ -3357,6 +3957,109 @@ function startOrchestrationStream(
   });
 }
 
+// ---- CP-84 (Task-429 T-5/T-6): multiplexed lane stream --------------------
+// One app-lifetime controller — deliberately NOT cancelled by resetRun(),
+// project switches, or chat focus changes. The stream is level-triggered:
+// every reconnect starts from a chunked authoritative snapshot; the 30s
+// history poll keeps running independently and corrects any drift.
+let muxUpdatesStarted = false;
+let muxUpdatesController: AbortController | undefined;
+
+function startRunUpdatesStream(
+  client: RunnerClient,
+  set: (fn: (s: AppState) => Partial<AppState>) => void,
+  get: () => AppState,
+): void {
+  if (muxUpdatesStarted || typeof client.streamRunUpdates !== "function") return;
+  muxUpdatesStarted = true;
+  void consumeRunUpdatesLoop(client, set, get);
+}
+
+const MUX_BACKOFF_MIN_MS = 500;
+const MUX_BACKOFF_MAX_MS = 30_000;
+
+async function consumeRunUpdatesLoop(
+  client: RunnerClient,
+  set: (fn: (s: AppState) => Partial<AppState>) => void,
+  get: () => AppState,
+): Promise<void> {
+  let backoffMs = MUX_BACKOFF_MIN_MS;
+  for (;;) {
+    const ctrl = new AbortController();
+    muxUpdatesController = ctrl;
+    let sawSnapshot = false;
+    // Mirror of the queue's chunk staging, only for history-row patching —
+    // reset when a new snapshotId supersedes a partial burst.
+    let stagedSnapId = "";
+    let stagedLanes: RunRealtimeProjection[] = [];
+    try {
+      // Chunk staging + atomic reconcile live in attentionQueue.applyRunUpdate
+      // (T-4) so the semantics are unit-testable without this loop.
+      for await (const frame of client.streamRunUpdates!(ctrl.signal)) {
+        if (frame.kind === "resync") break; // server overflow → reconnect fresh
+        attentionQueue.applyRunUpdate(frame);
+        if (frame.kind === "snapshot") {
+          if ((frame.snapshotId ?? "") !== stagedSnapId) {
+            stagedSnapId = frame.snapshotId ?? "";
+            stagedLanes = [];
+          }
+          stagedLanes.push(...(frame.runs ?? []));
+          if (frame.complete) {
+            sawSnapshot = true;
+            for (const lane of stagedLanes) patchHistoryLane(set, lane);
+            stagedLanes = [];
+          }
+          continue;
+        }
+        if (frame.kind === "upsert" && frame.run) {
+          patchHistoryLane(set, frame.run);
+          // Task-433 T-4: authority advanced past any cached view — mark the
+          // snapshot dirty (the cached timeline stays; revalidation settles).
+          markRunSnapshotDirty(get(), frame.run.runId, frame.run.revision);
+        }
+      }
+      // Stream ended cleanly (server restart etc.) — reconnect for a snapshot.
+    } catch (err) {
+      if (ctrl.signal.aborted) return;
+      // eslint-disable-next-line no-console
+      console.warn("[FlowPilot] run-updates stream dropped; backing off:", err);
+    }
+    if (ctrl.signal.aborted) return;
+    if (sawSnapshot) backoffMs = MUX_BACKOFF_MIN_MS; // healthy snapshot resets backoff (T-5)
+    await new Promise((r) => setTimeout(r, backoffMs + Math.floor(Math.random() * 250)));
+    backoffMs = Math.min(backoffMs * 2, MUX_BACKOFF_MAX_MS);
+  }
+}
+
+/** Overlay a lane projection's status/updatedAt onto the polled history
+ *  slices — the mux is fresher than the 30s poll, so the Navigator reflects
+ *  waiting/terminal transitions immediately. */
+function patchHistoryLane(set: (fn: (s: AppState) => Partial<AppState>) => void, lane: RunRealtimeProjection): void {
+  set((s) => {
+    const items = s.projectHistoryById[lane.projectId];
+    if (!items?.some((it) => it.runId === lane.runId)) return {};
+    const next = items.map((it) =>
+      it.runId === lane.runId ? { ...it, status: lane.status, updatedAt: lane.updatedAt } : it,
+    );
+    return {
+      projectHistoryById: { ...s.projectHistoryById, [lane.projectId]: next },
+      ...(s.selectedProjectId === lane.projectId ? { runHistory: next } : {}),
+    };
+  });
+}
+
+/**
+ * CP-84 (Task-434 T-1): the single place that decides whether an event's
+ * source run is the one on screen. `undefined`/unresolvable → false — the
+ * fail-safe routes to the inbox instead of hijacking with a modal.
+ * `mainRunId`/`activeAgentRunId` count as focused: viewing a child lane or
+ * the parent of a focused leg is still "the run the user is watching".
+ */
+export function isFocusedRun(s: AppState, runId: string | undefined): boolean {
+  if (!runId) return false;
+  return runId === s.runId || runId === s.mainRunId || runId === s.activeAgentRunId;
+}
+
 function isEventForRun(e: ProviderEventDTO, runId: string): boolean {
   if (e.type === "agent_graph_updated") {
     return e.agentGraphSnapshot.parentRunId === runId;
@@ -3478,8 +4181,11 @@ function applyEvent(s: AppState, e: ProviderEventDTO): Partial<AppState> {
     // Both cases: add to _gateBlockedRunIds so Navigator shows a stable completed icon for
     // inactive gate-settled runs. Cleared on the next turn_started. (BUG-137)
     const alreadyBlocked = Boolean(s._gateBlockedRunIds[e.workflowRunId]);
+    // CP-84 (Task-434): the modal serves the focused run only — a non-focused
+    // gate block still marks _gateBlockedRunIds (Navigator stability) but
+    // surfaces through the attention inbox instead of a modal hijack.
     const newGateBlock =
-      e.status === "block" && !alreadyBlocked
+      e.status === "block" && !alreadyBlocked && isFocusedRun(s, e.workflowRunId)
         ? {
             message: e.error,
             options: e.gateOptions,
@@ -3636,40 +4342,104 @@ function runErrorMessage(err: unknown): string {
 
 function snapshotRunState(state: AppState): RunSnapshot {
   const pending = sanitizePendingSnapshotState(state.status, state.pendingApprovals, state.pendingQuestions);
+  const now = Date.now();
+  // Clone mutable collections: _timelineEvictedIds is mutated in place by
+  // applyTimelineWindow, and aliasing it would let the focused run's reducer
+  // corrupt the cached lane (Task-433 constraint).
   return {
-    timeline: state.timeline,
-    artifacts: state.artifacts,
+    timeline: [...state.timeline],
+    artifacts: [...state.artifacts],
     status: state.status,
-    pendingApprovals: pending.pendingApprovals,
-    pendingQuestions: pending.pendingQuestions,
+    pendingApprovals: [...pending.pendingApprovals],
+    pendingQuestions: [...pending.pendingQuestions],
     latestTokenUsage: state.latestTokenUsage,
     lastTurnInput: state.lastTurnInput,
     recoverable: state.recoverable,
     _streamingAssistantId: state._streamingAssistantId,
     activeStepId: state.activeStepId,
     lastEventSeq: state._runReplaySeq[state.runId ?? ""] ?? state._runReplaySeq[state.mainRunId ?? ""] ?? undefined,
+    timelineHasOlder: state.timelineHasOlder,
+    _timelineAnchorSeq: state._timelineAnchorSeq,
+    _timelineEvictedIds: new Set(state._timelineEvictedIds ?? []),
+    projectId: state.selectedProjectId,
+    cachedAt: now,
+    lastAccessedAt: now,
+    scrollAnchor: liveScrollAnchor.current ? { ...liveScrollAnchor.current } : undefined,
   };
 }
 
 function restoreRunSnapshot(snapshot: RunSnapshot): Partial<AppState> {
   const pending = sanitizePendingSnapshotState(snapshot.status, snapshot.pendingApprovals, snapshot.pendingQuestions);
+  // Clone mutable collections on restore too — the cached copy must not alias
+  // live state the reducer will mutate next.
   return {
-    timeline: snapshot.timeline,
-    artifacts: snapshot.artifacts,
+    timeline: [...snapshot.timeline],
+    artifacts: [...snapshot.artifacts],
     status: snapshot.status,
-    pendingApprovals: pending.pendingApprovals,
-    pendingQuestions: pending.pendingQuestions,
+    pendingApprovals: [...pending.pendingApprovals],
+    pendingQuestions: [...pending.pendingQuestions],
     latestTokenUsage: snapshot.latestTokenUsage,
     lastTurnInput: snapshot.lastTurnInput,
     recoverable: snapshot.recoverable,
     _streamingAssistantId: snapshot._streamingAssistantId,
     activeStepId: snapshot.activeStepId,
+    timelineHasOlder: snapshot.timelineHasOlder ?? false,
+    _timelineAnchorSeq: snapshot._timelineAnchorSeq,
+    _timelineEvictedIds: new Set(snapshot._timelineEvictedIds ?? []),
+    _timelineLoadingEarlier: false,
   };
+}
+
+/**
+ * Task-433: the pin set — snapshots required by the active focus ancestry
+ * (current run, main run, focused child) can never be LRU-evicted.
+ */
+function pinnedSnapshotRunIds(state: AppState): Set<string> {
+  const pinned = new Set<string>();
+  if (state.runId) pinned.add(state.runId);
+  if (state.mainRunId) pinned.add(state.mainRunId);
+  if (state.activeAgentRunId) pinned.add(state.activeAgentRunId);
+  return pinned;
+}
+
+/** Task-433: evict oldest non-pinned snapshots beyond RUN_SNAPSHOT_LRU_CAP. */
+export function pruneRunSnapshots(
+  snapshots: Record<string, RunSnapshot>,
+  pinnedRunIds: Set<string>,
+): Record<string, RunSnapshot> {
+  const evictable = Object.keys(snapshots).filter((id) => !pinnedRunIds.has(id));
+  if (evictable.length <= RUN_SNAPSHOT_LRU_CAP) return snapshots;
+  evictable.sort(
+    (a, b) => (snapshots[a].lastAccessedAt ?? 0) - (snapshots[b].lastAccessedAt ?? 0),
+  );
+  const next = { ...snapshots };
+  for (const id of evictable.slice(0, evictable.length - RUN_SNAPSHOT_LRU_CAP)) {
+    delete next[id];
+  }
+  return next;
+}
+
+/** Task-433: bump lastAccessedAt and return the snapshot (LRU touch). */
+export function touchRunSnapshot(state: AppState, runId: string): RunSnapshot | undefined {
+  const snap = state._runSnapshots[runId];
+  if (!snap) return undefined;
+  snap.lastAccessedAt = Date.now();
+  return snap;
+}
+
+/** Task-433 T-4: a mux upsert advanced authority past the cached view — mark
+ *  the snapshot dirty without touching its (still useful) timeline. */
+export function markRunSnapshotDirty(state: AppState, runId: string, revision: number): void {
+  const snap = state._runSnapshots[runId];
+  if (!snap) return;
+  if (snap.dirtyRevision !== undefined && snap.dirtyRevision >= revision) return;
+  snap.dirtyRevision = revision;
 }
 
 function emptyRunSnapshot(status: RunStatus): Partial<AppState> {
   return {
     timeline: [],
+    ...resetTimelineWindow(),
     artifacts: [],
     status,
     pendingApprovals: [],
@@ -3683,10 +4453,23 @@ function emptyRunSnapshot(status: RunStatus): Partial<AppState> {
   };
 }
 
-function cacheRunSnapshot(state: AppState, runId?: string): void {
+function cacheRunSnapshot(state: AppState, runId?: string, anchor?: TimelineScrollAnchor): void {
   if (!runId) return;
   const snap = snapshotRunState(state);
+  if (anchor) snap.scrollAnchor = anchor;
+  // Preserve the prior entry's dirty marker — re-caching a lane does not prove
+  // it is fresh (authority may still be ahead).
+  const prior = state._runSnapshots[runId];
+  if (prior?.dirtyRevision !== undefined) snap.dirtyRevision = prior.dirtyRevision;
   state._runSnapshots[runId] = snap;
+  // Task-433 T-2: bound the cache — pin the active focus ancestry, LRU-evict
+  // the rest. Mutation is fine: _runSnapshots slots are owned by this seam.
+  const pruned = pruneRunSnapshots(state._runSnapshots, pinnedSnapshotRunIds(state));
+  if (pruned !== state._runSnapshots) {
+    for (const id of Object.keys(state._runSnapshots)) {
+      if (!(id in pruned)) delete state._runSnapshots[id];
+    }
+  }
   // Task-404: feed the attention-queue observer with the focused run's pending
   // fields so its queue entry refines to the right kind (approval/question).
   attentionQueue.ingestSnapshot(runId, snap);
@@ -3696,4 +4479,27 @@ function cacheRunSnapshot(state: AppState, runId?: string): void {
 // Navigator queue re-renders whenever a producer ingests new state.
 attentionQueue.subscribe(() => {
   useStore.setState({ attentionItems: attentionQueue.items });
+});
+
+// Keep the selected project's projectHistoryById slot in sync with runHistory
+// mutations that bypass loadRunHistory (optimistic deletes, per-item syncStatus
+// flips). Skipped on project switch so the destination project's cached slot
+// survives until its own fetch lands (stale-while-revalidate).
+let lastMirroredProjectId = "";
+let lastMirroredHistory: RunHistoryItem[] | undefined;
+useStore.subscribe((s) => {
+  const projectId = s.selectedProjectId;
+  if (!projectId) return;
+  if (projectId !== lastMirroredProjectId) {
+    lastMirroredProjectId = projectId;
+    lastMirroredHistory = s.runHistory;
+    return;
+  }
+  if (s.runHistory === lastMirroredHistory) return;
+  lastMirroredHistory = s.runHistory;
+  const slot = s.projectHistoryById[projectId];
+  if (slot === s.runHistory) return;
+  useStore.setState((cur) => ({
+    projectHistoryById: { ...cur.projectHistoryById, [projectId]: s.runHistory },
+  }));
 });

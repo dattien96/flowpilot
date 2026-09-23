@@ -76,6 +76,10 @@ func (s *InteractiveService) RegisterInteractiveRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/handoff-context", s.handleHandoffContext)
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/chat-summary", s.handleGenerateChatSummary)
 	mux.HandleFunc("GET /client/workflow-runs/{runId}/events/stream", s.handleEventStream)
+	// CP-84 (Task-429): one multiplexed stream carrying level-triggered
+	// RunRealtimeProjection frames for every user-visible lane — powers the
+	// cross-run attention inbox without N per-run SSE connections.
+	mux.HandleFunc("GET /client/events/stream", s.handleAllEventsStream)
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/interrupt", s.handleInterrupt)
 	mux.HandleFunc("POST /client/approvals/{approvalId}/decision", s.handleApprovalDecision)
 	mux.HandleFunc("POST /client/questions/{questionId}/answer", s.handleAnswerQuestion)
@@ -637,6 +641,102 @@ func (s *InteractiveService) handleEventStream(w http.ResponseWriter, r *http.Re
 	}
 }
 
+// handleAllEventsStream serves GET /client/events/stream (CP-84 / Task-429).
+// First burst: chunked authoritative snapshot of every user-visible
+// non-terminal lane (snapshotId + complete on the final chunk — clients stage
+// and reconcile atomically). Then per-run upsert/remove frames drained from
+// the subscriber's dirty set, plus heartbeat. A dirty-set overflow ends the
+// stream with a retryable resync frame so the client reconnects fresh.
+// Request cancel and write failure both unsubscribe (T-4/T-7).
+func (s *InteractiveService) handleAllEventsStream(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeInteractiveError(w, newAPIErr(http.StatusInternalServerError, "stream_unsupported", "streaming not supported"))
+		return
+	}
+
+	subID, wake, snapshot := s.subscribeRunUpdates()
+	defer s.unsubscribeRunUpdates(subID)
+	// T-7 telemetry: connection lifecycle + subscriber count only — never
+	// payload text.
+	log.Printf("[mux] subscriber %d connected (snapshot lanes=%d, subscribers=%d)", subID, len(snapshot), s.runUpdateSubCount())
+	defer log.Printf("[mux] subscriber %d disconnected", subID)
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+
+	snapshotID := fmt.Sprintf("snap-%d-%d", subID, time.Now().UnixNano())
+	if len(snapshot) == 0 {
+		if !writeRunUpdateFrame(w, flusher, RunRealtimeFrame{Kind: RunRealtimeSnapshot, SnapshotID: snapshotID, Complete: true}) {
+			return
+		}
+	}
+	for i := 0; i < len(snapshot); i += runUpdateSnapshotChunk {
+		end := i + runUpdateSnapshotChunk
+		if end > len(snapshot) {
+			end = len(snapshot)
+		}
+		frame := RunRealtimeFrame{
+			Kind:       RunRealtimeSnapshot,
+			SnapshotID: snapshotID,
+			Runs:       snapshot[i:end],
+			Complete:   end == len(snapshot),
+		}
+		if !writeRunUpdateFrame(w, flusher, frame) {
+			return
+		}
+	}
+
+	heartbeat := time.NewTicker(muxHeartbeatInterval)
+	defer heartbeat.Stop()
+	for {
+		select {
+		case <-wake:
+			for _, frame := range s.drainRunUpdates(subID) {
+				if !writeRunUpdateFrame(w, flusher, frame) {
+					return // write failure — subscriber already cleaned up
+				}
+				if frame.Kind == RunRealtimeResync {
+					return // overflow: close retryable so the client re-snapshots
+				}
+			}
+		case <-heartbeat.C:
+			if _, err := w.Write([]byte(": heartbeat\n\n")); err != nil {
+				return
+			}
+			flusher.Flush()
+		case <-r.Context().Done():
+			return
+		}
+	}
+}
+
+// writeRunUpdateFrame marshals + writes one SSE frame. Returns false on any
+// write error so the handler can unwind — the caller never holds s.mu here,
+// so marshal/network cost never blocks state mutations (T-4).
+func writeRunUpdateFrame(w http.ResponseWriter, flusher http.Flusher, frame RunRealtimeFrame) bool {
+	payload, err := json.Marshal(frame)
+	if err != nil {
+		return true // frame itself is broken; connection is still healthy
+	}
+	if _, err := w.Write([]byte("event: " + string(frame.Kind) + "\n")); err != nil {
+		return false
+	}
+	if _, err := w.Write([]byte("data: ")); err != nil {
+		return false
+	}
+	if _, err := w.Write(payload); err != nil {
+		return false
+	}
+	if _, err := w.Write([]byte("\n\n")); err != nil {
+		return false
+	}
+	flusher.Flush()
+	return true
+}
+
 func writeSSE(w http.ResponseWriter, ev ProviderEvent) {
 	payload, err := json.Marshal(ev)
 	if err != nil {
@@ -1033,6 +1133,7 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 	if rs.worktree != nil {
 		handle.WorktreeState = rs.worktree.State
 		handle.WorktreeSlug = rs.worktree.Slug
+		handle.WorktreePath = rs.worktree.Path
 	}
 	return handle, nil
 }
@@ -1123,6 +1224,7 @@ func (s *InteractiveService) resumeRun(runID string) (RunHandle, *apiErr) {
 	if rs.worktree != nil {
 		handle.WorktreeState = rs.worktree.State
 		handle.WorktreeSlug = rs.worktree.Slug
+		handle.WorktreePath = rs.worktree.Path
 	}
 	// Surface the synthetic chat step so the desktop can continue a resumed normal_chat
 	// run; its turns need a stepId and the chat step id is deterministic (T-7). Workflow
@@ -1206,6 +1308,9 @@ type runHistoryItem struct {
 	// CP-71 worktree badge fields (omitempty — absent for normal runs).
 	WorktreeState string `json:"worktreeState,omitempty"`
 	WorktreeSlug  string `json:"worktreeSlug,omitempty"`
+	// Task-426 (CP-83): absolute bound-worktree dir for terminal cwd
+	// resolution. Omitted when unbound.
+	WorktreePath string `json:"worktreePath,omitempty"`
 }
 
 func (s *InteractiveService) projectRunHistory(projectID string) []runHistoryItem {
@@ -1260,6 +1365,7 @@ func (s *InteractiveService) projectRunHistory(projectID string) []runHistoryIte
 		if rs.worktree != nil {
 			item.WorktreeState = rs.worktree.State
 			item.WorktreeSlug = rs.worktree.Slug
+			item.WorktreePath = rs.worktree.Path
 		}
 		if sess, ok := persistedSyncByRunID[rs.id]; ok {
 			item.SourceMachineID = sess.SourceMachineID
@@ -1315,6 +1421,7 @@ func (s *InteractiveService) projectRunHistory(projectID string) []runHistoryIte
 					FlowRef:         sess.ChatFlowRef,
 					WorktreeState:   sess.WorktreeState,
 					WorktreeSlug:    sess.WorktreeSlug,
+					WorktreePath:    sess.WorktreePath,
 				})
 			}
 		}

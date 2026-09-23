@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 // CP-68 scaffold observability (Task-385 follow-up): the AI Scaffold Turn runs
@@ -27,6 +29,12 @@ const (
 	scaffoldProgressKeep       = 400
 	scaffoldProgressFileName   = "scaffold-progress.ndjson"
 	scaffoldProgressPhaseStart = "started"
+	// scaffoldStreamQuietGap is the silence after which an uppercase-led stdout
+	// chunk counts as a new status line even without terminal punctuation —
+	// providers narrate the next status only once the previous action finished.
+	// 1.5s sits far above intra-status streaming splits (~300ms observed on
+	// devin -p) and below the multi-second gaps between real statuses.
+	scaffoldStreamQuietGap = 1500 * time.Millisecond
 )
 
 // ScaffoldProgressEvent is one observable scaffold moment. Kind distinguishes
@@ -242,6 +250,92 @@ func (s *InteractiveService) loadScaffoldProgressTail(projectID string) []Scaffo
 	// Read more than the in-memory ring so the merge path can recover a trimmed
 	// transcript head; NDJSON lines are small so a few thousand is cheap.
 	return readScaffoldProgressTail(filepath.Join(dir, ".flowpilot", scaffoldProgressFileName), scaffoldProgressKeep*8)
+}
+
+// scaffoldStreamJoiner re-inserts line boundaries into the provider's stdout
+// stream (CA-921). `devin -p` writes each narration/status update back-to-back
+// with NO separator at all — no newline, CR, or ANSI — so every client that
+// concatenates output events renders one endless line. A new status line is
+// inferred when the next chunk opens with an uppercase letter or digit AND the
+// stream closed a sentence (".", "!", "?", "…"), or when the provider went
+// quiet for scaffoldStreamQuietGap first. Everything else appends raw so
+// mid-sentence streaming splits stay glued.
+type scaffoldStreamJoiner struct {
+	now      func() time.Time
+	lastRune rune
+	lastAt   time.Time
+	hasLast  bool
+	atBreak  bool
+}
+
+func newScaffoldStreamJoiner(now func() time.Time) *scaffoldStreamJoiner {
+	if now == nil {
+		now = time.Now
+	}
+	return &scaffoldStreamJoiner{now: now}
+}
+
+// push returns the chunk to emit, prefixed with "\n" when it opens a new line.
+func (j *scaffoldStreamJoiner) push(chunk string) string {
+	if chunk == "" {
+		return ""
+	}
+	out := chunk
+	if j.hasLast {
+		next, _ := utf8.DecodeRuneInString(chunk)
+		if j.needsBreak(next) {
+			out = "\n" + chunk
+		}
+	}
+	j.hasLast = true
+	j.atBreak = false // consumed by this chunk, or moot once text exists
+	j.lastRune, _ = utf8.DecodeLastRuneInString(chunk)
+	j.lastAt = j.now()
+	return out
+}
+
+// markBoundary forces the next output chunk onto a fresh line — a phase event
+// (ai_turn → gate → heal) or a new turn means the stream changed context.
+func (j *scaffoldStreamJoiner) markBoundary() {
+	j.atBreak = true
+}
+
+func (j *scaffoldStreamJoiner) needsBreak(next rune) bool {
+	if unicode.IsSpace(j.lastRune) {
+		// Already on a fresh line (or mid-whitespace) — never double-break.
+		j.atBreak = false
+		return false
+	}
+	if j.atBreak {
+		j.atBreak = false
+		return true
+	}
+	if !unicode.IsUpper(next) && !unicode.IsDigit(next) {
+		return false
+	}
+	switch j.lastRune {
+	case '.', '!', '?', '…':
+		return true
+	}
+	return j.now().Sub(j.lastAt) >= scaffoldStreamQuietGap
+}
+
+// wrapScaffoldProgressSink normalizes output-event text through one joiner for
+// the whole dispatch, so boundaries hold across turns and heal attempts.
+// Phase/result events mark a hard boundary for the next output chunk.
+func wrapScaffoldProgressSink(sink func(ScaffoldProgressEvent), now func() time.Time) func(ScaffoldProgressEvent) {
+	if sink == nil {
+		return nil
+	}
+	j := newScaffoldStreamJoiner(now)
+	return func(ev ScaffoldProgressEvent) {
+		if ev.Kind == "output" {
+			ev.Text = j.push(ev.Text)
+		} else {
+			j.markBoundary()
+		}
+		sink(ev)
+	}
 }
 
 // appendScaffoldProgressLine writes one event as an NDJSON line. The log lives

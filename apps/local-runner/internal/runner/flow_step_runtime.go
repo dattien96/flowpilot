@@ -518,6 +518,7 @@ func (s *InteractiveService) settleParentRunOnFlowDone(parentRunID string) {
 		if id := parent.pendingApprovalID; id != "" {
 			if rec := s.approvals[id]; rec != nil && rec.status == "pending" {
 				rec.status = "expired"
+				rec.revision++
 				state := approvalStateFromRecord(parent, rec, "")
 				approvalSnapshot = &state
 			}
@@ -526,6 +527,7 @@ func (s *InteractiveService) settleParentRunOnFlowDone(parentRunID string) {
 		if id := parent.pendingQuestionID; id != "" {
 			if rec := s.questions[id]; rec != nil && rec.status == "pending" {
 				rec.status = "expired"
+				rec.revision++
 				state := questionStateFromRecord(rec, "", "")
 				questionSnapshot = &state
 			}

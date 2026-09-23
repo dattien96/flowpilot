@@ -479,6 +479,8 @@ func (b *turnBridge) Accepted(receipt ReceiptEvidence) {
 		}
 		rs.dispatch[turnID] = &cp
 	}
+	// CP-84: receipt state can change dispatch-attention (uncertain/cancel).
+	s.markRunRealtimeDirty(rs.id)
 }
 
 // Terminal is the sole automatic caller of CommitTerminalAndSettleIntent.
@@ -520,6 +522,8 @@ func (b *turnBridge) Terminal(proof TerminalEvidence) {
 		}
 		rs.dispatch[turnID] = &cp
 	}
+	// CP-84: terminal settle can open settle_pending / repair attention.
+	s.markRunRealtimeDirty(rs.id)
 	// Task-251: advance settle phases when gate is not still pending.
 	s.maybeScheduleSettleAfterTerminal(rs.id, turnID)
 }

@@ -11,6 +11,8 @@ const KIND_LABEL: Record<AttentionKind, string> = {
   r_requirement: "Requirement",
   decision: "Decision",
   dispatch_attention: "Dispatch",
+  worktree_merge: "Merge",
+  quota: "Quota",
 };
 
 function truncate(text: string, max = 60): string {

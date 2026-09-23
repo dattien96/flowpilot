@@ -27,9 +27,29 @@ interface RunnerLifecycleBridge {
   onStatus(cb: (status: RunnerLifecycleStatusEvent) => void): () => void;
 }
 
+// Task-427 (CP-83): embedded terminal bridge — mirror of
+// src/terminal/termBridge.ts TermApi (kept structurally identical so the
+// preload factory stays the single implementation).
+interface TermSpawnRequest {
+  cwd: string;
+  shell?: string;
+  cols: number;
+  rows: number;
+}
+
+interface TermBridge {
+  spawn(req: TermSpawnRequest): Promise<{ id: string }>;
+  write(id: string, data: string): Promise<void>;
+  resize(id: string, cols: number, rows: number): Promise<void>;
+  kill(id: string): Promise<{ ok: boolean }>;
+  onData(cb: (e: { id: string; data: string }) => void): () => void;
+  onExit(cb: (e: { id: string; exitCode: number }) => void): () => void;
+}
+
 declare global {
   interface Window {
     flowpilot?: {
+      platform?: NodeJS.Platform | string;
       openInIde(file: string, line?: number): Promise<{ ok: boolean; stub?: boolean }>;
       openExternal(url: string): Promise<{ ok: boolean }>;
       loadAuthSession(): Promise<{
@@ -57,8 +77,13 @@ declare global {
         headers: Array<[string, string]>;
         body: string;
       }>;
-      showNotification(title: string, body: string): Promise<{ ok: boolean }>;
+      showNotification(title: string, body: string, runId?: string): Promise<{ ok: boolean }>;
+      /** CP-84 (Task-431): notification click deep-link — carries the runId
+       *  passed to showNotification. Absent outside Electron. */
+      onNotificationClick?(cb: (runId: string) => void): () => void;
       lifecycle?: RunnerLifecycleBridge;
+      /** CP-83: absent when the renderer runs outside Electron (plain browser). */
+      term?: TermBridge;
     };
   }
 }

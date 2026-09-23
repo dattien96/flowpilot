@@ -106,6 +106,8 @@ export interface DesktopLifecyclePorts {
   heartbeatMs?: number;
   /** Override register-retry cadence (ms); default REGISTER_RETRY_MS. */
   registerRetryMs?: number;
+  /** Delay between heartbeat attempts on transport failure; default 400ms. */
+  heartbeatRetryMs?: number;
   /** Reconnect budget for planned restarts; default 60_000 (SD-28). */
   reconnectGraceMs?: number;
   /** /health poll cadence during reconnect; default 500ms. */
@@ -149,6 +151,12 @@ const DEFAULT_HEARTBEAT_MS = 5_000;
 const DEFAULT_RECONNECT_GRACE_MS = 60_000;
 const DEFAULT_RECONNECT_POLL_MS = 500;
 const CALL_TIMEOUT_MS = 4_000;
+// A single dropped/timed-out heartbeat must not kill the app — transient
+// socket resets and brief runner stalls are normal under load. Retry inside
+// the beat before declaring the runner lost; sustained failure still quits.
+// 3 attempts ≪ the 15 s lease TTL so the runner still sees a live client.
+const HEARTBEAT_ATTEMPTS = 3;
+const HEARTBEAT_RETRY_MS = 400;
 // Registration races runner boot (supervisor spawns the desktop while `go run`
 // is still compiling): keep retrying so the app never stays unmanaged while a
 // client-managed/supervised runner would idle-exit under it.
@@ -284,19 +292,42 @@ export function createDesktopLifecycle(ports: DesktopLifecyclePorts): DesktopLif
     heartbeatTimer = setT(tick, lease.heartbeatMs);
   }
 
+  async function heartbeatRequest(current: Lease): Promise<LifecycleSnapshot> {
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < HEARTBEAT_ATTEMPTS; attempt++) {
+      try {
+        return await call<LifecycleSnapshot>(
+          "POST",
+          `/system/clients/${current.leaseId}/heartbeat`,
+          {
+            leaseToken: current.token,
+            runnerInstanceId: current.runnerInstanceId,
+            generation: current.generation,
+          },
+        );
+      } catch (err) {
+        // LifecycleError = an answered HTTP response (lease_unknown,
+        // stale_generation, draining snapshot conflicts…) — authoritative,
+        // never retried. Only raw transport/timeout failures retry.
+        if (err instanceof LifecycleError) throw err;
+        lastErr = err;
+        if (quitting) break;
+        if (attempt + 1 < HEARTBEAT_ATTEMPTS) {
+          // Real (ref'd) timer, not ports.setTimeoutFn: this is an in-call
+          // await — an unref'd/injected timer would leave heartbeatOnce()
+          // pending forever under fake/parked schedulers.
+          await new Promise((r) => setTimeout(r, ports.heartbeatRetryMs ?? HEARTBEAT_RETRY_MS));
+        }
+      }
+    }
+    throw lastErr;
+  }
+
   async function heartbeatOnce(): Promise<void> {
     if (!lease || reconnecting) return;
     const current = lease;
     try {
-      const snap = await call<LifecycleSnapshot>(
-        "POST",
-        `/system/clients/${current.leaseId}/heartbeat`,
-        {
-          leaseToken: current.token,
-          runnerInstanceId: current.runnerInstanceId,
-          generation: current.generation,
-        },
-      );
+      const snap = await heartbeatRequest(current);
       lastSnapshot = snap;
       phase = snap.phase;
       if (snap.phase === "draining_restart" && snap.restart && !reconnecting) {
@@ -319,6 +350,9 @@ export function createDesktopLifecycle(ports: DesktopLifecyclePorts): DesktopLif
         enterReconnect(lastSnapshot?.restart?.deadline);
         return;
       }
+      // The beat may have been in a retry sleep while the user closed the
+      // app — don't report an intentional shutdown as runner loss.
+      if (quitting) return;
       await runnerLost("runner unreachable");
     }
   }

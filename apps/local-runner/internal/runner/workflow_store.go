@@ -341,6 +341,12 @@ type ProviderApprovalState struct {
 	Policy          string
 	ExpiresAt       string
 	ResolvedChoices []string
+	// Revision/CreatedAt are the CP-84 durable decision identity (Task-430):
+	// Revision is a per-record monotonic counter (1 at creation, +1 per status
+	// transition) so a stale client frame is detectable; CreatedAt is the
+	// RFC3339Nano arming stamp. Additive — zero values on legacy rows.
+	Revision  int64
+	CreatedAt string
 }
 
 type ProviderQuestionState struct {
@@ -354,6 +360,10 @@ type ProviderQuestionState struct {
 	Choice          []string
 	ExpiresAt       string
 	ResolvedChoices []string
+	// Revision/CreatedAt mirror ProviderApprovalState's CP-84 identity
+	// (Task-430). Additive — zero values on legacy rows.
+	Revision  int64
+	CreatedAt string
 }
 
 // ---- in-memory fake (tests) ------------------------------------------------

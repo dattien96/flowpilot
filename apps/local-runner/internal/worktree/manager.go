@@ -236,8 +236,12 @@ func ensureGitignore(repoDir string) {
 }
 
 // Diff returns the worktree's full change as a patch. Untracked files are
-// intent-to-added first so new files enter the diff. An unchanged worktree
-// yields an empty (non-nil-error-free) patch.
+// intent-to-added first so new files enter the diff. When the base sidecar
+// exists the diff is anchored at the recorded base commit — work COMMITTED on
+// the worktree branch (a provider can `git commit` inside it) is part of the
+// delta, not silently dropped (BUG-378). Without a sidecar the legacy bare
+// `git diff` (index/working-tree only) is kept. An unchanged worktree yields
+// an empty (non-nil-error-free) patch.
 func (Manager) Diff(_ context.Context, repoDir, ownerID, prefix string) ([]byte, error) {
 	if err := validateOwnerID(ownerID); err != nil {
 		return nil, err
@@ -249,7 +253,16 @@ func (Manager) Diff(_ context.Context, repoDir, ownerID, prefix string) ([]byte,
 	if _, err := gitOut(path, "add", "-N", "."); err != nil {
 		return nil, err
 	}
-	cmd := exec.Command("git", "diff", "--no-color")
+	args := []string{"diff", "--no-color"}
+	// Anchor at the recorded base commit when available: `git diff <base>`
+	// covers committed-branch + index + working-tree + intent-to-add — the
+	// complete delta the merge-back contract promises.
+	if raw, err := os.ReadFile(BaseSidecar(repoDir, ownerID, prefix)); err == nil {
+		if base := strings.TrimSpace(string(raw)); base != "" {
+			args = append(args, base)
+		}
+	}
+	cmd := exec.Command("git", args...)
 	cmd.Dir = path
 	patch, err := cmd.Output()
 	if err != nil {

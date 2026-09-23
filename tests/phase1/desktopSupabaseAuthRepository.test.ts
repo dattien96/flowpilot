@@ -192,3 +192,75 @@ test("DesktopSupabaseAuthRepository keeps fallback session visible to bootstrap 
     (globalThis as { window?: unknown }).window = originalWindow;
   }
 });
+
+// BUG-376 (CP-81 "random logout"): after a successful restore, setSession may
+// ROTATE the refresh token (Supabase refresh tokens are single-use). The
+// repository persisted the request `payload` — i.e. the OLD, now-dead tokens —
+// so the next cold start restored with a stale refresh token and the session
+// silently degraded to logged-out. The persisted session must carry the
+// tokens from the setSession response.
+test("DesktopSupabaseAuthRepository persists rotated tokens after restore, not the stale payload", async () => {
+  const originalWindow = (globalThis as { window?: unknown }).window;
+  let persistedSession: PersistedAuthSession | null = {
+    clientKey: "https://proj.supabase.co::anon",
+    accessToken: "stale-access-token",
+    refreshToken: "stale-refresh-token",
+    userId: "user-1",
+    email: "user@example.com",
+  };
+  (globalThis as { window?: unknown }).window = {
+    flowpilot: {
+      loadAuthSession: async () => persistedSession,
+      saveAuthSession: async (payload: PersistedAuthSession) => {
+        persistedSession = payload;
+        return { ok: true };
+      },
+      clearAuthSession: async () => {
+        persistedSession = null;
+        return { ok: true };
+      },
+    },
+  };
+  try {
+    const repository = new DesktopSupabaseAuthRepository(
+      new FakeRuntimeConfigRepository(),
+      new FakeHttpClient(async () => {
+        throw new Error("Runner should not be called when persisted auth session can be restored.");
+      }),
+      "http://127.0.0.1:4317",
+    );
+    const supabaseStub = {
+      auth: {
+        getSession: async () => ({ data: { session: null }, error: null }),
+        setSession: async (_tokens: { access_token: string; refresh_token: string }) => ({
+          // Supabase rotation: the response carries NEW tokens.
+          data: {
+            session: {
+              access_token: "rotated-access-token",
+              refresh_token: "rotated-refresh-token",
+              user: { id: "user-1", email: "user@example.com" },
+            },
+          },
+          error: null,
+        }),
+      },
+    };
+    const repositoryState = repository as unknown as {
+      client: typeof supabaseStub | null;
+      clientKey: string | null;
+    };
+    repositoryState.client = supabaseStub;
+    repositoryState.clientKey = "https://proj.supabase.co::anon";
+
+    const session = await repository.getSession();
+    assert.deepEqual(session, { userId: "user-1", email: "user@example.com" });
+    assert.equal(
+      persistedSession?.refreshToken,
+      "rotated-refresh-token",
+      "persisted session must carry the rotated refresh token, not the consumed one",
+    );
+    assert.equal(persistedSession?.accessToken, "rotated-access-token");
+  } finally {
+    (globalThis as { window?: unknown }).window = originalWindow;
+  }
+});

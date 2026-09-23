@@ -298,10 +298,12 @@ export class DesktopSupabaseAuthRepository implements AuthRepository {
       }
       const session = mapAuthSession(data.session);
       if (session) {
-        await this.savePersistedAuthSession({
-          ...payload,
-          clientKey: this.clientKey ?? this.clientIdentityFromClient(supabase),
-        });
+        const clientKey = this.clientKey ?? this.clientIdentityFromClient(supabase);
+        // BUG-376: setSession may have rotated the refresh token (Supabase
+        // refresh tokens are single-use) — persist the RESPONSE tokens, not
+        // the request payload, or the stored session is dead on next boot.
+        const rotated = toPersistedAuthSession(data.session, clientKey);
+        await this.savePersistedAuthSession(rotated ?? { ...payload, clientKey });
         return session;
       }
     } catch {

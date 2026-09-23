@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { RUNNER_URL } from "@/config";
+import { CheckIcon, CloseIcon, CopyIcon, GlobeIcon } from "@/components/icons";
 
 interface TranslateResult {
   translatedText: string;
@@ -247,14 +248,14 @@ export function TranslatePopup({ containerRef }: Props): React.ReactElement | nu
     >
       {!result && !loading && !error && (
         <button type="button" className="translate-chip-btn" onClick={translate}>
-          🌐 Translate to Vietnamese
+          <GlobeIcon size={12} /> Translate to Vietnamese
         </button>
       )}
       {loading && <div className="translate-loading">Translating…</div>}
       {error && (
         <div className="translate-error">
           <span className="translate-error-msg">{error}</span>
-          <button type="button" className="translate-dismiss" onClick={dismiss} aria-label="Dismiss">✕</button>
+          <button type="button" className="translate-dismiss" onClick={dismiss} aria-label="Dismiss"><CloseIcon size={11} /></button>
         </div>
       )}
       {result && (
@@ -268,9 +269,9 @@ export function TranslatePopup({ containerRef }: Props): React.ReactElement | nu
               {(result.source || "en").toUpperCase()} → {result.target.toUpperCase()}
             </span>
             <button type="button" className="translate-copy-btn" onClick={copyResult} title={copied ? "Copied" : "Copy translation"}>
-              {copied ? "✓" : "⧉"}
+              {copied ? <CheckIcon size={11} /> : <CopyIcon size={11} />}
             </button>
-            <button type="button" className="translate-dismiss" onClick={dismiss} aria-label="Dismiss">✕</button>
+            <button type="button" className="translate-dismiss" onClick={dismiss} aria-label="Dismiss"><CloseIcon size={11} /></button>
           </div>
           <div className="translate-result-text" style={{ maxHeight: placement ? placement.textMaxHeight : undefined }}>
             {result.translatedText}

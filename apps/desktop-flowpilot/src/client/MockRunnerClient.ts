@@ -27,6 +27,7 @@ import type {
   SpawnAgentResult,
   RunHandle,
   RunHistoryItem,
+  RunRealtimeFrame,
   RunnerClient,
   StartRunInput,
   Step,
@@ -314,6 +315,18 @@ export class MockRunnerClient implements RunnerClient {
     // Mock stub — real gate agreement is only possible with a live runner (Task-155).
   }
 
+  // CP-84 (Task-431): record inbox decision calls so tests can assert routing.
+  resolvedWorktrees: Array<{ runId: string; mode: string; confirm?: boolean }> = [];
+  ssLockAnswers: Array<{ runId: string; action: string; edits?: string }> = [];
+
+  async resolveWorktreeMerge(runId: string, mode: string, confirm?: boolean): Promise<void> {
+    this.resolvedWorktrees.push({ runId, mode, confirm });
+  }
+
+  async confirmSSLock(runId: string, action: "approve" | "reject", edits?: string): Promise<void> {
+    this.ssLockAnswers.push({ runId, action, edits });
+  }
+
   async *streamRun(runId: string, afterSeq = 0, signal?: AbortSignal): AsyncIterable<ProviderEventDTO> {
     const log = this.eventLog.get(runId) ?? [];
     for (const ev of log) {
@@ -324,6 +337,15 @@ export class MockRunnerClient implements RunnerClient {
         yield ev;
       }
     }
+  }
+
+  // CP-84 / Task-429: the mock opens the mux stream but emits no lanes —
+  // tests that need frames override this per-instance.
+  async *streamRunUpdates(signal?: AbortSignal): AsyncIterable<RunRealtimeFrame> {
+    await new Promise<void>((resolve) => {
+      if (signal?.aborted) return resolve();
+      signal?.addEventListener("abort", () => resolve(), { once: true });
+    });
   }
 
   async listProjects(): Promise<Project[]> {
@@ -399,11 +421,18 @@ export class MockRunnerClient implements RunnerClient {
   }
   private switchLastProvider = new Map<string, string>();
 
-  async chatTimeline(chatId: string, afterSeq?: number, limit?: number): Promise<ChatTimelineResponse> {
+  async chatTimeline(chatId: string, afterSeq?: number, limit?: number, beforeSeq?: number): Promise<ChatTimelineResponse> {
     await delay(20);
     void afterSeq;
     void limit;
+    void beforeSeq;
     return { chatId, legs: [], records: [], nextSeq: 0, truncated: false, degraded: false };
+  }
+
+  async runTimeline(runId: string, opts?: { afterSeq?: number; limit?: number; beforeSeq?: number }): Promise<ChatTimelineResponse> {
+    await delay(20);
+    void opts;
+    return { chatId: runId, legs: [], records: [], nextSeq: 0, truncated: false, degraded: false };
   }
 
   async handoffContext(runId: string, input: HandoffContextRequest): Promise<HandoffContextResponse> {

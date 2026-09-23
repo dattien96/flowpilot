@@ -4,12 +4,18 @@ import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { wireDesktopLifecycle } from "./lifecycle";
+import { registerTerminalIpc } from "./terminal";
 
 // Electron shell (04-01). Loads the Vite dev server in dev, the built renderer in
 // prod. The IdeBridge is the real Part B implementation: it detects an installed
 // IDE CLI and opens the file at a line.
 
 const VITE_DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL;
+
+// Task-427 (CP-83): single-window handle for the terminal IPC adapter. The
+// renderer resolves cwd itself (worktreePath ?? project.path); the main side
+// only owns pty processes.
+let mainWindow: BrowserWindow | null = null;
 
 // Required on Windows for native notifications to appear in the Action Center.
 // In dev mode the packaged app ID is not registered, so we use the executable
@@ -146,19 +152,40 @@ function tryOpen(candidates: IdeCandidate[], file: string, line: number | undefi
 }
 
 function createWindow(): void {
+  const isMac = process.platform === "darwin";
   const win = new BrowserWindow({
     width: 1320,
     height: 880,
     minWidth: 960,
     minHeight: 640,
-    backgroundColor: "#0e1117",
+    // Match the renderer --bg token so launch does not flash a mismatched shell.
+    backgroundColor: "#141414",
     title: "FlowPilot Desktop",
+    // Devin/VS Code chrome: no OS titlebar or menu (Alt still toggles the menu
+    // on Windows). Windows/Linux get native caption buttons painted as an
+    // overlay via titleBarOverlay; macOS keeps the inset traffic lights.
+    autoHideMenuBar: true,
+    titleBarStyle: isMac ? "hiddenInset" : "hidden",
+    ...(isMac
+      ? {}
+      : {
+          titleBarOverlay: {
+            color: "#141414",
+            symbolColor: "rgba(255,255,255,0.85)",
+            height: 36,
+          },
+        }),
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
     },
+  });
+
+  mainWindow = win;
+  win.on("closed", () => {
+    if (mainWindow === win) mainWindow = null;
   });
 
   if (VITE_DEV_SERVER_URL) {
@@ -201,10 +228,19 @@ ipcMain.handle("auth-session:clear", async () => {
   await clearPersistedAuthSession();
   return { ok: true };
 });
-ipcMain.handle("notification:show", (_event, payload: { title: string; body: string }) => {
+ipcMain.handle("notification:show", (_event, payload: { title: string; body: string; runId?: string }) => {
   console.log("[notification] isSupported:", Notification.isSupported(), "payload:", payload);
   try {
-    new Notification({ title: payload.title, body: payload.body }).show();
+    const n = new Notification({ title: payload.title, body: payload.body });
+    // CP-84 (Task-431 T-5): clicking a notification deep-links to the run it
+    // came from — the renderer resolves the attention item and opens it.
+    n.on("click", () => {
+      if (payload.runId) {
+        mainWindow?.show();
+        mainWindow?.webContents.send("notification:clicked", { runId: payload.runId });
+      }
+    });
+    n.show();
   } catch (err) {
     console.error("[notification] show failed:", err);
   }
@@ -272,6 +308,7 @@ const desktopLifecycle = wireDesktopLifecycle(localRunnerURL());
 
 void app.whenReady().then(() => {
   void desktopLifecycle.lifecycle.start();
+  registerTerminalIpc(() => mainWindow);
   createWindow();
 });
 

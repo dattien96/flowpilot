@@ -369,6 +369,11 @@ export interface RunHandle {
   /** CP-59 chat SSOT: the logical chat this run belongs to + its leg ordinal. */
   chatId?: string;
   legSeq?: number;
+  /** CP-71/Task-426: worktree binding echo — present when bound. */
+  worktreeState?: string;
+  worktreeSlug?: string;
+  /** Task-426 (CP-83): absolute bound-worktree dir for terminal cwd. */
+  worktreePath?: string;
 }
 
 export interface RunHistoryItem {
@@ -404,6 +409,9 @@ export interface RunHistoryItem {
   /** CP-71: present when the run owns/shares a worktree binding. */
   worktreeState?: string;
   worktreeSlug?: string;
+  /** Task-426 (CP-83): absolute bound-worktree dir — the embedded terminal
+   *  resolves cwd from this instead of recomputing runner-internal paths. */
+  worktreePath?: string;
 }
 
 export interface ChatSessionSyncRequest {
@@ -799,6 +807,87 @@ export interface DispatchInspectResult extends DispatchSettlementDisposition {
   openRepair?: { repairRevision: number; reason: string; quarantineHash: string; state: string; createdAt?: string };
 }
 
+// ---- CP-84 / Task-429+430: multiplexed realtime lane stream ----------------
+
+/** Closed set of decision surfaces carried in a lane projection (Task-430). */
+export type DecisionKind =
+  | "approval"
+  | "question"
+  | "gate"
+  | "ss_lock"
+  | "worktree_merge"
+  | "dispatch_attention"
+  | "quota"
+  | "r_requirement";
+
+/**
+ * One bounded, redacted, actionable record on a lane. `id` is stable across
+ * restarts (durable record ids, not event seq); `revision` is an opaque
+ * equality token resubmitted on action — a mismatch yields 409 server-side.
+ */
+export interface DecisionPayload {
+  version: number;
+  id: string;
+  runId: string;
+  kind: DecisionKind;
+  revision: string;
+  /** pending | resolving | marker */
+  status: string;
+  actionable: boolean;
+  createdAt?: string;
+  expiresAt?: string;
+  providerKey?: string;
+  turnId?: string;
+  prompt?: string;
+  approval?: {
+    command?: string;
+    cwd?: string;
+    reason?: string;
+    kind?: string;
+    decisions?: { value: string; label: string }[];
+  };
+  question?: { options?: QuestionOption[]; multiSelect?: boolean };
+  gate?: { options?: string[]; regressedTests?: string[]; stepId?: string; resumeFrom?: string };
+  ssLock?: { featureBase?: string; draftSsPath?: string; draftSdPath?: string; quickView?: string };
+  worktree?: { path?: string; branch?: string; baseCommit?: string; conflictPaths?: string[]; patchRef?: string };
+  dispatch?: { turnId?: string; attentionKind?: string; reason?: string };
+  /** Task-431: usage-limit decision — the suggested account to switch to. */
+  quota?: { candidateAccountId?: string; candidateLabel?: string; remainingPct?: number };
+}
+
+/**
+ * Level-triggered projection of ONE user-visible lane (Task-429 T-1/T-2).
+ * `revision` is a mux-emission sequence stamped at send time — a client
+ * dedupe token only, never a reconnect cursor (reconnect-by-snapshot is the
+ * closed decision). Carries no transcript delta or tool payload.
+ */
+export interface RunRealtimeProjection {
+  runId: string;
+  projectId: string;
+  chatId?: string;
+  revision: number;
+  providerKey?: ProviderKey;
+  status: RunStatus;
+  updatedAt: string;
+  lastSummary?: string;
+  decisions?: DecisionPayload[];
+}
+
+export type RunRealtimeFrameKind = "snapshot" | "upsert" | "remove" | "resync";
+
+/** One SSE frame on GET /client/events/stream. */
+export interface RunRealtimeFrame {
+  kind: RunRealtimeFrameKind;
+  /** Connection-local staging id — stage chunks, reconcile only on complete. */
+  snapshotId?: string;
+  complete?: boolean;
+  runId?: string;
+  run?: RunRealtimeProjection;
+  runs?: RunRealtimeProjection[];
+  /** resync frames: the connection is closing; reconnect for a fresh snapshot. */
+  retryable?: boolean;
+}
+
 // ---- The contract ----------------------------------------------------------
 
 export interface RunnerClient {
@@ -816,8 +905,14 @@ export interface RunnerClient {
   handoffContext(runId: string, input: HandoffContextRequest): Promise<HandoffContextResponse>;
   /** CP-59 Task-314: chat-scoped cross-provider switch (runner mints the new leg). */
   switchChatProvider(chatId: string, input: ChatSwitchInput): Promise<ChatSwitchResponse>;
-  /** CP-59 Task-313: joined multi-leg chat timeline. */
-  chatTimeline(chatId: string, afterSeq?: number, limit?: number): Promise<ChatTimelineResponse>;
+  /** CP-59 Task-313: joined multi-leg chat timeline. Task-421: `beforeSeq`
+   *  pages backward (records with chatSeq < beforeSeq, ascending); -1 fetches
+   *  the latest page. Also serves workflow runs via the run-id keyed route. */
+  chatTimeline(chatId: string, afterSeq?: number, limit?: number, beforeSeq?: number): Promise<ChatTimelineResponse>;
+  /** Task-421: run-scoped timeline (workflow runs key transcript by runId).
+   *  Optional — older test doubles may omit it; callers must fall back to the
+   *  in-memory window. */
+  runTimeline?(runId: string, opts?: { afterSeq?: number; limit?: number; beforeSeq?: number }): Promise<ChatTimelineResponse>;
   generateChatSummary(runId: string): Promise<ChatSummaryResult>;
   /** Streaming turn: yields normalized provider events until terminal. */
   sendTurn(input: TurnInput): AsyncIterable<ProviderEventDTO>;
@@ -827,6 +922,12 @@ export interface RunnerClient {
   interrupt(runId: string): Promise<void>;
   /** Attach to a run's event stream and replay from afterSeq — used on reconnect. */
   streamRun(runId: string, afterSeq?: number, signal?: AbortSignal): AsyncIterable<ProviderEventDTO>;
+  /**
+   * CP-84 / Task-429 T-5: one multiplexed lane stream for the whole client —
+   * chunked authoritative snapshot, then level-triggered upsert/remove.
+   * Optional so mocks/older runners degrade to the 30s history poll.
+   */
+  streamRunUpdates?(signal?: AbortSignal): AsyncIterable<RunRealtimeFrame>;
   listArtifacts(runId: string): Promise<Artifact[]>;
   listSkills(provider: string, cwd?: string): Promise<ProviderSkill[]>;
   /** Workspace paths for the @file picker. Optional so older mocks stay valid. */
@@ -978,6 +1079,18 @@ export interface RunnerClient {
    * customText: required when option === "custom".
    */
   submitGateDecision?(runId: string, option: string, customText?: string): Promise<void>;
+  /**
+   * CP-84 (Task-431): resolve a worktree merge decision — POST
+   * /client/workflow-runs/{runId}/worktree/resolve.
+   * mode: "apply_patch" | "keep_branch" | "discard"; confirm forwards the
+   * user's explicit discard confirmation when the server asks for it.
+   */
+  resolveWorktreeMerge?(runId: string, mode: string, confirm?: boolean): Promise<unknown>;
+  /**
+   * CP-84 (Task-431): answer an SS-lock gate — POST
+   * /client/workflow-runs/{runId}/confirm {action, edits}.
+   */
+  confirmSSLock?(runId: string, action: "approve" | "reject", edits?: string): Promise<unknown>;
   /**
    * Task-309: widen the frozen contract for a scope-drift block and resume.
    * Calls POST /client/workflow-runs/{runId}/agent-loop/amend {"paths":[...] }.

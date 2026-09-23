@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useStore } from "@/state/store";
 import type { LSPStatus } from "@/types/contract";
+import { WarnIcon } from "@/components/icons";
 
 // LSPStatusNotice: compact missing-language-server warning pinned at the top
 // of the right sidebar stack (CP-63 follow-up). Null unless the bound
@@ -37,10 +38,10 @@ export function LSPStatusNotice(): React.ReactElement | null {
   if (!status?.warn || !status.binary) return null;
   return (
     <section className="lsp-status-notice" aria-label="Language server status">
-      <div className="lsp-status-title">⚠ LSP: {status.binary} missing</div>
+      <div className="lsp-status-title"><WarnIcon size={12} /> LSP: {status.binary} missing</div>
       {status.installHint ? (
         <div className="lsp-status-hint" title={status.installHint}>
-          → {status.installHint}
+          {status.installHint}
         </div>
       ) : null}
     </section>
