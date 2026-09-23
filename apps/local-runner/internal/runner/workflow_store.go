@@ -167,6 +167,17 @@ type ProviderSessionState struct {
 	VibeTaskIndex int
 	VibeTaskTotal int
 	VibeTaskName  string
+	// BUG-404: the vibe owner-debate stashes the sprint topology so the debate
+	// can run on its own flow — these were RAM-only, so a runner restart during
+	// negotiation lost them and the debate_synthesis done-verdict settled the
+	// whole flow instead of restoring the sprint (false done).
+	VibeParkedNodes      []agentpack.FlowNode
+	VibeParkedEdges      []agentpack.FlowEdge
+	VibeParkedAcceptance []string
+	VibeParkedFlowRef    string
+	// PendingBatchSignatureByStep buffers coder submit_coder_outcome batches
+	// until the negotiation hub consumes them — RAM-only before BUG-404.
+	PendingBatchSignatureByStep map[string][]CoderBatchSignatureRequest
 	// PendingFlowGateSettle is durable gate-pending state (V10 P0): after
 	// restart, reconstructRun re-queues post-turn gate instead of treating
 	// the child/root as completed.

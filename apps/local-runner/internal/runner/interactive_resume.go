@@ -895,8 +895,16 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 		// disk-reconstruction path never restored them — a restarted chat run
 		// lost ChatID and routeProviderSwitch never fired again (same symptom
 		// as the original bug, restart-only).
-		chatID:          st.ChatID,
-		legSeq:          st.LegSeq,
+		chatID: st.ChatID,
+		legSeq: st.LegSeq,
+		// BUG-405: same class — legState/legClosedReason/switchFromRunID were
+		// persisted but never restored, so every reconstructed leg surfaced
+		// legState:"" (timeline lies, switch-provider 409s chat_no_active_leg)
+		// and the next persistSessionSnapshot rewrote the durable row with the
+		// three fields omitempty-dropped — last-wins data loss.
+		legState:        st.LegState,
+		legClosedReason: st.LegClosedReason,
+		switchFromRunID: st.SwitchFromRunID,
 		status:          normalizedStatus,
 		createdAt:       st.StartedAt,
 		updatedAt:       updatedAt,
@@ -976,11 +984,19 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 		vibeTaskIndex:                   st.VibeTaskIndex,
 		vibeTaskTotal:                   st.VibeTaskTotal,
 		vibeTaskName:                    st.VibeTaskName,
-		flowStartGitHead:                st.FlowStartGitHead,
-		pendingRestartRunID:             st.PendingRestartRunID,
-		pendingRestartPrompt:            st.PendingRestartPrompt,
-		pendingRestartGen:               st.PendingRestartGen,
-		flowContextInjected:             st.FlowContextInjected,
+		// BUG-404: restore the debate-parked sprint topology + buffered coder
+		// batches — previously RAM-only, so a restart mid-negotiation lost them
+		// and the debate_synthesis done verdict settled the whole flow.
+		vibeParkedNodes:             append([]agentpack.FlowNode(nil), st.VibeParkedNodes...),
+		vibeParkedEdges:             append([]agentpack.FlowEdge(nil), st.VibeParkedEdges...),
+		vibeParkedAcceptance:        append([]string(nil), st.VibeParkedAcceptance...),
+		vibeParkedFlowRef:           st.VibeParkedFlowRef,
+		pendingBatchSignatureByStep: copyBatchSignatureMap(st.PendingBatchSignatureByStep),
+		flowStartGitHead:            st.FlowStartGitHead,
+		pendingRestartRunID:         st.PendingRestartRunID,
+		pendingRestartPrompt:        st.PendingRestartPrompt,
+		pendingRestartGen:           st.PendingRestartGen,
+		flowContextInjected:         st.FlowContextInjected,
 		// CP-51 Task-252 (Codex-suggested fix, 2026-07-17): these three durable
 		// provenance fields now round-trip through both session-store backends
 		// (encoder fix), but reconstruction never restored them onto the new run
@@ -1275,6 +1291,20 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 	// Restore flow-engine loop state so a restarted or Drive-synced run resumes
 	// at the correct round/cap/mode (Task-085 T-4).
 	if st.LoopState.Mode != "" || st.LoopState.Cap > 0 || st.LoopState.Round > 0 || strings.TrimSpace(st.LoopState.Status) != "" {
+		// BUG-410: a snapshot taken mid-crash can carry a stale blockReason (the
+		// hub_stalled watchdog wrote it while the loop status was still
+		// "running"). Restoring it verbatim leaves surfaces reading a phantom
+		// block on a live loop. BlockReason is block-only; GateReason also
+		// carries legitimate pause/stop reasons, so keep it there.
+		switch strings.TrimSpace(st.LoopState.Status) {
+		case "blocked":
+			// A blocked loop owns both reasons.
+		case "paused", "stopped":
+			st.LoopState.BlockReason = ""
+		default:
+			st.LoopState.BlockReason = ""
+			st.LoopState.GateReason = ""
+		}
 		s.agentOrchestrator.setLoop(rs.id, st.LoopState)
 	}
 	// run-63960: if durable loop is already blocked awaiting user, drop stale
@@ -1530,7 +1560,12 @@ func (s *InteractiveService) flushDurableTurnIntents(runID string) {
 		return
 	}
 	if !s.claimDurableIntentLocked(rs, kind, prompt, stepID, gen) {
+		// BUG-377: the lease may belong to a wedged delivery; arm a bounded
+		// re-check so the intent is reclaimed at/after lease expiry instead of
+		// stranded until restart.
+		claimUntil := rs.intentClaimUntil
 		s.mu.Unlock()
+		s.rearmDurableIntentIdleCheck(runID, claimUntil)
 		return
 	}
 	s.mu.Unlock()
@@ -1654,6 +1689,31 @@ func (s *InteractiveService) claimDurableIntentLocked(rs *interactiveRun, kind, 
 
 const durableIntentLease = 30 * time.Minute
 
+// durableIntentRearmProbe bounds how long a queued durable reprompt/resume
+// intent may sit undelivered while another delivery holds the claim lease.
+// BUG-377 (live cp37 run-1): the lease alone only prevents double-dispatch —
+// when the owning startTurn goroutine wedges silently (no error, no turn), no
+// path re-checks the intent and it strands until the next user turn or a
+// restart. A failed claim now arms a one-shot idle re-check: at most this far
+// out, or at lease expiry, whichever comes first. Each fired check re-samples
+// state, so the chain self-terminates once the intent clears or delivers.
+// var (not const) so tests can shrink the probe.
+var durableIntentRearmProbe = 15 * time.Second
+
+// rearmDurableIntentIdleCheck schedules a bounded one-shot notifyTurnIdle so a
+// queued durable intent whose claim is held by another (possibly wedged)
+// delivery is retried instead of stranded. Caller must NOT hold s.mu.
+func (s *InteractiveService) rearmDurableIntentIdleCheck(runID string, claimUntil time.Time) {
+	if s == nil || strings.TrimSpace(runID) == "" {
+		return
+	}
+	delay := time.Until(claimUntil)
+	if delay <= 0 || delay > durableIntentRearmProbe {
+		delay = durableIntentRearmProbe
+	}
+	time.AfterFunc(delay, func() { s.notifyTurnIdle(runID) })
+}
+
 // durableIntentMaxPermanentFails stops auto-retry spam for permanent startTurn
 // errors (account/provider/config). Transient conflicts do not count.
 const durableIntentMaxPermanentFails = 5
@@ -1710,7 +1770,11 @@ func (s *InteractiveService) startTurnClearingIntent(runID, stepID, prompt, kind
 	owned := rs.intentClaimKind == kind && rs.intentClaimGen == gen && time.Now().Before(rs.intentClaimUntil)
 	if !owned {
 		if !s.claimDurableIntentLocked(rs, kind, prompt, stepID, gen) {
+			// BUG-377: another delivery owns this gen and may be wedged;
+			// re-check at/after its lease expiry so the intent cannot strand.
+			claimUntil := rs.intentClaimUntil
 			s.mu.Unlock()
+			s.rearmDurableIntentIdleCheck(runID, claimUntil)
 			return
 		}
 	}
@@ -1720,7 +1784,13 @@ func (s *InteractiveService) startTurnClearingIntent(runID, stepID, prompt, kind
 	// provider turn for the same intent generation.
 	// BUG-288 R18-1: zero-pad gen for stable ordering in durable snapshots.
 	idem := fmt.Sprintf("durable-%s-%s-%020d", runID, kind, gen)
-	turnID, apiErr := s.startTurn(runID, TurnInput{StepID: stepID, Prompt: prompt}, "", idem)
+	scenario := ""
+	if kind == "reprompt" {
+		// BUG-391: mark the delivery so startTurn does not zero the reprompt
+		// counter — the cap bounds the reprompt LOOP across turns.
+		scenario = scenarioGateReprompt
+	}
+	turnID, apiErr := s.startTurn(runID, TurnInput{StepID: stepID, Prompt: prompt}, scenario, idem)
 	if apiErr != nil {
 		log.Printf("[resume-intent] startTurn failed run=%s kind=%s gen=%d code=%s: %s",
 			runID, kind, gen, apiErr.code, apiErr.msg)
@@ -3414,15 +3484,20 @@ func (s *InteractiveService) appendTranscriptReplayEventsOpt(rs *interactiveRun,
 		}
 		rs.events = append(rs.events, historical[i])
 	}
-	// Append a synthetic turn_completed to close any trailing "Thinking..." row.
+	// Append a synthetic terminal to close any trailing "Thinking..." row.
 	// timelineReducer.finalize injects a thinking row after every non-terminal event
 	// (message_completed / tool_completed etc.), so without this the resumed idle chat
-	// would render a perpetual spinner.
+	// would render a perpetual spinner. BUG-384: a run whose last turn FAILED must
+	// close with turn_failed — replaying it as turn_completed masks the failure.
 	if last := rs.events[len(rs.events)-1]; last.Type != EventTurnCompleted && last.Type != EventTurnFailed {
+		tailType := EventTurnCompleted
+		if rs.status == RunStatusFailed || rs.status == RunStatusCancelled {
+			tailType = EventTurnFailed
+		}
 		rs.seq++
 		rs.events = append(rs.events, ProviderEvent{
 			Seq:               rs.seq,
-			Type:              EventTurnCompleted,
+			Type:              tailType,
 			ID:                s.nextID("transcript"),
 			WorkflowRunID:     rs.id,
 			WorkflowStepRunID: stepID,
@@ -4208,6 +4283,11 @@ func (s *InteractiveService) seedGrokTranscriptFromDisk(rs *interactiveRun) {
 	for _, sid := range sessionIDs {
 		historical = append(historical, loadGrokTranscriptEvents(grokChatHistoryPath(home, rs.workspaceCwd, sid))...)
 	}
+	// BUG-384: every SendTurn retry re-issues session/prompt and Grok persists
+	// each attempt as a <user_query> frame. Collapse adjacent identical user
+	// turns before overlay so surplus frames can't surface as phantom turns
+	// holding the full composed prompt.
+	historical = dedupeRetryDuplicatedTurnStarts(historical)
 	// Strip sibling/foreign frames BEFORE overlayRawTurnPrompts: overlay maps
 	// durable prompts onto the first overlayable user slot and can relabel a
 	// foreign chat as the hub prompt, then keep the following foreign assistant
@@ -4580,10 +4660,21 @@ func transcriptHasUntaggedAssistantText(events []ProviderEvent, text string) boo
 func transcriptAssistantInsertIndex(events []ProviderEvent, entries []turnLogLine, entryIndex int, turnID string) int {
 	if turnID != "" {
 		lastOwn := -1
+		firstTerminal := -1
 		for i, event := range events {
 			if strings.TrimSpace(event.ProviderTurnID) == turnID {
 				lastOwn = i
+				// BUG-435: a message_completed recovered from the turn log must
+				// land BEFORE the turn's terminal event — inserting after it
+				// produced turn_completed → message_completed and the tail
+				// close then appended a duplicate turn_completed.
+				if firstTerminal < 0 && (event.Type == EventTurnCompleted || event.Type == EventTurnFailed) {
+					firstTerminal = i
+				}
 			}
+		}
+		if firstTerminal >= 0 {
+			return firstTerminal
 		}
 		if lastOwn >= 0 {
 			return lastOwn + 1
@@ -4609,6 +4700,34 @@ func transcriptAssistantInsertIndex(events []ProviderEvent, entries []turnLogLin
 
 func overlayRawGrokTurnPrompts(historical []ProviderEvent, rawPrompts []turnLogLine) []ProviderEvent {
 	return overlayRawTurnPrompts(historical, rawPrompts)
+}
+
+// dedupeRetryDuplicatedTurnStarts collapses consecutive turn_started events
+// whose prompts are byte-identical after trimming (BUG-384). Provider retry
+// attempts re-send the same composed prompt; a transport-failed attempt leaves
+// no assistant/tool events between frames, so identical adjacent turn_starts
+// are retry artifacts, not distinct user turns. Keeping the FIRST frame
+// preserves overlay alignment (overlayRawTurnPrompts replaces the prompt text
+// anyway) and the durable turn count stays authoritative: a genuine re-typed
+// identical prompt with no intervening reply collapses here but is restored by
+// prependMissingPromptOnlyEvents as a prompt-only event.
+func dedupeRetryDuplicatedTurnStarts(events []ProviderEvent) []ProviderEvent {
+	if len(events) < 2 {
+		return events
+	}
+	out := events[:0]
+	for _, e := range events {
+		if e.Type == EventTurnStarted && len(out) > 0 {
+			prev := out[len(out)-1]
+			if prev.Type == EventTurnStarted &&
+				strings.TrimSpace(prev.Prompt) != "" &&
+				strings.TrimSpace(prev.Prompt) == strings.TrimSpace(e.Prompt) {
+				continue
+			}
+		}
+		out = append(out, e)
+	}
+	return out
 }
 
 // stripAgentContextBlock removes composeAgentContextBlock's "[FlowPilot system

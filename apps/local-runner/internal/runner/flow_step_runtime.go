@@ -533,6 +533,11 @@ func (s *InteractiveService) settleParentRunOnFlowDone(parentRunID string) {
 			}
 			parent.pendingQuestionID = ""
 		}
+		// BUG-432: a stale pendingGateBlock on a done run left
+		// POST /gate-decision live — it accepted keep-test-fix-code/custom and
+		// spawned a reprompt turn on a dead loop. Terminal means no pending
+		// decision.
+		parent.pendingGateBlock = nil
 	}
 	s.mu.Unlock()
 	if approvalSnapshot != nil {
@@ -561,7 +566,10 @@ func (s *InteractiveService) reconcileChildRunsOnFlowDone(parentRunID string) {
 			continue
 		}
 		switch child.status {
-		case RunStatusRunning, RunStatusWaitingApproval, RunStatusWaitingQuestion:
+		// BUG-432: waiting_user_approval children were orphaned forever —
+		// a child parked by parkFlowForAwaitingUser stayed "waiting on human"
+		// after the flow it belonged to was already done.
+		case RunStatusRunning, RunStatusWaitingApproval, RunStatusWaitingQuestion, RunStatusWaitingUserApr:
 		default:
 			continue
 		}

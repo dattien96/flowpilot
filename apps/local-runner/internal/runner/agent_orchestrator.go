@@ -289,6 +289,10 @@ type SpawnAgentInput struct {
 	// from parentRunID topology alone (DOD-I4 — a sibling/unrelated source must
 	// never be trusted by topology). Internal-only, like ParentContextNote above.
 	FCPMarkerProvenanceRunID string `json:"-"`
+	// WorkspaceCwd overrides the child's working directory (internal-only —
+	// never decoded from the wire). The tournament executor binds each
+	// candidate to its isolated worktree path (BUG-426 / CP-65 P-5).
+	WorkspaceCwd string `json:"-"`
 	// Model gives this spawn its own model, taking priority over both the
 	// agent definition's model and the parent run's inherited model (BUG-228).
 	// Set by the flow executor for an agent.delegate node whose role has its
@@ -614,6 +618,12 @@ type FlowControlInput struct {
 	// flow_control status). Used by CP-53 P-2 to gate synthesis→done.
 	viaReviewOutcome    bool
 	reviewOutcomeStatus string // approved|changes_requested|blocked before statusMap
+	// agentInitiated marks inputs that arrived through turnBridge.SubmitFlowControl
+	// — the agent's own decision surface. BUG-402: the sprint-tasks-remaining
+	// done refusal applies only to agent verdicts; an operator settle (sprint
+	// boundary cancel/decline, POST /flow-control) is the human decision the
+	// contract defers to and must not be refused.
+	agentInitiated bool
 }
 
 // FlowControlResult is the engine's reply after processing a FlowControlInput.
