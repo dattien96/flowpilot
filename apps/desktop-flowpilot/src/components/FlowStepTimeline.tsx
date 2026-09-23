@@ -1,4 +1,5 @@
 import type { WorkflowStepRuntimeDTO, WorkflowStepRuntimeStatus } from "@/types/contract";
+import { BanIcon, CheckIcon, CloseIcon } from "@/components/icons";
 
 // BUG-156: vertical connected-circle stepper for Flow Mode's step list, replacing
 // WorkflowStepRuntimePanel's flat card list. Each icon encodes one of five visual
@@ -27,13 +28,11 @@ function visualState(status: WorkflowStepRuntimeStatus): TimelineVisualState {
   }
 }
 
-const STATE_GLYPH: Record<TimelineVisualState, string> = {
-  idle: "",
-  running: "",
-  done: "✓",
-  approval: "!",
-  error: "✕",
-  cancelled: "∅",
+const STATE_GLYPH: Partial<Record<TimelineVisualState, React.ReactElement>> = {
+  done: <CheckIcon size={9} />,
+  approval: <span className="fti-glyph">!</span>,
+  error: <CloseIcon size={9} />,
+  cancelled: <BanIcon size={9} />,
 };
 
 const STATE_LABEL: Record<WorkflowStepRuntimeStatus, string> = {

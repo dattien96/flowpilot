@@ -17,7 +17,7 @@ import {
 function PostureModeIcon({ posture }: { posture: ChatPosture }): React.ReactElement {
   if (posture === "scan") {
     return (
-      <svg viewBox="0 0 16 16" aria-hidden="true">
+      <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
         <circle cx="7" cy="7" r="3.6" fill="none" stroke="currentColor" strokeWidth="1.4" />
         <path d="M9.7 9.7 13 13" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
       </svg>
@@ -25,7 +25,7 @@ function PostureModeIcon({ posture }: { posture: ChatPosture }): React.ReactElem
   }
   if (posture === "non") {
     return (
-      <svg viewBox="0 0 16 16" aria-hidden="true">
+      <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
         <circle cx="8" cy="8" r="5.2" fill="none" stroke="currentColor" strokeWidth="1.3" />
         <path d="M5.4 8h5.2" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
       </svg>
@@ -33,14 +33,14 @@ function PostureModeIcon({ posture }: { posture: ChatPosture }): React.ReactElem
   }
   if (posture === "plan") {
     return (
-      <svg viewBox="0 0 16 16" aria-hidden="true">
+      <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
         <path d="M8 2v2M8 12v2M2 8h2M12 8h2M4.4 4.4l1.4 1.4M10.2 10.2l1.4 1.4M11.6 4.4l-1.4 1.4M5.8 10.2l-1.4 1.4" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
         <circle cx="8" cy="8" r="2" fill="none" stroke="currentColor" strokeWidth="1.3" />
       </svg>
     );
   }
   return (
-    <svg viewBox="0 0 16 16" aria-hidden="true">
+    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
       <path d="M3 3l10 10M13 3L3 13" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
       <rect x="5.5" y="5.5" width="5" height="5" rx="1" fill="none" stroke="currentColor" strokeWidth="1.3" />
     </svg>
@@ -262,7 +262,7 @@ function ChatPostureSetupModal({ posture, onClose }: { posture: ChatPosture; onC
               onClick={() => setModalTab(item.key)}
             >
               <span>{item.label}</span>
-              {item.key === posture ? <span className="chat-posture-modal-tab-active-dot">●</span> : null}
+              {item.key === posture ? <span className="chat-posture-modal-tab-active-dot" /> : null}
             </button>
           ))}
         </div>

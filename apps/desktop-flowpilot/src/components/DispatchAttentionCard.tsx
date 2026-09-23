@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { DispatchAttentionItem, DispatchInspectResult, DispatchResolveAction } from "@/types/contract";
 import { useStore } from "@/state/store";
+import { DisclosureCaret } from "@/components/icons";
 import { attentionQueue } from "@/state/attentionQueue";
 
 /**
@@ -146,7 +147,7 @@ export function DispatchAttentionCard(): React.ReactElement | null {
           title={collapsed ? "Expand" : "Collapse"}
           onClick={() => setCollapsed((value) => !value)}
         >
-          <span className="dispatch-attention-caret" aria-hidden="true">{collapsed ? "▸" : "▾"}</span>
+          <span className="dispatch-attention-caret" aria-hidden="true"><DisclosureCaret open={!collapsed} /></span>
           <span className="badge badge-warn">Dispatch attention</span>
           <span className="meta">{items.length} item(s)</span>
         </button>

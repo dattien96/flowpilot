@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { buildToastGroupSummary } from "@/app/runToastGrouping";
 import { useStore } from "@/state/store";
 import type { RunStatus } from "@/types/contract";
+import { CloseIcon, DisclosureCaret } from "@/components/icons";
 
 interface Toast {
   id: number;
@@ -98,7 +99,7 @@ export function RunToast(): React.ReactElement | null {
               </span>
               <span className="run-toast-group-summary">{groupSummary}</span>
             </span>
-            <span className="run-toast-group-caret" aria-hidden="true">▸</span>
+            <span className="run-toast-group-caret" aria-hidden="true"><DisclosureCaret /></span>
           </button>
           <button
             type="button"
@@ -106,7 +107,7 @@ export function RunToast(): React.ReactElement | null {
             onClick={() => setToasts([])}
             aria-label="Dismiss all notifications"
           >
-            ✕
+            <CloseIcon size={11} />
           </button>
         </div>
       </div>
@@ -131,7 +132,7 @@ export function RunToast(): React.ReactElement | null {
                   onClick={() => setModalOpen(false)}
                   aria-label="Close notification list"
                 >
-                  ✕
+                  <CloseIcon size={11} />
                 </button>
               </div>
               <div className="run-toast-modal-list">
@@ -151,7 +152,7 @@ export function RunToast(): React.ReactElement | null {
                       onClick={() => setToasts((ts) => ts.filter((t) => t.id !== toast.id))}
                       aria-label={`Dismiss ${toast.message}`}
                     >
-                      ✕
+                      <CloseIcon size={11} />
                     </button>
                   </div>
                 ))}
