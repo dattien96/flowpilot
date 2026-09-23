@@ -479,6 +479,35 @@ func TestRunUpdates_EverySubscriberReceivesUpserts(t *testing.T) {
 	}
 }
 
+// TestRunUpdates_TerminalRemoveReachesEverySubscriber: remove bookkeeping is
+// per-subscriber (sub.removed) — a terminal lane's remove must reach every
+// subscriber exactly once, not just the first to drain.
+func TestRunUpdates_TerminalRemoveReachesEverySubscriber(t *testing.T) {
+	svc := NewInteractiveService()
+	rs := mkDecisionRun(svc, "run-429-multi-rm", "proj-1")
+	subA, _, _ := svc.subscribeRunUpdates()
+	defer svc.unsubscribeRunUpdates(subA)
+	subB, _, _ := svc.subscribeRunUpdates()
+	defer svc.unsubscribeRunUpdates(subB)
+
+	svc.mu.Lock()
+	rs.status = RunStatusCompleted
+	svc.markRunRealtimeDirtyLocked(rs.id)
+	svc.mu.Unlock()
+
+	for _, subID := range []int64{subA, subB} {
+		removes := 0
+		for _, f := range svc.drainRunUpdates(subID) {
+			if f.Kind == RunRealtimeRemove && f.RunID == rs.id {
+				removes++
+			}
+		}
+		if removes != 1 {
+			t.Fatalf("subscriber %d got %d removes, want exactly 1", subID, removes)
+		}
+	}
+}
+
 // TestRunUpdates_DispatchResolveMarksRunDirty: an operator settle must dirty
 // the lane — otherwise the resolved dispatch_attention decision lingers in
 // every subscriber's inbox until an unrelated event happens to mark the run.

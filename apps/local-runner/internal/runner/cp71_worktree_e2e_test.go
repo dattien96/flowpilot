@@ -569,3 +569,39 @@ func TestE2EWorktree_OffByteParityHTTP(t *testing.T) {
 		t.Fatalf("toggle-off run must carry no worktree fields: %s", raw)
 	}
 }
+
+// ── 11. Delete gate: a live binding forces merge resolution first ──────────
+// (SS-23 E-3 / AGENTS §4 — deleting a run with a live worktree binding must
+// fail closed until the merge decision is resolved, inline via ?worktree=).
+
+func TestE2EWorktree_DeleteGateBlocksAndInlineResolves(t *testing.T) {
+	repo := initWorktreeRepo(t)
+	svc, srv := worktreeHTTPServer(t, repo)
+	runID := startWorktreeFlowRun(t, srv, repo)
+	markRunTerminal(t, svc, runID) // terminal flow run → merge_pending binding
+
+	// Bare DELETE must fail closed with the pending-merge card.
+	status, raw := doJSON(t, http.MethodDelete,
+		srv.URL+"/client/workflow-runs/"+runID, nil, nil)
+	if status != http.StatusConflict {
+		t.Fatalf("delete with live binding: status=%d want 409 body=%s", status, raw)
+	}
+	if !strings.Contains(string(raw), "worktree_merge_pending") {
+		t.Fatalf("delete error missing worktree_merge_pending: %s", raw)
+	}
+	if st := runWorktreeState(t, srv, runID); st != "merge_pending" {
+		t.Fatalf("state=%s want merge_pending (binding preserved)", st)
+	}
+
+	// Inline resolve via ?worktree=discard → delete proceeds.
+	status, raw = doJSON(t, http.MethodDelete,
+		srv.URL+"/client/workflow-runs/"+runID+"?worktree=discard", nil, nil)
+	if status != http.StatusOK {
+		t.Fatalf("delete with inline discard: status=%d body=%s", status, raw)
+	}
+	status, _ = doJSON(t, http.MethodGet,
+		srv.URL+"/client/workflow-runs/"+runID, nil, nil)
+	if status != http.StatusNotFound {
+		t.Fatalf("run still present after gated delete: status=%d", status)
+	}
+}
