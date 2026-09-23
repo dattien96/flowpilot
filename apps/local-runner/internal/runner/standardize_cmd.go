@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -419,6 +420,8 @@ func scanDocFiles(paths []string) (*docscan.ScanReport, error) {
 		}
 		report.Issues = append(report.Issues, issues...)
 	}
+	// CP-48 audit (BUG-422): every completed scan leaves a machine-parseable line.
+	log.Printf("docscan_scan_completed files_scanned=%d issues_found=%d", report.TotalFilesScanned, len(report.Issues))
 	return report, nil
 }
 
@@ -438,7 +441,7 @@ func autoFixDraftDocs(paths []string) error {
 		if !ok {
 			continue
 		}
-		fixed, err := docscan.AutoFixDocument(string(data), phase)
+		fixed, changes, err := docscan.AutoFixDocumentDetailed(string(data), phase)
 		if err != nil {
 			return fmt.Errorf("standardize: autofix %s: %w", path, err)
 		}
@@ -448,6 +451,8 @@ func autoFixDraftDocs(paths []string) error {
 		if err := os.WriteFile(path, []byte(fixed), 0o644); err != nil {
 			return fmt.Errorf("standardize: writing autofixed draft %s: %w", path, err)
 		}
+		// CP-48 audit (BUG-422): every repaired file leaves a machine-parseable line.
+		log.Printf("docscan_autofix_applied file=%s changes=%d", path, len(changes))
 	}
 	return nil
 }
