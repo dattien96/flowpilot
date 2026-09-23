@@ -3,7 +3,7 @@
 - Document ID: `CP-84`
 - Title: `Realtime Multi-Lane Attention`
 - Phase: `coding_plan`
-- Status: `draft`
+- Status: `done`
 - Owner: `dat.nguyen`
 - Reviewers: ``
 - Created: `2026-09-23`

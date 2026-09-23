@@ -3,7 +3,7 @@
 - Document ID: `Task-433`
 - Title: `Run-View Cache — LRU`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `dat.nguyen`
 - Reviewers: ``
 - Created: `2026-09-23`

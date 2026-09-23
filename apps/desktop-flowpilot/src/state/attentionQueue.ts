@@ -230,7 +230,7 @@ function laneHistoryRow(p: RunRealtimeProjection): RunHistoryItem {
     runId: p.runId,
     projectId: p.projectId,
     chatId: p.chatId,
-    providerKey: (p.decisions?.[0]?.providerKey as RunHistoryItem["providerKey"]) ?? "claude",
+    providerKey: p.providerKey ?? (p.decisions?.[0]?.providerKey as RunHistoryItem["providerKey"]) ?? "claude",
     status: p.status,
     startedAt: p.updatedAt,
     updatedAt: p.updatedAt,

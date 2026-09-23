@@ -3,7 +3,7 @@
 - Document ID: `Task-434`
 - Title: `Modal Routing for Non-Focused Runs`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `dat.nguyen`
 - Reviewers: ``
 - Created: `2026-09-23`

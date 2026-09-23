@@ -525,10 +525,12 @@ type RunRealtimeProjection struct {
 	RunID     string `json:"runId"`
 	ProjectID string `json:"projectId"`
 	ChatID    string `json:"chatId,omitempty"`
-	// Revision is the per-run event sequence at projection time — a client
-	// dedupe token only, NEVER a reconnect cursor and never a global seq
-	// (T-6: reconnect-by-snapshot is the closed decision).
+	// Revision is the mux-emission sequence stamped at send time — a client
+	// dedupe token only, NEVER a reconnect cursor (T-6: reconnect-by-snapshot
+	// is the closed decision). Stamped from s.runUpdateSeq at every emit so
+	// decision-only changes (which leave rs.seq untouched) still advance it.
 	Revision    int64             `json:"revision"`
+	ProviderKey string            `json:"providerKey,omitempty"`
 	Status      RunStatus         `json:"status"`
 	UpdatedAt   string            `json:"updatedAt"`
 	LastSummary string            `json:"lastSummary,omitempty"`
@@ -616,6 +618,7 @@ func (s *InteractiveService) projectRealtimeRunLocked(rs *interactiveRun) RunRea
 		Status:      rs.status,
 		UpdatedAt:   rs.updatedAt,
 		LastSummary: boundDecisionText(rs.lastMessage, decisionFieldMaxLen),
+		ProviderKey: string(rs.providerKey),
 		Decisions:   s.decisionPayloadsForRunLocked(rs),
 	}
 }

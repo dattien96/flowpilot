@@ -3,7 +3,7 @@
 - Document ID: `Task-430`
 - Title: `Decision Payload Contract`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `dat.nguyen`
 - Reviewers: ``
 - Created: `2026-09-23`

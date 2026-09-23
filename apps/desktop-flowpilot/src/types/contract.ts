@@ -857,15 +857,16 @@ export interface DecisionPayload {
 
 /**
  * Level-triggered projection of ONE user-visible lane (Task-429 T-1/T-2).
- * `revision` is the per-run event seq at projection time — a client dedupe
- * token only, never a reconnect cursor (reconnect-by-snapshot is the closed
- * decision). Carries no transcript delta or tool payload.
+ * `revision` is a mux-emission sequence stamped at send time — a client
+ * dedupe token only, never a reconnect cursor (reconnect-by-snapshot is the
+ * closed decision). Carries no transcript delta or tool payload.
  */
 export interface RunRealtimeProjection {
   runId: string;
   projectId: string;
   chatId?: string;
   revision: number;
+  providerKey?: ProviderKey;
   status: RunStatus;
   updatedAt: string;
   lastSummary?: string;
