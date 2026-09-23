@@ -2,7 +2,10 @@ package runner
 
 import (
 	"context"
+	"fmt"
 	"log"
+	"net/http"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -391,6 +394,47 @@ func (s *InteractiveService) maybeParkVibeCpJoinResume(parentRunID string) bool 
 	s.mu.Unlock()
 	s.parkFlowForAwaitingUser(parentRunID)
 	return true
+}
+
+// validateVibeCpIngestSource enforces BUG-399 (live run-3439): a turn that
+// launches vibe-cp-ingest must name a CP-shaped source before cp_reader can
+// draft anything — requirements/07-Coding-Plan/**/CP-*.md whose file exists
+// and carries `Document ID: CP-*`. The TUI `/flow` picker runs DetectVibeEntry
+// but API clients pin flowRef directly, so the deterministic check lives at
+// turn admission. Source resolution order: explicit SourceDocID (the launch
+// arm's `@path`, stripped), then the first CP-shaped token in the prompt.
+// Fail-closed: no source, unreadable file, or missing Document ID all reject
+// with 422 — nothing is drafted. Called with s.mu held.
+func (s *InteractiveService) validateVibeCpIngestSource(rs *interactiveRun, in TurnInput) *apiErr {
+	src := strings.TrimPrefix(strings.TrimSpace(in.SourceDocID), "@")
+	if !workingmode.IsCodingPlanCPPath(src) {
+		src = ""
+		for _, tok := range tokenizePromptTokens(in.Prompt) {
+			cand := strings.TrimPrefix(strings.TrimSpace(tok), "@")
+			if workingmode.IsCodingPlanCPPath(cand) {
+				src = cand
+				break
+			}
+		}
+	}
+	if src == "" {
+		return newAPIErr(http.StatusUnprocessableEntity, "invalid_cp_source",
+			"vibe-cp-ingest requires a requirements/07-Coding-Plan/**/CP-*.md source document")
+	}
+	abs := src
+	if !filepath.IsAbs(abs) && strings.TrimSpace(rs.workspaceCwd) != "" {
+		abs = filepath.Join(rs.workspaceCwd, filepath.FromSlash(src))
+	}
+	b, err := os.ReadFile(abs)
+	if err != nil {
+		return newAPIErr(http.StatusUnprocessableEntity, "invalid_cp_source",
+			fmt.Sprintf("vibe-cp-ingest source %q is not readable: %v", src, err))
+	}
+	if !workingmode.HasCPDocumentID(string(b)) {
+		return newAPIErr(http.StatusUnprocessableEntity, "invalid_cp_source",
+			fmt.Sprintf("vibe-cp-ingest source %q is not a CP document (missing `Document ID: CP-*`)", src))
+	}
+	return nil
 }
 
 // maybeStartVibeCpIngest overlays vibe-cp-ingest after ingest wrote a CP.
