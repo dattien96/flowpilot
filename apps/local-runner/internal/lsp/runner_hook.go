@@ -99,7 +99,9 @@ func (h *PostWriteDiagnosticsHook) AfterFileWriteErrors(relPath, newContent stri
 		log.Printf("[lsp] doc sync failed for %s: %v (skipping diagnostics)", abs, err)
 		return nil, nil
 	}
-	if err := h.Collector.WaitForDiagnostics(context.Background(), h.timeout()); err != nil {
+	// BUG-380: wait for THIS file's publish — a foreign file's diagnostics
+	// bumping the shared generation used to end the wait early.
+	if err := h.Collector.WaitForDiagnosticsForURI(context.Background(), uri, h.timeout()); err != nil {
 		return nil, nil // timeout or cancel: skip gracefully
 	}
 	var errs []FileDiagnostic

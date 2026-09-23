@@ -257,6 +257,12 @@ func (m *ServerManager) WaitReady(ctx context.Context, timeout time.Duration) er
 	if _, err := client.Initialize(ctx, params); err != nil {
 		return fmt.Errorf("lsp: wait ready: %w", err)
 	}
+	// BUG-380: the initialize RESPONSE alone is not "ready" — LSP requires the
+	// `initialized` notification to complete the handshake. gopls defers
+	// package load until it arrives, so without it diagnostics stay empty.
+	if err := client.Initialized(); err != nil {
+		return fmt.Errorf("lsp: wait ready (initialized): %w", err)
+	}
 	return nil
 }
 

@@ -134,6 +134,14 @@ func (c *Client) Shutdown(ctx context.Context) error {
 	return c.notify("exit", nil)
 }
 
+// Initialized sends the LSP `initialized` notification that completes the
+// handshake (BUG-380). Servers like gopls defer workspace/package load until
+// it arrives — without it every didOpen/didChange only yields the sev-2
+// "No active builds" placeholder and real diagnostics never flow.
+func (c *Client) Initialized() error {
+	return c.notify("initialized", map[string]any{})
+}
+
 // DidOpen notifies the server that a document was opened.
 func (c *Client) DidOpen(params DidOpenTextDocumentParams) error {
 	return c.notify("textDocument/didOpen", params)
