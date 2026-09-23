@@ -11,6 +11,10 @@ import "@/styles.css";
   env?: Record<string, string | undefined>;
 }).env ?? {};
 
+// Platform hook for CSS (e.g. extra left padding for macOS traffic lights when
+// running frameless). Absent in a plain browser tab — no-op there.
+document.body.dataset.platform = window.flowpilot?.platform ?? "web";
+
 void import("@/App").then(({ App }) => {
   ReactDOM.createRoot(document.getElementById("root")!).render(
     <React.StrictMode>

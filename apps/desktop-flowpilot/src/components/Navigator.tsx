@@ -3,7 +3,7 @@ import { useStore } from "@/state/store";
 import type { RemoteChatSessionSummary, RunHistoryItem } from "@/types/contract";
 import { filterVisibleHistory, isAgentHistoryItem, isProjectSyncing, isSyncableRun } from "@/components/navigatorHistory";
 import { flattenGroupedHistory, groupRunsByChatId } from "../state/chatHistory";
-import { AttentionQueue } from "@/components/AttentionQueue";
+import { CloseIcon, DisclosureCaret, PlusIcon } from "@/components/icons";
 
 const HISTORY_LIMIT = 5;
 const REMOTE_CHATS_LIMIT = 4;
@@ -134,7 +134,11 @@ export function Navigator(): React.ReactElement {
   const loadRunHistory = useStore((s) => s.loadRunHistory);
   const loadRemoteChatSessions = useStore((s) => s.loadRemoteChatSessions);
   const openHistoryRun = useStore((s) => s.openHistoryRun);
-  const openRunAtAttention = useStore((s) => s.openRunAtAttention);
+  const loadProjectHistory = useStore((s) => s.loadProjectHistory);
+  const loadAllProjectHistories = useStore((s) => s.loadAllProjectHistories);
+  const projectHistoryById = useStore((s) => s.projectHistoryById);
+  const attentionItems = useStore((s) => s.attentionItems);
+  const resetRun = useStore((s) => s.resetRun);
   const syncRuns = useStore((s) => s.syncRuns);
   const syncAllInProject = useStore((s) => s.syncAllInProject);
   const syncBatchProgress = useStore((s) => s.syncBatchProgress);
@@ -149,9 +153,12 @@ export function Navigator(): React.ReactElement {
 
   const [newlyCompleted, setNewlyCompleted] = useState<Set<string>>(new Set());
   const [recentProjectIds, setRecentProjectIds] = useState<string[]>([]);
-  const [projectHistoryById, setProjectHistoryById] = useState<Record<string, RunHistoryItem[]>>({});
   const [remoteChatSessionsByProjectId, setRemoteChatSessionsByProjectId] = useState<Record<string, RemoteChatSessionSummary[]>>({});
   const [expandedHistoryIds, setExpandedHistoryIds] = useState<Set<string>>(new Set());
+  const [collapsedProjectIds, setCollapsedProjectIds] = useState<Set<string>>(new Set());
+  // Per-project collapse state for the History / Remote Chats sub-sections
+  // inside a group body — keyed "<projectId>:history" | "<projectId>:remote".
+  const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set());
   const [selectionModeProjectId, setSelectionModeProjectId] = useState<string | null>(null);
   const [selectedRunIds, setSelectedRunIds] = useState<Set<string>>(new Set());
   const [confirmAction, setConfirmAction] = useState<{ type: "delete" | "sync"; runIds: string[]; projectId: string } | null>(null);
@@ -333,23 +340,16 @@ export function Navigator(): React.ReactElement {
     }
   }, [selectedProjectId, historyLoading, visibleRunHistory]);
 
+  // Warm every project's history once so group chat counts + the header
+  // attention inbox are populated before the user visits each project; the
+  // 30s refresh keeps waiting-status badges fresh without hammering the runner
+  // (the selected project keeps its own faster 3s/10s poll via loadRunHistory).
   useEffect(() => {
-    if (!selectedProjectId) return;
-    // Scope to the selected project's own items (rather than gating on
-    // historyLoading) so a mid-switch fetch never writes a different project's
-    // stale runHistory into this cache, while still letting same-project
-    // optimistic updates (sync-up's per-item syncStatus, pull-down's restored
-    // rows) flow through immediately instead of freezing until whatever
-    // background poll happens to be in flight resolves. Blanket-gating on
-    // historyLoading previously made a multi-chat sync/restore batch look
-    // "stuck" the whole time it overlapped a poll, only updating once that
-    // poll's own fetch finally settled.
-    const scoped = visibleRunHistory.filter((item) => item.projectId === selectedProjectId);
-    setProjectHistoryById((current) => ({
-      ...current,
-      [selectedProjectId]: sortByRecent(scoped),
-    }));
-  }, [selectedProjectId, visibleRunHistory]);
+    if (projects.length === 0) return;
+    void loadAllProjectHistories();
+    const id = setInterval(() => void loadAllProjectHistories(), 30_000);
+    return () => clearInterval(id);
+  }, [projects, loadAllProjectHistories]);
 
   // Cache the remote (Drive-synced) chat list per project so switching back to an
   // already-visited project shows its last-known list instantly instead of
@@ -397,7 +397,7 @@ export function Navigator(): React.ReactElement {
   // collapse under the chat head (latest leg) with a leg-count chip.
   const activeHistory = useMemo(() => {
     const base = selectedProjectId ? (projectHistoryById[selectedProjectId] ?? []) : [];
-    return flattenGroupedHistory(groupRunsByChatId(base));
+    return flattenGroupedHistory(groupRunsByChatId(filterVisibleHistory(sortByRecent(base))));
   }, [selectedProjectId, projectHistoryById]);
   const showAllHistory = expandedHistoryIds.has(selectedProjectId ?? "");
   const visibleHistory = showAllHistory ? activeHistory : activeHistory.slice(0, HISTORY_LIMIT);
@@ -428,58 +428,142 @@ export function Navigator(): React.ReactElement {
       const next = [projectId, ...current.filter((id) => id !== projectId)];
       return next.slice(0, 8);
     });
+    setCollapsedProjectIds((current) => {
+      if (!current.has(projectId)) return current;
+      const next = new Set(current);
+      next.delete(projectId);
+      return next;
+    });
     void selectProject(projectId);
+  };
+
+  // "+ New chat" on a project group: selecting a different project already
+  // resets the run via selectProject(); same-project needs an explicit reset.
+  const newChatInProject = (projectId: string) => {
+    if (projectId !== selectedProjectId) {
+      selectProjectAndTrack(projectId);
+    } else {
+      resetRun();
+    }
+  };
+
+  const toggleSection = (key: string) => {
+    setCollapsedSections((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  const toggleProjectCollapsed = (projectId: string) => {
+    setCollapsedProjectIds((current) => {
+      const next = new Set(current);
+      if (next.has(projectId)) next.delete(projectId);
+      else next.add(projectId);
+      return next;
+    });
+    // Expanding a group lazy-loads its history if the warm pass hasn't run yet.
+    if (collapsedProjectIds.has(projectId) && !projectHistoryById[projectId]) {
+      void loadProjectHistory(projectId);
+    }
+  };
+
+  // Clicking a chat inside any project group auto-selects that project first
+  // (chats always open inside their owning workspace), then replays the run.
+  const openChatInProject = (projectId: string, item: RunHistoryItem) => {
+    if (projectId !== selectedProjectId) {
+      selectProjectAndTrack(projectId);
+    }
+    void openHistoryRun(item.runId, item);
   };
 
   return (
     <div className="navigator project-rail">
       <section className="project-rail-section">
         <div className="project-rail-head">
-          <label className="project-rail-head-label">
-            Active Project
-            <span className="project-count-badge-inline">{projects.length}</span>
-          </label>
+          <div>
+            <label className="project-rail-head-label">
+              Projects
+              <span className="project-count-badge-inline">{projects.length}</span>
+            </label>
+          </div>
         </div>
 
         {orderedProjects.length === 0 ? (
           <div className="project-rail-empty">No projects loaded yet.</div>
         ) : (
-          <div className="project-selector">
-            <select
-              className="project-selector-select"
-              value={selectedProjectId ?? ""}
-              onChange={(e) => selectProjectAndTrack(e.target.value)}
-              aria-label="Active project"
-            >
-              {orderedProjects.map((project) => (
-                <option key={project.id} value={project.id}>
-                  {project.name}
-                </option>
-              ))}
-            </select>
-            {selectedProjectId && (
-              <span className="project-selector-path">
-                {orderedProjects.find((p) => p.id === selectedProjectId)?.path}
-              </span>
-            )}
-          </div>
-        )}
-      </section>
-
-      <AttentionQueue
-        onOpenRun={(runId, chatId) => {
-          void openRunAtAttention(runId, chatId);
-        }}
-      />
+          <div className="project-groups">
+            {orderedProjects.map((project) => {
+              const isActiveProject = project.id === selectedProjectId;
+              const projectCollapsed = collapsedProjectIds.has(project.id);
+              const groupHistory = isActiveProject
+                ? activeHistory
+                : flattenGroupedHistory(
+                    groupRunsByChatId(filterVisibleHistory(sortByRecent(projectHistoryById[project.id] ?? []))),
+                  );
+              const chatCount = groupHistory.length;
+              const waitingCount = attentionItems.filter((item) => item.projectId === project.id).length;
+              const showAllGroup = expandedHistoryIds.has(project.id);
+              const visibleGroupHistory = showAllGroup ? groupHistory : groupHistory.slice(0, HISTORY_LIMIT);
+              return (
+                <div key={project.id} className={`project-group${isActiveProject ? " project-group-active" : ""}`}>
+                  <div className="project-group-head">
+                    <button
+                      type="button"
+                      className="project-group-caret"
+                      aria-expanded={!projectCollapsed}
+                      aria-label={projectCollapsed ? `Expand ${project.name}` : `Collapse ${project.name}`}
+                      title={projectCollapsed ? "Expand" : "Collapse"}
+                      onClick={() => toggleProjectCollapsed(project.id)}
+                    >
+                      <DisclosureCaret open={!projectCollapsed} />
+                    </button>
+                    <button
+                      type="button"
+                      className="project-group-toggle"
+                      aria-label={`Switch to ${project.name}`}
+                      title={project.path}
+                      onClick={() => selectProjectAndTrack(project.id)}
+                    >
+                      <span className="project-group-name">{project.name}</span>
+                      {waitingCount > 0 && (
+                        <span className="project-group-waiting" title={`${waitingCount} run${waitingCount > 1 ? "s" : ""} need attention`}>
+                          {waitingCount}
+                        </span>
+                      )}
+                      {chatCount > 0 && <span className="project-group-count">{chatCount}</span>}
+                    </button>
+                    <button
+                      type="button"
+                      className="project-group-new"
+                      title={`New chat in ${project.name}`}
+                      aria-label={`New chat in ${project.name}`}
+                      onClick={(e) => { e.stopPropagation(); newChatInProject(project.id); }}
+                    >
+                      <PlusIcon size={11} />
+                    </button>
+                  </div>
+                  {!projectCollapsed ? (
+                    <div className="project-group-body">
+                      <div className="project-group-path" title={project.path}>{project.path}</div>
+                      {isActiveProject ? (
+                        <>
 
       <section className="project-history-section">
         <div className="project-rail-head">
-          <div>
-            <label>History</label>
+          <button
+            type="button"
+            className="project-section-toggle"
+            aria-expanded={!collapsedSections.has(`${project.id}:history`)}
+            onClick={() => toggleSection(`${project.id}:history`)}
+          >
+            <DisclosureCaret open={!collapsedSections.has(`${project.id}:history`)} />
+            <span className="project-section-toggle-label">History</span>
             {activeHistory.length > 0 && (
-              <p className="project-history-chat-count">{activeHistory.length} chats</p>
+              <span className="project-history-chat-count">{activeHistory.length} chats</span>
             )}
-          </div>
+          </button>
           <div className="project-rail-head-actions">
             {historyLoading && <span className="project-rail-state">Loading</span>}
             {selectedProjectId && (
@@ -533,6 +617,7 @@ export function Navigator(): React.ReactElement {
           </div>
         </div>
 
+        {!collapsedSections.has(`${project.id}:history`) && (<>
         {historyLoadError && (
           <div className="project-history-error">
             <strong>History failed to load</strong>
@@ -669,7 +754,7 @@ export function Navigator(): React.ReactElement {
                         title="Delete this chat"
                         aria-label="Delete chat"
                       >
-                        ×
+                        <CloseIcon size={11} />
                       </button>
                     </div>
                   </div>
@@ -728,14 +813,23 @@ export function Navigator(): React.ReactElement {
             )}
           </div>
         )}
+        </>)}
       </section>
 
       <section className="project-history-section project-history-section--remote">
         <div className="project-rail-head">
-          <div>
-            <label>Remote Chats</label>
-            <p>Drive-backed chat sessions available to restore into this project.</p>
-          </div>
+          <button
+            type="button"
+            className="project-section-toggle"
+            aria-expanded={!collapsedSections.has(`${project.id}:remote`)}
+            onClick={() => toggleSection(`${project.id}:remote`)}
+          >
+            <DisclosureCaret open={!collapsedSections.has(`${project.id}:remote`)} />
+            <span className="project-section-toggle-label">Remote Chats</span>
+            {activeRemoteChatSessions.length > 0 && (
+              <span className="project-history-chat-count">{activeRemoteChatSessions.length}</span>
+            )}
+          </button>
           <div className="project-rail-head-actions">
             {remoteHistoryLoading && <span className="project-rail-state">Loading</span>}
             {remoteSelectionMode ? (
@@ -766,6 +860,7 @@ export function Navigator(): React.ReactElement {
           </div>
         </div>
 
+        {!collapsedSections.has(`${project.id}:remote`) && (<>
         {remoteHistoryLoadError && (
           <div className="project-history-error">
             <strong>Remote history failed to load</strong>
@@ -879,6 +974,66 @@ export function Navigator(): React.ReactElement {
                   : `Show all (${activeRemoteChatSessions.length - REMOTE_CHATS_LIMIT} more)`}
               </button>
             )}
+          </div>
+        )}
+        </>)}
+      </section>
+                        </>
+                      ) : (
+                        // Inactive group peek — read-only chat list; clicking a
+                        // row switches to that project and opens the run.
+                        visibleGroupHistory.length === 0 ? (
+                          <div className="project-rail-empty">
+                            {projectHistoryById[project.id] ? "No chats yet." : "Loading…"}
+                          </div>
+                        ) : (
+                          <div className="project-history-list">
+                            {visibleGroupHistory.map((item) => (
+                              <div
+                                key={item.runId}
+                                className={`project-history-item-row${item.unavailableReason ? " project-history-item-row--disabled" : ""}`}
+                                title={item.unavailableReason || item.runId}
+                              >
+                                <button
+                                  type="button"
+                                  className={`project-history-item${item.unavailableReason ? " project-history-item--disabled" : ""}`}
+                                  disabled={Boolean(item.unavailableReason)}
+                                  onClick={() => openChatInProject(project.id, item)}
+                                >
+                                  <span className="project-history-item-top">
+                                    <HistoryStatusIcon status={item.status} />
+                                    <span className="project-history-item-title">
+                                      {runTitle(item.lastPrompt || item.lastMessage)}
+                                      {item.legsCount && item.legsCount > 1 ? (
+                                        <span className="project-history-legs-count">{item.legsCount} legs</span>
+                                      ) : null}
+                                    </span>
+                                  </span>
+                                  <span className="project-history-item-meta">
+                                    {runTypeLabel(item)} · {RUN_TIME_FORMAT.format(new Date(item.updatedAt))}
+                                  </span>
+                                </button>
+                              </div>
+                            ))}
+                            {groupHistory.length > HISTORY_LIMIT && (
+                              <button
+                                type="button"
+                                className="project-history-more"
+                                onClick={() => toggleShowAllHistory(project.id)}
+                              >
+                                {showAllGroup
+                                  ? "Show less"
+                                  : `Show all (${groupHistory.length - HISTORY_LIMIT} more)`}
+                              </button>
+                            )}
+                          </div>
+                        )
+                      )}
+                    </div>
+                  ) : null}
+                </div>
+              );
+            })}
           </div>
         )}
       </section>

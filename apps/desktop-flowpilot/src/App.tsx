@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type {
   DesktopBootstrapState,
   SupabaseConfigInput,
@@ -7,9 +7,11 @@ import type {
   SupabaseConfigValidation,
   SupabaseRuntimeStatus,
 } from "@flowpilot/client-core";
+import { PanelLeftIcon, PanelRightIcon } from "@/components/icons";
 import { RunStatus } from "@/components/RunStatus";
 import { RunnerStatusIndicator } from "@/components/RunnerStatusIndicator";
 import { RunToast } from "@/components/RunToast";
+import { AttentionInbox } from "@/components/AttentionInbox";
 import { ChatWorkspace } from "@/components/ChatWorkspace";
 import { LoginScreen } from "@/components/LoginScreen";
 import { SettingsShell, type SettingsSection } from "@/components/SettingsShell";
@@ -54,6 +56,45 @@ export function App(): React.ReactElement {
   const [busy, setBusy] = useState(false);
   const [leftSidebarVisible, setLeftSidebarVisible] = useState(true);
   const [rightSidebarVisible, setRightSidebarVisible] = useState(true);
+
+  // Auto-collapse side rails at narrow widths so columns never overlap or
+  // force a horizontal scrollbar. Remembers the user's choice and restores it
+  // when the window widens again; manual toggles still work while narrow.
+  const sidebarMemory = useRef<{ left?: boolean; right?: boolean }>({});
+  const leftVisRef = useRef(leftSidebarVisible);
+  const rightVisRef = useRef(rightSidebarVisible);
+  leftVisRef.current = leftSidebarVisible;
+  rightVisRef.current = rightSidebarVisible;
+  useEffect(() => {
+    const rightMq = window.matchMedia("(max-width: 1240px)");
+    const leftMq = window.matchMedia("(max-width: 880px)");
+    const syncRight = () => {
+      if (rightMq.matches) {
+        if (sidebarMemory.current.right === undefined) sidebarMemory.current.right = rightVisRef.current;
+        setRightSidebarVisible(false);
+      } else if (sidebarMemory.current.right !== undefined) {
+        setRightSidebarVisible(sidebarMemory.current.right);
+        sidebarMemory.current.right = undefined;
+      }
+    };
+    const syncLeft = () => {
+      if (leftMq.matches) {
+        if (sidebarMemory.current.left === undefined) sidebarMemory.current.left = leftVisRef.current;
+        setLeftSidebarVisible(false);
+      } else if (sidebarMemory.current.left !== undefined) {
+        setLeftSidebarVisible(sidebarMemory.current.left);
+        sidebarMemory.current.left = undefined;
+      }
+    };
+    syncRight();
+    syncLeft();
+    rightMq.addEventListener("change", syncRight);
+    leftMq.addEventListener("change", syncLeft);
+    return () => {
+      rightMq.removeEventListener("change", syncRight);
+      leftMq.removeEventListener("change", syncLeft);
+    };
+  }, []);
   const [runtimeStatus, setRuntimeStatus] = useState<SupabaseRuntimeStatus>(emptyRuntimeStatus);
   const [unauthenticatedView, setUnauthenticatedView] =
     useState<UnauthenticatedView>("login");
@@ -271,9 +312,7 @@ export function App(): React.ReactElement {
             title={leftSidebarVisible ? "Hide left sidebar" : "Show left sidebar"}
             aria-label={leftSidebarVisible ? "Hide left sidebar" : "Show left sidebar"}
           >
-            <span className="sidebar-toggle-icon" aria-hidden="true">
-              ◧
-            </span>
+            <PanelLeftIcon size={15} />
           </button>
           <button
             className={`sidebar-toggle ${rightSidebarVisible ? "active" : ""}`}
@@ -283,9 +322,7 @@ export function App(): React.ReactElement {
             title={rightSidebarVisible ? "Hide right sidebar" : "Show right sidebar"}
             aria-label={rightSidebarVisible ? "Hide right sidebar" : "Show right sidebar"}
           >
-            <span className="sidebar-toggle-icon" aria-hidden="true">
-              ◨
-            </span>
+            <PanelRightIcon size={15} />
           </button>
         </div>
         <div className="brand">
@@ -293,6 +330,7 @@ export function App(): React.ReactElement {
         </div>
 
         <div className="header-actions">
+          <AttentionInbox />
           <div className="header-tabs" role="tablist" aria-label="Desktop mode">
             <button
               className={`header-tab ${authenticatedView === "chat" ? "active" : ""}`}

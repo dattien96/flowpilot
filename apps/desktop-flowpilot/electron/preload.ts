@@ -4,6 +4,9 @@ import { contextBridge, ipcRenderer } from "electron";
 // the main side (logs only). The renderer's IdeBridge falls back to console.log
 // when this bridge is absent (e.g. running the renderer in a plain browser tab).
 contextBridge.exposeInMainWorld("flowpilot", {
+  // Used by the renderer to pad the custom titlebar around native window
+  // controls (macOS traffic lights vs Windows/Linux caption overlay).
+  platform: process.platform,
   openInIde: (file: string, line?: number): Promise<{ ok: boolean; stub?: boolean }> =>
     ipcRenderer.invoke("ide:open", { file, line }),
   openExternal: (url: string): Promise<{ ok: boolean }> => ipcRenderer.invoke("shell:openExternal", { url }),

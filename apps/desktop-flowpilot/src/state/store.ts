@@ -122,6 +122,8 @@ const LAST_PROJECT_KEY = "fp:lastProjectId";
 const LAST_CHAT_MODE_KEY = "fp:lastChatMode";
 
 let loadProjectsInFlight: Promise<void> | null = null;
+// Dedupe for loadProjectHistory cache-warmer — one fetch per project at a time.
+const projectHistoryInflight = new Set<string>();
 let activeHistoryReplayController: AbortController | undefined;
 let activeOrchestrationStreamController: AbortController | undefined;
 let activeAgentFocusStreamController: AbortController | undefined;
@@ -415,6 +417,10 @@ interface AppState {
   timeline: TimelineItem[];
   artifacts: Artifact[];
   runHistory: RunHistoryItem[];
+  /** Per-project run-history cache powering the Navigator's project groups and
+   *  the cross-project attention inbox. The selected project's slot is kept in
+   *  sync with runHistory; other slots fill via loadProjectHistory. */
+  projectHistoryById: Record<string, RunHistoryItem[]>;
   remoteChatSessions: RemoteChatSessionSummary[];
   /** Progress of an in-flight batch sync-to-Drive (syncAllInProject / selection-mode
    *  "Sync" confirm), so the Navigator can show "Syncing x/y…" instead of a bare spinner. */
@@ -544,6 +550,12 @@ interface AppState {
   stop(): Promise<void>;
   reconnect(): Promise<void>;
   loadRunHistory(): Promise<void>;
+  /** Fetch+cache one project's history without touching the active project —
+   *  used by the Navigator's project groups and the attention inbox so runs
+   *  outside the selected project still show counts and attention items. */
+  loadProjectHistory(projectId: string): Promise<void>;
+  /** Warm projectHistoryById (+ attention queue) for every known project. */
+  loadAllProjectHistories(): Promise<void>;
   loadRemoteChatSessions(): Promise<void>;
   refreshAgentRuns(): Promise<void>;
   refreshWorkflowStepRuntime(): Promise<void>;
@@ -576,10 +588,10 @@ interface AppState {
     cwd?: string,
     options?: { refresh?: boolean; open?: boolean },
   ): Promise<void>;
-  openHistoryRun(runId: string): Promise<void>;
+  openHistoryRun(runId: string, item?: RunHistoryItem): Promise<void>;
   /** Task-404: open the run that owns an attention-queue item — reuses the
    *  existing history-picker path (openHistoryRun), no new navigation. */
-  openRunAtAttention(runId: string, chatId: string): Promise<void>;
+  openRunAtAttention(runId: string, chatId: string, projectId?: string): Promise<void>;
   resetRun(): void;
   openInIde(path: string, line?: number): void;
   openAdminWeb(): void;
@@ -624,6 +636,7 @@ export const useStore = create<AppState>((set, get) => ({
   pendingApprovals: [],
   pendingQuestions: [],
   runHistory: [],
+  projectHistoryById: {},
   remoteChatSessions: [],
   syncBatchProgress: undefined,
   agentRuns: [],
@@ -2316,13 +2329,51 @@ export const useStore = create<AppState>((set, get) => ({
       const runHistory = await client.listRunHistory(selectedProjectId);
       if (get()._historyLoadSeq !== seq) return;
       attentionQueue.ingestHistory(runHistory, selectedProjectId);
-      set({ runHistory, historyLoading: false, historyLoadError: undefined });
+      set((s) => ({
+        runHistory,
+        projectHistoryById: { ...s.projectHistoryById, [selectedProjectId]: runHistory },
+        historyLoading: false,
+        historyLoadError: undefined,
+      }));
     } catch (err) {
       if (get()._historyLoadSeq !== seq) return;
       // eslint-disable-next-line no-console
       console.error("[FlowPilot] listRunHistory failed:", err);
       // F-4: surface error in the history panel instead of injecting into the chat timeline
       set({ historyLoading: false, historyLoadError: String(err) });
+    }
+  },
+
+  async loadProjectHistory(projectId) {
+    const { client } = get();
+    if (!projectId || projectHistoryInflight.has(projectId)) return;
+    projectHistoryInflight.add(projectId);
+    try {
+      const items = await client.listRunHistory(projectId);
+      attentionQueue.ingestHistory(items, projectId);
+      set((s) => ({
+        projectHistoryById: { ...s.projectHistoryById, [projectId]: items },
+        // The active project's slice also feeds runHistory — keep it in sync
+        // when a stale cache warmer resolves after the user switched to it.
+        ...(s.selectedProjectId === projectId && s.runHistory.length === 0 && !s.historyLoading
+          ? { runHistory: items }
+          : {}),
+      }));
+    } catch {
+      // Best-effort warm — a failed project simply shows no chats/attention
+      // until its next refresh; never surface cross-project fetch errors.
+    } finally {
+      projectHistoryInflight.delete(projectId);
+    }
+  },
+
+  async loadAllProjectHistories() {
+    const { projects, selectedProjectId } = get();
+    // Selected project's slice is owned by loadRunHistory's own poll loop —
+    // skip it here so a slow warm can't clobber a fresher in-flight result.
+    for (const project of projects) {
+      if (project.id === selectedProjectId) continue;
+      await get().loadProjectHistory(project.id);
     }
   },
 
@@ -2527,9 +2578,12 @@ export const useStore = create<AppState>((set, get) => ({
     }
   },
 
-  async openHistoryRun(runId) {
+  async openHistoryRun(runId, itemOverride) {
     const { client } = get();
-    const historyItem = get().runHistory.find((item) => item.runId === runId);
+    // itemOverride lets callers open a run that is not in the current project's
+    // polled runHistory (e.g. a cached row from another project group in the
+    // Navigator) — it supplies the same provider/chatId hints the lookup would.
+    const historyItem = itemOverride ?? get().runHistory.find((item) => item.runId === runId);
     const historyProvider = historyItem?.providerKey;
     console.info("[FlowPilot][history-open] start", {
       runId,
@@ -2709,8 +2763,16 @@ export const useStore = create<AppState>((set, get) => ({
 
   // Task-404: attention items carry the run that is blocked; opening it goes
   // through the exact same history-picker path as clicking a history row.
-  async openRunAtAttention(runId, _chatId) {
-    await get().openHistoryRun(runId);
+  // Inbox: items may belong to another project — switch to it first so the
+  // opened chat lands in the right workspace context.
+  async openRunAtAttention(runId, _chatId, projectId) {
+    if (projectId && projectId !== get().selectedProjectId) {
+      await get().selectProject(projectId);
+    }
+    const item =
+      (projectId ? get().projectHistoryById[projectId]?.find((h) => h.runId === runId) : undefined) ??
+      get().runHistory.find((h) => h.runId === runId);
+    await get().openHistoryRun(runId, item);
   },
 
   resetRun() {
@@ -3696,4 +3758,27 @@ function cacheRunSnapshot(state: AppState, runId?: string): void {
 // Navigator queue re-renders whenever a producer ingests new state.
 attentionQueue.subscribe(() => {
   useStore.setState({ attentionItems: attentionQueue.items });
+});
+
+// Keep the selected project's projectHistoryById slot in sync with runHistory
+// mutations that bypass loadRunHistory (optimistic deletes, per-item syncStatus
+// flips). Skipped on project switch so the destination project's cached slot
+// survives until its own fetch lands (stale-while-revalidate).
+let lastMirroredProjectId = "";
+let lastMirroredHistory: RunHistoryItem[] | undefined;
+useStore.subscribe((s) => {
+  const projectId = s.selectedProjectId;
+  if (!projectId) return;
+  if (projectId !== lastMirroredProjectId) {
+    lastMirroredProjectId = projectId;
+    lastMirroredHistory = s.runHistory;
+    return;
+  }
+  if (s.runHistory === lastMirroredHistory) return;
+  lastMirroredHistory = s.runHistory;
+  const slot = s.projectHistoryById[projectId];
+  if (slot === s.runHistory) return;
+  useStore.setState((cur) => ({
+    projectHistoryById: { ...cur.projectHistoryById, [projectId]: s.runHistory },
+  }));
 });

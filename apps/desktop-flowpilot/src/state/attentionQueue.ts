@@ -3,6 +3,12 @@
 // flat, ordered list for the Navigator. Pure derivation: no new backend calls,
 // fed by run-history polling (ingestHistory), focused-run snapshot caching
 // (ingestSnapshot), and the dispatch-attention card (ingestDispatch).
+//
+// Inbox update: the queue keeps one history slice per project so the header
+// inbox can surface waiting runs across ALL loaded projects, not just the
+// selected one — a run stuck in project B stays visible while project A is
+// open. Each item carries its projectId so the inbox can switch projects on
+// open.
 
 import type { RunHistoryItem } from "@/types/contract";
 import type { PendingApproval, PendingQuestion } from "@/state/timelineReducer";
@@ -20,6 +26,8 @@ export type AttentionKind =
 export interface AttentionItem {
   runId: string;
   chatId: string;
+  /** Owning project — the inbox groups/labels by it and switches to it on open. */
+  projectId: string;
   runTitle: string;
   kind: AttentionKind;
   waitingSince: string;
@@ -57,6 +65,7 @@ export function deriveAttentionItems(
     items.push({
       runId: h.runId,
       chatId: h.chatId || h.runId,
+      projectId: h.projectId,
       runTitle: (h.lastPrompt || h.lastMessage || "").trim() || h.runId,
       kind: refineKind(base, snapshots[h.runId]),
       waitingSince: h.updatedAt,
@@ -84,10 +93,11 @@ function refineKind(base: AttentionKind, snap: RunSnapshotAttentionView | undefi
 type Listener = () => void;
 
 const listeners = new Set<Listener>();
-let historyItems: RunHistoryItem[] = [];
+// Per-project history slices — a project's entries stay cached (and keep
+// contributing attention items) while the user browses another project.
+const historyByProject = new Map<string, RunHistoryItem[]>();
 const snapshotViews: Record<string, RunSnapshotAttentionView | undefined> = {};
 const dispatchViews: Record<string, Array<{ kind?: string }>> = {};
-let activeProjectId = "";
 
 function mergedSnapshots(): Record<string, RunSnapshotAttentionView | undefined> {
   const out: Record<string, RunSnapshotAttentionView | undefined> = { ...snapshotViews };
@@ -98,7 +108,14 @@ function mergedSnapshots(): Record<string, RunSnapshotAttentionView | undefined>
 }
 
 function recompute(): void {
-  attentionQueue.items = deriveAttentionItems(historyItems, mergedSnapshots(), activeProjectId);
+  const snapshots = mergedSnapshots();
+  const items: AttentionItem[] = [];
+  for (const [projectId, history] of historyByProject) {
+    items.push(...deriveAttentionItems(history, snapshots, projectId));
+  }
+  // Oldest waiting runs first (spec AC) — across all projects.
+  items.sort((a, b) => (a.waitingSince < b.waitingSince ? -1 : a.waitingSince > b.waitingSince ? 1 : 0));
+  attentionQueue.items = items;
   for (const fn of listeners) fn();
 }
 
@@ -111,8 +128,18 @@ export const attentionQueue: {
 } = {
   items: [],
   ingestHistory(items, projectId) {
-    historyItems = items;
-    if (projectId !== undefined) activeProjectId = projectId;
+    if (projectId !== undefined) {
+      historyByProject.set(projectId, items);
+    } else {
+      // No owning project supplied — rebuild every slice from the items' own
+      // projectId fields (matches the pre-slice "replace everything" semantics).
+      historyByProject.clear();
+      for (const item of items) {
+        const slice = historyByProject.get(item.projectId);
+        if (slice) slice.push(item);
+        else historyByProject.set(item.projectId, [item]);
+      }
+    }
     recompute();
   },
   ingestSnapshot(runId, snap) {

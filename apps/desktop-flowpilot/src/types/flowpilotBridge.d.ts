@@ -30,6 +30,7 @@ interface RunnerLifecycleBridge {
 declare global {
   interface Window {
     flowpilot?: {
+      platform?: NodeJS.Platform | string;
       openInIde(file: string, line?: number): Promise<{ ok: boolean; stub?: boolean }>;
       openExternal(url: string): Promise<{ ok: boolean }>;
       loadAuthSession(): Promise<{

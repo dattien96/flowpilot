@@ -146,13 +146,29 @@ function tryOpen(candidates: IdeCandidate[], file: string, line: number | undefi
 }
 
 function createWindow(): void {
+  const isMac = process.platform === "darwin";
   const win = new BrowserWindow({
     width: 1320,
     height: 880,
     minWidth: 960,
     minHeight: 640,
-    backgroundColor: "#0e1117",
+    // Match the renderer --bg token so launch does not flash a mismatched shell.
+    backgroundColor: "#141414",
     title: "FlowPilot Desktop",
+    // Devin/VS Code chrome: no OS titlebar or menu (Alt still toggles the menu
+    // on Windows). Windows/Linux get native caption buttons painted as an
+    // overlay via titleBarOverlay; macOS keeps the inset traffic lights.
+    autoHideMenuBar: true,
+    titleBarStyle: isMac ? "hiddenInset" : "hidden",
+    ...(isMac
+      ? {}
+      : {
+          titleBarOverlay: {
+            color: "#141414",
+            symbolColor: "rgba(255,255,255,0.85)",
+            height: 36,
+          },
+        }),
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
