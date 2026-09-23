@@ -17,3 +17,21 @@ if (stale) {
   console.log("[ensure-deps] deps missing or manifest/lockfile changed — running npm install");
   execSync("npm install --no-audit --no-fund", { cwd: root, stdio: "inherit" });
 }
+
+// node-pty's darwin prebuild ships spawn-helper without the exec bit after some
+// npm extractions — without it every term:spawn dies with `posix_spawnp
+// failed` (BUG-385). Cheap to assert on every run, not just post-install.
+const ptyPrebuilds = path.join(root, "node_modules", "node-pty", "prebuilds");
+if (fs.existsSync(ptyPrebuilds)) {
+  for (const arch of fs.readdirSync(ptyPrebuilds)) {
+    const helper = path.join(ptyPrebuilds, arch, "spawn-helper");
+    try {
+      fs.accessSync(helper, fs.constants.X_OK);
+    } catch {
+      if (fs.existsSync(helper)) {
+        fs.chmodSync(helper, 0o755);
+        console.log(`[ensure-deps] restored +x on ${path.relative(root, helper)}`);
+      }
+    }
+  }
+}
