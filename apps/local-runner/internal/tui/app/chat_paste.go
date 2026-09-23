@@ -122,6 +122,38 @@ func (m *AppModel) insertPasteSummary(text string) {
 	m.insertInputAtCursor(token)
 }
 
+// pastedDraftSlashCommand returns the slash command the user typed alongside
+// collapsed paste tokens — e.g. draft "[Pasted 4k chars]/status". Expansion
+// would bury the "/" prefix and submit the line as prompt text (BUG-430c).
+// Fires only when the non-token remainder is itself a slash line; "token +
+// ordinary text" stays a prompt. The paste draft is preserved for the next
+// Enter — tokens are rejoined into inputValue by the caller.
+func (m *AppModel) pastedDraftSlashCommand() (string, bool) {
+	if len(m.pasteSegments) == 0 {
+		return "", false
+	}
+	rem := m.inputValue
+	for _, seg := range m.pasteSegments {
+		rem = strings.Replace(rem, seg.token, "", 1)
+	}
+	rem = strings.TrimSpace(rem)
+	if !strings.HasPrefix(rem, "/") {
+		return "", false
+	}
+	return rem, true
+}
+
+// collapseDraftToPasteTokens resets the draft to just the paste placeholders,
+// dropping the typed text around them (consumed as the slash command).
+func (m *AppModel) collapseDraftToPasteTokens() {
+	tokens := make([]string, 0, len(m.pasteSegments))
+	for _, seg := range m.pasteSegments {
+		tokens = append(tokens, seg.token)
+	}
+	m.inputValue = strings.Join(tokens, " ")
+	m.inputCursor = -1
+}
+
 // expandPasteTokens replaces collapsed placeholders in input with their full
 // pasted text. Applied right before submit so the timeline and prompt history
 // receive the real prompt, not the placeholder.
