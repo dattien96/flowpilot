@@ -417,6 +417,43 @@ func (s *InteractiveService) takePendingFlowRefInvalidErr(runID string) error {
 	return err
 }
 
+// flowStepsFromDefinition synthesizes the catalog step view for a workflowID
+// that resolves to a flow definition but has no mirrored workflow_steps rows
+// (BUG-426: offline runner / pack-ref child spawn). Step ids follow the
+// mirror's packID__flowID__nodeID convention so downstream model/role lookups
+// keep working. Returns ok=false when the id is not a resolvable flow — the
+// caller keeps the workflow_has_no_steps rejection for plain empty workflows.
+func (s *InteractiveService) flowStepsFromDefinition(ctx context.Context, workflowID string) ([]Step, bool) {
+	s.mu.Lock()
+	store := s.flowDefinitionStore
+	s.mu.Unlock()
+	record, err := NewFlowDefinitionResolver(store).ResolveFlowRef(ctx, workflowID)
+	if err != nil || len(record.Definition.Nodes) == 0 {
+		return nil, false
+	}
+	flowName := record.Name
+	if flowName == "" {
+		flowName = record.Definition.ID
+	}
+	flowKey := record.PackID + "__" + record.PackFlowID
+	if strings.TrimSpace(record.PackID) == "" || strings.TrimSpace(record.PackFlowID) == "" {
+		flowKey = record.Definition.ID
+	}
+	steps := make([]Step, 0, len(record.Definition.Nodes))
+	for _, n := range record.Definition.Nodes {
+		steps = append(steps, Step{
+			ID:         sanitizeStepType(flowKey + "__" + n.ID),
+			WorkflowID: workflowID,
+			Name:       flowName + ": " + humanizeFlowNodeID(n.ID),
+			NodeID:     n.ID,
+			BehaviorID: n.Behavior,
+			AgentRef:   n.Agent,
+			Model:      n.Model,
+		})
+	}
+	return steps, true
+}
+
 // explicitFlowRefResolves synchronously confirms an explicit chat flowRef
 // (Chat Mode's Bug sub-mode picker, CP-42/Task-177) actually resolves to a
 // valid stored/embedded flow definition, before handleStartTurn ever hands it
@@ -1307,6 +1344,20 @@ func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID
 					s.setFlowStepStatus(context.Background(), parentRunID, completedNodeID, StepStatusDone)
 				}
 				return s.parkVibeLock(parentRunID, target.ID)
+			}
+			// BUG-426: a behavior-less inline marker node (tournament-harness's
+			// parallel_rollout) carries no behavior id — dispatching it through
+			// the inline switch is impossible, and the spawnable-only filter
+			// below rejects it too, so the whole cohort never spawned. Expand
+			// its declared forward "done" targets and fan them out as the
+			// candidate cohort instead.
+			if candidates, ok := tournamentRolloutPassthrough(target, edges, nodes); ok {
+				if s.isFlowEngineDriven(parentRunID) {
+					s.setFlowStepStatus(context.Background(), parentRunID, completedNodeID, StepStatusDone)
+					s.setFlowStepStatus(context.Background(), parentRunID, target.ID, StepStatusDone)
+				}
+				s.spawnTournamentCandidates(parentRunID, target, candidates, resultMessage)
+				return true
 			}
 			if canonical, ok := agentpack.NormalizeBehaviorID(target.Behavior); ok && canonical != "agent.delegate" {
 				if spec, err := DefaultBehaviorRegistry().Resolve(canonical); err == nil && spec.Scope == BehaviorScopeInline {
