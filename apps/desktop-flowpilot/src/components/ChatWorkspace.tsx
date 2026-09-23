@@ -15,7 +15,8 @@ import { DispatchAttentionCard } from "@/components/DispatchAttentionCard";
 import { ChatPosturePanel } from "@/components/ChatPosturePanel";
 import { LSPStatusNotice } from "@/components/LSPStatusNotice";
 import { gateBlockSecondaryAction } from "@/components/gateBlockActions";
-import { useStore, accountLabel, providerLabel, type ChatStartMode } from "@/state/store";
+import { GateIcon, WarnIcon } from "@/components/icons";
+import { useStore, accountLabel, providerLabel } from "@/state/store";
 
 function WorkflowControlPanel(): React.ReactElement | null {
   const selectedProjectId = useStore((s) => s.selectedProjectId);
@@ -146,187 +147,6 @@ function WorkflowControlPanel(): React.ReactElement | null {
           </div>
         </>
       )}
-    </section>
-  );
-}
-
-function ChatModeIntentIcon({ mode }: { mode: ChatStartMode }): React.ReactElement {
-  if (mode === "task") {
-    return (
-      <svg viewBox="0 0 16 16" aria-hidden="true">
-        <rect x="3" y="2.5" width="10" height="11" rx="2" fill="none" stroke="currentColor" strokeWidth="1.4" />
-        <path d="M5.3 5.7h5.4M5.3 8h5.4M5.3 10.3h3.2" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-      </svg>
-    );
-  }
-  if (mode === "bugfix") {
-    return (
-      <svg viewBox="0 0 16 16" aria-hidden="true">
-        <path d="M8 3.1c1.8 0 3.2 1.3 3.2 3v2c0 2.3-1.4 4.3-3.2 4.3S4.8 10.4 4.8 8.1v-2c0-1.7 1.4-3 3.2-3z" fill="none" stroke="currentColor" strokeWidth="1.3" />
-        <path d="M6.2 2.4 5.2 1.2M9.8 2.4l1-1.2M4.1 6 2.4 5.1M11.9 6l1.7-.9M4 9.4l-1.7.9M12 9.4l1.7.9" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
-      </svg>
-    );
-  }
-  return (
-    <svg viewBox="0 0 16 16" aria-hidden="true">
-      <circle cx="8" cy="8" r="4.5" fill="none" stroke="currentColor" strokeWidth="1.4" />
-    </svg>
-  );
-}
-
-function ChatStartIntentPanel(): React.ReactElement | null {
-  const chatMode = useStore((s) => s.chatMode);
-  const chatStartMode = useStore((s) => s.chatStartMode);
-  const chatSourceDocId = useStore((s) => s.chatSourceDocId);
-  const workingMode = useStore((s) => s.workingMode);
-  const runStatus = useStore((s) => s.status);
-  const runId = useStore((s) => s.runId);
-  const setChatStartMode = useStore((s) => s.setChatStartMode);
-  const setChatSourceDocId = useStore((s) => s.setChatSourceDocId);
-  const flowRef = useStore((s) => s.flowRef);
-  const setFlowRef = useStore((s) => s.setFlowRef);
-  const builtinOrchestrationOptions = useStore((s) => s.builtinOrchestrationOptions);
-  const loadBuiltinOrchestrationOptions = useStore((s) => s.loadBuiltinOrchestrationOptions);
-
-  // BUG-265: builtinOrchestrationOptions is normally loaded as a side effect
-  // of setChatStartMode (the Bug tab's onClick), so a chatStartMode of
-  // "bugfix" that instead arrives from elsewhere — restoring a reopened
-  // Chat-Mode run's picker selection (BUG-263's openHistoryRun fix), or any
-  // future path that sets chatStartMode directly — never triggers the fetch.
-  // The Built-in orchestration select then silently fails to render at all
-  // (its own condition below requires builtinOrchestrationOptions.length >
-  // 0), even though flowRef itself was correctly restored. Load it here,
-  // keyed only on chatStartMode actually being "bugfix" with nothing loaded
-  // yet, so every entry path is covered without needing to find and patch
-  // each one that can set chatStartMode.
-  useEffect(() => {
-    if (chatStartMode === "bugfix" && builtinOrchestrationOptions.length === 0) {
-      void loadBuiltinOrchestrationOptions("bug");
-    }
-  }, [chatStartMode, builtinOrchestrationOptions.length, loadBuiltinOrchestrationOptions]);
-
-  if (chatMode !== "normal_chat") return null;
-
-  // BUG-NOTE-CP42 #29: the runner only ever honors changeType/subMode/flowRef
-  // on the very first turn (turnCount==0), and the client itself already
-  // knows this — sendMessage's own isFirstChatTurn check
-  // (chatMode === "normal_chat" && !runId) permanently stops sending these
-  // fields the moment a runId exists, which happens on the first send and
-  // never resets for the life of this chat. But this picker was only
-  // disabled while a turn was actively in flight (isRunning), so as soon as
-  // turn 1 completed it became clickable again — letting the user "change"
-  // a setting that the client had already permanently stopped transmitting.
-  // Lock it once the chat has actually started, not just while running.
-  const chatStarted = Boolean(runId);
-  const isRunning = runStatus === "running" || chatStarted;
-
-  return (
-    <section className="workflow-rail workflow-rail-right chat-start-mode-panel">
-      <div className="project-rail-head">
-        <div>
-          <label>Chat Intent</label>
-          <p>
-            {chatStarted
-              ? "Locked after the first message — start a new chat to change the intent."
-              : "Select the intent type for this chat. Disabled while the AI is running."}
-          </p>
-        </div>
-      </div>
-      <div className="tab-list tab-list-three" role="tablist" aria-label="Chat start intent">
-        {([
-          { mode: "normal" as const, label: "Normal" },
-          { mode: "task" as const, label: "Task" },
-          { mode: "bugfix" as const, label: "Bug" },
-        ]).map((item) => (
-          <button
-            key={item.mode}
-            type="button"
-            role="tab"
-            aria-selected={chatStartMode === item.mode}
-            className={`tab chat-start-mode-tab is-${item.mode} ${chatStartMode === item.mode ? "active" : ""}`}
-            disabled={isRunning}
-            onClick={() => setChatStartMode(item.mode)}
-          >
-            <span className="chat-start-mode-icon"><ChatModeIntentIcon mode={item.mode} /></span>
-            <span>{item.label}</span>
-          </button>
-        ))}
-      </div>
-      {workingMode === "vibe" ? (
-        <div className="nav-group">
-          <label>SS or CP path (optional)</label>
-          <input
-            value={chatSourceDocId}
-            disabled={isRunning}
-            placeholder="requirements/07-Coding-Plan/**/CP-*.md or paste the idea"
-            onChange={(event) => setChatSourceDocId(event.target.value)}
-          />
-          <input
-            type="file"
-            accept=".md,text/markdown"
-            hidden
-            aria-label="Browse SS or CP markdown"
-            onChange={(event) => {
-              const file = event.target.files?.[0]
-              if (!file) return
-              const withPath = file as File & { path?: string }
-              const raw = (withPath.path || file.name).replace(/\\/g, "/")
-              setChatSourceDocId(raw)
-              event.target.value = ""
-            }}
-          />
-          <button
-            type="button"
-            className="secondary-btn"
-            disabled={isRunning}
-            onClick={(event) => {
-              const input = (event.currentTarget.previousElementSibling as HTMLInputElement | null)
-              input?.click()
-            }}
-          >
-            Browse…
-          </button>
-          <p className="chat-start-mode-hint">
-            CP path starts vibe-cp-ingest. Anything else starts vibe-ingest. First prompt also auto-detects.
-          </p>
-        </div>
-      ) : null}
-      {chatStartMode !== "normal" && workingMode !== "vibe" ? (
-        <div className="nav-group">
-          <label>{chatStartMode === "task" ? "Task ID (optional)" : "Bug ID (optional)"}</label>
-          <input
-            value={chatSourceDocId}
-            disabled={isRunning}
-            placeholder={chatStartMode === "task" ? "Task-NNN (optional)" : "BUG-NNN (optional)"}
-            onChange={(event) => setChatSourceDocId(event.target.value)}
-          />
-          <p className="chat-start-mode-hint">
-            If set, the runner names the tracked document directly in the injected first-turn guidance.
-          </p>
-        </div>
-      ) : null}
-      {chatStartMode === "bugfix" && builtinOrchestrationOptions.length > 0 ? (
-        <div className="nav-group chat-builtin-orchestration">
-          <label>Built-in orchestration</label>
-          <select
-            value={flowRef ?? ""}
-            disabled={isRunning}
-            onChange={(event) => setFlowRef(event.target.value || undefined)}
-          >
-            <option value="">None</option>
-            {builtinOrchestrationOptions.map((opt) => (
-              <option key={opt.flowRef} value={opt.flowRef}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
-          <p className="chat-start-mode-hint">
-            {flowRef
-              ? (builtinOrchestrationOptions.find((opt) => opt.flowRef === flowRef)?.description ?? "")
-              : "Optional. Runs a built-in review-until-clean loop instead of plain bug chat."}
-          </p>
-        </div>
-      ) : null}
     </section>
   );
 }
@@ -537,7 +357,7 @@ function GateBlockModal(): React.ReactElement | null {
       >
         <div className="account-switch-modal gate-block-modal gate-decision-card" onClick={(e) => e.stopPropagation()}>
           <p className="gate-block-title">
-            <span className="gate-block-icon" aria-hidden="true">⛔</span>
+            <span className="gate-block-icon" aria-hidden="true"><GateIcon size={15} /></span>
             Regression gate — tests broke
           </p>
           {coarse ? (
@@ -615,7 +435,7 @@ function GateBlockModal(): React.ReactElement | null {
     >
       <div className="account-switch-modal gate-block-modal" onClick={(e) => e.stopPropagation()}>
         <p className="gate-block-title">
-          <span className="gate-block-icon" aria-hidden="true">⛔</span>
+          <span className="gate-block-icon" aria-hidden="true"><GateIcon size={15} /></span>
           Flow gate blocked this step
         </p>
         <p className="gate-block-detail">{detail}</p>
@@ -658,7 +478,7 @@ function HistoryOpenErrorModal(): React.ReactElement | null {
     >
       <div className="account-switch-modal gate-block-modal" onClick={(e) => e.stopPropagation()}>
         <p className="gate-block-title">
-          <span className="gate-block-icon" aria-hidden="true">⚠️</span>
+          <span className="gate-block-icon" aria-hidden="true"><WarnIcon size={15} /></span>
           Can&apos;t open this chat
         </p>
         <p className="gate-block-detail">{detail}</p>
@@ -823,7 +643,6 @@ export function ChatWorkspace({
               <LSPStatusNotice />
               <WorkflowControlPanel />
               <ChatPosturePanel />
-              <ChatStartIntentPanel />
               <AgentsPanel />
               <ProviderAccountsPanel />
             </div>

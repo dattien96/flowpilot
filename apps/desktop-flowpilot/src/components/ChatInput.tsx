@@ -15,6 +15,7 @@ import {
   type PendingAttachment,
 } from "@/lib/normalizeImage";
 import { supportsVisionFor } from "./visionProviders";
+import { BotIcon, CaretIcon, CheckIcon, CloseIcon, MenuIcon, PaperclipIcon, SendIcon } from "@/components/icons";
 
 function CodexIcon(): React.ReactElement {
   return (
@@ -990,7 +991,7 @@ export function ChatInput(): React.ReactElement {
                         : `Selected skills ${selectedSkills.length}/${totalSkills}`}
                     </span>
                     <span className="skill-select-caret" aria-hidden="true">
-                      ▾
+                      <CaretIcon />
                     </span>
                   </button>
                 </div>
@@ -1061,7 +1062,7 @@ export function ChatInput(): React.ReactElement {
                     onClick={() => setControllerExpanded(false)}
                     aria-label="Collapse chat controls"
                   >
-                    <span aria-hidden="true">▾</span>
+                    <CaretIcon open />
                   </button>
                 </div>
               </div>
@@ -1158,7 +1159,7 @@ export function ChatInput(): React.ReactElement {
                 }}
                 aria-label="Close skills picker"
               >
-                ×
+                <CloseIcon size={12} />
               </button>
             </div>
             <input
@@ -1211,7 +1212,7 @@ export function ChatInput(): React.ReactElement {
                 className={`skill-item ${active ? "skill-item-active" : ""} ${highlighted ? "skill-item-highlighted" : ""}`}
                 onClick={() => (active ? removeSkill(s.name) : pickSkill(s.name))}
               >
-                <span className="skill-mark">{active ? "☑" : "☐"}</span>
+                <span className={`skill-mark ${active ? "on" : ""}`} aria-hidden="true">{active ? <CheckIcon size={9} /> : null}</span>
                 <span className="skill-copy">
                   <span className={`skill-name ${active ? "skill-name-active" : "skill-name-idle"}`}>/{s.name}</span>
                   {s.description && <span className="skill-desc" title={s.description}>{s.description}</span>}
@@ -1234,7 +1235,7 @@ export function ChatInput(): React.ReactElement {
                 onClick={() => { if (atFragment !== null) setAtDismissedIndex(atFragment.index); }}
                 aria-label="Close file picker"
               >
-                ×
+                <CloseIcon size={12} />
               </button>
             </div>
           </div>
@@ -1265,7 +1266,7 @@ export function ChatInput(): React.ReactElement {
                 onClick={() => { if (slashFragment !== null) setSlashDismissedIndex(slashFragment.index); }}
                 aria-label="Close agent command"
               >
-                ×
+                <CloseIcon size={12} />
               </button>
             </div>
           </div>
@@ -1274,7 +1275,7 @@ export function ChatInput(): React.ReactElement {
             className="skill-item skill-item-highlighted"
             onMouseDown={(e) => { e.preventDefault(); triggerAgentSlash(); }}
           >
-            <span className="skill-mark">🤖</span>
+            <span className="skill-mark-ico"><BotIcon size={14} /></span>
             <span className="skill-copy">
               <span className="skill-name skill-name-idle">/a · Spawn sub-agent</span>
               <span className="skill-desc">Open the spawn-agent panel (same as the right sidebar). Press Enter.</span>
@@ -1307,7 +1308,7 @@ export function ChatInput(): React.ReactElement {
                 disabled={blocked}
                 aria-label={`Remove ${att.originalName}`}
               >
-                ×
+                <CloseIcon size={12} />
               </button>
             </div>
           ))}
@@ -1318,13 +1319,7 @@ export function ChatInput(): React.ReactElement {
           {attachError}
         </div>
       )}
-      {isChatMode && childRunFocused && (
-        <div className="ctxbar ring">
-          ↳ Viewing child agent <b>{focusedAgentName}</b> · transcript only
-        </div>
-      )}
-
-      <div className="input-bar">
+      <div className="composer">
         {!childRunFocused && (
           <div
             className="composer-resize-handle"
@@ -1338,67 +1333,22 @@ export function ChatInput(): React.ReactElement {
             <span className="composer-resize-grip" aria-hidden="true" />
           </div>
         )}
-        {isChatMode && !controllerExpanded && !childRunFocused && (
-          <button
-            type="button"
-            className="chat-controller-toggle chat-controller-toggle-inline"
-            onClick={() => setControllerExpanded(true)}
-            aria-label="Expand chat controls"
-          >
-            <span className="chat-controller-menu-icon" aria-hidden="true">
-              <span />
-              <span />
-              <span />
-            </span>
-          </button>
-        )}
-        {isChatMode && !childRunFocused && (
-          <>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept={ACCEPT_ATTR}
-              multiple
-              hidden
-              onChange={(e) => {
-                void onPickFiles(e.target.files);
-                e.target.value = ""; // allow re-picking the same file
-              }}
-            />
-            <button
-              type="button"
-              className="attach-btn"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={!supportsVision || blocked || attachments.length >= MAX_ATTACHMENTS}
-              aria-label={
-                supportsVision
-                  ? "Attach image"
-                  : "Image attachments are not supported by the selected provider"
-              }
-              title={supportsVision ? "Attach image (or paste with Ctrl+V)" : "Selected provider does not support images"}
-            >
-              <span aria-hidden="true">📎</span>
-              {attachments.length > 0 && (
-                <span className="attach-badge" aria-label={`${attachments.length} image${attachments.length > 1 ? "s" : ""} attached`}>
-                  {attachments.length}
-                </span>
-              )}
-            </button>
-          </>
-        )}
         {childRunFocused ? (
           <>
-            <div className="text-area-wrapper">
-              <div className="input-note">Return to the main chat to send prompts or use @agent routing.</div>
+            <div className="composer-note">
+              Transcript of <b>{focusedAgentName}</b> — return to the main chat to send prompts or use @agent routing.
             </div>
-            {blocked && (
-              <button type="button" className="btn send-btn send-btn-stop" onClick={() => void stop()} aria-label="Stop child agent">
-                <StopIcon />
+            <div className="composer-toolbar">
+              <span className="composer-spacer" />
+              {blocked && (
+                <button type="button" className="icon-btn composer-send composer-send-stop" onClick={() => void stop()} aria-label="Stop child agent">
+                  <StopIcon />
+                </button>
+              )}
+              <button type="button" className="composer-main-btn" onClick={backToMainRun}>
+                Back to main
               </button>
-            )}
-            <button type="button" className="btn send-btn" onClick={backToMainRun}>
-              Main
-            </button>
+            </div>
           </>
         ) : (
           <>
@@ -1436,15 +1386,63 @@ export function ChatInput(): React.ReactElement {
                 }}
               />
             </div>
-            {blocked ? (
-              <button type="button" className="btn send-btn send-btn-stop" onClick={() => void stop()} aria-label="Stop AI">
-                <StopIcon />
-              </button>
-            ) : (
-              <button type="button" className="btn btn-primary send-btn" onClick={send} disabled={!canSend}>
-                Send
-              </button>
-            )}
+            <div className="composer-toolbar">
+              {isChatMode && !controllerExpanded && (
+                <button
+                  type="button"
+                  className="icon-btn"
+                  onClick={() => setControllerExpanded(true)}
+                  aria-label="Expand chat controls"
+                  title="Expand chat controls"
+                >
+                  <MenuIcon size={15} />
+                </button>
+              )}
+              {isChatMode && (
+                <>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept={ACCEPT_ATTR}
+                    multiple
+                    hidden
+                    onChange={(e) => {
+                      void onPickFiles(e.target.files);
+                      e.target.value = ""; // allow re-picking the same file
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="icon-btn attach-btn"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={!supportsVision || blocked || attachments.length >= MAX_ATTACHMENTS}
+                    aria-label={
+                      supportsVision
+                        ? "Attach image"
+                        : "Image attachments are not supported by the selected provider"
+                    }
+                    title={supportsVision ? "Attach image (or paste with Ctrl+V)" : "Selected provider does not support images"}
+                  >
+                    <PaperclipIcon size={15} />
+                    {attachments.length > 0 && (
+                      <span className="attach-badge" aria-label={`${attachments.length} image${attachments.length > 1 ? "s" : ""} attached`}>
+                        {attachments.length}
+                      </span>
+                    )}
+                  </button>
+                </>
+              )}
+              <span className="composer-spacer" />
+              {blocked ? (
+                <button type="button" className="icon-btn composer-send composer-send-stop" onClick={() => void stop()} aria-label="Stop AI">
+                  <StopIcon />
+                </button>
+              ) : (
+                <button type="button" className="icon-btn composer-send" onClick={send} disabled={!canSend} aria-label="Send">
+                  <SendIcon size={15} />
+                </button>
+              )}
+            </div>
           </>
         )}
       </div>
@@ -1480,7 +1478,7 @@ export function ChatInput(): React.ReactElement {
                 onClick={() => setPreviewAtt(null)}
                 aria-label="Close preview"
               >
-                ×
+                <CloseIcon size={12} />
               </button>
             </div>
             <img

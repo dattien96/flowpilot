@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useStore } from "@/state/store";
 import type { AgentDefinition, AgentRunSummary } from "@/types/contract";
 import { formatDependencyLabels } from "@/components/agentDependencies";
+import { BoardIcon, BotIcon, CaretIcon, CloseIcon, PlusIcon } from "@/components/icons";
 
 interface SpawnDialogState {
   agentName: string;
@@ -211,10 +212,19 @@ export function AgentsPanel(): React.ReactElement | null {
   }
 
   return (
-    <section className="panel agents">
-      <div className="panel-h">
-        <span>Agents</span>
-        {runningAgentCount > 0 && <span className="acount">{runningAgentCount} running</span>}
+    <section className="workflow-rail workflow-rail-right agents-panel">
+      <div className="project-rail-head">
+        <div>
+          <label>
+            Agents
+            {runningAgentCount > 0 && <span className="acount">{runningAgentCount} running</span>}
+          </label>
+          <p>
+            {workspaceMainView === "board"
+              ? "Board is open in the main pane. Click an agent to open its chat instead."
+              : "Sub-agents in this session — click to open."}
+          </p>
+        </div>
         <button
           type="button"
           className={`board-link-btn ${workspaceMainView === "board" ? "active" : ""}`}
@@ -226,21 +236,16 @@ export function AgentsPanel(): React.ReactElement | null {
             }
           }}
         >
-          ▦ Board
+          <BoardIcon size={12} />
+          <span>Board</span>
         </button>
       </div>
 
-      <p className="panel-sub">
-        {workspaceMainView === "board"
-          ? "Board is open in the main pane. Click an agent to open its chat instead."
-          : "Sub-agents in this session — click to open · ＋ to spawn."}
-      </p>
-
       <div className="ag-sec">
-        ● Running
+        Running
       </div>
 
-      <div className="agent-run-list" style={{ display: "flex", flexDirection: "column", gap: "6px", padding: 0 }}>
+      <div className="agent-run-list">
         <div
           className={`acard main ${mainCardActive && workspaceMainView !== "board" ? "sel" : ""}`}
           onClick={() => mainRunId && void backToMainRun()}
@@ -286,7 +291,7 @@ export function AgentsPanel(): React.ReactElement | null {
               </div>
               {run.dependsOn && run.dependsOn.length > 0 && (
                 <div className="ac-meta" style={{ marginTop: "3px" }}>
-                  ⟂ depends: {formatDependencyLabels(run.dependsOn, agentRuns).join(", ")}
+                  depends: {formatDependencyLabels(run.dependsOn, agentRuns).join(", ")}
                 </div>
               )}
               {run.agentStatus && (
@@ -300,7 +305,7 @@ export function AgentsPanel(): React.ReactElement | null {
 
         {activeRuns.length > AGENT_COLLAPSE_LIMIT && (
           <button type="button" className="ag-more" onClick={() => setShowAllActive((v) => !v)}>
-            {showAllActive ? "▴ Show fewer" : `▾ Show ${activeRuns.length - AGENT_COLLAPSE_LIMIT} more`}
+            <CaretIcon open={showAllActive} /> {showAllActive ? "Show fewer" : `Show ${activeRuns.length - AGENT_COLLAPSE_LIMIT} more`}
           </button>
         )}
 
@@ -311,16 +316,16 @@ export function AgentsPanel(): React.ReactElement | null {
           disabled={!mainRunId || !client.spawnAgent || spawnBlocked}
           title={spawnBlocked ? "Main is busy (a turn or a wait=true agent is running) — wait for it to finish before spawning another." : undefined}
         >
-          ＋ Spawn agent
+          <PlusIcon size={12} /> Spawn agent
         </button>
       </div>
 
       {closedRuns.length > 0 && (
         <>
           <div className="ag-sec">
-            ◌ Recently closed
+            Recently closed
           </div>
-          <div className="agent-run-list" style={{ display: "flex", flexDirection: "column", gap: "6px", padding: 0 }}>
+          <div className="agent-run-list">
             {visibleClosedRuns.map((run) => {
               const isSelected = run.runId === activeAgentRunId && workspaceMainView !== "board";
               const provClass = run.providerKey ?? "codex";
@@ -349,7 +354,7 @@ export function AgentsPanel(): React.ReactElement | null {
             })}
             {closedRuns.length > AGENT_COLLAPSE_LIMIT && (
               <button type="button" className="ag-more" onClick={() => setShowAllClosed((v) => !v)}>
-                {showAllClosed ? "▴ Show fewer" : `▾ Show ${closedRuns.length - AGENT_COLLAPSE_LIMIT} more`}
+                <CaretIcon open={showAllClosed} /> {showAllClosed ? "Show fewer" : `Show ${closedRuns.length - AGENT_COLLAPSE_LIMIT} more`}
               </button>
             )}
           </div>
@@ -360,8 +365,8 @@ export function AgentsPanel(): React.ReactElement | null {
         <div className="modal-backdrop" onClick={() => { setDialog(null); setOpen(false); }}>
           <div className="dlg" onClick={(e) => e.stopPropagation()}>
             <div className="dlg-h">
-              <span>🤖 Spawn sub-agent</span>
-              <span className="x" onClick={() => { setDialog(null); setOpen(false); }}>✕</span>
+              <span className="dlg-h-title"><BotIcon size={14} /> Spawn sub-agent</span>
+              <button type="button" className="x" onClick={() => { setDialog(null); setOpen(false); }} aria-label="Close spawn dialog"><CloseIcon size={12} /></button>
             </div>
             <div className="dlg-b">
               <div className="fld">
@@ -418,12 +423,12 @@ export function AgentsPanel(): React.ReactElement | null {
                 <label>Provider override <span className="src-hint">(optional — defaults to the agent's preference)</span></label>
                 <div className="chips">
                   <span className={`chip ${!dialog?.providerOverride ? "sel" : ""}`} onClick={() => setDialog(c => c ? { ...c, providerOverride: undefined } : null)}>inherit</span>
-                  <span className={`chip ${dialog?.providerOverride === "claude" ? "sel" : ""}`} onClick={() => setDialog(c => c ? { ...c, providerOverride: "claude" } : null)}>✳ Claude</span>
-                  <span className={`chip ${dialog?.providerOverride === "codex" ? "sel" : ""}`} onClick={() => setDialog(c => c ? { ...c, providerOverride: "codex" } : null)}>◎ Codex</span>
-                  <span className={`chip ${dialog?.providerOverride === "gemini" ? "sel" : ""}`} onClick={() => setDialog(c => c ? { ...c, providerOverride: "gemini" } : null)}>◆ Gemini</span>
-                  <span className={`chip ${dialog?.providerOverride === "grok" ? "sel" : ""}`} onClick={() => setDialog(c => c ? { ...c, providerOverride: "grok" } : null)}>✦ Grok</span>
-                  <span className={`chip ${dialog?.providerOverride === "opencode" ? "sel" : ""}`} onClick={() => setDialog(c => c ? { ...c, providerOverride: "opencode" } : null)}>⬡ OpenCode</span>
-                  <span className={`chip ${dialog?.providerOverride === "devin" ? "sel" : ""}`} onClick={() => setDialog(c => c ? { ...c, providerOverride: "devin" } : null)}>◈ Devin</span>
+                  <span className={`chip ${dialog?.providerOverride === "claude" ? "sel" : ""}`} onClick={() => setDialog(c => c ? { ...c, providerOverride: "claude" } : null)}>Claude</span>
+                  <span className={`chip ${dialog?.providerOverride === "codex" ? "sel" : ""}`} onClick={() => setDialog(c => c ? { ...c, providerOverride: "codex" } : null)}>Codex</span>
+                  <span className={`chip ${dialog?.providerOverride === "gemini" ? "sel" : ""}`} onClick={() => setDialog(c => c ? { ...c, providerOverride: "gemini" } : null)}>Gemini</span>
+                  <span className={`chip ${dialog?.providerOverride === "grok" ? "sel" : ""}`} onClick={() => setDialog(c => c ? { ...c, providerOverride: "grok" } : null)}>Grok</span>
+                  <span className={`chip ${dialog?.providerOverride === "opencode" ? "sel" : ""}`} onClick={() => setDialog(c => c ? { ...c, providerOverride: "opencode" } : null)}>OpenCode</span>
+                  <span className={`chip ${dialog?.providerOverride === "devin" ? "sel" : ""}`} onClick={() => setDialog(c => c ? { ...c, providerOverride: "devin" } : null)}>Devin</span>
                 </div>
               </div>
 
@@ -455,7 +460,7 @@ export function AgentsPanel(): React.ReactElement | null {
                           return { ...c, dependsOn: nextDeps };
                         })}
                       >
-                        ⟂ wait for: {dep.agentName}
+                        wait for: {dep.agentName}
                       </span>
                     );
                   })}
@@ -488,7 +493,7 @@ export function AgentsPanel(): React.ReactElement | null {
                 disabled={spawning || spawnBlocked || !dialog?.agentName || dialog.prompt.trim().length === 0}
                 title={spawnBlocked ? "Main is busy (a turn or a wait=true agent is running) — wait for it to finish." : undefined}
               >
-                Spawn ▸
+                Spawn
               </button>
             </div>
           </div>
