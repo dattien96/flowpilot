@@ -82,7 +82,17 @@ test("chrome components carry no emoji glyphs", () => {
   for (const file of [
     "src/components/Navigator.tsx",
     "src/components/AttentionQueue.tsx",
+    "src/components/AttentionInbox.tsx",
     "src/components/ChatPosturePanel.tsx",
+    "src/components/AgentsPanel.tsx",
+    "src/components/ChatInput.tsx",
+    "src/components/ChatWorkspace.tsx",
+    "src/components/Timeline.tsx",
+    "src/components/RunToast.tsx",
+    "src/components/LSPStatusNotice.tsx",
+    "src/components/TranslatePopup.tsx",
+    "src/components/DispatchAttentionCard.tsx",
+    "src/App.tsx",
   ]) {
     const src = fs.readFileSync(path.resolve(process.cwd(), file), "utf8");
     const stripped = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");

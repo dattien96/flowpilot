@@ -1,0 +1,28 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "jsx": "react-jsx",
+    "rootDir": ".",
+    "outDir": ".phase1-tests",
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["apps/desktop-flowpilot/src/*"],
+      "@flowpilot/client-core": ["packages/flowpilot-client-core/src/index.ts"]
+    },
+    "typeRoots": ["./apps/desktop-flowpilot/node_modules/@types"],
+    "types": ["node"]
+  },
+  "include": [
+    "packages/flowpilot-client-core/src/**/*.ts",
+    "apps/desktop-flowpilot/src/app/**/*.ts",
+    "apps/desktop-flowpilot/src/**/*.test.ts",
+    "apps/desktop-flowpilot/src/auth/desktopAdminSupabaseClient.ts",
+    "apps/desktop-flowpilot/src/auth/desktopBridgeHttp.ts",
+    "apps/desktop-flowpilot/src/components/settings/settingsHelpers.ts"
+  ]
+}
