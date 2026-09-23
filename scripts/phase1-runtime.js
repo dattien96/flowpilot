@@ -4,6 +4,9 @@
 // `node --require scripts/phase1-runtime.js --test …`, this maps:
 //   @/<rel>                  → .phase1-tests/apps/desktop-flowpilot/src/<rel>.js
 //   @flowpilot/client-core…  → packages/flowpilot-client-core/src/…
+//   bare imports (zustand…)  → apps/desktop-flowpilot/node_modules fallback —
+//     the compiled output lives outside the app tree so Node's walk-up never
+//     reaches it. Original resolution is tried first; this is only a fallback.
 // Additive infrastructure only — no test or production behavior changes.
 "use strict";
 
@@ -14,6 +17,7 @@ const ROOT = path.resolve(__dirname, "..");
 const OUT = path.join(ROOT, ".phase1-tests");
 
 const DESKTOP_SRC = path.join(OUT, "apps", "desktop-flowpilot", "src");
+const DESKTOP_NM = path.join(ROOT, "apps", "desktop-flowpilot", "node_modules");
 const CLIENT_CORE = path.join(ROOT, "packages", "flowpilot-client-core", "src");
 
 const originalResolve = Module._resolveFilename;
@@ -37,5 +41,10 @@ Module._resolveFilename = function (request, ...rest) {
       // try the next candidate
     }
   }
-  return originalResolve.call(this, request, ...rest);
+  try {
+    return originalResolve.call(this, request, ...rest);
+  } catch (err) {
+    if (request.startsWith(".") || path.isAbsolute(request)) throw err;
+    return require.resolve(request, { paths: [DESKTOP_NM, path.join(ROOT, "node_modules")] });
+  }
 };
