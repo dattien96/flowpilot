@@ -1,10 +1,17 @@
 package changeledger
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 )
+
+// ErrNotGitRepo is returned by InstallPostCommitHook when repoDir is not a git
+// work tree — no .git directory and no worktree pointer file. Callers must
+// treat it as a truthful "skipped" outcome; the function never fabricates a
+// .git/ skeleton.
+var ErrNotGitRepo = errors.New("changeledger: not a git work tree")
 
 const (
 	ledgerSentinelFile = "ledger-needs-update"
@@ -36,7 +43,10 @@ func SentinelPath(dotFlowpilotDir string) string {
 //   - If the file exists but lacks the marker: append our block.
 //   - If the file does not exist: write the standalone hook.
 func InstallPostCommitHook(repoDir string) error {
-	hookDir := filepath.Join(repoDir, ".git", "hooks")
+	hookDir, err := resolveHooksDir(repoDir)
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(hookDir, 0o755); err != nil {
 		return err
 	}
@@ -56,6 +66,41 @@ func InstallPostCommitHook(repoDir string) error {
 		return writeErr
 	}
 	return os.WriteFile(hookPath, []byte(postCommitHook), 0o755)
+}
+
+// resolveHooksDir returns the real hooks directory for repoDir without
+// creating anything: <repo>/.git/hooks for a normal repo, or the gitdir
+// target's hooks/ for a linked worktree (where .git is a pointer file).
+// Returns ErrNotGitRepo when repoDir is not a git work tree at all.
+func resolveHooksDir(repoDir string) (string, error) {
+	dotGit := filepath.Join(repoDir, ".git")
+	info, err := os.Stat(dotGit)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", ErrNotGitRepo
+		}
+		return "", err
+	}
+	if info.IsDir() {
+		return filepath.Join(dotGit, "hooks"), nil
+	}
+	data, err := os.ReadFile(dotGit)
+	if err != nil {
+		return "", err
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if rest, ok := strings.CutPrefix(strings.TrimSpace(line), "gitdir:"); ok {
+			gitdir := strings.TrimSpace(rest)
+			if gitdir == "" {
+				break
+			}
+			if !filepath.IsAbs(gitdir) {
+				gitdir = filepath.Join(repoDir, gitdir)
+			}
+			return filepath.Join(gitdir, "hooks"), nil
+		}
+	}
+	return "", ErrNotGitRepo
 }
 
 // CheckAndRebuild checks for the dirty sentinel. When present, it runs an

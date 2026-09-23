@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -389,7 +390,22 @@ func (s *InteractiveService) runEngineInit(
 	}
 
 	ledgerErr := changeledger.Build(workingDirectory, dotFlowpilotDir)
-	steps = append(steps, buildEngineStep("changeledger_build", ledgerErr, filepath.Join(dotFlowpilotDir, "ledger", "feature_history.ndjson")))
+	ledgerPath := filepath.Join(dotFlowpilotDir, "ledger", "feature_history.ndjson")
+	if ledgerErr == nil {
+		// BUG-416: report ok only when the ledger artifact actually exists —
+		// Build is a no-op on empty/non-git repos and writes nothing.
+		if _, statErr := os.Stat(ledgerPath); statErr == nil {
+			steps = append(steps, buildEngineStep("changeledger_build", nil, ledgerPath))
+		} else {
+			steps = append(steps, EngineInitStepResult{
+				Step:    "changeledger_build",
+				Outcome: "skipped",
+				Detail:  "no commits recorded; ledger file not created",
+			})
+		}
+	} else {
+		steps = append(steps, buildEngineStep("changeledger_build", ledgerErr, ledgerPath))
+	}
 
 	var catalogErr error
 	if ledgerErr == nil {
@@ -411,7 +427,15 @@ func (s *InteractiveService) runEngineInit(
 	// CP-35: install the post-commit git hook so new commits are visible to the
 	// oracle before the next AI turn — without waiting for a session restart.
 	hookErr := changeledger.InstallPostCommitHook(workingDirectory)
-	steps = append(steps, buildEngineStep("hook_install", hookErr, filepath.Join(workingDirectory, ".git", "hooks", "post-commit")))
+	if errors.Is(hookErr, changeledger.ErrNotGitRepo) {
+		steps = append(steps, EngineInitStepResult{
+			Step:    "hook_install",
+			Outcome: "skipped",
+			Detail:  "not a git work tree",
+		})
+	} else {
+		steps = append(steps, buildEngineStep("hook_install", hookErr, filepath.Join(workingDirectory, ".git", "hooks", "post-commit")))
+	}
 
 	// CP-37: pull the chat-summary timeline from Drive before uploading, so a fresh
 	// machine recovers prior-discussion continuity (commit/feature history rebuilds
