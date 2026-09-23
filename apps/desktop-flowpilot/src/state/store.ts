@@ -1168,6 +1168,9 @@ export const useStore = create<AppState>((set, get) => ({
     });
     if (projectChanged) {
       get().resetRun();
+      // Worktree intent is scoped to the project — a stale true would send
+      // worktree:true to a project that may not be a git repo.
+      set({ worktreeEnabled: false });
     }
     get().refreshWorktreeAvailability();
     void get().loadSkills(get().selectedProvider ?? "codex");
@@ -2991,7 +2994,11 @@ export const useStore = create<AppState>((set, get) => ({
       chatSourceDocId: "",
       flowRef: undefined,
       builtinOrchestrationOptions: [],
-      worktreeEnabled: false,
+      // worktreeEnabled intentionally survives reset: the toggle is a next-run
+      // intent (like yoloMode/workingMode), not per-run state — clearing it here
+      // silently dropped worktree:true when "New run"/new-chat called resetRun
+      // before sendPrompt (M-3 regression). selectProject clears it explicitly
+      // on project change so a stale flag can't hit a non-git project.
       activeWorktreePath: "",
       activeWorktreeState: "",
       selectedModel: pickDefaultModel(selectedProvider, supportedModels),
