@@ -270,7 +270,18 @@ WaitLoop:
 		suitePassed = true
 	}
 
-	scanner := bufio.NewScanner(strings.NewReader(combinedOutput))
+	passed, failed = parseSuiteTestNames(testCmd, combinedOutput)
+	return
+}
+
+// parseSuiteTestNames extracts named test results from a suite's combined
+// output. BUG-390: go test prints subtest verdicts indented
+// ("    --- FAIL: TestX/sub"); Contains+TrimPrefix left the indent in place so
+// the parsed "name" was the literal "---", which then poisoned baselines and
+// made every real subtest failure classify as a regression. Take the text
+// after the marker wherever it appears on the line.
+func parseSuiteTestNames(testCmd, output string) (passed, failed []string) {
+	scanner := bufio.NewScanner(strings.NewReader(output))
 	// Default MaxScanTokenSize is 64KiB; retained output is maxSuiteOutputBytes
 	// plus the truncation marker and can be one long line. Raise the limit so
 	// named PASS/FAIL lines after a long spam line are still parsed.
@@ -280,15 +291,15 @@ WaitLoop:
 		line := scanner.Text()
 		switch {
 		case strings.HasPrefix(testCmd, "go test"):
-			if strings.Contains(line, "--- PASS:") {
-				after := strings.TrimSpace(strings.TrimPrefix(line, "--- PASS:"))
-				if f := strings.Fields(after); len(f) > 0 {
+			if idx := strings.Index(line, "--- PASS:"); idx >= 0 {
+				after := strings.TrimSpace(line[idx+len("--- PASS:"):])
+				if f := strings.Fields(after); len(f) > 0 && f[0] != "---" {
 					passed = append(passed, f[0])
 				}
 			}
-			if strings.Contains(line, "--- FAIL:") {
-				after := strings.TrimSpace(strings.TrimPrefix(line, "--- FAIL:"))
-				if f := strings.Fields(after); len(f) > 0 {
+			if idx := strings.Index(line, "--- FAIL:"); idx >= 0 {
+				after := strings.TrimSpace(line[idx+len("--- FAIL:"):])
+				if f := strings.Fields(after); len(f) > 0 && f[0] != "---" {
 					failed = append(failed, f[0])
 				}
 			}
@@ -454,11 +465,13 @@ func shellSplit(cmd string) []string {
 }
 
 func isInBaseline(testName string, baseline []string) bool {
-	if testName == "" {
+	// BUG-390: "---" is a parse artifact, never a test name — baselines written
+	// before the subtest-parse fix can still carry it, and it must never match.
+	if testName == "" || testName == "---" {
 		return false
 	}
 	for _, b := range baseline {
-		if b == "" {
+		if b == "" || b == "---" {
 			continue
 		}
 		if b == testName || strings.HasSuffix(b, testName) || strings.HasSuffix(testName, b) {

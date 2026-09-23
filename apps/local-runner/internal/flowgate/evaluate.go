@@ -111,12 +111,22 @@ func checkRule(rule Rule, tr TurnResult) *Violation {
 		return checkSignatureLockRule(rule, tr)
 
 	case "tests_failed":
+		// BUG-398: a scaffold/tdd turn's contract is compile-green/runtime-RED —
+		// its mandated failing tests are not a violation (r-scaffold-red owns
+		// the RED semantics for this turn).
+		if tr.ScaffoldExpected {
+			return nil
+		}
 		// Ordinary suite failures only (V9-27) — not regression names.
 		if tr.Tests.Ran && len(tr.Tests.Failed) > 0 {
 			return &Violation{Rule: rule, Detail: "Tests failed: " + strings.Join(tr.Tests.Failed, ", ")}
 		}
 
 	case "regression_test_broke":
+		// BUG-398: same contracted-RED suppression as r-tests.
+		if tr.ScaffoldExpected {
+			return nil
+		}
 		// Prefer dedicated Regressed list; fall back to Failed for legacy callers
 		// that only populate Failed with regression names.
 		names := tr.Tests.Regressed
@@ -265,7 +275,7 @@ func checkRule(rule Rule, tr TurnResult) *Violation {
 		if len(missing) > 0 {
 			return &Violation{
 				Rule:   rule,
-				Detail: "Task/BUG document(s) without a Definition of Done checklist: " + strings.Join(missing, ", ") + " — add a '## Definition of Done' section with at least one '- [ ]' acceptance checkbox",
+				Detail: "Task/BUG document(s) without a Definition of Done checklist: " + strings.Join(missing, ", ") + " — add a '## Definition of Done' (or the spec's '## Acceptance Check') section with at least one '- [ ]' acceptance checkbox",
 			}
 		}
 

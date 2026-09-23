@@ -2,6 +2,7 @@ package runner
 
 import (
 	"log"
+	"os"
 	"path"
 	"path/filepath"
 	"strings"
@@ -255,9 +256,129 @@ func (s *InteractiveService) decideReproduceTestLock(rs *interactiveRun, details
 		if candidate == "" {
 			return "", "", false
 		}
-		if changecontract.IsReadOnlyLockedPath(rec, candidate) {
+		// BUG-388: records frozen before the abs->rel store fix may carry
+		// absolute ReadOnlyPaths — relativize-under-workspace on read too.
+		if changecontract.IsReadOnlyLockedPathUnder(rec, candidate, cwd) {
 			return "deny", "reproduce_test_locked", true
 		}
 	}
 	return "", "", false
+}
+
+// reproduceFailuresExerciseTarget implements the BUG-389 fabricated-RED check:
+// a reproduce turn's RED is only a reproduction when at least one failing test
+// exercises a symbol declared in the step's frozen scope. Live proof of the
+// gap: `simulatedBuggy := 3 + 4; if simulatedBuggy != 12 { t.Fatalf(...) }`
+// satisfied r-reproduce on runs 4501/5307/6008.
+//
+// Returns (checked, hit):
+//   - checked=false — the runner cannot verify (no frozen contract, no Go
+//     declared files, no declared symbols, or no failing test resolves to a
+//     source file). Typed degradation: the named-failure verdict stands rather
+//     than hard-blocking every reproduce turn on an unverifiable shape.
+//   - checked=true, hit=false — failing tests resolved but none reference a
+//     declared symbol: the failure is unrelated to the reported bug.
+func (s *InteractiveService) reproduceFailuresExerciseTarget(workspace, contractRunID string, failedNames, writtenPaths []string) (checked, hit bool) {
+	if len(failedNames) == 0 || strings.TrimSpace(workspace) == "" {
+		return false, false
+	}
+	rec, ok := s.frozenContractForRun(workspace, contractRunID)
+	if !ok {
+		return false, false
+	}
+	symSet := map[string]bool{}
+	declaredDirs := map[string]bool{}
+	for _, p := range rec.DeclaredPaths {
+		rel := strings.TrimSpace(p)
+		if rel == "" || flowgate.IsTestFile(rel) || flowgate.LangForPath(rel) != "go" {
+			continue
+		}
+		if d := path.Dir(rel); d != "" && d != "." {
+			declaredDirs[d] = true
+		} else {
+			declaredDirs["."] = true
+		}
+		src, err := os.ReadFile(filepath.Join(workspace, filepath.FromSlash(rel)))
+		if err != nil {
+			continue
+		}
+		infos, err := flowgate.ExtractSymbolInfos("go", rel, src, nil)
+		if err != nil {
+			continue
+		}
+		for _, in := range infos {
+			if in.Name != "" {
+				symSet[in.Name] = true
+			}
+		}
+	}
+	if len(symSet) == 0 {
+		return false, false
+	}
+	// Candidate test files: this turn's written *_test.go plus every *_test.go
+	// under the declared dirs — the reproduction file may have been written on
+	// an earlier reprompt turn of the same episode.
+	candidates := map[string]bool{}
+	for _, p := range writtenPaths {
+		rel := filepath.ToSlash(strings.TrimSpace(p))
+		if strings.HasSuffix(rel, "_test.go") {
+			candidates[rel] = true
+		}
+	}
+	for d := range declaredDirs {
+		matches, _ := filepath.Glob(filepath.Join(workspace, filepath.FromSlash(d), "*_test.go"))
+		for _, m := range matches {
+			if rel, err := filepath.Rel(workspace, m); err == nil {
+				candidates[filepath.ToSlash(rel)] = true
+			}
+		}
+	}
+	resolved := false
+	for _, name := range failedNames {
+		root := name
+		if i := strings.Index(root, "/"); i >= 0 {
+			root = root[:i]
+		}
+		if root == "" {
+			continue
+		}
+		decl := "func " + root + "("
+		for f := range candidates {
+			b, err := os.ReadFile(filepath.Join(workspace, filepath.FromSlash(f)))
+			if err != nil || !strings.Contains(string(b), decl) {
+				continue
+			}
+			resolved = true
+			for sym := range symSet {
+				if testSourceCallsSymbol(string(b), sym) {
+					return true, true
+				}
+			}
+			break
+		}
+	}
+	return resolved, false
+}
+
+// testSourceCallsSymbol reports whether src contains a call-shaped use of sym
+// (`sym(` at an identifier boundary) — the deterministic proxy for "this test
+// exercises the reported production code".
+func testSourceCallsSymbol(src, sym string) bool {
+	for idx := 0; ; {
+		i := strings.Index(src[idx:], sym+"(")
+		if i < 0 {
+			return false
+		}
+		pos := idx + i
+		// Identifier-boundary check: the char before must not be
+		// letter/digit/underscore (so "ReadAll(" does not match "All(").
+		if pos == 0 || !isIdentByte(src[pos-1]) {
+			return true
+		}
+		idx = pos + len(sym)
+	}
+}
+
+func isIdentByte(b byte) bool {
+	return b == '_' || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9')
 }
