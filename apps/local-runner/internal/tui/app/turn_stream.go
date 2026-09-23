@@ -34,16 +34,30 @@ type turnStreamState struct {
 
 // Orchestration stream (Desktop startOrchestrationStream): continues after the
 // user turn so hub/child agent_graph_updated and late gate events still apply.
+// RunID is the leg the stream was opened for — captured when the cmd was
+// created. A provider/chat switch landing between issue and delivery makes the
+// open stale: Update must drop+cancel it instead of letting it tear down the
+// NEW leg's stream and attach the dead one (BUG-450). Empty RunID is only
+// reachable from test-injected messages, which are always processed.
 type orchStreamOpenedMsg struct {
+	RunID  string
 	EvCh   <-chan client.ProviderEvent
 	Cancel context.CancelFunc
 }
 
+// st identifies the stream generation that produced the message. A poll
+// in flight when its stream is replaced (provider switch, new user turn)
+// still delivers one final event/close — the tag lets Update drop it instead
+// of letting a dead stream's close tear down the live one (BUG-428).
+// St is nil only for test-injected messages, which are always processed.
 type orchStreamEventMsg struct {
 	Ev client.ProviderEvent
+	st *orchStreamState
 }
 
-type orchStreamClosedMsg struct{}
+type orchStreamClosedMsg struct {
+	st *orchStreamState
+}
 
 type orchStreamState struct {
 	evCh   <-chan client.ProviderEvent
@@ -88,7 +102,7 @@ func (m *AppModel) cmdStartOrchestrationStream() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithCancel(context.Background())
 		ch := cl.StreamLive(ctx, runID, after)
-		return orchStreamOpenedMsg{EvCh: ch, Cancel: cancel}
+		return orchStreamOpenedMsg{RunID: runID, EvCh: ch, Cancel: cancel}
 	}
 }
 
@@ -100,9 +114,9 @@ func (m *AppModel) cmdPollOrchStream() tea.Cmd {
 	return func() tea.Msg {
 		ev, ok := <-st.evCh
 		if !ok {
-			return orchStreamClosedMsg{}
+			return orchStreamClosedMsg{st: st}
 		}
-		return orchStreamEventMsg{Ev: ev}
+		return orchStreamEventMsg{Ev: ev, st: st}
 	}
 }
 
