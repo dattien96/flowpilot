@@ -65,7 +65,16 @@ interface ChatSyncGoogleDriveStatus {
   session?: ChatSyncGoogleDriveSession;
   effectiveSource: "chat_sync" | "artifact_legacy" | "none";
   ready: boolean;
-  availableAccounts: ChatSyncGoogleDriveAccountStatus[];
+  // Runner emits omitempty — absent when no Drive accounts exist (BUG-383).
+  availableAccounts?: ChatSyncGoogleDriveAccountStatus[];
+}
+
+// normalizeChatSyncGoogleDriveStatus fills fields the wire may omit so every
+// downstream `.length`/`.map`/`?.` usage is safe.
+export function normalizeChatSyncGoogleDriveStatus(
+  payload: ChatSyncGoogleDriveStatus,
+): ChatSyncGoogleDriveStatus & { availableAccounts: ChatSyncGoogleDriveAccountStatus[] } {
+  return { ...payload, availableAccounts: payload.availableAccounts ?? [] };
 }
 
 interface ChatSyncGoogleDriveConnectSession {
@@ -228,7 +237,9 @@ export function ProjectsSettings({ onNavigateSection }: ProjectsSettingsProps): 
   const [expandedPanels, setExpandedPanels] = useState<Record<ProjectPanelKey, boolean>>(defaultExpandedPanels);
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [deleteConfirmationText, setDeleteConfirmationText] = useState("");
-  const [chatSyncStatus, setChatSyncStatus] = useState<ChatSyncGoogleDriveStatus | null>(null);
+  const [chatSyncStatus, setChatSyncStatus] = useState<
+    (ChatSyncGoogleDriveStatus & { availableAccounts: ChatSyncGoogleDriveAccountStatus[] }) | null
+  >(null);
   const [chatSyncLoading, setChatSyncLoading] = useState(false);
   const [chatSyncBusyAction, setChatSyncBusyAction] = useState<string | null>(null);
   const [chatSyncSelectedAccountId, setChatSyncSelectedAccountId] = useState("");
@@ -354,7 +365,9 @@ export function ProjectsSettings({ onNavigateSection }: ProjectsSettingsProps): 
       if (!response.ok) {
         throw new Error(await readRunnerError(response));
       }
-      const payload = (await response.json()) as ChatSyncGoogleDriveStatus;
+      const payload = normalizeChatSyncGoogleDriveStatus(
+        (await response.json()) as ChatSyncGoogleDriveStatus,
+      );
       setChatSyncStatus(payload);
       const selectedAccountId = payload.connection.accountId?.trim() ?? "";
       if (selectedAccountId) {
