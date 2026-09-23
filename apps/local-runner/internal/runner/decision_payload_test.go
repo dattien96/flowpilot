@@ -1,8 +1,11 @@
 package runner
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -442,6 +445,110 @@ func TestRunUpdates_CoalescesSlowSubscriberWithoutLosingWaitingState(t *testing.
 	}
 	if upsert.Status != RunStatusWaitingApproval || len(upsert.Decisions) != 1 {
 		t.Fatalf("drain lost latest waiting state: %+v", upsert)
+	}
+}
+
+// TestRunUpdates_EverySubscriberReceivesUpserts: change-detection must be
+// per-subscriber — after one subscriber drains a dirty run, another subscriber
+// must still receive the upsert for the same mark. A per-run (global)
+// fingerprint would suppress every subscriber but the first to drain.
+func TestRunUpdates_EverySubscriberReceivesUpserts(t *testing.T) {
+	svc := NewInteractiveService()
+	rs := mkDecisionRun(svc, "run-429-multi", "proj-1")
+	subA, _, _ := svc.subscribeRunUpdates()
+	defer svc.unsubscribeRunUpdates(subA)
+	subB, _, _ := svc.subscribeRunUpdates()
+	defer svc.unsubscribeRunUpdates(subB)
+
+	svc.mu.Lock()
+	rs.status = RunStatusWaitingApproval
+	svc.approvals["appr-429-multi"] = pendingApprovalRec("appr-429-multi", rs.id)
+	svc.markRunRealtimeDirtyLocked(rs.id)
+	svc.mu.Unlock()
+
+	for _, subID := range []int64{subA, subB} {
+		got := false
+		for _, f := range svc.drainRunUpdates(subID) {
+			if f.Kind == RunRealtimeUpsert && f.RunID == rs.id && f.Run != nil {
+				got = true
+			}
+		}
+		if !got {
+			t.Fatalf("subscriber %d missed upsert for %q", subID, rs.id)
+		}
+	}
+}
+
+// TestRunUpdates_DispatchResolveMarksRunDirty: an operator settle must dirty
+// the lane — otherwise the resolved dispatch_attention decision lingers in
+// every subscriber's inbox until an unrelated event happens to mark the run.
+func TestRunUpdates_DispatchResolveMarksRunDirty(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryDispatchStore()
+	rec := testPrepared("r1", "t1")
+	_ = store.CreatePrepared(ctx, rec, testEnvelope("r1", "t1"))
+	rev, _ := store.CASAdvance(ctx, "r1", "t1", 1, DispatchPrepared, DispatchSendClaimed, nil)
+	rev, _ = store.CASAdvance(ctx, "r1", "t1", rev, DispatchSendClaimed, DispatchSendStarted, nil)
+	rev, _ = store.ClaimRecovery(ctx, "r1", "t1", rev, "sc", time.Minute)
+	_, rev, _ = store.CommitRecoveryUnknownOrRequireCancel(ctx, "r1", "t1", rev, "sc")
+
+	svc := &InteractiveService{dispatchStore: store}
+	mux := http.NewServeMux()
+	svc.RegisterDispatchOperatorRoutes(mux)
+	subID, _, _ := svc.subscribeRunUpdates()
+	defer svc.unsubscribeRunUpdates(subID)
+
+	body := resolveUncertainRequest{ExpectedRev: rev, ResolutionID: "res-dirty", Action: "confirm_cancelled"}
+	raw, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/client/workflow-runs/r1/dispatches/t1/resolve", strings.NewReader(string(raw)))
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != 200 {
+		t.Fatalf("resolve status %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	svc.mu.Lock()
+	dirty := svc.runUpdateSubs[subID].dirty["r1"]
+	svc.mu.Unlock()
+	if !dirty {
+		t.Fatal("dispatch resolve did not mark the run dirty — settled attention would linger on the mux")
+	}
+}
+
+// TestRunUpdates_UpsertRevisionAdvancesWithoutSeqChange: a lane change driven
+// purely by durable decisions (e.g. dispatch settle) leaves rs.seq untouched.
+// The wire revision must still strictly increase or the client's dedupe
+// (`rev <= last applied`) drops the upsert and the stale item persists.
+func TestRunUpdates_UpsertRevisionAdvancesWithoutSeqChange(t *testing.T) {
+	svc := NewInteractiveService()
+	rs := mkDecisionRun(svc, "run-429-rev", "proj-1")
+	subID, _, snap := svc.subscribeRunUpdates()
+	defer svc.unsubscribeRunUpdates(subID)
+	var snapRev int64
+	for _, p := range snap {
+		if p.RunID == rs.id {
+			snapRev = p.Revision
+		}
+	}
+
+	// Decision set changes; rs.seq deliberately untouched.
+	svc.mu.Lock()
+	rs.status = RunStatusWaitingApproval
+	svc.approvals["appr-429-rev"] = pendingApprovalRec("appr-429-rev", rs.id)
+	svc.markRunRealtimeDirtyLocked(rs.id)
+	svc.mu.Unlock()
+
+	var upsert *RunRealtimeProjection
+	for _, f := range svc.drainRunUpdates(subID) {
+		if f.Kind == RunRealtimeUpsert && f.RunID == rs.id {
+			upsert = f.Run
+		}
+	}
+	if upsert == nil {
+		t.Fatal("expected upsert for changed lane")
+	}
+	if upsert.Revision <= snapRev {
+		t.Fatalf("upsert revision %d not above snapshot revision %d — client dedupe would drop it", upsert.Revision, snapRev)
 	}
 }
 

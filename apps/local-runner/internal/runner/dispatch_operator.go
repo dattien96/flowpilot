@@ -185,6 +185,7 @@ func (s *InteractiveService) handleDispatchResolve(w http.ResponseWriter, r *htt
 		writeInteractiveError(w, newAPIErr(http.StatusBadGateway, "post_resolve_read_failed", gerr.Error()))
 		return
 	}
+	s.markRunRealtimeDirty(runID)
 	writeInteractiveJSON(w, http.StatusOK, dispatchSettlementDisposition(rec))
 }
 
@@ -222,6 +223,7 @@ func (s *InteractiveService) handleDispatchRetryAsNew(w http.ResponseWriter, r *
 	}
 	out := dispatchSettlementDisposition(oldRec)
 	out["newTurnId"] = req.NewTurnID
+	s.markRunRealtimeDirty(runID)
 	writeInteractiveJSON(w, http.StatusOK, out)
 }
 
@@ -272,6 +274,7 @@ func (s *InteractiveService) handleDispatchRepairResolution(w http.ResponseWrite
 		writeInteractiveError(w, dispatchOperatorErr(cerr))
 		return
 	}
+	s.markRunRealtimeDirty(runID)
 	writeInteractiveJSON(w, http.StatusOK, map[string]any{"revision": rev, "outcome": string(outcome), "detail": detail})
 }
 

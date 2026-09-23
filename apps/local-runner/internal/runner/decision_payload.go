@@ -559,6 +559,11 @@ type runUpdateSub struct {
 	// lane re-marked dirty (settle emits several trailing events) must not
 	// re-emit remove on every drain.
 	removed map[string]bool
+	// fps is the per-subscriber last-sent projection fingerprint per run. The
+	// suppression check MUST live on the subscriber, not the run: a shared
+	// fingerprint lets the first drainer's update mark the run "sent" for
+	// every other subscriber, silently starving them.
+	fps map[string]string
 }
 
 // runUpdateDirtyCap bounds per-subscriber dirty memory; past it the
@@ -670,6 +675,7 @@ func (s *InteractiveService) subscribeRunUpdates() (int64, <-chan struct{}, []Ru
 		id:      s.runUpdateNextID,
 		dirty:   map[string]bool{},
 		removed: map[string]bool{},
+		fps:     map[string]string{},
 		wake:    make(chan struct{}, 1),
 	}
 	s.runUpdateNextID++
@@ -703,7 +709,9 @@ func (s *InteractiveService) subscribeRunUpdates() (int64, <-chan struct{}, []Ru
 		if !isLaneRelevant(snap[i]) {
 			continue // terminal with nothing actionable leaves the lane set
 		}
-		rs.muxFingerprint = realtimeFingerprint(snap[i])
+		s.runUpdateSeq++
+		snap[i].Revision = s.runUpdateSeq
+		sub.fps[snap[i].RunID] = realtimeFingerprint(snap[i])
 		kept = append(kept, snap[i])
 	}
 	sort.Slice(kept, func(i, j int) bool { return kept[i].RunID < kept[j].RunID })
@@ -815,6 +823,7 @@ func (s *InteractiveService) drainRunUpdates(subID int64) []RunRealtimeFrame {
 			return // remove already sent — terminal lanes re-mark dirty on settle
 		}
 		sub.removed[id] = true
+		delete(sub.fps, id) // lane is gone — a later upsert must fire fresh
 		frames = append(frames, RunRealtimeFrame{Kind: RunRealtimeRemove, RunID: id})
 	}
 	for _, c := range cands {
@@ -832,12 +841,14 @@ func (s *InteractiveService) drainRunUpdates(subID int64) []RunRealtimeFrame {
 			continue
 		}
 		fp := realtimeFingerprint(proj)
-		if fp == c.rs.muxFingerprint {
+		if fp == sub.fps[c.rs.id] {
 			continue
 		}
-		c.rs.muxFingerprint = fp
+		sub.fps[c.rs.id] = fp
 		delete(sub.removed, c.rs.id) // lane is live again — a later remove must fire
 		p := proj
+		s.runUpdateSeq++
+		p.Revision = s.runUpdateSeq
 		frames = append(frames, RunRealtimeFrame{Kind: RunRealtimeUpsert, RunID: c.rs.id, Run: &p})
 	}
 	for _, g := range gates {
@@ -847,8 +858,13 @@ func (s *InteractiveService) drainRunUpdates(subID int64) []RunRealtimeFrame {
 			}
 			if f.Kind == RunRealtimeRemove {
 				sub.removed[f.RunID] = true
+				delete(sub.fps, f.RunID)
 			} else {
 				delete(sub.removed, f.RunID)
+				if f.Run != nil {
+					s.runUpdateSeq++
+					f.Run.Revision = s.runUpdateSeq
+				}
 			}
 			frames = append(frames, f)
 		}

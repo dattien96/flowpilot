@@ -171,6 +171,11 @@ type InteractiveService struct {
 	// memory bounded by run count, never event count. Guarded by s.mu.
 	runUpdateSubs   map[int64]*runUpdateSub
 	runUpdateNextID int64
+	// runUpdateSeq stamps the wire revision on every emitted projection. The
+	// client's stale guard drops rev <= last-applied, so the wire revision
+	// must strictly increase whenever meaningful lane state changes — rs.seq
+	// alone fails (dispatch settles don't bump it). Guarded by s.mu.
+	runUpdateSeq int64
 }
 
 type interactiveRun struct {
@@ -754,11 +759,6 @@ type interactiveRun struct {
 	// no longer renders pinned above the entire prior conversation after a
 	// full server restart (see reorderSidecarPrefixToEnd).
 	sidecarPrefixCount int64
-
-	// muxFingerprint is the change-detector for the Task-429 mux plane: a
-	// drained run re-projects and emits an upsert only when its meaningful
-	// lane state (status, last summary, leg id, decision set) moved.
-	muxFingerprint string
 }
 
 type approvalRecord struct {
