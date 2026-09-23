@@ -31,6 +31,12 @@ import (
 
 const maxFlowGateReprompts = 2
 
+// scenarioGateReprompt marks a startTurn as the delivery of a queued gate
+// reprompt (startTurnClearingIntent kind="reprompt"). It lets startTurn keep
+// the reprompt-loop counter instead of zeroing it on the reprompt turn
+// itself (BUG-391).
+const scenarioGateReprompt = "gate_reprompt"
+
 // maxGateFixCodeAutoReprompts caps silent re-attempts after the user already
 // chose keep-test-fix-code. Without this, a model that only narrates the fix
 // (or asks for write permission in chat without writing) re-fires the full
@@ -74,8 +80,15 @@ func (s *InteractiveService) gateEpochStillValidLocked(runID string, epoch int64
 	if rs.parentRunID != "" {
 		loopParent = rs.parentRunID
 	}
-	if st := s.agentOrchestrator.loopStateFor(loopParent).Status; st == "stopped" || st == "done" {
-		return false
+	// BUG-393: a turn admitted onto an already-sealed loop
+	// (rs.turnStartedAfterLoopDone) is plain chat that still gets gate
+	// evaluation — the sealed loop is its EXPECTED admission state, not a
+	// Stop-style invalidation. The epoch mismatch and cancelled/failed checks
+	// above still fence real Stop races for the same turn.
+	if !rs.turnStartedAfterLoopDone {
+		if st := s.agentOrchestrator.loopStateFor(loopParent).Status; st == "stopped" || st == "done" {
+			return false
+		}
 	}
 	return true
 }
@@ -188,6 +201,19 @@ func (s *InteractiveService) runFlowGateAtEpoch(
 	}
 	log.Printf("[gate] cwd=%q baseSHA=%q diffLen=%d diff=%+v", cwd, baseSHA, len(diff), diff)
 	changedPaths := changedPathsFromDiff(diff)
+	// BUG-425: a gate-reprompt turn re-bases onto its own turnStartGitHead, so
+	// its observed diff only covers the remediation delta (usually just the
+	// change-audit note). The failing coding turn's paths were carried on the
+	// run — fold them into feature-key suggestion + contract inference so the
+	// committed contract describes the real change. tr.GitDiff stays
+	// turn-scoped so r-tests/r-reg still evaluate only this turn's delta.
+	s.mu.Lock()
+	carriedCodePaths := append([]string(nil), rs.pendingGateCodePaths...)
+	s.mu.Unlock()
+	if len(carriedCodePaths) > 0 {
+		changedPaths = appendUniqueStrings(changedPaths, carriedCodePaths...)
+		sort.Strings(changedPaths)
+	}
 	commitSubjects := collectCommitSubjectsSince(cwd, baseSHA)
 	knownFeatureKeys := loadKnownFeatureKeys(cwd)
 	suggestedFeatureKeys := suggestFeatureKeys(dotFP, changedPaths, strings.Join(commitSubjects, "\n"))
@@ -196,7 +222,7 @@ func (s *InteractiveService) runFlowGateAtEpoch(
 	// saving/head update (V9-02/V9-04). Commit only after gate allows.
 	// CP-43 P-1 Plan A: also consider the turn's prompt so a user-declared
 	// [Change Contract] is not missed when the AI does not echo it.
-	prepared := prepareChangeContract(ctx, cwd, rs.id, rs.stepID, rs.lastFullPrompt, fin.FinalMessage, diff, suggestedFeatureKeys)
+	prepared := prepareChangeContract(ctx, cwd, rs.id, rs.stepID, rs.lastFullPrompt, fin.FinalMessage, mergeCarriedPathsIntoDiff(diff, carriedCodePaths), suggestedFeatureKeys)
 	contractDeclared := prepared.declared
 	scopeOutOfScopePaths := prepared.outOfScopePaths
 	scopeHighSeverity := prepared.highSeverity
@@ -353,6 +379,12 @@ func (s *InteractiveService) runFlowGateAtEpoch(
 		}
 		tr.ReproduceExpected = true
 		tr.ReproduceCompileFailed = flowgate.ClassifySuiteOutput(baselineTestCmd, oracle.Output)
+		// BUG-389: verify the RED actually exercises the reported scope.
+		if len(tr.Tests.Failed) > 0 {
+			checked, hit := s.reproduceFailuresExerciseTarget(cwd, reproduceLockRunID, tr.Tests.Failed, tr.WrittenPaths)
+			tr.ReproduceTargetChecked = checked
+			tr.ReproduceExercisesTarget = hit
+		}
 		rules = flowgate.SuppressTestRules(flowgate.EnabledReproduceRules(rules, true))
 		log.Printf("[gate] reproduce turn: r-reproduce armed, r-tests/r-reg suppressed (compileFailed=%v failed=%v)",
 			tr.ReproduceCompileFailed, tr.Tests.Failed)
@@ -386,6 +418,17 @@ func (s *InteractiveService) runFlowGateAtEpoch(
 	// No synthetic r-tamper warn — the rule itself (reprompt) owns the signal.
 
 	if len(violations) == 0 {
+		// BUG-391: a passed gate ends the reprompt episode — reset the loop
+		// counter so a later, unrelated violation gets a fresh budget.
+		// BUG-440: pendingGateCodePaths is NOT cleared here — an LSP
+		// diagnostic below can still force a reprompt whose turn needs the
+		// carried scope, and a failed contract commit leaves the episode
+		// unfinished. The carry is dropped only after the contract commits.
+		s.mu.Lock()
+		if r := s.runs[runID]; r != nil && r.gateEpoch == epoch {
+			r.repromptAttempts = 0
+		}
+		s.mu.Unlock()
 		// CP-64 P-3: a passed reproduce turn locks its new test file(s)
 		// read-only for the coder step — the physical evidence of the bug can
 		// no longer be weakened by the fix that follows.
@@ -396,7 +439,11 @@ func (s *InteractiveService) runFlowGateAtEpoch(
 		// path — contract/scope violations keep their own reprompt; only a
 		// gate-clean turn consults LSP. Nil checker returns "" immediately.
 		if diagMsg := s.lspDiagnosticsForTurn(ctx, cwd, fin.ChangedFiles); diagMsg != "" {
-			return s.blockTurnForLSPDiagnostics(runID, epoch, turnID, diagMsg)
+			// BUG-440: hand the LSP reprompt the union of carried paths, this
+			// turn's observed diff, and confirmed writes — its own diff will
+			// only hold the diagnostic-fix delta.
+			return s.blockTurnForLSPDiagnostics(runID, epoch, turnID, diagMsg,
+				appendUniqueStrings(changedPaths, fin.ChangedFiles...)...)
 		}
 		// V10R4 P0-03 / BUG-288 R16-P0: durable commit under s.mu (no TOCTOU).
 		// V9-02: only persist contract + canonical head after gate allows.
@@ -429,6 +476,15 @@ func (s *InteractiveService) runFlowGateAtEpoch(
 			}
 			return true
 		}
+		// BUG-425/BUG-440: the contract is durably committed — the reprompt
+		// episode is fully over. Drop carried code paths so they cannot leak
+		// into the next unrelated turn's contract inference. (On LSP reprompt
+		// or commit failure above the carry is intentionally retained.)
+		s.mu.Lock()
+		if r := s.runs[runID]; r != nil && r.gateEpoch == epoch {
+			r.pendingGateCodePaths = nil
+		}
+		s.mu.Unlock()
 		// CP-62 P-1 (Task-337): a clean-gate vibe turn at drift >= 80 still
 		// escalates through the vibe resolver (owner debate), never the
 		// deferred pause path. Dev mode passthrough unchanged.
@@ -519,6 +575,17 @@ func (s *InteractiveService) runFlowGateAtEpoch(
 				r.pendingGateRepromptPrompt = prompt
 				r.pendingGateRepromptStepID = stepID
 				r.pendingGateRepromptGen++
+				// BUG-425/BUG-440: carry this failing turn's paths so the
+				// reprompt turn's gate can still infer a contract over the
+				// real change — its own diff will only hold the remediation
+				// delta. Union the observed diff paths AND confirmed write
+				// events: provider EventFileChanged streams can be partial,
+				// so neither source alone is complete. Union (not replace)
+				// so chained reprompts keep earlier paths.
+				pathsToHold := appendUniqueStrings(changedPaths, tr.WrittenPaths...)
+				if len(pathsToHold) > 0 {
+					r.pendingGateCodePaths = appendUniqueStrings(r.pendingGateCodePaths, pathsToHold...)
+				}
 			}
 			s.mu.Unlock()
 			return true
@@ -548,6 +615,13 @@ func (s *InteractiveService) runFlowGateAtEpoch(
 	}) {
 		return true
 	}
+	// BUG-425: gate allowed the turn — the reprompt episode is over; drop the
+	// carried code paths so a later unrelated turn does not inherit them.
+	s.mu.Lock()
+	if r := s.runs[runID]; r != nil && r.gateEpoch == epoch {
+		r.pendingGateCodePaths = nil
+	}
+	s.mu.Unlock()
 	s.recordGateAcceptedMetric(dotFP, rs, turnID, gateMode)
 	return false
 }
@@ -781,6 +855,14 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 			}
 		}
 		changedPaths := changedPathsFromDiff(diff)
+		// BUG-425 (child mirror): a reprompted coding child's own diff is just
+		// its remediation delta — pendingGateCodePaths already carries the
+		// failing turn's code paths (BUG-288 #8); fold them into suggestion +
+		// inference so the committed contract describes the real change.
+		if len(pendingPaths) > 0 {
+			changedPaths = appendUniqueStrings(changedPaths, pendingPaths...)
+			sort.Strings(changedPaths)
+		}
 		dotFP := filepath.Join(cwd, ".flowpilot")
 		suggested := suggestFeatureKeys(dotFP, changedPaths, fin.FinalMessage)
 		// Key contract under parent flow run id so appendChangeContractIfAny /
@@ -793,7 +875,7 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 		if stepForContract == "" {
 			stepForContract = rs.stepID
 		}
-		prepared = prepareChangeContract(ctx, cwd, contractRunID, stepForContract, rs.lastFullPrompt, fin.FinalMessage, diff, suggested)
+		prepared = prepareChangeContract(ctx, cwd, contractRunID, stepForContract, rs.lastFullPrompt, fin.FinalMessage, mergeCarriedPathsIntoDiff(diff, pendingPaths), suggested)
 		hasPreparedContract = true
 		contractDeclared = prepared.declared
 		scopeOutOfScopePaths = prepared.outOfScopePaths
@@ -952,6 +1034,11 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 				// exemption: flow-rules.json / forged siblings still drift).
 				changecontract.IsCanonicalHeadStorePath(p) ||
 				changecontract.IsLegacyContractsStorePath(p) ||
+				// BUG-394: runner/gate/provider-owned config the agent never
+				// wrote — the gate's own baseline capture, first-init gate
+				// config, the Devin session's MCP file. Exact paths only
+				// (CA-427 Finding 2: flow-rules.json still drifts).
+				changecontract.IsRunnerOwnedConfigPath(p) ||
 				// CA-648: tool/skill-pack owned scaffold surfaces
 				// (.claude/** .agents/** .grok/** AGENTS.md CLAUDE.md
 				// .gitignore) are installed mid-flow by skillpack/desktop
@@ -977,7 +1064,8 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 		// reproduction.
 		lockedOnly := codeOnlyWritten[:0]
 		for _, p := range codeOnlyWritten {
-			if changecontract.IsReadOnlyLockedPath(rec, p) {
+			// BUG-388: tolerate records whose ReadOnlyPaths were stored absolute.
+			if changecontract.IsReadOnlyLockedPathUnder(rec, p, cwd) {
 				continue
 			}
 			lockedOnly = append(lockedOnly, p)
@@ -1139,13 +1227,16 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 		written = pendingPaths
 	}
 	tr := flowgate.TurnResult{
-		RunID:                                 rs.id,
-		StepID:                                rs.stepID,
-		FinalMessage:                          fin.FinalMessage,
-		WrittenPaths:                          written,
-		WorkspaceCwd:                          cwd,
-		GitDiff:                               diff,
-		ChangedPaths:                          changedPathsFromDiff(diff),
+		RunID:        rs.id,
+		StepID:       rs.stepID,
+		FinalMessage: fin.FinalMessage,
+		WrittenPaths: written,
+		WorkspaceCwd: cwd,
+		GitDiff:      diff,
+		// BUG-425: union with carried prior-turn code paths — matches
+		// `written = pendingPaths` above and keeps contract/telemetry
+		// consistent on reprompt turns.
+		ChangedPaths:                          changedPathsFromDiff(mergeCarriedPathsIntoDiff(diff, pendingPaths)),
 		ChangeType:                            changeType,
 		RequiredFileArtifactOutputs:           required,
 		RequiredStructuredFileArtifactOutputs: structured,
@@ -1250,6 +1341,12 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 		// CP-64 P-1: the compile/assertion split the (pure) r-reproduce rule
 		// consumes — a compile error is never a successful reproduction.
 		tr.ReproduceCompileFailed = flowgate.ClassifySuiteOutput(baselineTestCmd, oracle.Output)
+		// BUG-389: verify the RED actually exercises the reported scope.
+		if len(tr.Tests.Failed) > 0 {
+			checked, hit := s.reproduceFailuresExerciseTarget(cwd, parentID, tr.Tests.Failed, tr.WrittenPaths)
+			tr.ReproduceTargetChecked = checked
+			tr.ReproduceExercisesTarget = hit
+		}
 		tr.TamperedTestPaths = append([]string(nil), oracle.Tampered...)
 		s.setTamperedTestPaths(rs, oracle.Tampered)
 		if scaffoldTurn {
@@ -1329,6 +1426,13 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 
 	violations := flowgate.Evaluate(tr, only)
 	if len(violations) == 0 {
+		// BUG-391: a passed gate ends the reprompt episode — reset the loop
+		// counter so a later, unrelated violation gets a fresh budget.
+		s.mu.Lock()
+		if r := s.runs[runID]; r != nil && r.gateEpoch == epoch {
+			r.repromptAttempts = 0
+		}
+		s.mu.Unlock()
 		// CP-64 P-3: a passed reproduce turn locks its NEW test file(s)
 		// read-only on the coder step's frozen contract — the coder can no
 		// longer weaken the reproduction that proves the bug (enforced at the
@@ -1345,7 +1449,11 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 		// CP-63 P-5 (Task-358): same live-diagnostics allow-path hook as the
 		// root gate above; nil checker returns "" immediately.
 		if diagMsg := s.lspDiagnosticsForTurn(ctx, cwd, fin.ChangedFiles); diagMsg != "" {
-			return s.blockTurnForLSPDiagnostics(runID, epoch, turnID, diagMsg)
+			// BUG-440 (child): carry union(diff, writes, prior carry) into the
+			// diagnostic reprompt — its own diff is only the fix delta.
+			lspCarry := appendUniqueStrings(changedPathsFromDiff(diff), fin.ChangedFiles...)
+			lspCarry = appendUniqueStrings(lspCarry, pendingPaths...)
+			return s.blockTurnForLSPDiagnostics(runID, epoch, turnID, diagMsg, lspCarry...)
 		}
 		// BUG-288 R16-P0: durable commit under s.mu (no TOCTOU with Stop).
 		if hasPreparedContract {
@@ -1405,10 +1513,9 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 		return true
 	}
 	// Remember code paths so empty-diff retry still re-checks (BUG-288 #8).
-	pathsToHold := tr.WrittenPaths
-	if len(pathsToHold) == 0 {
-		pathsToHold = changedPathsFromDiff(diff)
-	}
+	// BUG-440 (child): union the observed diff with confirmed write events —
+	// partial EventFileChanged streams must not drop diff-observed code paths.
+	pathsToHold := appendUniqueStrings(changedPathsFromDiff(diff), tr.WrittenPaths...)
 	// Extract r-reg options for child decision card (BUG-289 L3/F-12).
 	var gateOptions []string
 	var gateRegressedTests []string
@@ -1426,7 +1533,9 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 		return true
 	}
 	if len(pathsToHold) > 0 {
-		rs.pendingGateCodePaths = append([]string(nil), pathsToHold...)
+		// BUG-425: union with already-carried paths so a reprompt of a
+		// reprompt keeps the original failing turn's code paths.
+		rs.pendingGateCodePaths = appendUniqueStrings(rs.pendingGateCodePaths, pathsToHold...)
 	}
 	// CP-51 run-11262: user already chose keep-test-fix-code — do not re-open
 	// the decision modal; auto-reprompt with a write-hard prompt a few times.
@@ -2108,7 +2217,62 @@ func (s *InteractiveService) SubmitGateDecision(runID, option, customText string
 			return newAPIErr(400, "invalid_option", "option must be ok or cancel")
 		}
 	}
+	// BUG-411: when this run's own loop — or its parent's — is parked awaiting
+	// a human decision, a gate-decision IS that decision (the escalate /
+	// owner-debate card owns remediation). The old code consumed
+	// pendingGateBlock and fired startTurn into the flow_awaiting_user fence
+	// from a goroutine that swallowed the 409 — the option read "accepted"
+	// while nothing ran and the block was gone (live run-21689/run-25555
+	// debate deadlock). Feed the choice into resumeFlowWithFeedback so the
+	// parked hub re-drives with the remediation in its reinvoke note. Runs
+	// with their own decision surface (vibeSprintBoundaryPending /
+	// vibeResumeConfirm) were already handled above.
+	decisionTarget := ""
+	if loop := s.agentOrchestrator.loopStateFor(runID); loop.Status == "blocked" {
+		decisionTarget = runID
+	} else if rs.parentRunID != "" {
+		parent := s.runs[rs.parentRunID]
+		parentOwnSurface := parent != nil && (parent.vibeSprintBoundaryPending || parent.vibeResumeConfirm)
+		if !parentOwnSurface {
+			if pl := s.agentOrchestrator.loopStateFor(rs.parentRunID); pl.Status == "blocked" {
+				decisionTarget = rs.parentRunID
+			}
+		}
+	}
+	if decisionTarget != "" {
+		var feedback string
+		switch strings.ToLower(strings.TrimSpace(option)) {
+		case "keep-test-fix-code":
+			feedback = "User decision on the gate/decision card: keep the test and fix the code (keep-test-fix-code)."
+		case "suggest-requirement-change":
+			feedback = "User decision on the gate/decision card: amend the requirement/contract (suggest-requirement-change)."
+		case "custom":
+			if strings.TrimSpace(customText) == "" {
+				s.mu.Unlock()
+				return newAPIErr(400, "invalid_request", "customText is required for option 'custom'")
+			}
+			feedback = "User decision on the gate/decision card: " + strings.TrimSpace(customText)
+		default:
+			s.mu.Unlock()
+			return newAPIErr(400, "invalid_option", "option must be: keep-test-fix-code | suggest-requirement-change | custom")
+		}
+		rs.pendingGateBlock = nil // the stale block is superseded by the resume feedback
+		s.mu.Unlock()
+		log.Printf("[gate-decision] runID=%q option=%q routed_to=%s (loop blocked; resume carries the decision)", runID, option, decisionTarget)
+		if _, err := s.resumeFlowWithFeedback(decisionTarget, feedback); err != nil {
+			return newAPIErr(409, "resume_failed", err.Error())
+		}
+		return nil
+	}
+
 	info := rs.pendingGateBlock
+	// BUG-432: a stale/no pendingGateBlock means there is no live decision to
+	// take — previously this still spawned a reprompt turn (on a terminal or
+	// dead-loop run) with an empty test description. Fail closed instead.
+	if info == nil {
+		s.mu.Unlock()
+		return newAPIErr(409, "no_pending_gate_decision", "no gate decision is pending for this run")
+	}
 	rs.pendingGateBlock = nil
 	s.markRunRealtimeDirtyLocked(runID)
 	stepID := rs.lastTurnStepID
@@ -2155,9 +2319,19 @@ func (s *InteractiveService) SubmitGateDecision(runID, option, customText string
 
 	log.Printf("[gate-decision] runID=%q option=%q", runID, option)
 
-	go func() {
-		_, _ = s.startTurn(runID, TurnInput{StepID: stepID, Prompt: prompt}, "", "")
-	}()
+	// BUG-411: dispatch synchronously and surface the rejection — the old
+	// fire-and-forget goroutine swallowed startTurn errors, so a refused
+	// reprompt still read {"status":"accepted"} while the pending block was
+	// already consumed. On failure restore the block so the decision is not
+	// lost.
+	if _, terr := s.startTurn(runID, TurnInput{StepID: stepID, Prompt: prompt}, "", ""); terr != nil {
+		s.mu.Lock()
+		if rs3 := s.runs[runID]; rs3 != nil && rs3.pendingGateBlock == nil {
+			rs3.pendingGateBlock = info
+		}
+		s.mu.Unlock()
+		return terr
+	}
 	return nil
 }
 
@@ -2342,6 +2516,31 @@ func changedPathsFromDiff(diff []flowgate.ChangedFile) []string {
 	return out
 }
 
+// mergeCarriedPathsIntoDiff appends carried paths that are absent from diff
+// as ChangedFile entries so contract inference (InferFromDiff, ScopeDiff)
+// sees the whole accumulated change on a reprompt turn. The returned slice
+// is a copy — the caller's diff stays turn-scoped for r-tests/r-reg.
+// BUG-425.
+func mergeCarriedPathsIntoDiff(diff []flowgate.ChangedFile, carried []string) []flowgate.ChangedFile {
+	if len(carried) == 0 {
+		return diff
+	}
+	seen := make(map[string]bool, len(diff))
+	for _, f := range diff {
+		seen[filepath.ToSlash(f.Path)] = true
+	}
+	out := append([]flowgate.ChangedFile(nil), diff...)
+	for _, p := range carried {
+		p = filepath.ToSlash(strings.TrimSpace(p))
+		if p == "" || seen[p] {
+			continue
+		}
+		seen[p] = true
+		out = append(out, flowgate.ChangedFile{Path: p, Status: "M"})
+	}
+	return out
+}
+
 func collectCommitSubjectsSince(cwd, baseSHA string) []string {
 	args := []string{"-C", cwd, "log", "--no-merges", "--format=%s"}
 	if strings.TrimSpace(baseSHA) != "" {
@@ -2380,6 +2579,26 @@ func suggestFeatureKeys(dotFP string, changedPaths []string, message string) []s
 		return nil
 	}
 	candidates := featurecatalog.SuggestKey(changedPaths, message, catalog)
+	// BUG-417: the r-fk reprompt exists to steer the agent onto a REGISTERED
+	// FEATURE-KEYS.md entry — auto-derived catalog keys (ledger-only noise
+	// like "claude"/"calc") must never be suggested. Filtering applies only
+	// when a registry actually exists; a project with no FEATURE-KEYS.md
+	// keeps the unfiltered suggestions (typed degradation, not silent
+	// behavior change).
+	registered := loadKnownFeatureKeys(filepath.Dir(dotFP))
+	if len(registered) > 0 {
+		allow := make(map[string]bool, len(registered))
+		for _, k := range registered {
+			allow[k] = true
+		}
+		filtered := candidates[:0]
+		for _, c := range candidates {
+			if allow[c.Key] {
+				filtered = append(filtered, c)
+			}
+		}
+		candidates = filtered
+	}
 	if len(candidates) == 0 {
 		return nil
 	}
@@ -2392,6 +2611,47 @@ func suggestFeatureKeys(dotFP string, changedPaths []string, message string) []s
 		keys = append(keys, candidates[i].Key)
 	}
 	return keys
+}
+
+// verifiedFeatureKeySuggestion returns the first suggested key that is
+// registered in change-audit/FEATURE-KEYS.md — the only verified feature
+// identity source. BUG-439: with no registry (or no registered suggestion)
+// the contract's feature_key stays explicitly empty rather than persisting
+// auto-catalog noise as feature identity.
+func verifiedFeatureKeySuggestion(cwd string, suggested []string) string {
+	if len(suggested) == 0 {
+		return ""
+	}
+	registered := loadKnownFeatureKeys(cwd)
+	if len(registered) == 0 {
+		return ""
+	}
+	allow := make(map[string]bool, len(registered))
+	for _, k := range registered {
+		allow[k] = true
+	}
+	for _, k := range suggested {
+		if allow[k] {
+			return k
+		}
+	}
+	return ""
+}
+
+// inferredContractIntent synthesizes a truthful, self-marked intent for an
+// inferred contract (BUG-439). It is derived only from the observed scope —
+// commit subjects and prompt/reprompt text can be unrelated to the change
+// and are never consulted. Returns "" only when the diff is empty.
+func inferredContractIntent(c changecontract.Contract, diff []flowgate.ChangedFile) string {
+	if len(c.DeclaredPaths) > 0 {
+		return "inferred scope: " + strings.Join(c.DeclaredPaths, ", ")
+	}
+	for _, f := range diff {
+		if strings.TrimSpace(f.Path) != "" {
+			return "inferred docs/audit-only change"
+		}
+	}
+	return ""
 }
 
 // preparedChangeContract holds contract/scope evaluation before durable side
@@ -2429,10 +2689,11 @@ func prepareChangeContract(ctx context.Context, cwd, runID, stepID, prompt, fina
 		log.Printf("[changecontract] store open failed: %v", err)
 		return out
 	}
-	featureKey := ""
-	if len(suggestedFeatureKeys) > 0 {
-		featureKey = suggestedFeatureKeys[0]
-	}
+	// BUG-439: a persisted feature_key is feature identity — only a key
+	// registered in change-audit/FEATURE-KEYS.md counts as verified.
+	// Auto-catalog suggestions (ledger noise like "claude", or broad-glob
+	// entries) must never be written into the contract; unresolved stays "".
+	featureKey := verifiedFeatureKeySuggestion(cwd, suggestedFeatureKeys)
 
 	// V9-04: do not let inferred hub/root contracts overwrite a declared coder contract.
 	if existing, ok := store.GetLatestForRun(runID); ok && existing.Confidence == changecontract.ConfidenceDeclared {
@@ -2466,6 +2727,10 @@ func prepareChangeContract(ctx context.Context, cwd, runID, stepID, prompt, fina
 		}
 	} else {
 		c = changecontract.InferFromDiff(featureKey, diff)
+		// BUG-439: inferred rows must not be content-free — derive a truthful,
+		// self-marked intent from the observed scope (never from commit
+		// subjects or reprompt boilerplate, which can be unrelated).
+		c.Intent = inferredContractIntent(c, diff)
 	}
 	c.RunID = runID
 	c.StepID = stepID
@@ -2494,6 +2759,11 @@ func prepareChangeContract(ctx context.Context, cwd, runID, stepID, prompt, fina
 	out.ok = true
 	out.contract = c
 	out.declared = declared
+	// BUG-439: a content-free inferred contract (no verified feature identity
+	// AND no code scope) carries nothing enforceable — do not persist the row.
+	if !out.declared && out.contract.FeatureKey == "" && len(out.contract.DeclaredPaths) == 0 {
+		out.skipSave = true
+	}
 	out.outOfScopePaths, _ = changecontract.ScopeDiff(scopeC, diff, nil)
 	if len(out.outOfScopePaths) > 0 {
 		hasGitNexus := tooling.CheckTool("gitnexus", cwd).Status == "ok"
@@ -2566,13 +2836,20 @@ func commitChangeContract(cwd string, p preparedChangeContract, route canonicalP
 		}
 	}
 	if p.contract.FeatureKey != "" {
+		// BUG-439: an inferred contract's synthesized intent is scope
+		// telemetry, not a vetted behavior statement — the Canonical Head
+		// must never fold it in (it would overwrite a curated statement).
+		headContract := p.contract
+		if headContract.Confidence == changecontract.ConfidenceInferred {
+			headContract.Intent = ""
+		}
 		if route.ParentRunID != "" {
-			if err := stagePendingCanonicalHead(cwd, route.ParentRunID, route.CoderStepID, p.contract, len(p.outOfScopePaths) > 0, secret); err != nil {
+			if err := stagePendingCanonicalHead(cwd, route.ParentRunID, route.CoderStepID, headContract, len(p.outOfScopePaths) > 0, secret); err != nil {
 				return err
 			}
 		} else {
 			// BUG-288 R18-6: head I/O must fail-closed with contract durability.
-			if _, _, _, err := updateCanonicalHead(cwd, p.contract, len(p.outOfScopePaths) > 0); err != nil {
+			if _, _, _, err := updateCanonicalHead(cwd, headContract, len(p.outOfScopePaths) > 0); err != nil {
 				return err
 			}
 		}

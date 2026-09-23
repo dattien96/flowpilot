@@ -39,7 +39,7 @@ func flowNodeInlineDispatchable(node agentpack.FlowNode) bool {
 		return false
 	}
 	switch canonical {
-	case "command.validate", "artifact.audit_draft", "telegram.notify", "hub.notify", "hub.inline", "contract.freeze", "context.produce":
+	case "command.validate", "artifact.audit_draft", "telegram.notify", "hub.notify", "hub.inline", "contract.freeze", "context.produce", "tournament.arbiter", "tournament.merge":
 		return true
 	}
 	return false
@@ -127,6 +127,10 @@ func (s *InteractiveService) tryAdvanceFlowThroughInline(parentRunID string, edg
 		// spawn its single forward target so the flow never falls back to the
 		// note+reinvoke-hub path (whose prose turn then hub_stalled forever).
 		return s.runContextProduceNode(ctx, parentRunID, edges, nodes, node, resultMessage)
+	case "tournament.arbiter":
+		return s.runTournamentArbiterNode(ctx, parentRunID, edges, nodes, node, resultMessage)
+	case "tournament.merge":
+		return s.runTournamentMergeNode(ctx, parentRunID, edges, nodes, node, resultMessage)
 	default:
 		return false
 	}
@@ -176,6 +180,27 @@ func (s *InteractiveService) runContextProduceNode(ctx context.Context, parentRu
 		return true
 	}
 
+	// Resolve the consuming node FIRST (BUG-421): the package is packed into
+	// the consumer's prompt, so the consumer's contextProfile/contextSources
+	// govern the source set — and topology errors must escalate before any
+	// package is stored for a spawn that will never happen.
+	targets := forwardDoneTargets(edges, node.ID)
+	if len(targets) != 1 {
+		return escalate(fmt.Sprintf("context node must have exactly one forward done target, got %d", len(targets)))
+	}
+	target, ok := findFlowNode(nodes, targets[0])
+	if !ok {
+		return escalate("forward target " + targets[0] + " missing from flow nodes")
+	}
+	canonical, ok := agentpack.NormalizeBehaviorID(target.Behavior)
+	if !ok || (canonical != "agent.delegate" && canonical != "agent.code" && !IsReproduceBehavior(target.Behavior) && !IsScaffoldBehavior(target.Behavior)) {
+		return escalate("forward target " + target.ID + " is not a spawnable delegate/writer (behavior " + target.Behavior + ")")
+	}
+	agentName := flowNodeAgentName(target)
+	if agentName == "" {
+		return escalate("forward target " + target.ID + " has no resolvable agent")
+	}
+
 	workspace := s.workspaceCwdFor(parentRunID)
 	hints := FlowContextHints{
 		WorkflowRunID: parentRunID,
@@ -185,8 +210,20 @@ func (s *InteractiveService) runContextProduceNode(ctx context.Context, parentRu
 	if workspace != "" {
 		hints.ExplicitSourcePaths = extractPromptSourcePaths(resultMessage)
 		hints.ChangedPaths = uncommittedChangedPaths(workspace)
+		// BUG-418/419: trust the run's declared/frozen contract like the
+		// freeze-chain path does — the contract's feature_key beats a fresh
+		// lexical guess from planner prose (runs 1560/2274/3131 resolved the
+		// wrong feature), and its declared_paths seed source.excerpt
+		// including bare filenames the prose tokenizer can never recover.
+		if contract, ok := latestContractForRun(workspace, parentRunID); ok {
+			hints.ResolvedFeatureKey = contract.FeatureKey
+			hints.ExplicitSourcePaths = mergeDeclaredSourcePaths(contract.DeclaredPaths, hints.ExplicitSourcePaths)
+		}
 	}
-	built, err := BuildFlowContextPackageWithSources(ctx, workspace, hints, node.ContextSources)
+	sourceIDs := producedContextSourceIDs(
+		agentpack.FlowDefinition{ContextProfiles: s.flowContextProfilesFor(ctx, parentRunID)},
+		node, target)
+	built, err := BuildFlowContextPackageWithSources(ctx, workspace, hints, sourceIDs)
 	if err != nil {
 		return escalate("context production failed: " + err.Error())
 	}
@@ -211,23 +248,6 @@ func (s *InteractiveService) runContextProduceNode(ctx context.Context, parentRu
 				"node_id", node.ID, "error", err.Error(),
 			)
 		}
-	}
-
-	targets := forwardDoneTargets(edges, node.ID)
-	if len(targets) != 1 {
-		return escalate(fmt.Sprintf("context node must have exactly one forward done target, got %d", len(targets)))
-	}
-	target, ok := findFlowNode(nodes, targets[0])
-	if !ok {
-		return escalate("forward target " + targets[0] + " missing from flow nodes")
-	}
-	canonical, ok := agentpack.NormalizeBehaviorID(target.Behavior)
-	if !ok || (canonical != "agent.delegate" && canonical != "agent.code" && !IsReproduceBehavior(target.Behavior) && !IsScaffoldBehavior(target.Behavior)) {
-		return escalate("forward target " + target.ID + " is not a spawnable delegate/writer (behavior " + target.Behavior + ")")
-	}
-	agentName := flowNodeAgentName(target)
-	if agentName == "" {
-		return escalate("forward target " + target.ID + " has no resolvable agent")
 	}
 	if canonical == "agent.code" {
 		store, storeErr := changecontract.NewFrozenStore(workspace)
@@ -570,6 +590,18 @@ func runValidateWithOracleIfPossible(ctx context.Context, command, workspaceRoot
 		}
 	} else if exit != 0 && len(oracle.Failed) > 0 && summary == "" {
 		summary = "Validation failed (new or non-baseline failures): " + strings.Join(oracle.Failed, ", ")
+	}
+	// BUG-387 (run-19151): a tampered read-only test file must fail the
+	// validate gate — the oracle's Tampered set was previously discarded, so a
+	// marker injected into a locked test survived to run completion.
+	if len(oracle.Tampered) > 0 {
+		exit = 1
+		tamperMsg := "pre-existing test file(s) tampered: " + strings.Join(oracle.Tampered, ", ")
+		if summary == "" {
+			summary = tamperMsg
+		} else {
+			summary = tamperMsg + " | " + summary
+		}
 	}
 	// Stderr preferred by SummarizeValidationFailure: put suite output there.
 	// Prefix with summary when both exist so unstructured logs still carry context.
@@ -2058,6 +2090,10 @@ func (s *InteractiveService) advanceFlowThroughFreezeChain(ctx context.Context, 
 	}
 
 	var pkg *FlowContextPackage
+	// BUG-421: the produced package is consumed by the NEXT chain hop (or the
+	// writer when the chain ends) — the consumer's contextProfile/
+	// candidateSources govern the source set, not the producing node's.
+	flowDef := agentpack.FlowDefinition{ContextProfiles: s.flowContextProfilesFor(ctx, parentRunID)}
 	buildAndStorePackage := func(nodeID string, sourceIDs []string) error {
 		hints := FlowContextHints{
 			WorkflowRunID:      parentRunID,
@@ -2093,8 +2129,12 @@ func (s *InteractiveService) advanceFlowThroughFreezeChain(ctx context.Context, 
 		return nil
 	}
 
-	for _, mid := range path {
-		if err := buildAndStorePackage(mid.ID, mid.ContextSources); err != nil {
+	for i, mid := range path {
+		consumer := writerNode
+		if i+1 < len(path) {
+			consumer = path[i+1]
+		}
+		if err := buildAndStorePackage(mid.ID, producedContextSourceIDs(flowDef, mid, consumer)); err != nil {
 			return escalate(mid.ID, "context production failed: "+err.Error())
 		}
 		if s.isFlowEngineDriven(parentRunID) {
@@ -2108,7 +2148,7 @@ func (s *InteractiveService) advanceFlowThroughFreezeChain(ctx context.Context, 
 	// just rec.Intent's bare sentence. Build one scoped to the writer's own
 	// declared context sources when the loop above never ran.
 	if pkg == nil {
-		if err := buildAndStorePackage(writerNode.ID, writerNode.ContextSources); err != nil {
+		if err := buildAndStorePackage(writerNode.ID, producedContextSourceIDs(flowDef, writerNode, writerNode)); err != nil {
 			return escalate(writerNode.ID, "context production failed: "+err.Error())
 		}
 	}
@@ -2232,21 +2272,46 @@ func (s *InteractiveService) frozenContractForRun(workspace, parentRunID string)
 		return changecontract.FrozenContractRecord{}, false
 	}
 	nodes := s.activeFlowNodesFor(parentRunID)
+	// BUG-386 (run-19151): in a scaffold->coder topology both writers hold a
+	// frozen record and only the coder's carries SignatureHash. Returning the
+	// first record in topology order (the scaffold's) left r-signature-lock and
+	// the renegotiate_signatures tool permanently disarmed. Prefer the
+	// signature-locked record; fall back to the first active one.
+	var fallback changecontract.FrozenContractRecord
+	hasFallback := false
 	for _, w := range flowAgentCodeWriterNodes(nodes) {
 		if rec, ok, _ := frozenStore.GetFrozenForStep(parentRunID, w.ID); ok {
-			return rec, true
+			if strings.TrimSpace(rec.SignatureHash) != "" {
+				return rec, true
+			}
+			if !hasFallback {
+				fallback, hasFallback = rec, true
+			}
 		}
 	}
+	if hasFallback {
+		return fallback, true
+	}
 	// Fallback: restart may not have live topology — scan any record bound to
-	// this run that is still active, regardless of step id.
+	// this run that is still active, regardless of step id. Same preference.
+	var fb2 changecontract.FrozenContractRecord
+	hasFb2 := false
 	if recs, err := frozenStore.ListForRun(parentRunID); err == nil {
 		for _, rec := range recs {
 			if rec.CoderStepID != "" {
 				if _, ok, _ := frozenStore.GetFrozenForStep(parentRunID, rec.CoderStepID); ok {
-					return rec, true
+					if strings.TrimSpace(rec.SignatureHash) != "" {
+						return rec, true
+					}
+					if !hasFb2 {
+						fb2, hasFb2 = rec, true
+					}
 				}
 			}
 		}
+	}
+	if hasFb2 {
+		return fb2, true
 	}
 	return changecontract.FrozenContractRecord{}, false
 }
