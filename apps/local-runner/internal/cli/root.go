@@ -904,12 +904,18 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 						writeHTTPError(w, http.StatusBadRequest, err)
 						return
 					}
+					// BUG-384: re-resolve the catalog so /client/projects picks up
+					// the new credentials immediately — the boot-time store stays
+					// stale otherwise and projects only appear after a restart.
+					interactive.SetCatalogStore(runner.CatalogStoreFor(instance))
 					writeHTTPJSON(w, config)
 				case http.MethodDelete:
 					if err := instance.ResetSupabaseWorkspaceConfig(); err != nil {
 						writeHTTPError(w, http.StatusInternalServerError, err)
 						return
 					}
+					// BUG-384: drop back to the offline catalog on reset.
+					interactive.SetCatalogStore(runner.CatalogStoreFor(instance))
 					writeHTTPJSON(w, map[string]string{"status": "reset"})
 				default:
 					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

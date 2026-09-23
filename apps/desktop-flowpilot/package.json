@@ -13,7 +13,11 @@
     "dist": "npm run build && electron-builder",
     "dist:win": "npm run build && electron-builder --win",
     "dist:mac": "npm run build && electron-builder --mac",
-    "dist:linux": "npm run build && electron-builder --linux"
+    "dist:linux": "npm run build && electron-builder --linux",
+    "predev": "node scripts/ensure-deps.js",
+    "prebuild": "node scripts/ensure-deps.js",
+    "pretypecheck": "node scripts/ensure-deps.js",
+    "pretest:phase1": "node scripts/ensure-deps.js"
   },
   "build": {
     "appId": "com.flowpilot.desktop",

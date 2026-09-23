@@ -13,6 +13,11 @@ import (
 )
 
 func TestSupabaseWorkspaceConfigSaveLoadAndReset(t *testing.T) {
+	// BUG-382: persist mirrors to the global ~/.flowpilot settings path — pin
+	// HOME to a temp dir so the test never overwrites the real user config.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	instance := &Runner{workspace: t.TempDir(), secretStore: newMemorySecretStore()}
 	restoreHTTPProbe(t)
 
@@ -84,6 +89,9 @@ func TestSupabaseWorkspaceConfigSaveLoadAndReset(t *testing.T) {
 }
 
 func TestSupabaseWorkspaceConfigValidationAndBlankSecretSemantics(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	instance := &Runner{workspace: t.TempDir(), secretStore: newMemorySecretStore()}
 	restoreHTTPProbe(t)
 
@@ -137,6 +145,9 @@ func TestSupabaseWorkspaceConfigValidationAndBlankSecretSemantics(t *testing.T) 
 }
 
 func TestSupabaseWorkspaceConfigSecretFailureDoesNotWriteConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	instance := &Runner{workspace: t.TempDir(), secretStore: failingSetSecretStore{}}
 	restoreHTTPProbe(t)
 
@@ -157,6 +168,9 @@ func TestSupabaseWorkspaceConfigSecretFailureDoesNotWriteConfig(t *testing.T) {
 }
 
 func TestSupabaseWorkspaceConfigPersistFailureRollsBackSecret(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	secretStore := newMemorySecretStore()
 	instance := &Runner{workspace: t.TempDir(), secretStore: secretStore}
 	restoreHTTPProbe(t)

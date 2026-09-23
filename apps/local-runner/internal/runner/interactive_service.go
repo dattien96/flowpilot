@@ -36,6 +36,10 @@ type InteractiveService struct {
 	// catalog serves projects/workflows/steps — the fake interactiveCatalog when
 	// Supabase is not configured, SupabaseCatalogStore when it is (04-08 A1).
 	catalog CatalogStore
+	// catalogOverride, when set, supersedes catalog — swapped in after a
+	// Supabase workspace config save/reset so /client/projects reflects the new
+	// credentials without a runner restart (BUG-384). Stores CatalogStore.
+	catalogOverride atomic.Value
 	// Chat SSOT capture stack (CP-59 / SD-26). Always ON on dev branch; lazily
 	// initialized by ensureChatTranscriptWriter. Zero values valid before init.
 	chatOnce        sync.Once
@@ -947,6 +951,26 @@ func NewInteractiveServiceWithStore(registry *ProviderRegistry, catalog CatalogS
 		catalog = newInteractiveCatalog()
 	}
 	return newInteractiveService(registry, catalog, store)
+}
+
+// currentCatalog returns the active catalog: the swapped-in override after a
+// Supabase config save/reset (BUG-384), else the boot-time catalog.
+func (s *InteractiveService) currentCatalog() CatalogStore {
+	if v := s.catalogOverride.Load(); v != nil {
+		return v.(CatalogStore)
+	}
+	return s.catalog
+}
+
+// SetCatalogStore atomically swaps the catalog the service reads. Called after
+// a successful Supabase workspace config save/reset so subsequent
+// /client/projects reads use the new credentials (BUG-384). A nil store falls
+// back to the offline fake catalog, matching the constructor contract.
+func (s *InteractiveService) SetCatalogStore(catalog CatalogStore) {
+	if catalog == nil {
+		catalog = newInteractiveCatalog()
+	}
+	s.catalogOverride.Store(catalog)
 }
 
 func newInteractiveService(registry *ProviderRegistry, catalog CatalogStore, workflowStore WorkflowStore) *InteractiveService {
