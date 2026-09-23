@@ -41,8 +41,11 @@ func (s *InteractiveService) lspCheckerOrDefault() lspChecker {
 // blockTurnForLSPDiagnostics parks the turn on compiler errors: it arms the
 // standard gate-reprompt fields so the settle machinery opens a new turn
 // carrying the diagnostic message, then reports blocked. Epoch handling
-// mirrors the gate's own fail-closed contract.
-func (s *InteractiveService) blockTurnForLSPDiagnostics(runID string, epoch int64, turnID, diagMsg string) bool {
+// mirrors the gate's own fail-closed contract. carriedPaths are unioned into
+// pendingGateCodePaths (BUG-440): the diagnostic reprompt turn's diff only
+// covers its own fix delta, so the failing turn's code scope must ride along
+// or contract inference loses the real change.
+func (s *InteractiveService) blockTurnForLSPDiagnostics(runID string, epoch int64, turnID, diagMsg string, carriedPaths ...string) bool {
 	if !s.gateEpochStillValid(runID, epoch) {
 		return true
 	}
@@ -61,6 +64,7 @@ func (s *InteractiveService) blockTurnForLSPDiagnostics(runID string, epoch int6
 	rs.pendingGateRepromptPrompt = diagMsg
 	rs.pendingGateRepromptStepID = stepID
 	rs.pendingGateRepromptGen++
+	rs.pendingGateCodePaths = appendUniqueStrings(rs.pendingGateCodePaths, carriedPaths...)
 	s.emitLocked(rs, ProviderEvent{
 		Type:           EventFlowGateViolation,
 		ProviderTurnID: turnID,
