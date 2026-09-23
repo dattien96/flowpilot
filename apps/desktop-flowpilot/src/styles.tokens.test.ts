@@ -112,3 +112,20 @@ test("right-sidebar-stack pins rows to content height", () => {
   assert.ok(m, ".right-sidebar-stack rule not found");
   assert.match(m![1], /align-content\s*:\s*start/);
 });
+
+test("navigator never scrolls horizontally (M-7)", () => {
+  // BUG: a long nowrap project name propagated min-content width through
+  // .project-group-head → .project-groups → the section's implicit auto
+  // column, making the navigator ~19px wider than the sidebar — an
+  // h-scrollbar appeared at narrow windows (measured nav.scrollWidth 240 >
+  // clientWidth 229 at 960px). .project-groups is the grid item that carries
+  // the propagation; it must be allowed to shrink to the track.
+  const groups = CSS.match(/\.project-groups\s*\{([\s\S]*?)\n\}/);
+  assert.ok(groups, ".project-groups rule not found");
+  assert.match(groups![1], /min-width\s*:\s*0/);
+  // Backstop: the nav's scroll container must clip horizontal overflow — a
+  // horizontal scrollbar in the sidebar is a layout bug, not content.
+  const nav = CSS.match(/\.navigator\s*\{([\s\S]*?)\n\}/);
+  assert.ok(nav, ".navigator rule not found");
+  assert.match(nav![1], /overflow-x\s*:\s*hidden/);
+});

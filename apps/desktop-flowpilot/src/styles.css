@@ -1693,6 +1693,9 @@ body[data-platform="darwin"] .app-header {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  /* Sidebar content must never scroll horizontally — every row ellipsizes or
+     wraps, so residual overflow is a layout bug to clip, not scroll. */
+  overflow-x: hidden;
 }
 .workflow-rail {
   display: grid;
@@ -2157,6 +2160,11 @@ body[data-platform="darwin"] .app-header {
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
+  /* Grid item of .project-rail-section: a long nowrap project name propagates
+     min-content width up the chain and forces the section's implicit column
+     wider than the sidebar (navigator h-scrollbar, M-7). The name already
+     ellipsizes; let the item shrink to the track. */
+  min-width: 0;
 }
 .project-group-head {
   display: flex;
