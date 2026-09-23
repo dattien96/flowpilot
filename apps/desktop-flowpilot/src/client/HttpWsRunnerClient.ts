@@ -279,14 +279,26 @@ export class HttpWsRunnerClient implements RunnerClient {
   switchChatProvider(chatId: string, input: ChatSwitchInput): Promise<ChatSwitchResponse> {
     return this.postJSON<ChatSwitchResponse>(`/client/chats/${encodeURIComponent(chatId)}/switch-provider`, input);
   }
-  async chatTimeline(chatId: string, afterSeq?: number, limit?: number): Promise<ChatTimelineResponse> {
+  async chatTimeline(chatId: string, afterSeq?: number, limit?: number, beforeSeq?: number): Promise<ChatTimelineResponse> {
     let path = `/client/chats/${encodeURIComponent(chatId)}/timeline`;
-    if (afterSeq !== undefined || limit !== undefined) {
+    if (afterSeq !== undefined || limit !== undefined || beforeSeq !== undefined) {
       const q = new URLSearchParams();
       if (afterSeq !== undefined) q.set("afterSeq", String(afterSeq));
       if (limit !== undefined) q.set("limit", String(limit));
+      if (beforeSeq !== undefined) q.set("beforeSeq", String(beforeSeq));
       path += `?${q.toString()}`;
     }
+    return this.getJSON<ChatTimelineResponse>(path);
+  }
+  /** Task-421: run-scoped timeline (workflow runs key transcript by runId). */
+  async runTimeline(runId: string, opts?: { afterSeq?: number; limit?: number; beforeSeq?: number }): Promise<ChatTimelineResponse> {
+    let path = `/client/workflow-runs/${encodeURIComponent(runId)}/timeline`;
+    const q = new URLSearchParams();
+    if (opts?.afterSeq !== undefined) q.set("afterSeq", String(opts.afterSeq));
+    if (opts?.limit !== undefined) q.set("limit", String(opts.limit));
+    if (opts?.beforeSeq !== undefined) q.set("beforeSeq", String(opts.beforeSeq));
+    const qs = q.toString();
+    if (qs) path += `?${qs}`;
     return this.getJSON<ChatTimelineResponse>(path);
   }
   generateChatSummary(runId: string): Promise<ChatSummaryResult> {

@@ -7,6 +7,7 @@ package runner
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -161,7 +162,17 @@ func (s *InteractiveService) handleChatTimeline(w http.ResponseWriter, r *http.R
 	var nextSeq int64
 	truncated := false
 	if writer := s.ensureChatTranscriptWriter(); writer != nil {
-		recs, err := writer.store.ReadChatRecords(r.Context(), chatID, afterSeq, limit)
+		var recs []ChatTranscriptRecord
+		var err error
+		if beforeSeq, hasBefore := parseBeforeSeq(r); hasBefore {
+			// Task-421: backward page — records with chatSeq < beforeSeq,
+			// ascending, tail-bounded by limit. beforeSeq=-1 requests the
+			// latest page (open-time tail fetch). `truncated` then means
+			// "older records exist".
+			recs, err = readChatRecordsBefore(r.Context(), writer.store, chatID, beforeSeq, limit)
+		} else {
+			recs, err = writer.store.ReadChatRecords(r.Context(), chatID, afterSeq, limit)
+		}
 		if err != nil {
 			writeInteractiveError(w, newAPIErr(http.StatusInternalServerError, "chat_timeline_unavailable", err.Error()))
 			return
@@ -182,6 +193,24 @@ func (s *InteractiveService) handleChatTimeline(w http.ResponseWriter, r *http.R
 		Truncated: truncated,
 		Degraded:  degraded,
 	})
+}
+
+// parseBeforeSeq reads the optional `beforeSeq` query param (Task-421). A
+// value of -1 means "the latest page" and resolves to MaxInt64 so the store
+// layer sees a real upper bound. Absent/invalid → (0, false).
+func parseBeforeSeq(r *http.Request) (int64, bool) {
+	v := strings.TrimSpace(r.URL.Query().Get("beforeSeq"))
+	if v == "" {
+		return 0, false
+	}
+	parsed, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	if parsed < 0 {
+		return math.MaxInt64, true
+	}
+	return parsed, true
 }
 
 // backfillLegacyChatTranscript synthesizes raw turn records from the newest

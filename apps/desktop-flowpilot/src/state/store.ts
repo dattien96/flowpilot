@@ -43,6 +43,7 @@ import {
 } from "@/app/navigatorCatalog";
 import {
   applyTimelineEvent,
+  applyTimelineWindow,
   shouldApplyRunEvent,
   type PendingApproval,
   type PendingQuestion,
@@ -56,6 +57,10 @@ const HANDOFF_PROMPT_PREFIX = "[FlowPilot cross-provider chat handoff]";
 function buildPriorChatTimeline(
   records: import("@/types/contract").ChatTranscriptRecord[],
   currentRunId: string,
+  /** Task-421: when paging backward (loadEarlierTimeline) the current leg's
+   *  records must materialize too — the live replay only covers the in-memory
+   *  window. Se duplicates are filtered by the caller. */
+  includeCurrentLeg = false,
 ): TimelineItem[] {
   // CP-59 F4 / CA-699: provider-agnostic join (chatId only, no providerKey branch).
   const out: TimelineItem[] = [];
@@ -65,7 +70,7 @@ function buildPriorChatTimeline(
   // turn_started lands on it. The switch divider already represents the seed.
   let skipLeg = "";
   for (const rec of records) {
-    if (rec.legRunId === currentRunId && rec.type !== "chat_provider_switch") {
+    if (!includeCurrentLeg && rec.legRunId === currentRunId && rec.type !== "chat_provider_switch") {
       continue;
     }
     switch (rec.type) {
@@ -120,6 +125,23 @@ function buildPriorChatTimeline(
 
 const LAST_PROJECT_KEY = "fp:lastProjectId";
 const LAST_CHAT_MODE_KEY = "fp:lastChatMode";
+/** Task-421: transcript records fetched per backward page / open tail page. */
+const TIMELINE_TRANSCRIPT_PAGE = 400;
+/** Task-421: monotonic id source for optimistic prompt bubbles. The old
+ *  `prompt-${timeline.length}` scheme collides once the windowed timeline
+ *  stops growing (length stays ~TIMELINE_WINDOW_MAX forever). */
+let localPromptSeq = 0;
+
+/** Task-421: reset the window bookkeeping wherever the timeline array is
+ *  wholesale replaced (new run, resetRun, reconnect, open). */
+function resetTimelineWindow(): Pick<AppState, "timelineHasOlder" | "_timelineAnchorSeq" | "_timelineLoadingEarlier" | "_timelineEvictedIds"> {
+  return {
+    timelineHasOlder: false,
+    _timelineAnchorSeq: undefined,
+    _timelineLoadingEarlier: false,
+    _timelineEvictedIds: new Set<string>(),
+  };
+}
 
 let loadProjectsInFlight: Promise<void> | null = null;
 // Dedupe for loadProjectHistory cache-warmer — one fetch per project at a time.
@@ -145,6 +167,11 @@ interface RunSnapshot {
   _streamingAssistantId?: string;
   activeStepId?: string;
   lastEventSeq?: number;
+  /** Task-421: window bookkeeping follows the run's snapshot so focusing a
+   *  child agent and coming back preserves paging state. */
+  timelineHasOlder?: boolean;
+  _timelineAnchorSeq?: number;
+  _timelineEvictedIds?: Set<string>;
 }
 
 function sanitizePendingSnapshotState(
@@ -360,10 +387,19 @@ interface AppState {
   /** CP-71: opt the next run into an isolated git worktree. Persisted per
    *  chat via the run record — restored from the opened run's binding. */
   worktreeEnabled: boolean;
+  /**
+   * Task-426/428: filesystem path of the focused run's bound worktree
+   * ("" when unbound) — set from RunHandle/RunHistoryItem so the embedded
+   * terminal can resolve cwd without recomputing runner internals.
+   */
+  activeWorktreePath: string;
+  /** Task-428: bottom terminal dock visibility (session-only, not persisted). */
+  terminalOpen: boolean;
   /** False when the selected project directory is not a git repo (IPC probe). */
   worktreeAvailable: boolean;
   /** Binding state of the active run: "" when the run has no worktree. */
   activeWorktreeState: string;
+  toggleTerminal(): void;
   setWorktreeEnabled(on: boolean): void;
   refreshWorktreeAvailability(): void;
   /** True while toggleYoloForActiveProvider's Grok-only async path is applying
@@ -415,6 +451,14 @@ interface AppState {
   activeStepId?: string;
   status: RunStatus;
   timeline: TimelineItem[];
+  /** Task-421: true when the persisted transcript still holds records older
+   *  than the in-memory window — drives the "Load earlier" affordance. */
+  timelineHasOlder: boolean;
+  /** Task-421: smallest materialized chatSeq — backward-paging anchor. */
+  _timelineAnchorSeq?: number;
+  _timelineLoadingEarlier?: boolean;
+  /** Task-421: ids evicted by the timeline window (replay dedup guard). */
+  _timelineEvictedIds: Set<string>;
   artifacts: Artifact[];
   runHistory: RunHistoryItem[];
   /** Per-project run-history cache powering the Navigator's project groups and
@@ -556,6 +600,8 @@ interface AppState {
   loadProjectHistory(projectId: string): Promise<void>;
   /** Warm projectHistoryById (+ attention queue) for every known project. */
   loadAllProjectHistories(): Promise<void>;
+  /** Task-421: page older transcript records into the windowed timeline. */
+  loadEarlierTimeline(): Promise<void>;
   loadRemoteChatSessions(): Promise<void>;
   refreshAgentRuns(): Promise<void>;
   refreshWorkflowStepRuntime(): Promise<void>;
@@ -632,6 +678,10 @@ export const useStore = create<AppState>((set, get) => ({
   supportedModels: [],
   status: "idle",
   timeline: [],
+  timelineHasOlder: false,
+  _timelineAnchorSeq: undefined,
+  _timelineLoadingEarlier: false,
+  _timelineEvictedIds: new Set<string>(),
   artifacts: [],
   pendingApprovals: [],
   pendingQuestions: [],
@@ -662,6 +712,8 @@ export const useStore = create<AppState>((set, get) => ({
   workingMode: loadWorkingMode(),
   worktreeEnabled: false,
   worktreeAvailable: true,
+  activeWorktreePath: "",
+  terminalOpen: false,
   activeWorktreeState: "",
   grokYoloPostureLoading: false,
   summaryGenerating: false,
@@ -1306,6 +1358,7 @@ export const useStore = create<AppState>((set, get) => ({
         activeStepId: handle.stepId,
         status: handle.status,
         timeline: [],
+        ...resetTimelineWindow(),
         artifacts: [],
         pendingApprovals: [],
         pendingQuestions: [],
@@ -1833,7 +1886,7 @@ export const useStore = create<AppState>((set, get) => ({
         ...s.timeline,
         {
           kind: "prompt",
-          id: `prompt-${s.timeline.length}`,
+          id: `prompt-local-${++localPromptSeq}`,
           text: prompt,
           selectedSkills: skills && skills.length > 0 ? [...skills] : undefined,
           attachments:
@@ -1902,6 +1955,7 @@ export const useStore = create<AppState>((set, get) => ({
           chatId: handle.chatId ?? existingChatId,
           chatDetached: false,
           activeAgentRunId: undefined,
+          activeWorktreePath: handle.worktreePath ?? "",
         });
         if (get().worktreeEnabled) set({ activeWorktreeState: "active" });
       } else if (!runId) {
@@ -1938,6 +1992,7 @@ export const useStore = create<AppState>((set, get) => ({
           chatId: handle.chatId,
           chatDetached: false,
           activeAgentRunId: undefined,
+          activeWorktreePath: handle.worktreePath ?? "",
         });
         if (get().worktreeEnabled) set({ activeWorktreeState: "active" });
       }
@@ -2310,7 +2365,7 @@ export const useStore = create<AppState>((set, get) => ({
     await client.resumeRun(runId);
     // Clear the timeline so the replay visibly rebuilds it from persisted events
     // via the run's event stream (attach + replay from seq 0).
-    set({ timeline: [], recoverable: false, status: "running", _streamingAssistantId: undefined, _streamRunSeq: get()._streamRunSeq + 1 });
+    set({ timeline: [], recoverable: false, status: "running", _streamingAssistantId: undefined, _streamRunSeq: get()._streamRunSeq + 1, ...resetTimelineWindow() });
     await consumeStream(runId, client.streamRun(runId, 0), set, get);
     startOrchestrationStream(runId, client, set, get);
   },
@@ -2374,6 +2429,54 @@ export const useStore = create<AppState>((set, get) => ({
     for (const project of projects) {
       if (project.id === selectedProjectId) continue;
       await get().loadProjectHistory(project.id);
+    }
+  },
+
+  async loadEarlierTimeline() {
+    const s0 = get();
+    const runIdAtStart = s0.runId;
+    // Chats page through the chat-keyed transcript; workflow runs through the
+    // run-keyed one (records persist under the run id — run_timeline.go).
+    const key = s0.chatId ?? s0.runId;
+    if (!key || s0._timelineLoadingEarlier) return;
+    // Known exhausted: a completed backward page sets hasOlder=false.
+    if (!s0.timelineHasOlder && s0._timelineAnchorSeq !== undefined) return;
+    set({ _timelineLoadingEarlier: true });
+    const beforeSeq = s0._timelineAnchorSeq ?? -1; // -1 = latest page
+    try {
+      const tl = s0.chatId
+        ? await s0.client.chatTimeline(s0.chatId, undefined, TIMELINE_TRANSCRIPT_PAGE, beforeSeq)
+        : s0.client.runTimeline
+          ? await s0.client.runTimeline(key, { beforeSeq, limit: TIMELINE_TRANSCRIPT_PAGE })
+          : { chatId: "", legs: [], records: [], nextSeq: 0, truncated: false, degraded: false };
+      const records = tl.records ?? [];
+      // includeCurrentLeg=true: the window may have evicted current-leg rows —
+      // paged transcript records re-materialize them as pinned history.
+      const built = buildPriorChatTimeline(records, runIdAtStart ?? "", true);
+      set((s) => {
+        if (s.runId !== runIdAtStart) return { _timelineLoadingEarlier: false };
+        // Seam dedup: a paged transcript item must not duplicate a retained
+        // live-rendered row (live ids differ from chat-<seq>-<leg> ids).
+        const seen = new Set(
+          s.timeline.map((it) => `${it.kind}:${"text" in it ? it.text : it.id}`),
+        );
+        const fresh = built
+          .filter((it) => !seen.has(`${it.kind}:${"text" in it ? it.text : it.id}`))
+          // Paged-back rows are user-requested history — pin them so ingest
+          // eviction never silently drops what the user is reading.
+          .map((it) => ({ ...it, pinned: true } as TimelineItem));
+        const win = applyTimelineWindow([...fresh, ...s.timeline], s._timelineEvictedIds);
+        return {
+          timeline: win.timeline,
+          _timelineEvictedIds: win.evictedIds,
+          _timelineAnchorSeq: records.length > 0 ? records[0].chatSeq : s._timelineAnchorSeq,
+          timelineHasOlder: records.length > 0 && tl.truncated === true,
+          _timelineLoadingEarlier: false,
+        };
+      });
+    } catch (err) {
+      console.warn("[FlowPilot][timeline] loadEarlier failed", err);
+      set((s) => (s.runId === runIdAtStart ? { _timelineLoadingEarlier: false } : {}));
     }
   },
 
@@ -2631,11 +2734,22 @@ export const useStore = create<AppState>((set, get) => ({
     // chatId only). Best effort: timeline fetch failures keep current-leg replay.
     // Fallback to historyItem.chatId when ResumeRun's handle lacks it (BUG-338).
     let priorTimeline: TimelineItem[] = [];
+    // Task-421: fetch only the transcript TAIL page on open — the durable
+    // store is the source of truth and older pages are pulled on demand via
+    // loadEarlierTimeline. Keeps reopen memory bounded for long chats.
+    let timelineAnchorSeq: number | undefined;
+    let timelineHasOlder = false;
     const effectiveChatId = (handle.chatId as string) || (historyItem?.chatId as string) || "";
     if (effectiveChatId && historyItem?.runKind !== "workflow" && (handle as { runKind?: string }).runKind !== "workflow") {
       try {
-        const tl = await client.chatTimeline(effectiveChatId);
-        priorTimeline = buildPriorChatTimeline(tl.records ?? [], handle.runId);
+        const tl = await client.chatTimeline(effectiveChatId, undefined, TIMELINE_TRANSCRIPT_PAGE, -1);
+        const records = tl.records ?? [];
+        timelineAnchorSeq = records.length > 0 ? records[0].chatSeq : undefined;
+        timelineHasOlder = tl.truncated === true;
+        priorTimeline = applyTimelineWindow(
+          buildPriorChatTimeline(records, handle.runId),
+          undefined,
+        ).timeline;
       } catch (e) {
         console.warn("[FlowPilot][history-open] chatTimeline failed, falling back to single-leg replay", e);
       }
@@ -2677,6 +2791,7 @@ export const useStore = create<AppState>((set, get) => ({
       // all legs of a chat share one worktree, so the newest leg's record
       // is the chat-level value.
       worktreeEnabled: Boolean(historyItem?.worktreeState),
+      activeWorktreePath: historyItem?.worktreePath ?? handle.worktreePath ?? "",
       activeWorktreeState: historyItem?.worktreeState ?? "",
       chatMode: isWorkflowHistoryItem ? "workflow_step_auto" : "normal_chat",
       ...(isWorkflowHistoryItem && historyItem?.workflowId
@@ -2685,6 +2800,10 @@ export const useStore = create<AppState>((set, get) => ({
       chatStartMode,
       flowRef: chatStartMode === "bugfix" ? historyItem?.flowRef : undefined,
       timeline: priorTimeline,
+      timelineHasOlder,
+      _timelineAnchorSeq: timelineAnchorSeq,
+      _timelineLoadingEarlier: false,
+      _timelineEvictedIds: new Set<string>(),
       artifacts: [],
       pendingApprovals: [],
       pendingQuestions: [],
@@ -2789,6 +2908,7 @@ export const useStore = create<AppState>((set, get) => ({
       activeStepId: undefined,
       status: "idle",
       timeline: [],
+      ...resetTimelineWindow(),
       artifacts: [],
       agentRuns: [],
       agentGraphSnapshot: undefined,
@@ -2815,9 +2935,14 @@ export const useStore = create<AppState>((set, get) => ({
       flowRef: undefined,
       builtinOrchestrationOptions: [],
       worktreeEnabled: false,
+      activeWorktreePath: "",
       activeWorktreeState: "",
       selectedModel: pickDefaultModel(selectedProvider, supportedModels),
     });
+  },
+
+  toggleTerminal() {
+    set((s) => ({ terminalOpen: !s.terminalOpen }));
   },
 
   openInIde(path, line) {
@@ -3710,6 +3835,9 @@ function snapshotRunState(state: AppState): RunSnapshot {
     _streamingAssistantId: state._streamingAssistantId,
     activeStepId: state.activeStepId,
     lastEventSeq: state._runReplaySeq[state.runId ?? ""] ?? state._runReplaySeq[state.mainRunId ?? ""] ?? undefined,
+    timelineHasOlder: state.timelineHasOlder,
+    _timelineAnchorSeq: state._timelineAnchorSeq,
+    _timelineEvictedIds: state._timelineEvictedIds,
   };
 }
 
@@ -3726,12 +3854,17 @@ function restoreRunSnapshot(snapshot: RunSnapshot): Partial<AppState> {
     recoverable: snapshot.recoverable,
     _streamingAssistantId: snapshot._streamingAssistantId,
     activeStepId: snapshot.activeStepId,
+    timelineHasOlder: snapshot.timelineHasOlder ?? false,
+    _timelineAnchorSeq: snapshot._timelineAnchorSeq,
+    _timelineEvictedIds: snapshot._timelineEvictedIds ?? new Set<string>(),
+    _timelineLoadingEarlier: false,
   };
 }
 
 function emptyRunSnapshot(status: RunStatus): Partial<AppState> {
   return {
     timeline: [],
+    ...resetTimelineWindow(),
     artifacts: [],
     status,
     pendingApprovals: [],

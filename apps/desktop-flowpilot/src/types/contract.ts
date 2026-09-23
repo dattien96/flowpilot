@@ -369,6 +369,11 @@ export interface RunHandle {
   /** CP-59 chat SSOT: the logical chat this run belongs to + its leg ordinal. */
   chatId?: string;
   legSeq?: number;
+  /** CP-71/Task-426: worktree binding echo — present when bound. */
+  worktreeState?: string;
+  worktreeSlug?: string;
+  /** Task-426 (CP-83): absolute bound-worktree dir for terminal cwd. */
+  worktreePath?: string;
 }
 
 export interface RunHistoryItem {
@@ -404,6 +409,9 @@ export interface RunHistoryItem {
   /** CP-71: present when the run owns/shares a worktree binding. */
   worktreeState?: string;
   worktreeSlug?: string;
+  /** Task-426 (CP-83): absolute bound-worktree dir — the embedded terminal
+   *  resolves cwd from this instead of recomputing runner-internal paths. */
+  worktreePath?: string;
 }
 
 export interface ChatSessionSyncRequest {
@@ -816,8 +824,14 @@ export interface RunnerClient {
   handoffContext(runId: string, input: HandoffContextRequest): Promise<HandoffContextResponse>;
   /** CP-59 Task-314: chat-scoped cross-provider switch (runner mints the new leg). */
   switchChatProvider(chatId: string, input: ChatSwitchInput): Promise<ChatSwitchResponse>;
-  /** CP-59 Task-313: joined multi-leg chat timeline. */
-  chatTimeline(chatId: string, afterSeq?: number, limit?: number): Promise<ChatTimelineResponse>;
+  /** CP-59 Task-313: joined multi-leg chat timeline. Task-421: `beforeSeq`
+   *  pages backward (records with chatSeq < beforeSeq, ascending); -1 fetches
+   *  the latest page. Also serves workflow runs via the run-id keyed route. */
+  chatTimeline(chatId: string, afterSeq?: number, limit?: number, beforeSeq?: number): Promise<ChatTimelineResponse>;
+  /** Task-421: run-scoped timeline (workflow runs key transcript by runId).
+   *  Optional — older test doubles may omit it; callers must fall back to the
+   *  in-memory window. */
+  runTimeline?(runId: string, opts?: { afterSeq?: number; limit?: number; beforeSeq?: number }): Promise<ChatTimelineResponse>;
   generateChatSummary(runId: string): Promise<ChatSummaryResult>;
   /** Streaming turn: yields normalized provider events until terminal. */
   sendTurn(input: TurnInput): AsyncIterable<ProviderEventDTO>;

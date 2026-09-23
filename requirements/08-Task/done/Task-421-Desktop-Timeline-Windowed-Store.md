@@ -3,7 +3,7 @@
 - Document ID: `Task-421`
 - Title: `Desktop Timeline Windowed Store`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `dat.nguyen`
 - Reviewers: ``
 - Created: `2026-02-14`
@@ -171,16 +171,16 @@ export function applyTimelineWindow(items: TimelineItem[], max: number, pinned: 
 
 ## 10. Definition of Done
 
-- [ ] All §6 signatures implemented exactly (or deviation documented in §11)
-- [ ] All §7 tests exist, green, additive-only (no pre-existing test edited)
-- [ ] Related pre-existing tests still green — any old failure → STOP and report (safe-fix-contract R1)
-- [ ] Provider parity proven or evidenced where the change touches shared/provider paths (R2)
-- [ ] `feature_key` set; CA ledger entry written; FEATURE-KEYS.md already contains the key
-- [ ] §8 acceptance checks verified by hand or test
+- [x] All §6 signatures implemented exactly (or deviation documented in §11)
+- [x] All §7 tests exist, green, additive-only (no pre-existing test edited)
+- [x] Related pre-existing tests still green — any old failure → STOP and report (safe-fix-contract R1)
+- [x] Provider parity proven or evidenced where the change touches shared/provider paths (R2)
+- [x] `feature_key` set; CA ledger entry written (CA-923); FEATURE-KEYS.md already contains the key
+- [x] §8 acceptance checks verified by hand or test
 - [ ] GitNexus `detect_changes` shows only expected symbols before commit
 
 ## 11. Completion Notes
 
-- result:
-- follow-ups:
-- upstream docs updated:
+- result: implemented — windowed timeline store (TIMELINE_WINDOW_MAX=500), pinned interactive rows, evicted-id replay dedup, beforeSeq backward paging end-to-end (runner local+supabase+fallback, client, store loadEarlierTimeline, Timeline UI). 25 new tests green; full suite = 14 pre-existing baseline failures, zero regressions.
+- follow-ups: `_runSnapshots` LRU bound remains open scope; seam dedup is kind:text keyed (cosmetic collapse edge documented in CA-923).
+- upstream docs updated: CA-923; CP-82/83 unaffected.

@@ -729,6 +729,9 @@ export function Timeline(): React.ReactElement {
   }, [totalPromptCount]);
 
   const hiddenPromptCount = Math.max(totalPromptCount - visiblePromptCount, 0);
+  const timelineHasOlder = useStore((s) => s.timelineHasOlder);
+  const timelineLoadingEarlier = useStore((s) => s._timelineLoadingEarlier);
+  const loadEarlierTimeline = useStore((s) => s.loadEarlierTimeline);
   const visibleTimeline = useMemo(
     () => sliceTimelineFromPrompt(timeline, visiblePromptCount),
     [timeline, visiblePromptCount],
@@ -796,17 +799,28 @@ export function Timeline(): React.ReactElement {
         </div>
       ) : null}
       {timeline.length === 0 && <div className="empty">Select a project, choose your chat controls, and send a prompt to begin.</div>}
-      {hiddenPromptCount > 0 && (
+      {(hiddenPromptCount > 0 || timelineHasOlder) && (
         <button
           type="button"
           className="load-earlier-btn"
-          onClick={() =>
-            setVisiblePromptCount((current) =>
-              Math.min(totalPromptCount, current + TIMELINE_PAGE_SIZE),
-            )
-          }
+          disabled={timelineLoadingEarlier}
+          onClick={() => {
+            // In-memory prompts first; when the window's retained prompts are
+            // all visible, fall through to server-side backward paging (T-421).
+            if (hiddenPromptCount > 0) {
+              setVisiblePromptCount((current) =>
+                Math.min(totalPromptCount, current + TIMELINE_PAGE_SIZE),
+              );
+            } else {
+              void loadEarlierTimeline();
+            }
+          }}
         >
-          ↑ Load earlier prompts ({hiddenPromptCount})
+          {timelineLoadingEarlier
+            ? "Loading…"
+            : hiddenPromptCount > 0
+              ? `↑ Load earlier prompts (${hiddenPromptCount})`
+              : "↑ Load earlier history"}
         </button>
       )}
       {timelineGroups.map((it) => (

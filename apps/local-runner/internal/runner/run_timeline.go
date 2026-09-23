@@ -80,7 +80,16 @@ func (s *InteractiveService) handleGetRunTimeline(w http.ResponseWriter, r *http
 	var nextSeq int64
 	truncated := false
 	if writer := s.ensureChatTranscriptWriter(); writer != nil {
-		recs, err := writer.store.ReadChatRecords(r.Context(), runID, afterSeq, limit)
+		var recs []ChatTranscriptRecord
+		var err error
+		if beforeSeq, hasBefore := parseBeforeSeq(r); hasBefore {
+			// Task-421: backward page keyed by run id — same contract as the
+			// chat timeline so the desktop windowed store works for workflow
+			// runs too.
+			recs, err = readChatRecordsBefore(r.Context(), writer.store, runID, beforeSeq, limit)
+		} else {
+			recs, err = writer.store.ReadChatRecords(r.Context(), runID, afterSeq, limit)
+		}
 		if err != nil {
 			writeInteractiveError(w, newAPIErr(http.StatusInternalServerError, "run_timeline_unavailable", err.Error()))
 			return

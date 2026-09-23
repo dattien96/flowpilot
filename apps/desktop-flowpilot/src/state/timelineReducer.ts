@@ -31,8 +31,8 @@ export interface PromptAttachmentView {
 }
 
 export type TimelineItem =
-  | { kind: "assistant"; id: string; text: string; finalized: boolean }
-  | { kind: "prompt"; id: string; text: string; selectedSkills?: string[]; attachments?: PromptAttachmentView[] }
+  | { kind: "assistant"; id: string; text: string; finalized: boolean; pinned?: boolean }
+  | { kind: "prompt"; id: string; text: string; selectedSkills?: string[]; attachments?: PromptAttachmentView[]; pinned?: boolean }
   | { kind: "thinking"; id: string; text: string }
   | { kind: "tool"; id: string; toolName: string; status: "running" | "success" | "failed" | "cancelled"; input?: unknown; output?: unknown }
   | { kind: "file"; id: string; path: string; changeType?: string }
@@ -40,7 +40,7 @@ export type TimelineItem =
   | { kind: "question"; id: string; questionId: string; prompt: string; options: QuestionOption[]; multiSelect?: boolean; answer?: string | string[] }
   | { kind: "agent"; id: string; agentName: string; childRunId: string; finalMessage?: string }
   | { kind: "decision_card"; id: string; card: DecisionCardDTO; chosenOptionId?: string }
-  | { kind: "system"; id: string; text: string; tone: "info" | "error" | "warn" };
+  | { kind: "system"; id: string; text: string; tone: "info" | "error" | "warn"; pinned?: boolean };
 
 export interface PendingApproval {
   approvalId: string;
@@ -66,6 +66,63 @@ export interface TimelineState {
    *  in a live turn (e.g. via the grouped ask UI), so this must be a collection. */
   pendingQuestions: PendingQuestion[];
   _streamingAssistantId?: string;
+  /** Task-421: ids of items evicted by the timeline window — a non-rendered
+   *  dedup cache so a re-delivered event (replay/reconnect) never re-appends
+   *  an evicted row. Mutated in place during eviction; capped by
+   *  EVICTED_IDS_CAP. Never read by render code. */
+  _timelineEvictedIds?: Set<string>;
+}
+
+/** Task-421: bound for the resident timeline array. Older items are evicted
+ *  from memory (pinned interactive rows excepted) and paged back from the
+ *  persisted transcript via loadEarlierTimeline. */
+export const TIMELINE_WINDOW_MAX = 500;
+/** Cap for the evicted-id dedup set — ids are small; 50k ≈ ~2MB worst case. */
+const EVICTED_IDS_CAP = 50000;
+
+/** Task-421: items that must never be evicted — unresolved interactive rows
+ *  (approvals/questions/decision cards gate pending-state reconciliation in
+ *  settleHistoryReplayPendingState), the live streaming bubble, `thinking`,
+ *  and rows the user explicitly paged back (pinned flag set by
+ *  loadEarlierTimeline). */
+export function isPinnedTimelineItem(it: TimelineItem): boolean {
+  if ("pinned" in it && it.pinned === true) return true;
+  switch (it.kind) {
+    case "approval": return it.decision === undefined;
+    case "question": return it.answer === undefined;
+    case "decision_card": return it.chosenOptionId === undefined;
+    case "thinking": return true;
+    case "assistant": return !it.finalized;
+    default: return false;
+  }
+}
+
+/** Task-421: keep at most `max` tail items, evicting oldest non-pinned rows
+ *  into `evictedIds` (dedup guard). Returns the same refs when under the
+ *  bound — zero allocation on the hot path. */
+export function applyTimelineWindow(
+  timeline: TimelineItem[],
+  evictedIds: Set<string> | undefined,
+  max: number = TIMELINE_WINDOW_MAX,
+): { timeline: TimelineItem[]; evictedIds: Set<string> } {
+  const evicted = evictedIds ?? new Set<string>();
+  if (timeline.length <= max) return { timeline, evictedIds: evicted };
+  let overflow = timeline.length - max;
+  const kept: TimelineItem[] = [];
+  for (const it of timeline) {
+    if (overflow > 0 && !isPinnedTimelineItem(it)) {
+      evicted.add(it.id);
+      overflow--;
+    } else {
+      kept.push(it);
+    }
+  }
+  while (evicted.size > EVICTED_IDS_CAP) {
+    const oldest = evicted.values().next().value;
+    if (oldest === undefined) break;
+    evicted.delete(oldest);
+  }
+  return { timeline: kept, evictedIds: evicted };
 }
 
 export function shouldApplyRunEvent(activeRunId: string | undefined, streamRunId: string): boolean {
@@ -124,6 +181,11 @@ function hasPendingPrompt(timeline: TimelineItem[], prompt: string): boolean {
 
 export function applyTimelineEvent(s: TimelineState, e: ProviderEventDTO): Partial<TimelineState> {
   const status = statusFromEvent(e, s.status);
+  // Task-421: dedup guard against events whose timeline rows were evicted by
+  // the window — a replayed/re-delivered event must not re-append a dropped
+  // row at the tail.
+  const evictedIds = s._timelineEvictedIds ?? new Set<string>();
+  const wasEvicted = (id: string): boolean => evictedIds.has(id);
   const thinkingItem = s.timeline.find((it) => it.kind === "thinking") as Extract<TimelineItem, { kind: "thinking" }> | undefined;
   // Annotation events (BUG-121): only preserve an existing thinking row — never create one.
   let shouldKeepThinking =
@@ -183,13 +245,16 @@ export function applyTimelineEvent(s: TimelineState, e: ProviderEventDTO): Parti
     const pendingQuestions = extra.pendingQuestions ?? (staleQuestionIds.length > 0 ? [] : s.pendingQuestions);
     const derivedStatus =
       pendingApprovals.length > 0 ? "waiting_approval" : pendingQuestions.length > 0 ? "waiting_question" : status;
+    // Task-421: bound the resident array — evict oldest non-pinned rows.
+    const win = applyTimelineWindow(nextTimeline, evictedIds);
     return {
       timeline: shouldKeepThinking
         ? [
-            ...nextTimeline,
-            thinkingItem ?? { kind: "thinking", id: `thinking-${nextTimeline.length}`, text: "Thinking..." },
+            ...win.timeline,
+            thinkingItem ?? { kind: "thinking", id: `thinking-${win.timeline.length}`, text: "Thinking..." },
           ]
-        : nextTimeline,
+        : win.timeline,
+      _timelineEvictedIds: win.evictedIds,
       status: derivedStatus,
       _streamingAssistantId: streamingAssistantId,
       // Always restated explicitly (not spread conditionally) so every returned partial
@@ -210,7 +275,7 @@ export function applyTimelineEvent(s: TimelineState, e: ProviderEventDTO): Parti
         // switching chats in the history panel re-streams the run from seq 0 — must
         // not push a second copy of a prompt already in the timeline.
         const promptId = `prompt-${e.providerTurnId}`;
-        const alreadyPresent = timeline.some((it) => it.kind === "prompt" && it.id === promptId);
+        const alreadyPresent = timeline.some((it) => it.kind === "prompt" && it.id === promptId) || wasEvicted(promptId);
         if (!alreadyPresent && !hasPendingPrompt(timeline, e.prompt)) {
           timeline.push({ kind: "prompt", id: promptId, text: e.prompt });
         }
@@ -234,7 +299,7 @@ export function applyTimelineEvent(s: TimelineState, e: ProviderEventDTO): Parti
         const existingIdx = timeline.findIndex((it) => it.kind === "assistant" && it.id === id);
         if (existingIdx >= 0) {
           timeline[existingIdx] = { kind: "assistant", id, text: e.text, finalized: false };
-        } else {
+        } else if (!wasEvicted(id)) {
           timeline.push({ kind: "assistant", id, text: e.text, finalized: false });
         }
       }
@@ -257,6 +322,9 @@ export function applyTimelineEvent(s: TimelineState, e: ProviderEventDTO): Parti
         const existingIdx = timeline.findIndex((it) => it.kind === "assistant" && it.id === e.id);
         if (existingIdx >= 0) {
           timeline[existingIdx] = { kind: "assistant", id: e.id, text: e.text, finalized: true };
+        } else if (wasEvicted(e.id)) {
+          // Task-421: row was evicted — a re-delivered completion must not
+          // re-append it at the tail.
         } else {
           // Duplicate-emission guard (BUG-116): a single logical assistant message can reach
           // us as several message_completed events (the Codex mapper derives one from
@@ -279,7 +347,7 @@ export function applyTimelineEvent(s: TimelineState, e: ProviderEventDTO): Parti
     case "tool_started":
       closeAssistant();
       // Idempotent guard (BUG-111): skip a re-delivered tool_started whose row already exists.
-      if (!timeline.some((it) => it.kind === "tool" && it.id === e.id)) {
+      if (!timeline.some((it) => it.kind === "tool" && it.id === e.id) && !wasEvicted(e.id)) {
         timeline.push({ kind: "tool", id: e.id, toolName: e.toolName, status: "running", input: e.input });
       }
       break;
@@ -298,7 +366,7 @@ export function applyTimelineEvent(s: TimelineState, e: ProviderEventDTO): Parti
       // re-delivery (chat switch / replay) of an already-completed tool or an orphan
       // completion. Skip if a tool of this name already exists (re-delivery); otherwise
       // record it. (BUG-111)
-      if (timeline.some((it) => it.kind === "tool" && it.toolName === e.toolName)) {
+      if (timeline.some((it) => it.kind === "tool" && it.toolName === e.toolName) || wasEvicted(e.id)) {
         return finalize(timeline);
       }
       timeline.push({ kind: "tool", id: e.id, toolName: e.toolName, status: e.status, output: e.output });
@@ -310,7 +378,7 @@ export function applyTimelineEvent(s: TimelineState, e: ProviderEventDTO): Parti
       // Idempotent guard (BUG-111): a chat switch re-streams the run from seq 0, so a
       // file_changed whose row already exists must not be pushed again — otherwise the
       // same "calc.go modified" / "CA-*.md created" rows duplicate after switching back.
-      if (!timeline.some((it) => it.kind === "file" && it.id === e.id)) {
+      if (!timeline.some((it) => it.kind === "file" && it.id === e.id) && !wasEvicted(e.id)) {
         timeline.push({ kind: "file", id: e.id, path: e.path, changeType: e.changeType });
       }
       break;
@@ -382,7 +450,7 @@ export function applyTimelineEvent(s: TimelineState, e: ProviderEventDTO): Parti
       // fail on live wait:false flow children, which historically never received
       // agent_result_injected until settle (run-9034) — so the round-2 coder card
       // never appeared on the main chat timeline.
-      if (!timeline.some((it) => it.kind === "agent" && it.id === e.id)) {
+      if (!timeline.some((it) => it.kind === "agent" && it.id === e.id) && !wasEvicted(e.id)) {
         timeline.push({ kind: "agent", id: e.id, agentName: e.agentName, childRunId: e.childRunId });
       }
       // Only keep an existing thinking row — never create a new one for annotation events.
@@ -413,7 +481,7 @@ export function applyTimelineEvent(s: TimelineState, e: ProviderEventDTO): Parti
         if (index >= 0) {
           const agent = timeline[index] as Extract<TimelineItem, { kind: "agent" }>;
           timeline[index] = { ...agent, finalMessage: e.finalMessage };
-        } else {
+        } else if (!wasEvicted(e.id)) {
           timeline.push({ kind: "agent", id: e.id, agentName: e.agentName, childRunId: e.childRunId, finalMessage: e.finalMessage });
         }
       }
@@ -424,7 +492,7 @@ export function applyTimelineEvent(s: TimelineState, e: ProviderEventDTO): Parti
       // CP-35: the gate fired. For a reprompt rule a turn_started follows; for a
       // block rule this card is the only signal. Render it and never spawn a
       // thinking row, so block rules don't leave a dangling "Thinking..." line.
-      if (!timeline.some((it) => it.kind === "system" && it.id === e.id)) {
+      if (!timeline.some((it) => it.kind === "system" && it.id === e.id) && !wasEvicted(e.id)) {
         timeline.push({ kind: "system", id: e.id, text: `⚠ ${e.error}`, tone: "warn" });
       }
       shouldKeepThinking = thinkingItem !== undefined;
@@ -436,7 +504,7 @@ export function applyTimelineEvent(s: TimelineState, e: ProviderEventDTO): Parti
       // renders the draft, it never writes a file or creates a commit itself).
       // A blocked_* status is not an error, but it is not "ready" either, so
       // it gets the same warn tone as a gate violation rather than plain info.
-      if (!timeline.some((it) => it.kind === "system" && it.id === e.id)) {
+      if (!timeline.some((it) => it.kind === "system" && it.id === e.id) && !wasEvicted(e.id)) {
         timeline.push({
           kind: "system",
           id: e.id,

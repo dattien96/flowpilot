@@ -399,11 +399,18 @@ export class MockRunnerClient implements RunnerClient {
   }
   private switchLastProvider = new Map<string, string>();
 
-  async chatTimeline(chatId: string, afterSeq?: number, limit?: number): Promise<ChatTimelineResponse> {
+  async chatTimeline(chatId: string, afterSeq?: number, limit?: number, beforeSeq?: number): Promise<ChatTimelineResponse> {
     await delay(20);
     void afterSeq;
     void limit;
+    void beforeSeq;
     return { chatId, legs: [], records: [], nextSeq: 0, truncated: false, degraded: false };
+  }
+
+  async runTimeline(runId: string, opts?: { afterSeq?: number; limit?: number; beforeSeq?: number }): Promise<ChatTimelineResponse> {
+    await delay(20);
+    void opts;
+    return { chatId: runId, legs: [], records: [], nextSeq: 0, truncated: false, degraded: false };
   }
 
   async handoffContext(runId: string, input: HandoffContextRequest): Promise<HandoffContextResponse> {

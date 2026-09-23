@@ -89,6 +89,36 @@ func (s *SupabaseWorkflowStore) ReadChatRecords(ctx context.Context, chatID stri
 	return out, nil
 }
 
+// ReadChatRecordsBefore returns the tail-bounded page of records with
+// chatSeq < beforeSeq in ascending order (Task-421 windowed timeline
+// paging). Implemented natively as desc+limit+reverse so the client can walk
+// a long chat backward without loading the whole transcript.
+func (s *SupabaseWorkflowStore) ReadChatRecordsBefore(ctx context.Context, chatID string, beforeSeq int64, limit int) ([]ChatTranscriptRecord, error) {
+	endpoint := fmt.Sprintf(
+		"%s/workflow_chat_events?select=chat_id,chat_seq,leg_run_id,type,payload&chat_id=eq.%s&chat_seq=lt.%d&order=chat_seq.desc",
+		s.restURL, chatID, beforeSeq,
+	)
+	if limit > 0 {
+		endpoint += fmt.Sprintf("&limit=%d", limit)
+	}
+	code, body, err := httpRequestFn(ctx, http.MethodGet, endpoint, s.headers(""), nil)
+	if err != nil {
+		return nil, err
+	}
+	if code < 200 || code >= 300 {
+		return nil, fmt.Errorf("supabase read chat records before failed: status %d: %s", code, string(body))
+	}
+	var rows []dbChatEventRow
+	if err := json.Unmarshal(body, &rows); err != nil {
+		return nil, fmt.Errorf("supabase read chat records before decode: %w", err)
+	}
+	out := make([]ChatTranscriptRecord, 0, len(rows))
+	for i := len(rows) - 1; i >= 0; i-- {
+		out = append(out, rows[i].toRecord())
+	}
+	return out, nil
+}
+
 // LatestChatSeq returns the chat's max chatSeq (0 when the chat is unknown).
 func (s *SupabaseWorkflowStore) LatestChatSeq(ctx context.Context, chatID string) (int64, error) {
 	endpoint := fmt.Sprintf(
