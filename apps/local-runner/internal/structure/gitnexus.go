@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
@@ -17,6 +18,14 @@ type gitNexusProvider struct {
 }
 
 func (g *gitNexusProvider) Available() bool {
+	// BUG-420 note: this stays unconditionally true — the pre-existing
+	// TestGitNexusProviderAvailable/TestNewSelectsCorrectProvider pin the
+	// contract (New(true) ⇒ an available provider). The silent-elision defect
+	// is instead closed by (a) repoNameFromDir reading the index's own
+	// meta.json so cloned/renamed beds resolve the registered name, and
+	// (b) per-target lookup failures surfacing as section warnings in
+	// renderDependenceBody — the actual error text reaches the package,
+	// which is stronger signal than the generic "not indexed" guidance.
 	return true
 }
 
@@ -57,12 +66,58 @@ func (g *gitNexusProvider) Dependents(ctx context.Context, target string) (Depen
 	return summary, nil
 }
 
+// repoNameFromDir resolves the GitNexus-registered repository name for a
+// workspace. BUG-420: the index's own metadata wins over the directory
+// basename — a bed cloned/renamed after indexing keeps `.gitnexus/meta.json`
+// naming the original repoPath (dir `lt-cpNN` indexed as `gate-sandbox`), so
+// the basename produced `Repository "<dir>" not found` on every lookup.
+// Falls back to the basename when the index metadata is absent/corrupt.
 func repoNameFromDir(repoDir string) string {
+	if name, ok := gitNexusIndexRepoName(repoDir); ok {
+		return name
+	}
 	clean := filepath.Clean(strings.TrimSpace(repoDir))
 	if clean == "" || clean == "." {
 		return "."
 	}
+	// Windows paths keep `\` on POSIX hosts (filepath.Base won't split them);
+	// normalize so a stored `C:\dir\repo` repoPath still resolves to `repo`.
+	norm := strings.TrimRight(strings.ReplaceAll(clean, `\`, "/"), "/")
+	if norm == "" {
+		return "."
+	}
+	if i := strings.LastIndex(norm, "/"); i >= 0 {
+		if name := norm[i+1:]; name != "" && name != "." && name != ".." {
+			return name
+		}
+	}
 	return filepath.Base(clean)
+}
+
+// gitNexusIndexRepoName reads <repoDir>/.gitnexus/meta.json and returns the
+// basename of the recorded repoPath — the name the index was registered
+// under. ok=false when the file is missing, unparseable, or carries no
+// repoPath (treated as "not indexed" for availability purposes).
+func gitNexusIndexRepoName(repoDir string) (string, bool) {
+	clean := filepath.Clean(strings.TrimSpace(repoDir))
+	if clean == "" || clean == "." {
+		return "", false
+	}
+	data, err := os.ReadFile(filepath.Join(clean, ".gitnexus", "meta.json"))
+	if err != nil {
+		return "", false
+	}
+	var meta struct {
+		RepoPath string `json:"repoPath"`
+	}
+	if err := json.Unmarshal(data, &meta); err != nil {
+		return "", false
+	}
+	name := filepath.Base(filepath.Clean(strings.TrimSpace(meta.RepoPath)))
+	if name == "" || name == "." || name == "/" {
+		return "", false
+	}
+	return name, true
 }
 
 // gitNexusResponseError extracts a top-level {"error":"..."} payload when present.
