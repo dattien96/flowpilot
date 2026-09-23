@@ -54,21 +54,33 @@ var sectionHeadingRe = regexp.MustCompile(`^(\s*#{1,2}\s+)(\d+)([.)])([ \t]*)(.*
 // AutoFixDocument returns an error for unsupported phase values and for
 // binary / non-UTF-8 content. Empty content is returned unchanged.
 func AutoFixDocument(content string, phase string) (string, error) {
+	fixed, _, err := AutoFixDocumentDetailed(content, phase)
+	return fixed, err
+}
+
+// AutoFixDocumentDetailed is AutoFixDocument plus an audit trail: the returned
+// slice names each repair stage that was applied ("metadata-inserted",
+// "metadata-fixed", "ai-quick-view-inserted", "ai-quick-view-fixed",
+// "sections-rebuilt"). An empty slice means the document already conformed and
+// the returned content is identical to the input. BUG-422: the standardize
+// audit line `docscan_autofix_applied … changes=N` reports len(changes).
+func AutoFixDocumentDetailed(content string, phase string) (string, []string, error) {
 	ph, err := NormalizePhase(phase)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if strings.ContainsRune(content, '\x00') || (len(content) > 0 && !utf8.ValidString(content)) {
-		return "", fmt.Errorf("docscan: content is not valid UTF-8 text; refusing to auto-fix possible binary content")
+		return "", nil, fmt.Errorf("docscan: content is not valid UTF-8 text; refusing to auto-fix possible binary content")
 	}
 	if strings.TrimSpace(content) == "" {
-		return content, nil
+		return content, nil, nil
 	}
 
 	lines := strings.Split(content, "\n")
 	doc := &parsedDoc{lines: lines, blocks: splitBlocks(lines)}
 	fbs := classifyBlocks(doc, ph)
 	changed := false
+	var changes []string
 
 	// --- Metadata block ---
 	metaPos := -1
@@ -87,8 +99,10 @@ func AutoFixDocument(content string, phase string) (string, error) {
 		fbs = insertBlock(fbs, at, nb)
 		metaPos = at
 		changed = true
+		changes = append(changes, "metadata-inserted")
 	} else if fixMetadataBody(fbs[metaPos], ph) {
 		changed = true
+		changes = append(changes, "metadata-fixed")
 	}
 
 	// --- AI Quick View block ---
@@ -103,8 +117,10 @@ func AutoFixDocument(content string, phase string) (string, error) {
 		nb := &fixBlock{kind: blockAIV, heading: "## AI Quick View", body: aivSkeleton(aiQuickViewSubsections(ph))}
 		fbs = insertBlock(fbs, metaPos+1, nb)
 		changed = true
+		changes = append(changes, "ai-quick-view-inserted")
 	} else if fixAIVBody(fbs[aivPos], ph) {
 		changed = true
+		changes = append(changes, "ai-quick-view-fixed")
 	}
 
 	// --- Numbered sections ---
@@ -119,10 +135,11 @@ func AutoFixDocument(content string, phase string) (string, error) {
 	if sectionFixNeeded(fbs[regionStart:], ph, preRegion) {
 		fbs = rebuildSectionRegion(fbs, regionStart, ph, preRegion)
 		changed = true
+		changes = append(changes, "sections-rebuilt")
 	}
 
 	if !changed {
-		return content, nil
+		return content, nil, nil
 	}
 
 	out := make([]string, 0, len(lines)+16)
@@ -134,7 +151,7 @@ func AutoFixDocument(content string, phase string) (string, error) {
 		out = append(out, b.heading)
 		out = append(out, b.body...)
 	}
-	return strings.Join(out, "\n"), nil
+	return strings.Join(out, "\n"), changes, nil
 }
 
 // classifyBlocks converts parsedDoc blocks into independent fixBlocks.

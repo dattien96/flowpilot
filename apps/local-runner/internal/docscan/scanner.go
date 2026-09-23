@@ -10,6 +10,7 @@ package docscan
 import (
 	"fmt"
 	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -174,6 +175,8 @@ func ScanDirectory(dirPath string) (*ScanReport, error) {
 	if err != nil {
 		return nil, err
 	}
+	// CP-48 audit: every completed scan leaves a machine-parseable line.
+	log.Printf("docscan_scan_completed files_scanned=%d issues_found=%d", report.TotalFilesScanned, len(report.Issues))
 	return report, nil
 }
 
