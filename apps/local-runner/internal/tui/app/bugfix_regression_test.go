@@ -1,6 +1,9 @@
 package app
 
 import (
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -11,7 +14,18 @@ import (
 )
 
 func TestCmdShutdownAndQuit_SkipsKillWhenRunnerReused(t *testing.T) {
-	m := New(config.ChatConfig{OwnsRunner: false}, "http://127.0.0.1:4317")
+	// BUG-377: this test used to point at the REAL default runner port
+	// (127.0.0.1:4317) — cmdShutdownAndQuit POSTs /system/shutdown, so any
+	// `go test` run could kill a live runner serving real clients (observed
+	// live 2026-09-23: suite run shut down the :4317 dev runner). Stub the
+	// endpoint; the assertion (QuitMsg) is unchanged.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = io.WriteString(w, `{"status":"accepted"}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	m := New(config.ChatConfig{OwnsRunner: false}, srv.URL)
 	cmd := m.cmdShutdownAndQuit()
 	msg := cmd()
 	if _, ok := msg.(QuitMsg); !ok {
