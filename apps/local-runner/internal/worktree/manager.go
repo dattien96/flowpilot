@@ -250,7 +250,12 @@ func (Manager) Diff(_ context.Context, repoDir, ownerID, prefix string) ([]byte,
 	if fi, err := os.Stat(path); err != nil || !fi.IsDir() {
 		return nil, fmt.Errorf("worktree: no worktree for owner %q", ownerID)
 	}
-	if _, err := gitOut(path, "add", "-N", "."); err != nil {
+	// The runner's own .flowpilot metadata dir (gate baselines, nested
+	// candidate worktrees, logs) is runtime state, never candidate output —
+	// exclude it from both the intent-to-add sweep and the diff or it lands
+	// in the merge patch and conflicts against the main workspace's own
+	// .flowpilot (live run-3589: winner patch conflicted on guard files).
+	if _, err := gitOut(path, "add", "-N", "--", ".", ":(exclude).flowpilot"); err != nil {
 		return nil, err
 	}
 	args := []string{"diff", "--no-color"}
@@ -262,6 +267,7 @@ func (Manager) Diff(_ context.Context, repoDir, ownerID, prefix string) ([]byte,
 			args = append(args, base)
 		}
 	}
+	args = append(args, "--", ".", ":(exclude).flowpilot")
 	cmd := exec.Command("git", args...)
 	cmd.Dir = path
 	patch, err := cmd.Output()
@@ -398,6 +404,44 @@ func (m Manager) ApplyWithOptions(_ context.Context, repoDir, ownerID, prefix st
 	apply.Stdin = bytes.NewReader(patch)
 	if out, err := apply.CombinedOutput(); err != nil {
 		// Raced between --check and apply: same conflict treatment.
+		return &MergeConflictError{
+			OwnerID:       ownerID,
+			Reason:        "patch failed to apply on the main workspace",
+			Patch:         patch,
+			ConflictPaths: conflictPathsFromApplyOutput(string(out)),
+		}
+	}
+	return nil
+}
+
+// ApplyPatch applies patch bytes onto the main workspace directly — the
+// worktree-free twin of ApplyWithOptions for callers holding a snapshot
+// (tournament escalate parks clean candidate worktrees; a later human pick
+// merges the stored diff). Same contract: --check oracle first, per-repo
+// serialization, no commit/ref mutation, *MergeConflictError with the patch
+// evidence on failure.
+func (m Manager) ApplyPatch(_ context.Context, repoDir, ownerID string, patch []byte) error {
+	mu := repoApplyLock(repoDir)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(bytes.TrimSpace(patch)) == 0 {
+		return nil // nothing to merge — still a successful (empty) win
+	}
+	check := exec.Command("git", "apply", "--check", "-")
+	check.Dir = repoDir
+	check.Stdin = bytes.NewReader(patch)
+	if out, err := check.CombinedOutput(); err != nil {
+		return &MergeConflictError{
+			OwnerID:       ownerID,
+			Reason:        "patch does not apply cleanly on the main workspace",
+			Patch:         patch,
+			ConflictPaths: conflictPathsFromApplyOutput(string(out)),
+		}
+	}
+	apply := exec.Command("git", "apply", "-")
+	apply.Dir = repoDir
+	apply.Stdin = bytes.NewReader(patch)
+	if out, err := apply.CombinedOutput(); err != nil {
 		return &MergeConflictError{
 			OwnerID:       ownerID,
 			Reason:        "patch failed to apply on the main workspace",

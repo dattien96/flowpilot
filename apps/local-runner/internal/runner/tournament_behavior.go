@@ -324,6 +324,7 @@ func behaviorTournamentArbiter(ctx context.Context, in BehaviorInput) (BehaviorO
 	}
 
 	results := make([]tournament.CandidateResult, 0, len(cfg.Candidates))
+	patches := map[string]string{}
 	for _, cand := range cfg.Candidates {
 		worktree, err := ensure(cand.CandidateID)
 		if err != nil {
@@ -350,11 +351,29 @@ func behaviorTournamentArbiter(ctx context.Context, in BehaviorInput) (BehaviorO
 				break
 			}
 		}
+		// Snapshot the candidate's patch BEFORE any verdict-time cleanup so
+		// an escalate's decision-card pick can still merge it after the
+		// worktree is gone (live run-3077: escalate cleaned the dirs and the
+		// human's candidate pick hit "no worktree for owner").
+		// BUG-453: a failed snapshot must fail closed — verdict-time cleanup
+		// deletes every candidate dir, so a card option with no snapshot is
+		// unmergeable forever. Same contract as the sibling ensure/metrics
+		// errors: no card, no surviving worktrees.
+		patch, derr := mgr.Diff(in.WorkspaceCwd, cand.CandidateID)
+		if derr != nil {
+			_ = mgr.Cleanup(in.WorkspaceCwd, ids)
+			return BehaviorOutput{}, fmt.Errorf("%s: patch snapshot for %s: %w", id, cand.CandidateID, derr)
+		}
+		patches[cand.CandidateID] = string(patch)
 		results = append(results, res)
 	}
-	return finishTournamentArbiter(results, cfg, attempt, func(losers []string) {
+	out := finishTournamentArbiter(results, cfg, attempt, func(losers []string) {
 		_ = mgr.Cleanup(in.WorkspaceCwd, losers)
-	}), nil
+	})
+	if len(patches) > 0 {
+		out.Payload["patches"] = patches
+	}
+	return out, nil
 }
 
 // finishTournamentArbiter scores, picks the action, does the verdict-time
@@ -424,7 +443,32 @@ func behaviorTournamentMerge(_ context.Context, in BehaviorInput) (BehaviorOutpu
 		return BehaviorOutput{}, fmt.Errorf("%s: missing workspace for node %q", id, in.NodeID)
 	}
 	var mgr tournament.WorktreeManager
-	if err := mgr.MergeWinner(in.WorkspaceCwd, winner); err != nil {
+	// A patch snapshot from the arbiter payload applies directly — the
+	// escalate path cleans candidate worktrees, so a human's card pick can
+	// only merge from the stored diff (BUG-414). Key PRESENCE distinguishes
+	// snapshot state (BUG-453):
+	//   present + nonempty → apply the recorded snapshot
+	//   present + empty    → the picked candidate changed nothing: escalate
+	//     explicitly rather than erroring on a worktree that no longer exists
+	//   absent             → legacy live-worktree path (an arbiter-picked
+	//     winner keeps its dir until merge)
+	// Read the patch raw — tournamentStringArg trims, and a stripped
+	// trailing newline makes `git apply` reject the diff as corrupt.
+	storedPatch, patchRecorded := in.RawArgs["patch"].(string)
+	var err error
+	switch {
+	case patchRecorded && strings.TrimSpace(storedPatch) != "":
+		err = mgr.ApplyPatch(in.WorkspaceCwd, winner, []byte(storedPatch))
+	case patchRecorded:
+		return BehaviorOutput{
+			Status:  "escalate",
+			Summary: "tournament winner " + winner + " produced no mergeable diff",
+			Payload: map[string]any{"winner": winner, "reason": "empty_patch"},
+		}, nil
+	default:
+		err = mgr.MergeWinner(in.WorkspaceCwd, winner)
+	}
+	if err != nil {
 		var conflict *tournament.MergeConflictError
 		if errors.As(err, &conflict) {
 			return BehaviorOutput{
