@@ -215,7 +215,7 @@ func TestSupabaseCatalogStoreShaping(t *testing.T) {
 	if projects[0].Model != "gpt-5.4" {
 		t.Fatalf("project model = %q, want gpt-5.4", projects[0].Model)
 	}
-	if !strings.Contains((*cap)[0].endpoint, "/rest/v1/projects?select=id,name,directory_path,default_model,project_workspace_bindings(local_path)") {
+	if !strings.Contains((*cap)[0].endpoint, "/rest/v1/projects?select=id,name,directory_path,default_model,platform,project_workspace_bindings(local_path)") {
 		t.Fatalf("projects endpoint = %s", (*cap)[0].endpoint)
 	}
 

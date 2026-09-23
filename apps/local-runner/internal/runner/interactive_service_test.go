@@ -1488,27 +1488,31 @@ func TestSpawnChildEmitsGraphAndBusEvents(t *testing.T) {
 	if _, spawnErr := svc.spawnChildRun(context.Background(), parent.RunID, SpawnAgentInput{Agent: "coder", Prompt: "do it", Provider: "codex", Wait: false}); spawnErr != nil {
 		t.Fatalf("spawnChildRun: %v", spawnErr)
 	}
-	status, body := doJSON(t, "GET", srv.URL+"/admin/workflow-runs/"+parent.RunID+"/events", nil, nil)
-	if status != http.StatusOK {
-		t.Fatalf("admin events status=%d body=%s", status, body)
-	}
+	// The bus event (kind=ready-for-review) is emitted on the child's turn
+	// completion, which is async after spawnChildRun returns — poll the event
+	// log until both event types land instead of racing the adapter.
 	var evs []ProviderEvent
-	if err := json.Unmarshal(body, &evs); err != nil {
-		t.Fatalf("decode events: %v", err)
-	}
-	hasGraph := false
-	hasBus := false
-	for _, ev := range evs {
-		if ev.Type == EventAgentGraphUpdated {
-			hasGraph = true
+	waitLoop(t, "graph+bus events persisted", 5*time.Second, func() bool {
+		status, body := doJSON(t, "GET", srv.URL+"/admin/workflow-runs/"+parent.RunID+"/events", nil, nil)
+		if status != http.StatusOK {
+			t.Fatalf("admin events status=%d body=%s", status, body)
 		}
-		if ev.Type == EventAgentBusMessage {
-			hasBus = true
+		evs = nil
+		if err := json.Unmarshal(body, &evs); err != nil {
+			t.Fatalf("decode events: %v", err)
 		}
-	}
-	if !hasGraph || !hasBus {
-		t.Fatalf("events missing graph/bus updates: %+v", evs)
-	}
+		hasGraph := false
+		hasBus := false
+		for _, ev := range evs {
+			if ev.Type == EventAgentGraphUpdated {
+				hasGraph = true
+			}
+			if ev.Type == EventAgentBusMessage {
+				hasBus = true
+			}
+		}
+		return hasGraph && hasBus
+	})
 }
 
 type loopRestartAdapter struct {

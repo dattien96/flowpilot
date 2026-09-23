@@ -13,6 +13,11 @@ func TestTask330_ResumeFromTddStartsSprintWhenNoTddOutput(t *testing.T) {
 	svc, _ := newTestServer(t)
 	cwd := t.TempDir()
 	task328Write(t, cwd, "requirements/08-Task/todo/Task-904-snake-core.md", "# T\n")
+	// Task-327 precondition: a real resume-from-tdd run reached tdd only after
+	// the SS lock, so vibeLockedSS is persisted and the file exists. Without it
+	// restartVibeIngestForMissingSS (R-TK-D3) correctly restarts vibe-ingest
+	// before the sprint resume below ever runs.
+	task328Write(t, cwd, "requirements/05-System-Specs/SS-1-snake.md", "# SS\n")
 	runID := "run-task330-tdd"
 	svc.mu.Lock()
 	svc.runs[runID] = &interactiveRun{
@@ -22,6 +27,7 @@ func TestTask330_ResumeFromTddStartsSprintWhenNoTddOutput(t *testing.T) {
 		workspaceCwd:       cwd,
 		chatFlowRef:        workingmode.PackPrefix + vibeSprintFlowID,
 		vibeCheckpointNode: vibeTaskSlicerNodeID,
+		vibeLockedSS:       "requirements/05-System-Specs/SS-1-snake.md",
 		vibeTaskPlan:       []string{"requirements/08-Task/todo/Task-904-snake-core.md"},
 		vibeResumeConfirm:  true,
 		vibeResumeFromNode: "tdd",

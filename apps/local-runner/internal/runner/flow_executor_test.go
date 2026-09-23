@@ -253,11 +253,39 @@ func TestFindFlowNodeReturnsMatchByID(t *testing.T) {
 }
 
 // TestTryAdvanceFlowFromNodeBailsOnNonDelegateTarget proves the safety valve:
-// if a forward target isn't a spawnable agent.delegate node (e.g. review-loop's
-// "synthesis", which is the hub's own inline turn), tryAdvanceFlowFromNode
-// returns false rather than guessing — callers fall back to the pre-existing
-// note+reinvoke-hub behavior for that case.
+// if a forward target isn't a spawnable agent.delegate node and isn't an
+// inline-dispatchable one either (e.g. a user.confirm control node),
+// tryAdvanceFlowFromNode returns false rather than guessing — callers fall
+// back to the pre-existing note+reinvoke-hub behavior for that case.
+// hub.inline targets are covered separately below: since CP-58 they dispatch
+// the hub notify inline (the same hub reinvoke end result), so they claim the
+// advance instead of bailing.
 func TestTryAdvanceFlowFromNodeBailsOnNonDelegateTarget(t *testing.T) {
+	svc, _ := newTestServer(t)
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	svc.mu.Lock()
+	svc.runs[parent.RunID].activeFlowEdges = []agentpack.FlowEdge{
+		{From: "reviewer_correctness", To: "confirm_gate", When: "done", Kind: "forward"},
+	}
+	svc.runs[parent.RunID].activeFlowNodes = []agentpack.FlowNode{
+		{ID: "confirm_gate", Behavior: "user.confirm"},
+	}
+	svc.mu.Unlock()
+
+	if svc.tryAdvanceFlowFromNode(parent.RunID, "reviewer_correctness", "looks good") {
+		t.Fatal("expected tryAdvanceFlowFromNode to bail (return false) when the target is a non-delegate, non-inline user.confirm node")
+	}
+}
+
+// TestTryAdvanceFlowFromNodeDispatchesHubInlineTarget covers the CP-58
+// contract: a forward target carrying hub.inline is the hub's own inline turn
+// (e.g. review-loop's "synthesis"). tryAdvanceFlowFromNode claims the advance
+// and dispatches the hub notify — the same end result as the old
+// bail→note+reinvoke-hub fallback, minus the extra round trip.
+func TestTryAdvanceFlowFromNodeDispatchesHubInlineTarget(t *testing.T) {
 	svc, _ := newTestServer(t)
 	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
 	if err != nil {
@@ -272,8 +300,13 @@ func TestTryAdvanceFlowFromNodeBailsOnNonDelegateTarget(t *testing.T) {
 	}
 	svc.mu.Unlock()
 
-	if svc.tryAdvanceFlowFromNode(parent.RunID, "reviewer_correctness", "looks good") {
-		t.Fatal("expected tryAdvanceFlowFromNode to bail (return false) when the target is hub.inline, not agent.delegate")
+	if !svc.tryAdvanceFlowFromNode(parent.RunID, "reviewer_correctness", "looks good") {
+		t.Fatal("expected tryAdvanceFlowFromNode to claim the advance for an inline-dispatchable hub.inline target")
+	}
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	if got := svc.runs[parent.RunID].activeHubNodeID; got != "synthesis" {
+		t.Fatalf("activeHubNodeID = %q, want synthesis (hub notify dispatch stamps the reached node)", got)
 	}
 }
 
@@ -863,6 +896,14 @@ func TestFlowEngineSynthesisPromptIncludesJoinedReviewerNote(t *testing.T) {
 					mu.Unlock()
 					b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "synthesized"})
 				case strings.Contains(req.Prompt, "Review this result from node"):
+					// Reviewer prompts instruct submit_review_outcome; a
+					// prose-only reply trips the CP-67 verdict reprompt
+					// (bounded ×2) and the join never sees a machine verdict.
+					// Emit the tool call like a compliant provider before
+					// completing.
+					if fc, err := reviewOutcomeToFlowControl(ReviewOutcomeInput{Status: "approved"}); err == nil {
+						_, _ = b.SubmitFlowControl(fc)
+					}
 					b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "approved"})
 				default:
 					b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "implemented"})

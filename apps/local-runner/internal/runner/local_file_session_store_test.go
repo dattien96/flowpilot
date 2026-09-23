@@ -111,13 +111,17 @@ func TestLocalFileSessionStoreAgentMetadataRoundTrip(t *testing.T) {
 		t.Fatalf("NewLocalFileSessionStore: %v", err)
 	}
 
+	// Relative timestamps: the store prunes sessions older than
+	// sessionStoreMaxAge (90d) on load — a hardcoded date silently drifts past
+	// the cutoff and the reloaded record vanishes (same class as ece72e4d).
+	now := time.Now().UTC()
 	sess := ProviderSessionState{
 		RunID:       "run-child",
 		ProjectID:   "proj-1",
 		ProviderKey: "codex",
 		Status:      "running",
-		StartedAt:   "2026-06-19T10:00:00Z",
-		UpdatedAt:   "2026-06-19T10:01:00Z",
+		StartedAt:   now.Add(-time.Hour).Format(time.RFC3339Nano),
+		UpdatedAt:   now.Add(-30 * time.Minute).Format(time.RFC3339Nano),
 		ParentRunID: "run-parent",
 		AgentName:   "coder",
 		Role:        "coder",
