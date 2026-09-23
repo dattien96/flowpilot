@@ -4921,6 +4921,10 @@ body[data-platform="darwin"] .app-header {
 
 .right-sidebar-stack {
   display: grid;
+  /* Rows must stay content-height: with the default align-content the grid
+     stretches auto tracks to fill the aside, inflating panels (e.g. posture
+     tabs) while later sections are still mounting on first paint. */
+  align-content: start;
   gap: var(--space-3);
   min-height: 0;
   padding: var(--space-3);

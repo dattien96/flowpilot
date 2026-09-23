@@ -102,3 +102,13 @@ test("chrome components carry no emoji glyphs", () => {
     assert.equal(emojiRe.test(stripped), false, `emoji glyph found in ${file}`);
   }
 });
+
+test("right-sidebar-stack pins rows to content height", () => {
+  // BUG: with grid's default align-content (normal => stretch), auto-sized
+  // tracks absorb the aside's leftover height on first paint — before all
+  // panels mount — inflating tab rows (measured 174px-tall .tab buttons).
+  // The stack must pack rows at the start edge instead.
+  const m = CSS.match(/\.right-sidebar-stack\s*\{([\s\S]*?)\n\}/);
+  assert.ok(m, ".right-sidebar-stack rule not found");
+  assert.match(m![1], /align-content\s*:\s*start/);
+});
