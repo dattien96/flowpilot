@@ -3,6 +3,7 @@ package runner
 import (
 	"encoding/json"
 	"strings"
+	"sync"
 )
 
 // Task-401 (CP-70 T-3): maps Devin ACP `session/update` notifications into
@@ -73,10 +74,17 @@ func mapDevinSessionUpdate(params map[string]any) ([]ProviderEvent, bool) {
 	}
 }
 
+// mapDevinToolCallUpdate handles a `tool_call_update`. Only TERMINAL statuses
+// produce events (BUG-436): Devin streams status="in_progress" updates while
+// the call is still running — mapping those to tool_completed double-fires
+// the lifecycle and can mark a still-running mutation as done.
 func mapDevinToolCallUpdate(update map[string]any) ([]ProviderEvent, bool) {
 	status, _ := update["status"].(string)
 	if status == "" {
 		return nil, false
+	}
+	if !devinToolCallStatusTerminal(status) {
+		return nil, true
 	}
 	title, _ := update["title"].(string)
 	mutationKind := devinToolMutationKind(update)
@@ -214,6 +222,173 @@ func devinPathsFromRawInputMap(m map[string]any) []string {
 		}
 	}
 	return out
+}
+
+// devinToolCallStatusTerminal reports whether a tool_call_update status is
+// terminal. Live ACP enum: pending | in_progress | completed | failed.
+// Unknown statuses preserve the legacy emit behavior (a terminal-ish event is
+// safer than silently dropping a completion).
+func devinToolCallStatusTerminal(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "in_progress", "pending", "running", "queued", "":
+		return false
+	default:
+		return true
+	}
+}
+
+// devinPendingToolCall caches identity + mutation metadata captured from the
+// initial `tool_call` frame. Devin's `tool_call_update` and
+// `session/request_permission` frames carry ONLY the toolCallId (plus
+// `_meta.cognition.ai/editableCommand` on exec approvals) — title, kind,
+// rawInput, locations and the MCP tool name exist only on the start frame
+// (live-verified lt-evidence cp46/cp70). The index lets the update and
+// permission paths recover that identity (BUG-374/375/434).
+type devinPendingToolCall struct {
+	title    string
+	kind     string
+	toolName string
+	rawInput map[string]any
+	paths    []string
+}
+
+// devinToolCallIndex is the per-session toolCallId → metadata cache. It is
+// shared between the turn goroutine (session/update notifications) and the
+// dispatcher's inbound goroutine (session/request_permission), so it is
+// internally locked.
+type devinToolCallIndex struct {
+	mu    sync.Mutex
+	calls map[string]devinPendingToolCall
+}
+
+func (x *devinToolCallIndex) remember(update map[string]any) {
+	if x == nil || update == nil {
+		return
+	}
+	id, _ := update["toolCallId"].(string)
+	if strings.TrimSpace(id) == "" {
+		return
+	}
+	meta := devinPendingToolCall{
+		toolName: devinToolNameFromMeta(update),
+		paths:    devinMutationPaths(update),
+	}
+	meta.title, _ = update["title"].(string)
+	meta.kind, _ = update["kind"].(string)
+	meta.rawInput, _ = update["rawInput"].(map[string]any)
+	x.mu.Lock()
+	if x.calls == nil {
+		x.calls = map[string]devinPendingToolCall{}
+	}
+	x.calls[id] = meta
+	x.mu.Unlock()
+}
+
+func (x *devinToolCallIndex) lookup(id string) (devinPendingToolCall, bool) {
+	if x == nil {
+		return devinPendingToolCall{}, false
+	}
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	m, ok := x.calls[strings.TrimSpace(id)]
+	return m, ok
+}
+
+func (x *devinToolCallIndex) forget(id string) {
+	if x == nil {
+		return
+	}
+	x.mu.Lock()
+	delete(x.calls, strings.TrimSpace(id))
+	x.mu.Unlock()
+}
+
+// devinToolNameFromMeta resolves the real tool name from a frame's _meta.
+// `cognition.ai/toolName` is the concrete name (e.g.
+// mcp__flowpilot__submit_review_outcome); `inferenceToolName` can be the
+// generic `mcp_call_tool`, so it is only a fallback.
+func devinToolNameFromMeta(update map[string]any) string {
+	meta, _ := update["_meta"].(map[string]any)
+	if meta == nil {
+		return ""
+	}
+	if name, _ := meta["cognition.ai/toolName"].(string); strings.TrimSpace(name) != "" {
+		return strings.TrimSpace(name)
+	}
+	if name, _ := meta["cognition.ai/inferenceToolName"].(string); strings.TrimSpace(name) != "" {
+		return strings.TrimSpace(name)
+	}
+	return ""
+}
+
+// devinCorrelateToolNotification mirrors grokCorrelateToolNotification: it
+// remembers tool_call metadata and enriches bare tool_call_update frames
+// (title/kind/locations/rawInput absent — only toolCallId+status+_meta) with
+// the cached values so the stateless mapper sees a complete frame
+// (BUG-375/436). Cached entries are dropped on the terminal update.
+func devinCorrelateToolNotification(idx *devinToolCallIndex, n devinNotification) devinNotification {
+	if idx == nil || n.Method != "session/update" || n.Params == nil {
+		return n
+	}
+	update, _ := n.Params["update"].(map[string]any)
+	if update == nil {
+		return n
+	}
+	su, _ := update["sessionUpdate"].(string)
+	if su == "tool_call" {
+		idx.remember(update)
+		return n
+	}
+	if su != "tool_call_update" {
+		return n
+	}
+	id, _ := update["toolCallId"].(string)
+	meta, ok := idx.lookup(id)
+	if !ok {
+		return n
+	}
+	status, _ := update["status"].(string)
+	if devinToolCallStatusTerminal(status) {
+		idx.forget(id)
+	}
+	enriched := make(map[string]any, len(update)+4)
+	for k, v := range update {
+		enriched[k] = v
+	}
+	if _, has := enriched["title"]; !has && meta.title != "" {
+		enriched["title"] = meta.title
+	}
+	if _, has := enriched["kind"]; !has && meta.kind != "" {
+		enriched["kind"] = meta.kind
+	}
+	if _, has := enriched["locations"]; !has && len(meta.paths) > 0 {
+		locs := make([]any, 0, len(meta.paths))
+		for _, p := range meta.paths {
+			locs = append(locs, map[string]any{"path": p})
+		}
+		enriched["locations"] = locs
+	}
+	if _, has := enriched["rawInput"]; !has && meta.rawInput != nil {
+		enriched["rawInput"] = meta.rawInput
+	}
+	if meta.toolName != "" {
+		src, _ := enriched["_meta"].(map[string]any)
+		m := make(map[string]any, len(src)+1)
+		for k, v := range src {
+			m[k] = v
+		}
+		if _, has := m["cognition.ai/toolName"]; !has {
+			m["cognition.ai/toolName"] = meta.toolName
+		}
+		enriched["_meta"] = m
+	}
+	params := make(map[string]any, len(n.Params))
+	for k, v := range n.Params {
+		params[k] = v
+	}
+	params["update"] = enriched
+	n.Params = params
+	return n
 }
 
 func devinToolStatus(status string) string {

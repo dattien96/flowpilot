@@ -55,6 +55,19 @@ type devinAdapter struct {
 	allowReviewOutcome map[string]bool
 	yoloModes          map[string]bool
 	permissionDenied   map[string]bool
+	// toolCalls is the per-session toolCallId correlation index (BUG-374/375/
+	// 434/436) — populated by session/update tool_call frames, read by
+	// tool_call_update enrichment and session/request_permission handling.
+	toolCalls map[string]*devinToolCallIndex
+	// appliedModel is the session's ACTUAL model (configOptions currentValue)
+	// — distinct from the requested id so records never claim a model that
+	// was rejected by set_config_option (BUG-379/433).
+	appliedModel map[string]string
+	// modelRejected marks sessions whose model set_config_option was refused.
+	// On a resumed session whose load result carried no currentValue the
+	// applied model is then unobservable — records must persist a typed
+	// unknown marker, not the rejected requested id (BUG-451).
+	modelRejected map[string]bool
 	// modelCatalog caches the configOptions "model" choices observed on this
 	// process's sessions — the per-model supportsImages flags live there.
 	modelCatalog []DevinConfigChoice
@@ -83,6 +96,7 @@ func newDevinAdapter(dispatcher *devinDispatcher, cwd string) *devinAdapter {
 		bridges:            map[string]TurnBridge{},
 		allowReviewOutcome: map[string]bool{},
 		yoloModes:          map[string]bool{},
+		toolCalls:          map[string]*devinToolCallIndex{},
 	}
 	if dispatcher != nil {
 		dispatcher.setInbound(a.handleInbound)
@@ -310,7 +324,10 @@ func (a *devinAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Tur
 	}
 	// Per-turn model + mode via session/set_config_option (live configOptions
 	// carry both selects; session/new has no model/mode params).
-	a.applyDevinSessionConfig(ctx, sessionID, req)
+	a.applyDevinSessionConfig(ctx, sessionID, req, bridge)
+	// BUG-433: persist the APPLIED model — a rejected set_config_option must
+	// not leave the record claiming the requested id ran.
+	a.recordAppliedSessionModel(ctx, req, sessionID)
 
 	// Devin must NOT wait for the Claude-style tools/list readiness signal:
 	// Devin's ACP client starts stdio MCP servers lazily (mcp/serversChanged
@@ -343,6 +360,8 @@ func (a *devinAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Tur
 		delete(a.allowReviewOutcome, sessionID)
 		delete(a.yoloModes, sessionID)
 		delete(a.permissionDenied, sessionID)
+		delete(a.toolCalls, sessionID)
+		delete(a.appliedModel, sessionID)
 		a.mu.Unlock()
 	}()
 
@@ -429,7 +448,32 @@ func (a *devinAdapter) devinFlowPilotMCPEntry(token string) map[string]interface
 	return devinACPStdioMCPServerEntry(claudeMCPServerName, command, args, nil)
 }
 
+// toolCallIndexFor returns the session's toolCallId correlation index,
+// creating it lazily. Called from both the turn goroutine and the
+// dispatcher's inbound goroutine.
+func (a *devinAdapter) toolCallIndexFor(sessionID string) *devinToolCallIndex {
+	if a == nil {
+		return nil
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.toolCalls == nil {
+		a.toolCalls = map[string]*devinToolCallIndex{}
+	}
+	idx := a.toolCalls[sessionID]
+	if idx == nil {
+		idx = &devinToolCallIndex{}
+		a.toolCalls[sessionID] = idx
+	}
+	return idx
+}
+
 func (a *devinAdapter) applyDevinNotification(sessionID string, n devinNotification, bridge TurnBridge, lastText string) string {
+	n = devinCorrelateToolNotification(a.toolCallIndexFor(sessionID), n)
 	events, mapped := mapDevinNotification(n)
 	if !mapped {
 		return lastText
@@ -626,6 +670,9 @@ func (a *devinAdapter) ensureSession(ctx context.Context, req TurnRequest, cwd s
 	a.mu.Lock()
 	a.lastSessionID = sessionID
 	a.mu.Unlock()
+	if cur := devinConfigOptionCurrentValue(result, "model"); cur != "" {
+		a.setAppliedModel(sessionID, cur)
+	}
 	a.rememberRunSession(req.RunID, sessionID)
 	a.recordSession(ctx, req, sessionID)
 	return sessionID, nil
@@ -687,7 +734,8 @@ func (a *devinAdapter) recordSession(ctx context.Context, req TurnRequest, sessi
 // resolved from the turn's YOLO + posture (resolveDevinSessionMode), and
 // thought_level takes the session's advertised reasoning values (Task-438:
 // medium/high/max — the knob that actually produces "SWE-2 Max" etc.).
-func (a *devinAdapter) applyDevinSessionConfig(ctx context.Context, sessionID string, req TurnRequest) {
+// Rejections/coercions surface to the user via bridge (BUG-379/433).
+func (a *devinAdapter) applyDevinSessionConfig(ctx context.Context, sessionID string, req TurnRequest, bridge TurnBridge) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" || a.dispatcher == nil {
 		return
@@ -710,10 +758,34 @@ func (a *devinAdapter) applyDevinSessionConfig(ctx context.Context, sessionID st
 		func() {
 			cfgCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 			defer cancel()
-			_, err := a.dispatcher.call(cfgCtx, "session/set_config_option", devinACPSessionSetConfigParams(sessionID, "model", modelName))
+			res, err := a.dispatcher.call(cfgCtx, "session/set_config_option", devinACPSessionSetConfigParams(sessionID, "model", modelName))
 			if err != nil {
-				log.Printf("[devin] session/set_config_option model=%q session=%q err=%v", modelName, sessionID, err)
+				// BUG-379/433: an Invalid-params rejection was log-only — the
+				// turn ran on the session's previous model with no user-facing
+				// signal while records kept claiming the requested model.
+				// BUG-451: mark the rejection so recordAppliedSessionModel can
+				// degrade to a typed unknown when no applied model was observed.
+				a.markModelRejected(sessionID)
+				applied := a.appliedModelFor(sessionID)
+				log.Printf("[devin] session/set_config_option model=%q session=%q err=%v applied=%q", modelName, sessionID, err, applied)
+				if bridge != nil {
+					note := fmt.Sprintf("[model] requested %q was rejected by Devin (%v); this turn runs on the session's configured model", modelName, err)
+					if applied != "" {
+						note += fmt.Sprintf(" %q", applied)
+					}
+					bridge.Emit(ProviderEvent{Type: EventMessageDelta, Text: note + "."})
+				}
 				return
+			}
+			if cur := devinConfigOptionCurrentValue(res, "model"); cur != "" {
+				a.setAppliedModel(sessionID, cur)
+				if !strings.EqualFold(cur, modelName) && bridge != nil {
+					// Accepted but coerced to a different value — surface it
+					// rather than recording a model that did not run.
+					bridge.Emit(ProviderEvent{Type: EventMessageDelta, Text: fmt.Sprintf("[model] requested %q was applied as %q by Devin.", modelName, cur)})
+				}
+			} else {
+				a.setAppliedModel(sessionID, modelName)
 			}
 			log.Printf("[devin] session/set_config_option ok model=%q session=%q", modelName, sessionID)
 		}()
@@ -722,8 +794,16 @@ func (a *devinAdapter) applyDevinSessionConfig(ctx context.Context, sessionID st
 		func() {
 			cfgCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 			defer cancel()
-			if _, err := a.dispatcher.call(cfgCtx, "session/set_config_option", devinACPSessionSetConfigParams(sessionID, "mode", mode)); err != nil {
+			res, err := a.dispatcher.call(cfgCtx, "session/set_config_option", devinACPSessionSetConfigParams(sessionID, "mode", mode))
+			if err != nil {
 				log.Printf("[devin] session/set_config_option mode=%q session=%q err=%v", mode, sessionID, err)
+				if bridge != nil {
+					bridge.Emit(ProviderEvent{Type: EventMessageDelta, Text: fmt.Sprintf("[mode] requested session mode %q was rejected by Devin (%v); the session keeps its previous mode.", mode, err)})
+				}
+				return
+			}
+			if cur := devinConfigOptionCurrentValue(res, "mode"); cur != "" && !strings.EqualFold(cur, mode) && bridge != nil {
+				bridge.Emit(ProviderEvent{Type: EventMessageDelta, Text: fmt.Sprintf("[mode] requested session mode %q was applied as %q by Devin.", mode, cur)})
 			}
 		}()
 	}
@@ -736,6 +816,104 @@ func (a *devinAdapter) applyDevinSessionConfig(ctx context.Context, sessionID st
 			}
 		}()
 	}
+}
+
+// devinConfigOptionCurrentValue reads currentValue for one config option out
+// of a session/new|load|set_config_option result's configOptions array.
+func devinConfigOptionCurrentValue(result map[string]any, id string) string {
+	opt := devinConfigOptionFromResult(result, id)
+	if opt == nil {
+		return ""
+	}
+	cur, _ := opt["currentValue"].(string)
+	return strings.TrimSpace(cur)
+}
+
+func (a *devinAdapter) setAppliedModel(sessionID, model string) {
+	if a == nil || strings.TrimSpace(sessionID) == "" || strings.TrimSpace(model) == "" {
+		return
+	}
+	a.mu.Lock()
+	if a.appliedModel == nil {
+		a.appliedModel = map[string]string{}
+	}
+	a.appliedModel[sessionID] = strings.TrimSpace(model)
+	a.mu.Unlock()
+}
+
+func (a *devinAdapter) appliedModelFor(sessionID string) string {
+	if a == nil {
+		return ""
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.appliedModel[strings.TrimSpace(sessionID)]
+}
+
+func (a *devinAdapter) markModelRejected(sessionID string) {
+	if a == nil || strings.TrimSpace(sessionID) == "" {
+		return
+	}
+	a.mu.Lock()
+	if a.modelRejected == nil {
+		a.modelRejected = map[string]bool{}
+	}
+	a.modelRejected[strings.TrimSpace(sessionID)] = true
+	a.mu.Unlock()
+}
+
+func (a *devinAdapter) modelRejectedFor(sessionID string) bool {
+	if a == nil {
+		return false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.modelRejected[strings.TrimSpace(sessionID)]
+}
+
+// devinUnknownModelMarker is the typed degradation persisted when the session's
+// applied model is genuinely unobservable (config-only session/load with no
+// currentValue, followed by a rejected model set — BUG-451). It cannot collide
+// with a real catalog id (ids are [a-z0-9./-]).
+const devinUnknownModelMarker = "devin/(unknown)"
+
+// recordAppliedSessionModel re-upserts the provider session record with the
+// model Devin actually applied (configOptions currentValue), so run metadata
+// never claims a rejected id (BUG-433). Bare catalog values get the "devin/"
+// prefix to match the requested-model record format.
+func (a *devinAdapter) recordAppliedSessionModel(ctx context.Context, req TurnRequest, sessionID string) {
+	if a == nil || a.sessionStore == nil {
+		return
+	}
+	applied := a.appliedModelFor(sessionID)
+	if applied == "" {
+		// BUG-451: a rejected model set on a session whose applied model was
+		// never observed must not leave recordSession's optimistic requested id
+		// on the durable record — re-upsert the typed unknown marker instead.
+		if !a.modelRejectedFor(sessionID) {
+			return
+		}
+		applied = devinUnknownModelMarker
+	}
+	if !strings.HasPrefix(applied, "devin/") {
+		applied = "devin/" + applied
+	}
+	if !strings.HasPrefix(applied, "devin/") {
+		applied = "devin/" + applied
+	}
+	cwd := a.cwd
+	if req.Cwd != "" {
+		cwd = req.Cwd
+	}
+	_ = a.sessionStore.UpsertSession(ctx, ProviderSessionRecord{
+		WorkflowRunID:     req.RunID,
+		ProviderKey:       string(ProviderKeyDevin),
+		ProviderSessionID: sessionID,
+		ProviderThreadID:  sessionID,
+		WorkingDirectory:  cwd,
+		ModelName:         applied,
+		Status:            "active",
+	})
 }
 
 // devinModelForTurn resolves the Devin catalog model id for a turn: strips
@@ -898,7 +1076,7 @@ func (a *devinAdapter) handleInbound(req devinInboundRequest) {
 		return
 	}
 
-	details := devinApprovalDetailsFromRequest(req.Params)
+	details := devinApprovalDetailsFromRequest(req.Params, a.toolCallIndexFor(sessionID))
 
 	if yolo {
 		_ = a.dispatcher.reply(req.ID, map[string]any{"outcome": map[string]any{"outcome": "selected", "optionId": devinEncodePermissionDecision(options, true)}})
@@ -960,36 +1138,147 @@ func devinEncodePermissionDecision(options []any, approve bool) string {
 	return "reject"
 }
 
-func devinApprovalDetailsFromRequest(params map[string]any) ApprovalDetails {
+// devinApprovalDetailsFromRequest builds ApprovalDetails for a Devin
+// session/request_permission. Live wire (lt-evidence cp46/cp70): toolCall
+// carries ONLY {toolCallId, _meta.cognition.ai/editableCommand} — no title,
+// no kind, no rawInput. Two recovery paths cover the identity gap
+// (BUG-374/434):
+//
+//   - idx correlation: the earlier session/update `tool_call` frame for the
+//     same toolCallId carries title/kind/rawInput/_meta.cognition.ai/toolName.
+//   - options fallback: Devin's option labels deterministically embed the MCP
+//     tool name ("allow calling submit_review_outcome on the flowpilot MCP
+//     server") — used when no correlated frame exists (e.g. request arrived
+//     before the notification).
+func devinApprovalDetailsFromRequest(params map[string]any, idx *devinToolCallIndex) ApprovalDetails {
 	toolCall, _ := params["toolCall"].(map[string]any)
-	title, _ := toolCall["title"].(string)
-	rawInput, _ := toolCall["rawInput"].(map[string]any)
-	var command string
-	if rawInput != nil {
-		if cmd, _ := rawInput["command"].(string); cmd != "" {
-			command = cmd
-		} else if cmd, _ := rawInput["cmd"].(string); cmd != "" {
-			command = cmd
-		} else if fp, _ := rawInput["filepath"].(string); fp != "" {
-			command = fp
-		} else if fp, _ := rawInput["filePath"].(string); fp != "" {
-			command = fp
-		} else if fp, _ := rawInput["path"].(string); fp != "" {
-			command = fp
+	toolCallID, _ := toolCall["toolCallId"].(string)
+	var meta devinPendingToolCall
+	haveMeta := false
+	if idx != nil {
+		meta, haveMeta = idx.lookup(toolCallID)
+	}
+
+	// Build an effective toolCall view: wire fields first, correlated frame
+	// as fallback for anything absent.
+	effective := make(map[string]any, len(toolCall)+3)
+	for k, v := range toolCall {
+		effective[k] = v
+	}
+	if haveMeta {
+		if _, has := effective["title"]; !has && meta.title != "" {
+			effective["title"] = meta.title
 		}
+		if _, has := effective["kind"]; !has && meta.kind != "" {
+			effective["kind"] = meta.kind
+		}
+	}
+	title, _ := effective["title"].(string)
+	rawInput, _ := toolCall["rawInput"].(map[string]any)
+	if rawInput == nil && haveMeta {
+		rawInput = meta.rawInput
+	}
+
+	toolName := ""
+	if haveMeta {
+		toolName = meta.toolName
+	}
+	if toolName == "" {
+		toolName = devinToolNameFromPermissionOptions(params["options"])
+	}
+
+	// editableCommand is Devin's canonical user-editable shell-command surface
+	// and the only field carrying the command on exec approvals (BUG-434).
+	command := devinCognitionMetaString(toolCall["_meta"], "cognition.ai/editableCommand")
+	if command == "" {
+		command = devinCommandFromRawInput(rawInput)
 	}
 	if command == "" {
 		command = title
 	}
+	if command == "" {
+		command = toolName
+	}
+
+	reason := title
+	if toolName != "" {
+		// The tool NAME is what verdict/ask_user/read-only matchers key on —
+		// keep it in Reason even when a display title exists.
+		reason = toolName
+	}
+	if reason == "" {
+		reason = command
+	}
+
+	kind := devinPermissionKind(effective, rawInput)
+	if kind == "other" {
+		switch {
+		case strings.TrimSpace(devinCognitionMetaString(toolCall["_meta"], "cognition.ai/editableCommand")) != "":
+			kind = "exec"
+		case strings.HasPrefix(strings.ToLower(toolName), "mcp__"):
+			kind = "mcp"
+		}
+	}
 	return ApprovalDetails{
 		Command: command,
-		Reason:  title,
-		Kind:    devinPermissionKind(toolCall, rawInput),
+		Reason:  reason,
+		Kind:    kind,
 		Decisions: []ApprovalDecisionOption{
 			{Value: "approve", Label: "Approve"},
 			{Value: "deny", Label: "Deny"},
 		},
 	}
+}
+
+// devinCognitionMetaString reads a `cognition.ai/*` key from a _meta map.
+func devinCognitionMetaString(meta any, key string) string {
+	m, _ := meta.(map[string]any)
+	if m == nil {
+		return ""
+	}
+	s, _ := m[key].(string)
+	return strings.TrimSpace(s)
+}
+
+func devinCommandFromRawInput(rawInput map[string]any) string {
+	if rawInput == nil {
+		return ""
+	}
+	for _, k := range []string{"command", "cmd", "filepath", "filePath", "path", "file_path"} {
+		if s, _ := rawInput[k].(string); strings.TrimSpace(s) != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+// devinToolNameFromPermissionOptions extracts the MCP tool name embedded in
+// Devin's deterministic option labels — e.g. "Yes, allow calling
+// submit_review_outcome on the flowpilot MCP server (this session)" yields
+// "mcp__flowpilot__submit_review_outcome". Returns "" when no label matches.
+func devinToolNameFromPermissionOptions(v any) string {
+	options, _ := v.([]any)
+	for _, raw := range options {
+		m, _ := raw.(map[string]any)
+		name, _ := m["name"].(string)
+		const marker = "calling "
+		const suffix = " on the flowpilot MCP server"
+		i := strings.Index(name, marker)
+		if i < 0 {
+			continue
+		}
+		rest := name[i+len(marker):]
+		j := strings.Index(rest, suffix)
+		if j <= 0 {
+			continue
+		}
+		tool := strings.Trim(rest[:j], " `'\"")
+		if tool == "" || strings.ContainsAny(tool, " \t") {
+			continue
+		}
+		return "mcp__flowpilot__" + tool
+	}
+	return ""
 }
 
 func devinPermissionKind(toolCall, rawInput map[string]any) string {
