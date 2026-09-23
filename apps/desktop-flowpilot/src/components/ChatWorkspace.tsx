@@ -3,6 +3,7 @@ import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { filterNavigatorWorkflows } from "@/app/navigatorCatalog";
 import { Navigator } from "@/components/Navigator";
 import { ChatInput } from "@/components/ChatInput";
+import { TerminalPanel } from "@/components/TerminalPanel";
 import { Timeline } from "@/components/Timeline";
 import { ScenarioSwitcher } from "@/components/ScenarioSwitcher";
 import { SystemControls } from "@/components/SystemControls";
@@ -626,6 +627,7 @@ export function ChatWorkspace({
             <ChatInput />
           </>
         )}
+        <TerminalPanel />
       </main>
 
       <FlowTimelineSidebar />

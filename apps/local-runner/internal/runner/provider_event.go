@@ -314,6 +314,10 @@ type RunHandle struct {
 	// (TUI status line, desktop navigator). Omitted when the run is unbound.
 	WorktreeState string `json:"worktreeState,omitempty"`
 	WorktreeSlug  string `json:"worktreeSlug,omitempty"`
+	// Task-426 (CP-83): absolute path of the bound worktree dir — the embedded
+	// terminal resolves cwd from this instead of recomputing runner-internal
+	// path conventions. Omitted when the run is unbound.
+	WorktreePath string `json:"worktreePath,omitempty"`
 }
 
 type StartRunInput struct {

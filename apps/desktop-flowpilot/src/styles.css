@@ -7503,3 +7503,121 @@ body.is-resizing-sidebar {
   font-size: 11px;
   color: var(--text-dim);
 }
+
+/* Task-428: VS Code-style bottom terminal dock */
+.term-panel {
+  height: 240px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-top: 1px solid var(--border);
+  background: var(--bg-2);
+}
+
+.term-tabs {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--border);
+  min-height: 28px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.term-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-xs);
+  color: var(--text-dim);
+  cursor: pointer;
+  max-width: 180px;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.term-tab:hover {
+  background: var(--bg-3);
+  color: var(--text);
+}
+
+.term-tab.active {
+  background: var(--bg-3);
+  color: var(--text);
+}
+
+.term-tab.exited {
+  opacity: 0.55;
+}
+
+.term-tab-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.term-tab-exited {
+  font-size: 10px;
+  color: var(--text-2);
+  font-style: italic;
+}
+
+.term-tab-close,
+.term-tab-new {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  border-radius: var(--radius-sm);
+  padding: var(--space-1);
+  cursor: pointer;
+}
+
+.term-tab-close:hover,
+.term-tab-new:hover {
+  background: var(--bg-3);
+  color: var(--text);
+}
+
+.term-tabs-spacer {
+  flex: 1;
+}
+
+.term-body {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+
+.term-host {
+  position: absolute;
+  inset: 0;
+  padding: var(--space-1) var(--space-2);
+}
+
+.term-host.hidden {
+  display: none;
+}
+
+.term-host .xterm {
+  height: 100%;
+}
+
+.term-error {
+  position: absolute;
+  top: var(--space-2);
+  left: var(--space-2);
+  right: var(--space-2);
+  z-index: 1;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  background: rgba(255, 90, 90, 0.12);
+  border: 1px solid rgba(255, 90, 90, 0.35);
+  color: var(--text);
+  font-size: var(--font-size-sm);
+}

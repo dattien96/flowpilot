@@ -1033,6 +1033,7 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 	if rs.worktree != nil {
 		handle.WorktreeState = rs.worktree.State
 		handle.WorktreeSlug = rs.worktree.Slug
+		handle.WorktreePath = rs.worktree.Path
 	}
 	return handle, nil
 }
@@ -1123,6 +1124,7 @@ func (s *InteractiveService) resumeRun(runID string) (RunHandle, *apiErr) {
 	if rs.worktree != nil {
 		handle.WorktreeState = rs.worktree.State
 		handle.WorktreeSlug = rs.worktree.Slug
+		handle.WorktreePath = rs.worktree.Path
 	}
 	// Surface the synthetic chat step so the desktop can continue a resumed normal_chat
 	// run; its turns need a stepId and the chat step id is deterministic (T-7). Workflow
@@ -1206,6 +1208,9 @@ type runHistoryItem struct {
 	// CP-71 worktree badge fields (omitempty — absent for normal runs).
 	WorktreeState string `json:"worktreeState,omitempty"`
 	WorktreeSlug  string `json:"worktreeSlug,omitempty"`
+	// Task-426 (CP-83): absolute bound-worktree dir for terminal cwd
+	// resolution. Omitted when unbound.
+	WorktreePath string `json:"worktreePath,omitempty"`
 }
 
 func (s *InteractiveService) projectRunHistory(projectID string) []runHistoryItem {
@@ -1260,6 +1265,7 @@ func (s *InteractiveService) projectRunHistory(projectID string) []runHistoryIte
 		if rs.worktree != nil {
 			item.WorktreeState = rs.worktree.State
 			item.WorktreeSlug = rs.worktree.Slug
+			item.WorktreePath = rs.worktree.Path
 		}
 		if sess, ok := persistedSyncByRunID[rs.id]; ok {
 			item.SourceMachineID = sess.SourceMachineID
@@ -1315,6 +1321,7 @@ func (s *InteractiveService) projectRunHistory(projectID string) []runHistoryIte
 					FlowRef:         sess.ChatFlowRef,
 					WorktreeState:   sess.WorktreeState,
 					WorktreeSlug:    sess.WorktreeSlug,
+					WorktreePath:    sess.WorktreePath,
 				})
 			}
 		}

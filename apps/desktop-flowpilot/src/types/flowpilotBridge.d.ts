@@ -27,6 +27,25 @@ interface RunnerLifecycleBridge {
   onStatus(cb: (status: RunnerLifecycleStatusEvent) => void): () => void;
 }
 
+// Task-427 (CP-83): embedded terminal bridge — mirror of
+// src/terminal/termBridge.ts TermApi (kept structurally identical so the
+// preload factory stays the single implementation).
+interface TermSpawnRequest {
+  cwd: string;
+  shell?: string;
+  cols: number;
+  rows: number;
+}
+
+interface TermBridge {
+  spawn(req: TermSpawnRequest): Promise<{ id: string }>;
+  write(id: string, data: string): Promise<void>;
+  resize(id: string, cols: number, rows: number): Promise<void>;
+  kill(id: string): Promise<{ ok: boolean }>;
+  onData(cb: (e: { id: string; data: string }) => void): () => void;
+  onExit(cb: (e: { id: string; exitCode: number }) => void): () => void;
+}
+
 declare global {
   interface Window {
     flowpilot?: {
@@ -60,6 +79,8 @@ declare global {
       }>;
       showNotification(title: string, body: string): Promise<{ ok: boolean }>;
       lifecycle?: RunnerLifecycleBridge;
+      /** CP-83: absent when the renderer runs outside Electron (plain browser). */
+      term?: TermBridge;
     };
   }
 }

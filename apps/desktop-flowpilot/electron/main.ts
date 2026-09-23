@@ -4,12 +4,18 @@ import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { wireDesktopLifecycle } from "./lifecycle";
+import { registerTerminalIpc } from "./terminal";
 
 // Electron shell (04-01). Loads the Vite dev server in dev, the built renderer in
 // prod. The IdeBridge is the real Part B implementation: it detects an installed
 // IDE CLI and opens the file at a line.
 
 const VITE_DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL;
+
+// Task-427 (CP-83): single-window handle for the terminal IPC adapter. The
+// renderer resolves cwd itself (worktreePath ?? project.path); the main side
+// only owns pty processes.
+let mainWindow: BrowserWindow | null = null;
 
 // Required on Windows for native notifications to appear in the Action Center.
 // In dev mode the packaged app ID is not registered, so we use the executable
@@ -177,6 +183,11 @@ function createWindow(): void {
     },
   });
 
+  mainWindow = win;
+  win.on("closed", () => {
+    if (mainWindow === win) mainWindow = null;
+  });
+
   if (VITE_DEV_SERVER_URL) {
     void win.loadURL(VITE_DEV_SERVER_URL);
   } else {
@@ -288,6 +299,7 @@ const desktopLifecycle = wireDesktopLifecycle(localRunnerURL());
 
 void app.whenReady().then(() => {
   void desktopLifecycle.lifecycle.start();
+  registerTerminalIpc(() => mainWindow);
   createWindow();
 });
 

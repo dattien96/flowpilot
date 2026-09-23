@@ -7,7 +7,7 @@ import type {
   SupabaseConfigValidation,
   SupabaseRuntimeStatus,
 } from "@flowpilot/client-core";
-import { PanelLeftIcon, PanelRightIcon } from "@/components/icons";
+import { PanelLeftIcon, PanelRightIcon, TerminalIcon } from "@/components/icons";
 import { RunStatus } from "@/components/RunStatus";
 import { RunnerStatusIndicator } from "@/components/RunnerStatusIndicator";
 import { RunToast } from "@/components/RunToast";
@@ -56,6 +56,7 @@ export function App(): React.ReactElement {
   const [busy, setBusy] = useState(false);
   const [leftSidebarVisible, setLeftSidebarVisible] = useState(true);
   const [rightSidebarVisible, setRightSidebarVisible] = useState(true);
+  const terminalOpen = useStore((s) => s.terminalOpen);
 
   // Auto-collapse side rails at narrow widths so columns never overlap or
   // force a horizontal scrollbar. Remembers the user's choice and restores it
@@ -106,6 +107,18 @@ export function App(): React.ReactElement {
   useEffect(() => {
     document.title = `FlowPilot Desktop (${modeLabel})`;
   }, [modeLabel]);
+
+  // Task-428: Ctrl+` toggles the bottom terminal dock (VS Code convention).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key === "`") {
+        e.preventDefault();
+        useStore.getState().toggleTerminal();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   useEffect(() => {
     void refreshBootstrap();
@@ -323,6 +336,16 @@ export function App(): React.ReactElement {
             aria-label={rightSidebarVisible ? "Hide right sidebar" : "Show right sidebar"}
           >
             <PanelRightIcon size={15} />
+          </button>
+          <button
+            className={`sidebar-toggle ${terminalOpen ? "active" : ""}`}
+            onClick={() => useStore.getState().toggleTerminal()}
+            type="button"
+            aria-pressed={terminalOpen}
+            title="Toggle terminal (Ctrl+`)"
+            aria-label="Toggle terminal panel"
+          >
+            <TerminalIcon size={15} />
           </button>
         </div>
         <div className="brand">

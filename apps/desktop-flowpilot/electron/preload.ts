@@ -1,5 +1,7 @@
 import { contextBridge, ipcRenderer } from "electron";
 
+import { createTermApi } from "../src/terminal/termBridge";
+
 // Exposes a tiny, typed bridge to the renderer. Part A: openInIde is a stub on
 // the main side (logs only). The renderer's IdeBridge falls back to console.log
 // when this bridge is absent (e.g. running the renderer in a plain browser tab).
@@ -38,6 +40,14 @@ contextBridge.exposeInMainWorld("flowpilot", {
   showNotification: (title: string, body: string): Promise<{ ok: boolean }> =>
     ipcRenderer.invoke("notification:show", { title, body }),
   isGitRepo: (path: string): Promise<boolean> => ipcRenderer.invoke("project:isGitRepo", { path }),
+  // Task-427 (CP-83): VS Code-style embedded terminal. Fully isolated from the
+  // runner — the renderer resolves cwd (worktreePath ?? project.path) and the
+  // main process owns the pty processes.
+  term: createTermApi(
+    (channel, payload) => ipcRenderer.invoke(channel, payload),
+    (channel, listener) => ipcRenderer.on(channel, listener),
+    (channel, listener) => ipcRenderer.removeListener(channel, listener),
+  ),
   // CP-81: lifecycle bridge — renderer sees snapshots/status but never the
   // lease token; destructive actions are fenced inside Electron main.
   lifecycle: {

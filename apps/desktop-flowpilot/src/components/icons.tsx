@@ -47,6 +47,14 @@ export const PanelRightIcon = icon(
   </>,
 );
 
+export const TerminalIcon = icon(
+  <>
+    <rect x="2" y="3" width="12" height="10" rx="1.5" />
+    <path d="M5 7l2.2 2L5 11" />
+    <path d="M8.5 11H11" />
+  </>,
+);
+
 export const PaperclipIcon = icon(
   <path d="M11.5 7.5 7 12a2.4 2.4 0 0 1-3.4-3.4l5-5a1.6 1.6 0 0 1 2.3 2.3l-5 5" />,
 );
