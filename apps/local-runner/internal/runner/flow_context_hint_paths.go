@@ -59,6 +59,35 @@ func extractPromptSourcePaths(prompt string) []string {
 	return out
 }
 
+// mergeDeclaredSourcePaths seeds a produce node's explicit source paths with
+// the run contract's declared_paths (BUG-419): the contract is authoritative
+// scope, and bare filenames like "calc.go" can never survive the prose
+// tokenizer's slash/extension checks. Declared paths come first, prose-
+// extracted paths append deduped — mirroring the freeze-chain's
+// rec.DeclaredPaths seeding so both production paths agree.
+func mergeDeclaredSourcePaths(declared, prose []string) []string {
+	if len(declared) == 0 {
+		return prose
+	}
+	seen := map[string]bool{}
+	out := make([]string, 0, len(declared)+len(prose))
+	add := func(p string) {
+		p = filepath.ToSlash(strings.TrimSpace(p))
+		if p == "" || seen[p] {
+			return
+		}
+		seen[p] = true
+		out = append(out, p)
+	}
+	for _, p := range declared {
+		add(p)
+	}
+	for _, p := range prose {
+		add(p)
+	}
+	return out
+}
+
 // tokenizePromptTokens splits prompt into tokens, treating content inside
 // matching quotes (", ', `) as a single token so paths with spaces survive
 // (V10R4 / Task-246). Unclosed quotes take the rest of the string as one token.

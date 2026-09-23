@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -56,6 +57,35 @@ func (s *InteractiveService) flowNodeProfileBudgetFor(rs *interactiveRun) int {
 		}
 	}
 	return 0
+}
+
+// flowContextProfilesFor returns the run's active flow definition's
+// ContextProfiles map (CP-62 P-5). BUG-421: produce paths resolve the
+// consuming node's profile through this — chatFlowRef first, then the
+// workflowID pack ref (workflow-launched runs carry it instead). Resolution
+// goes through the standard resolver so store-backed mirrors and the
+// embedded pack both work; any failure returns nil and callers fall back to
+// the pre-profile precedence unchanged (typed degradation, never a block).
+func (s *InteractiveService) flowContextProfilesFor(ctx context.Context, parentRunID string) map[string]agentpack.ContextProfile {
+	s.mu.Lock()
+	rs := s.runs[parentRunID]
+	store := s.flowDefinitionStore
+	var ref string
+	if rs != nil {
+		ref = strings.TrimSpace(rs.chatFlowRef)
+		if ref == "" {
+			ref = strings.TrimSpace(rs.workflowID)
+		}
+	}
+	s.mu.Unlock()
+	if ref == "" {
+		return nil
+	}
+	rec, err := NewFlowDefinitionResolver(store).ResolveFlowRef(ctx, ref)
+	if err != nil {
+		return nil
+	}
+	return rec.Definition.ContextProfiles
 }
 
 // catalogSummaryHeading marks the CP-62 P-5 catalog tier block appended to a

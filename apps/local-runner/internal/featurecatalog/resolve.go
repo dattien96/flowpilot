@@ -39,11 +39,19 @@ func ResolveFeature(nl string, catalog *Catalog) ([]Candidate, error) {
 			score += 5.0
 		}
 
+		// BUG-417: award the glob-substring hit ONCE per feature, not per
+		// token. Auto-cataloged noise features (a chore commit's ~100-entry
+		// file_globs covering most of the repo) matched nearly every query
+		// token — coverage breadth amplified into dominance over registered
+		// FEATURE-KEYS.md entries whose real signal is keyword/key/title
+		// matches. One hit still credits a genuinely glob-relevant feature;
+		// breadth no longer compounds.
 		globStr := strings.ToLower(strings.Join(feat.FileGlobs, " "))
 		if globStr != "" {
 			for _, qt := range queryTokens {
 				if strings.Contains(globStr, qt) {
 					score += 2.0
+					break
 				}
 			}
 		}

@@ -63,7 +63,10 @@ func (s *dependenceSource) Fetch(ctx context.Context, hints FlowContextHints) (F
 	bctx, cancel := context.WithTimeout(ctx, dependenceTotalBudget)
 	defer cancel()
 
-	body := renderDependenceBody(bctx, provider, targets)
+	body, warnings := renderDependenceBody(bctx, provider, targets)
+	if len(warnings) > 0 {
+		section.Warnings = warnings
+	}
 	if strings.TrimSpace(body) == "" {
 		return section, nil
 	}
@@ -87,12 +90,21 @@ func dependenceTargets(c changecontract.Contract) []string {
 	return out
 }
 
-func renderDependenceBody(ctx context.Context, provider structure.Provider, targets []string) string {
+// renderDependenceBody renders the blast-radius body and returns any lookup
+// warnings. BUG-420: per-target errors were swallowed by `continue`, so a
+// run of failures (e.g. every `gitnexus impact` returning `Repository
+// "<dir>" not found` on a name-mismatched bed) produced an empty body that
+// elided the whole section with zero observable signal. Errors now surface
+// as warnings — a partial failure still renders the hits that succeeded.
+func renderDependenceBody(ctx context.Context, provider structure.Provider, targets []string) (string, []string) {
 	var b strings.Builder
+	var warnings []string
+	var errs []string
 	any, incomplete := false, false
 	for _, t := range targets {
 		summary, err := provider.Dependents(ctx, t)
 		if err != nil {
+			errs = append(errs, fmt.Sprintf("%s: %v", t, err))
 			continue
 		}
 		nearest := append([]string(nil), summary.Nearest...)
@@ -117,12 +129,16 @@ func renderDependenceBody(ctx context.Context, provider structure.Provider, targ
 			incomplete = true
 		}
 	}
+	if len(errs) > 0 {
+		warnings = append(warnings, fmt.Sprintf(
+			"gitnexus impact failed for %d/%d target(s): %s", len(errs), len(targets), errs[0]))
+	}
 	if !any {
-		return ""
+		return "", warnings
 	}
 	out := "## Dependence\n\n" + b.String()
 	if incomplete {
 		out += "\n_Note: partial caller list (dynamic dispatch)._"
 	}
-	return strings.TrimSpace(out)
+	return strings.TrimSpace(out), warnings
 }
