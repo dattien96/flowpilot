@@ -204,6 +204,16 @@ func (s *InteractiveService) resolveWorktree(ctx context.Context, runID, mode st
 		if b.State == "lost" {
 			return nil, newAPIErr(http.StatusConflict, "worktree_lost", "worktree is missing; nothing to keep")
 		}
+		// The kept branch only holds commits — uncommitted worktree changes
+		// vanish with the directory. Same confirm contract as discard (Q-2).
+		uncommitted, _ := mgr.Uncommitted(ctx, repoDir, b.OwnerID, "")
+		if len(uncommitted) > 0 && !confirm {
+			return map[string]any{
+					"runId": runID, "worktreeState": b.State, "mode": mode,
+					"requiresConfirm": true, "uncommitted": uncommitted,
+				}, newAPIErr(http.StatusConflict, "worktree_keep_branch_confirm",
+					"worktree has uncommitted changes that are not on the branch; resend with confirm")
+		}
 		_ = mgr.Cleanup(ctx, repoDir, b.OwnerID, "", true)
 		s.setWorktreeState(rs, "kept_branch")
 		return respond("kept_branch", map[string]any{"branch": b.Branch})
@@ -412,7 +422,8 @@ func (s *InteractiveService) handleWorktreeResolve(w http.ResponseWriter, r *htt
 	out, e := s.resolveWorktree(r.Context(), r.PathValue("runId"), body.Mode, body.Confirm)
 	if e != nil {
 		// Conflict responses still carry the evidence payload for the card.
-		if e.code == "worktree_merge_conflict" || e.code == "worktree_discard_confirm" {
+		if e.code == "worktree_merge_conflict" || e.code == "worktree_discard_confirm" ||
+			e.code == "worktree_keep_branch_confirm" {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(e.status)
 			_ = json.NewEncoder(w).Encode(out)

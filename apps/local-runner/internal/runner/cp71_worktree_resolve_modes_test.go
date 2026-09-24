@@ -252,3 +252,57 @@ func TestE2EWorktree_InvalidModeRejectedHTTP(t *testing.T) {
 		t.Fatalf("binding state changed by invalid mode: %s", st)
 	}
 }
+
+// TestE2EWorktree_KeepBranchWithUncommittedRequiresConfirm: live-found gap —
+// keep_branch removes the worktree but keeps only the branch pointer; any
+// uncommitted delta (untracked OR modified tracked files) is silently lost
+// because it was never on the branch. Same data-loss guard as discard: 409
+// requiresConfirm + the uncommitted path list; confirm=true proceeds.
+func TestE2EWorktree_KeepBranchWithUncommittedRequiresConfirm(t *testing.T) {
+	repo := initWorktreeRepo(t)
+	svc, srv := worktreeHTTPServer(t, repo)
+	runID := startWorktreeChatRun(t, srv, repo, map[string]any{"providerKey": "claude"})
+	wtPath := runWorktreePath(t, srv, runID)
+
+	// Provider left an uncommitted artifact AND modified a tracked file.
+	if err := os.WriteFile(filepath.Join(wtPath, "uncommitted.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	markRunTerminal(t, svc, runID)
+
+	status, raw := resolveWorktreeConfirmHTTP(t, srv, runID, "keep_branch", false)
+	if status != http.StatusConflict {
+		t.Fatalf("keep_branch without confirm: %d %s — uncommitted work must not be silently dropped", status, raw)
+	}
+	var conflict struct {
+		RequiresConfirm bool     `json:"requiresConfirm"`
+		Uncommitted     []string `json:"uncommitted"`
+	}
+	if err := json.Unmarshal(raw, &conflict); err != nil {
+		t.Fatalf("decode conflict payload: %v (%s)", err, raw)
+	}
+	if !conflict.RequiresConfirm {
+		t.Fatalf("expected requiresConfirm, got %+v", conflict)
+	}
+	found := false
+	for _, u := range conflict.Uncommitted {
+		if strings.Contains(filepath.ToSlash(u), "uncommitted.txt") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("uncommitted list missing artifact: %+v", conflict.Uncommitted)
+	}
+	// Worktree must still be there — the user has not confirmed the loss.
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Fatal("worktree must survive an unconfirmed keep_branch")
+	}
+
+	status, raw = resolveWorktreeConfirmHTTP(t, srv, runID, "keep_branch", true)
+	if status != http.StatusOK {
+		t.Fatalf("keep_branch with confirm: %d %s", status, raw)
+	}
+	if st := runWorktreeState(t, srv, runID); st != "kept_branch" {
+		t.Fatalf("state=%s want kept_branch", st)
+	}
+}
