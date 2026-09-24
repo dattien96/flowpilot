@@ -484,7 +484,7 @@ marked `UI` — backend evidence still required where noted.
 
 | ID | Case | Pass criteria | Auto | Status |
 |----|------|---------------|------|--------|
-| B-59-1 | Switch legs | devin→opencode (and back) → new leg, `includedTurnCount`, E-9 divider, target identity | chat SSOT tests | ☐ |
+| B-59-1 | Switch legs | devin→opencode (and back) → new leg, `includedTurnCount`, E-9 divider, target identity | chat SSOT tests | ◑ cht_10a27db90766: devin leg (run-49030) → switch → codex leg (run-49042) legSeq 1, handoff `raw`, `includedTurnCount:1`, E-9 `chat_provider_switch` divider positioned correctly, old leg closed `provider_switch`. **BUG-465 found+fixed**: codex answered both turns with identical canned text → `collapseRepeatedFinals` dropped turn-2's answer from rendered timeline (raw records seqs 11/12 intact). Fixed CA-962. **Not yet drilled**: switch back (codex→devin) leg. |
 | B-59-2 | Same-provider switch | `handoff_same_provider` 409 → in-place | unit | ☐ |
 | B-59-3 | Timeline | legs sorted, records deduped, dividers positioned | unit | ☐ |
 | B-59-4 | Detached reattach | first prompt reattaches (no `chat_no_active_leg` — BUG-405 legState restore, re-verify post-restart) | `bug405` refs | ☐ |
@@ -500,7 +500,7 @@ marked `UI` — backend evidence still required where noted.
 | C-23-1 | 23 | Budget packer | wide-read turn → `[prompt-pack]` truncation fields | promptpacker tests | ☐ |
 | C-23-2 | 23 | Drift ladder + single pause | failing turns → score events → `drift_pause_required` once at ≥80 → continue resumes | driftdetect + `bug430_*` | ☐ |
 | C-23-3 | 23 | Vibe non-pause | same ladder in vibe → no pause | unit | ☐ |
-| C-23-4 | 23 | Skillpack install | `.agents/skills` + `.claude/skills` populated, `version:` markers (BUG-415) | skillpack tests | ☐ |
+| C-23-4 | 23 | Skillpack install | `.agents/skills` + `.claude/skills` populated, `version:` markers (BUG-415) | skillpack tests | ☑ bed: 15 skills in `.agents/skills` + mirrored `.claude/skills`, all carry `version:` frontmatter (e.g. flow-harness-contract v6) |
 | C-35-1 | 35 | Feature resolve + history | "improve calc-core" → verified confidence, newest-last prior work | featurecatalog | ◑ run-6893: feature `str-utils` resolved; canonical.head/history sections empty (first-run feature — correct degrade), change.contract section carried declared scope |
 | C-35-2 | 35 | r-ca gate | no CA note → reprompt→block; CA written → pass | runner gate tests | ☑ run-6893: audit tier-3 blocked done on missing CA note → operator wrote CA-001 → re-observe → audit DONE |
 | C-35-3 | 35 | Oracle regression block | break pre-existing test → `regression_test_broke` | flowgate | ☐ |
@@ -511,7 +511,7 @@ marked `UI` — backend evidence still required where noted.
 | C-63-1 | 63 | gopls diagnostics live | `[lsp] lsp.start` + **sev1 diagnostics actually surfaced** (BUG-380 initialized-notify fix — re-verify end-to-end) | lsp tests | ☐ RE-VERIFY |
 | C-63-2 | 63 | Degrade + doctor | missing binary → warn-once + `flowpilot doctor` MISSING exit 1 | cli/lsp | ☐ |
 | C-63-3 | 63 | Crash budget | repeated crashes → session-wide disable, no respawn | unit | ☐ |
-| C-66-1 | 66 | GitNexus bootstrap → knowledge artifacts | bootstrap ok; 0-process degrade graceful | knowledge tests | ☐ |
+| C-66-1 | 66 | GitNexus bootstrap → knowledge artifacts | bootstrap ok; 0-process degrade graceful | knowledge tests | ◑ bed `.flowpilot/knowledge/` populated: system-overview.md, data-models.md, execution-flows.md, index.json (bootstrap ran); 0-process degrade leg not drilled |
 | C-66-2 | 66 | Locus routing | planner gets `knowledge.flow`; coder does NOT; `candidateSources` wired (BUG-421) | unit | ☐ RE-VERIFY |
 | C-66-3 | 66 | Audit hook differential non-blocking | incremental update touches only changed artifacts | unit | ☐ |
 

@@ -263,10 +263,19 @@ func (s *InteractiveService) backfillLegacyChatTranscript(ctx context.Context, c
 // mapper records both EventMessageCompleted and EventTurnCompleted, and the
 // echo would duplicate the final text. Raw records stay on disk; the read model
 // collapses (SD-26 §6.1 note).
+//
+// BUG-465: the dedup is scoped to a single turn — a turn_started record resets
+// the per-leg baseline. Without that, a model that ends two consecutive turns
+// with identical text (e.g. a canned "Done." final) had its second answer
+// silently dropped from the rendered timeline even though the raw record
+// exists (live: cht_10a27db90766 leg run-49042).
 func collapseRepeatedFinals(recs []ChatTranscriptRecord) []ChatTranscriptRecord {
 	out := make([]ChatTranscriptRecord, 0, len(recs))
 	lastTextByLeg := map[string]string{}
 	for _, rec := range recs {
+		if rec.Type == EventTypeChatTurnStarted {
+			delete(lastTextByLeg, rec.LegRunID)
+		}
 		if rec.Type == EventTypeChatMessageCompleted {
 			var p struct {
 				Text string `json:"text"`
