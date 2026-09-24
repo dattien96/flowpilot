@@ -237,6 +237,120 @@ No new reds → no post-rebase regression. ✅ GATE PASS.
 - **Dispatch durability (CP-51)**: `prepared → send_claimed → send_started →
   terminal_completed` chain with envelope hashes observed on every provider
   turn across run-1/run-94/run-6893/run-14071 records.
+- **run-34947 (vibe-ingest snake, devin hub) — ingest→slicer PASS, sprint
+  start exposed BUG-461**: full intake chain live —
+  `ingest_reader` → `ss_converter` → `ss_validator` (APPROVE) → `ss_lock`
+  parked card → human `continue` unlocked → `cp_writer` spawned. First
+  cp_writer child (devin) died on the free-tier rate limit
+  (`retryable: unavailable`, 10s, 0 writes) — `writer_fail_skips_validator_hub`
+  correctly skipped the validator reinvoke but left the run `running` with
+  nothing scheduled (dead-end shape, same class as the merge-card
+  observation: a linear-writer failure surfaces no card). Runner restart →
+  resume parked `blocked` + pendingGate `resumeFrom: ss_lock` →
+  `gate-decision ok` re-drove cp_writer on **grok/grok-4.5** via the
+  `step_definitions.model` admin override (mid-flight provider override
+  verified live) → CP-01 finalized → `task_slicer` wrote Task-3/4/5. Sprint
+  start then failed at flow resolution: mirrored `vibe-sprint` dropped the
+  flow-level `contextProfiles` map so the BUG-458-restored
+  `contextProfile: scout` node ref failed validation — **BUG-461, fixed
+  CA-958** (restore `ContextProfiles`/`Tools` from the embedded pack for
+  builtin mirrors). A second restart during the stranded sprint-start
+  cancelled the run (same CP-66 parked/in-flight-run cancel gap — no
+  pending gate existed to re-drive).
+- **Stale-task pollution observation**: `collectVibeTaskPlan` globs every
+  `requirements/08-Task/todo/Task-*.md` regardless of feature lineage —
+  leftover draft Tasks from earlier bed runs (Task-1 gcd/lcm, Task-2
+  strutil) would have entered the snake sprint plan ahead of Task-3.
+  Quarantined to `/tmp/fp-bed-task-backup/` for clean evidence; whether
+  cross-feature drafts should join a new CP's sprint plan is a design
+  question worth a follow-up (plan = "all pending work" vs "this CP's
+  children only").
+- **BUG-365 live-verified**: after `ss_lock` confirm, all three SS docs on
+  disk carry `Status: approved` (SS-01/02/03-snake-*).
+- **A-60-7 live-verified**: a vibe-cp-ingest turn without a CP source
+  rejected with `422 invalid_cp_source` (BUG-399 fail-closed admission);
+  adding `sourceDocId` armed the flow.
+- **run-37268 (vibe-cp-ingest snake) — Task-3 sprint COMPLETE through the
+  full harness chain; BUG-462 found + fixed live**: cp_reader → cp_validator
+  (Devin `submit_review_outcome` approved) → cp_lock parked → `continue`
+  confirmed → task_slicer → vibe-sprint armed Task-3 →
+  `preflight_contract_plan` → `preflight_contract_freeze` → `context` →
+  `tdd` all DONE; scaffold locked `snake/model_test.go` read-only + pinned
+  `signature_hash`+10 `locked_signatures` on the coder contract (v2).
+  tdd→coder advance then false-parked: `vibe_tdd_missing — coder refused;
+  tdd artifact missing` fired 70ms after the signature pin — the FS-only
+  `hasVibeTddOutput` could not see the adopted full-body test file and never
+  consulted the contract record it was about to open anyway. **BUG-462,
+  fixed CA-959**: `vibeTddEvidencePresent` counts contract-pinned
+  `LockedSignatures` at all three gate sites (advance + both resume paths);
+  3 additive tests incl. guard-rail (bare v1 freeze still parks; CA-769
+  full-body rejection preserved). Live verify post-fix: runner restart →
+  `gate-decision ok` on `resumeFrom: tdd` → coder spawned (run-40625,
+  devin/swe-2-high) → `coder`/`validate`/`synthesis`/`audit` all DONE →
+  sprint boundary card `sprint 2/3 (Task-4-snake-loop-input-render.md)`
+  parked (boundary checkpoint OK) → `ok` armed sprint 2. Bed: `go test
+  ./snake/...` green (0.278s).
+- **BUG-462 side observations**: (a) `agent-loop/continue` answered a
+  `vibeResumeConfirm` gate with a fresh hub turn instead of consuming the
+  card — only `gate-decision` routes it (same wrong-surface class as the
+  run-34947 ss_lock gate miss); (b) `steps-runtime` briefly showed
+  `synthesis RUNNING` while `coder` was still PENDING after the restart —
+  stale step view, settled to DONE on completion; (c) boot-time builtin
+  mirror sync hit `409 duplicate workflow_steps(workflow_id,order_index)`
+  on `bug-plan-harness` — insert-not-upsert on an existing row set; sync
+  failure is logged and non-fatal but worth a fix pass (mirror freshness).
+- **run-37268 sprint-2 (Task-4) — BUG-463 found + fixed; run cancelled by
+  restart; continued as run-41626**: sprint-2 minted a fresh contract (v4,
+  `coder` step — A-60-5 re-verified: no reuse of Task-3's record) → tdd
+  DONE → scaffold locked test files but the pin logged an **empty
+  signature hash** and stored **absolute** `read_only_paths`. Root cause:
+  devin's `EventFileChanged` reported absolute paths this turn (sprint-1
+  reported relative — provider shape varies); `scaffoldSignatureSnapshot`
+  `filepath.Join(cwd, abs)` never existed → empty sigs, and
+  `recordScaffoldArtifactsLock` bypassed the BUG-388 relativize wrapper so
+  abs paths persisted (read-only deny-list would never have matched).
+  **BUG-463, fixed CA-960**: normalize `EventFileChanged` paths at
+  ingestion + relativize `written` at the scaffold gate; contract evidence
+  now also counts `ReadOnlyPaths` (a post-freeze lock is itself the
+  runner's TDD attestation — covers the already-locked sigs-empty record).
+  Runner restart then cancelled the parked run (known CP-66 observation,
+  re-confirmed); Task-3 file archived to `08-Task/done/` per convention
+  (runner had ticked all DoD boxes) and **run-41626** launched via
+  `vibe-cp-ingest` @CP-01 — cp_reader correctly read "Task-3 done,
+  Task-4/5 pending" → chain re-armed toward slicer → sprint Task-4.
+- **run-41626 (vibe-cp-ingest resume) — Snake MVP COMPLETE via the
+  agent-orchestrated sprint path**: vibe-intake child (run-41631) read the
+  bed state, correctly identified "Task-3 done / Task-4 stubbed mid-TDD /
+  Task-5 not started", and self-orchestrated two sequential `vibe-sprint`
+  children (`spawn_agent wait=true`): run-42033 (Task-4 — implemented
+  input/loop/render stubs → green, 4.5min/1107 events) and run-43155
+  (Task-5 — score/game-over/R-Q, 7min/1187 events). Verified end state:
+  `go test -count=1 ./...` green, `go vet` clean, Task-4/5 docs moved to
+  `done/` with §11 filled, handoff-sprint-2/3.yaml + CA-006/007 written,
+  `snake/cmd` binary renders grid+snake+food and quits on `q`. Intake's
+  final report correctly refused to mark CP-01 done (interactive-terminal
+  DoD needs human playthrough; cooked-mode stdin caveat documented).
+  Engine-side flow then proceeded cp_lock (confirmed `ok`) → task_slicer
+  (doc-writer found nothing to slice) → **parked
+  `flow_parked_awaiting_user`** — see observations.
+- **Two sprint execution modes observed for the same vibe entry**:
+  run-37268 ran sprints as ENGINE-DRIVEN flow nodes
+  (preflight_contract_plan → freeze → context → tdd → coder → validate →
+  synthesis → audit, with contract freeze + signature lock + read-only
+  enforcement); run-41626's intake agent instead spawned plain
+  `vibe-sprint` agent children — single-turn devin runs with NO frozen
+  contract minted and no TDD-signature/read-only gate enforcement (test
+  integrity rests on prompt instruction only). Both produced correct
+  artifacts here, but the contract machinery coverage differs — design
+  question: should `spawn_agent("vibe-sprint")` resolve to the flow
+  instead of a bare role child?
+- **Requirement-park UX gap at plan exhaustion**: when every Task doc is
+  already in `done/`, the slicer-done gate (BUG-363) sees empty `todo/`
+  and parks "refusing to sprint from fallback" — correct fail-closed, but
+  indistinguishable from a genuine slicer failure; a `continue` turn is
+  absorbed (`hub_reinvoke_skipped_vibe_lock_sealed`) with no card options,
+  so the only operator close is stop/cancel. Worth a "plan exhausted →
+  done" terminal distinction follow-up.
 
 Evidence convention: every row gets runId + log line / artifact path. UI-only rows are
 marked `UI` — backend evidence still required where noted.
@@ -335,12 +449,12 @@ marked `UI` — backend evidence still required where noted.
 | ID | Case | Pass criteria | Auto | Status |
 |----|------|---------------|------|--------|
 | A-60-1 | Mode gate | `/vibe` on clean bed → only vibe flows armable; dev `1/2/3` cards absent in vibe | workingmode tests | ☐ |
-| A-60-2 | Snake MVP end-to-end | vibe run → SS → CP → tasks → sprint → playable `snake` (build+run green). **Was PARTIAL: owner-debate parked forever (BUG-411, fixed) — re-run required** | unit | ☐ RE-VERIFY |
+| A-60-2 | Snake MVP end-to-end | vibe run → SS → CP → tasks → sprint → playable `snake` (build+run green). **Was PARTIAL: owner-debate parked forever (BUG-411, fixed) — re-run required** | unit | ☑ run-37268+run-41626: Task-3 sprint FULL engine chain DONE; Task-4/5 sprints via agent-orchestrated `vibe-sprint` children (run-42033/run-43155) — `go test ./...` green, `go vet` clean, `snake/cmd` renders+quits. BUG-462/463 found+fixed live. Caveat: CP-01 interactive-playthrough DoD awaits human sign-off (documented) |
 | A-60-3 | Fail-closed probes | `rm -rf`-class → refused + parked | unit | ☐ |
 | A-60-4 | Resume checkpoint matrix §11 | R-SS/R-CP/R-TK keep + delete demotion (Task→CP→SS→empty); N-CP/N-SS/N-TK/N-DEL new-flow skip — **all unchecked live** | — | ☐ DEFERRED-LIVE |
-| A-60-5 | Sprint reuse freeze (BUG-368, fixed CA-823) | 2nd vibe-sprint on same run gets fresh contract (sprint-1 paths not reused) | `bug368_*` | ☐ RE-VERIFY |
-| A-60-6 | SS lock stamp (BUG-365, fixed CA-820) | ss_lock writes `status: approved` on disk; requirement park surfaces blocked card | `bug365_*` | ☐ RE-VERIFY |
-| A-60-7 | vibe-cp-ingest admission | non-CP input → 422 `invalid_cp_source` (BUG-399 fixed — re-verify) | `bug399` tests | ☐ |
+| A-60-5 | Sprint reuse freeze (BUG-368, fixed CA-823) | 2nd vibe-sprint on same run gets fresh contract (sprint-1 paths not reused) | `bug368_*` | ☑ run-37268: sprint-2 minted NEW contract v4 for coder step with Task-4 paths (loop/input/render) — Task-3's v2 (model.go sigs) untouched |
+| A-60-6 | SS lock stamp (BUG-365, fixed CA-820) | ss_lock writes `status: approved` on disk; requirement park surfaces blocked card | `bug365_*` | ☑ run-34947: ss_lock confirm → all 3 SS docs carry `Status: approved` on disk; card surfaced as `flow_parked_awaiting_user` + pendingGate ok/cancel |
+| A-60-7 | vibe-cp-ingest admission | non-CP input → 422 `invalid_cp_source` (BUG-399 fixed — re-verify) | `bug399` tests | ☑ run-37268: turn without sourceDocId rejected `invalid_cp_source`; with `sourceDocId` armed cp_reader |
 | A-60-8 | Waiting-approval orphan reconcile (BUG-432) | flow done while child waits → child terminalized, no orphan | unit | ☐ |
 
 ---
