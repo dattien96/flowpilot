@@ -72,3 +72,24 @@ func TestGateDriftStillBlocksExtensionlessSubdirFile(t *testing.T) {
 		t.Fatal("an undeclared extension-less file under a subdir must still count as drift")
 	}
 }
+
+// BUG-457 (live run-13080): the runner's own flow diag log
+// (.flowpilot/logs/features/<feature>/<run>.ndjson) is appended DURING the
+// writer's turn — the frozen gate's diff observes it and parks on drift.
+// Same class as CA-649 (gate-metrics self-park): runner observability files
+// are never the coder's write. Narrow prefix only — .flowpilot/settings or
+// contracts still drift.
+func TestGateDriftIgnoresRunnerDiagLog(t *testing.T) {
+	dir, head := newContractFreezeTestRepo(t)
+	svc, parentID := newP4CodeWriterFixture(t, dir)
+	freezeP4Contract(t, dir, parentID, "coder", head, []string{"strutil.go"})
+	rs := newP4ChildRun(svc, "child-diag", parentID, dir, head)
+
+	p4WriteFile(t, dir, "strutil.go", "package main\n\nfunc Reverse(s string) string { return s }\n")
+	p4WriteFile(t, dir, ".flowpilot/logs/features/agent-flow-engine/run-1.ndjson", "{}\n")
+
+	if svc.runChildArtifactOutputGateAtEpoch(context.Background(), rs, "turn-1",
+		finalizeInput{FinalMessage: "done", ChangedFiles: []string{"strutil.go"}}, 0) {
+		t.Fatal("the runner's own .flowpilot/logs/** diag output must NOT count as scope drift")
+	}
+}

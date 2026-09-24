@@ -103,6 +103,20 @@ func IsRunnerChatBookkeepingPath(p string) bool {
 	return strings.HasPrefix(normalizeScopePath(p), ".flowpilot/chats/")
 }
 
+// IsRunnerLogsBookkeepingPath reports whether p lives under the runner's own
+// flow diagnostic log directory (.flowpilot/logs/). flowDiagLog appends
+// per-feature run logs there on every flow event — including mid-turn inside
+// the exact diff window the frozen-scope gate observes — so without the
+// exemption every writer false-positives on the runner's own observability
+// output (BUG-457, live run-13080: implement parked on
+// .flowpilot/logs/features/agent-flow-engine/run-13080.ndjson). Same narrow-
+// prefix reasoning as IsRunnerChatBookkeepingPath: nothing under logs/ is a
+// gate input, while .flowpilot/settings/ and .flowpilot/contracts/ stay fully
+// subject to drift enforcement (CA-427 Finding 2).
+func IsRunnerLogsBookkeepingPath(p string) bool {
+	return strings.HasPrefix(normalizeScopePath(p), ".flowpilot/logs/")
+}
+
 // IsChangeAuditPath reports whether p is a change audit note — flat, direct
 // children of change-audit/ named CA-*.md — which coding agents are explicitly
 // allowed to create per BUG-278 without triggering code scope drift.

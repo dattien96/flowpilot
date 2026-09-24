@@ -1025,6 +1025,10 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 				changecontract.IsPendingCanonicalStoreBookkeepingPath(p) ||
 				changecontract.IsRunnerLedgerBookkeepingPath(p) ||
 				changecontract.IsRunnerChatBookkeepingPath(p) ||
+				// BUG-457: .flowpilot/logs/** is the runner's own flow diag
+				// output appended mid-turn — same self-park class as
+				// CA-649's gate-metrics. Never the coder's write.
+				changecontract.IsRunnerLogsBookkeepingPath(p) ||
 				changecontract.IsChangeAuditPath(p) ||
 				// Runner-owned stores the gate's own diff can observe: the
 				// Canonical Head file (SaveHead on gate passes) and the legacy
