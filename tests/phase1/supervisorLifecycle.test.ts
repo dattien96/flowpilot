@@ -59,12 +59,23 @@ function freshSupervisor(): Patched {
   const spawned: SpawnRecord[] = [];
   const kills: Array<[number, unknown]> = [];
   const origSpawn = cp.spawn;
+  const origExecSync = cp.execSync;
   const origKill = process.kill;
 
   cp.spawn = (cmd: string, args: string[], opts: SpawnRecord["opts"]) => {
     const child = fakeChild();
     spawned.push({ cmd, args, opts, child });
     return child;
+  };
+  // Windows cleanup paths (signalManagedProcess/killProcessTree) run
+  // `taskkill /F /T /PID <pid>` through execSync instead of process.kill
+  // (BUG-240). Record each tree-kill as a SIGKILL-equivalent so the kill
+  // ladder is observable on win32; non-taskkill execSync calls (netstat,
+  // wmic, …) return empty output, matching the no-real-processes sandbox.
+  (cp as { execSync: unknown }).execSync = (cmd: string): string => {
+    const m = /taskkill \/F \/T \/PID (\d+)/.exec(String(cmd));
+    if (m) kills.push([Number(m[1]), "SIGKILL"]);
+    return "";
   };
   // isPidAlive/signal/kill all funnel through process.kill. Returning true
   // keeps fake children "alive" so cleanup reaches the force-kill ladder.
@@ -82,6 +93,7 @@ function freshSupervisor(): Patched {
     kills,
     restore() {
       cp.spawn = origSpawn;
+      (cp as { execSync: unknown }).execSync = origExecSync;
       (process as { kill: unknown }).kill = origKill;
       delete require2.cache[modPath];
     },
@@ -264,8 +276,16 @@ test("TestSupervisor_ForceShutdownStopsRunnerWebDesktop", async () => {
     const wanted = [runner.pid, web.pid, desktop.pid, libre.pid];
     for (const pid of wanted) {
       const sigs = p.kills.filter(([k]) => Math.abs(k) === pid).map(([, s]) => s);
-      assert.ok(sigs.includes("SIGINT"), `pid ${pid} must get graceful SIGINT, got ${JSON.stringify(sigs)}`);
-      assert.ok(sigs.includes("SIGKILL"), `pid ${pid} must get force SIGKILL, got ${JSON.stringify(sigs)}`);
+      if (process.platform === "win32") {
+        // Windows has no graceful signal ladder: both the SIGINT pass and the
+        // force-kill pass collapse to `taskkill /F /T` (BUG-240), recorded as
+        // SIGKILL-equivalents. Two hits prove the escalation ran end-to-end.
+        const treeKills = sigs.filter((s) => s === "SIGKILL").length;
+        assert.ok(treeKills >= 2, `pid ${pid} must be tree-killed on grace+force passes, got ${JSON.stringify(sigs)}`);
+      } else {
+        assert.ok(sigs.includes("SIGINT"), `pid ${pid} must get graceful SIGINT, got ${JSON.stringify(sigs)}`);
+        assert.ok(sigs.includes("SIGKILL"), `pid ${pid} must get force SIGKILL, got ${JSON.stringify(sigs)}`);
+      }
     }
   } finally {
     p.restore();

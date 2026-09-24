@@ -419,9 +419,7 @@ func TestRunnerBoot_TUIDeathDoesNotKillSharedRunner(t *testing.T) {
 	if cmd.SysProcAttr == nil {
 		t.Fatal("shared spawn must set SysProcAttr (detached)")
 	}
-	if runtime.GOOS != "windows" && !cmd.SysProcAttr.Setsid {
-		t.Fatal("unix shared spawn must Setsid-detach from the TUI session")
-	}
+	assertSharedRunnerDetached(t, cmd)
 	// And the kill-on-close job must not be wired into the shared spawn path.
 	src, err := os.ReadFile("runnerboot.go")
 	if err != nil {
