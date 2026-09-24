@@ -92,8 +92,28 @@ Park sites covered:
 Pre-fix runs run-102429 / run-103685 (fp-beds/full): unblock after the
 zero-task park produced `status: running` with `cp_validator` stamped
 RUNNING and no delegate/turn — the sealed-hub no-op, later settling into
-`hub_stalled`. Post-fix live verification tracked in
-requirements/07-Coding-Plan/todo/CP-Full-Live-Test.md (A-60-4 R-TK leg).
+`hub_stalled`.
+
+Post-fix verification on run-104945 (fp-beds/full, runner b471, grok):
+
+- cp_reader DONE → cp_validator DONE → cp_lock approved → task_slicer
+  asked the duplicate-detection question (q-106127, mirrored to root).
+- Answered "Skip re-slice" → slicer DONE → loop parked
+  `blocked/requirement` with the CP-scoped gate reason.
+- `agent-loop/continue` with still-zero CP-01 tasks → the advance
+  re-ran and **re-parked `blocked/requirement`** (pre-fix: `running`
+  zombie → hub_stalled).
+- Restored a CP-01-parented task (`Task-21-snake-core-model-rtk.md`,
+  copy of done Task-3) → `agent-loop/continue` → advance re-ran,
+  rebuilt the CP-scoped plan (`vibeTaskTotal: 1`,
+  `vibeTaskName: Task-21-...`), and dispatched the sprint chain:
+  preflight_contract_plan DONE → preflight_contract_freeze DONE →
+  context DONE → tdd RUNNING — a real dispatch, not a zombie.
+
+Also observed: codex's vibe-intake child repeatedly ended without
+`submit_review_outcome` on cp_validator (run-104904, blocked/escalate
+missing-verdict — same wall as run-85792; honest codex evidence, the
+drill relaunched on grok which completed the validator cleanly).
 
 ## Related surface (not changed)
 
