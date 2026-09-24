@@ -3791,13 +3791,19 @@ func (m *AppModel) turnIsActive() bool {
 	// RUNNING child (screenshot: "done" + leftover [stop], possibly with a
 	// stale flowStepsActive) is not a turn the operator should Stop
 	// (BUG-371). A done loop with a still-RUNNING child still arms [stop].
-	if strings.EqualFold(strings.TrimSpace(m.flowLoopStatus), "done") && !m.hasLiveWorkingChild() {
+	// A pending send is live work too: the post-done follow-up's send→stream
+	// gap must keep [stop] armed (CA-544); turnSendPending was split from
+	// pendingPrompt in BUG-341 and must count here as well.
+	if strings.EqualFold(strings.TrimSpace(m.flowLoopStatus), "done") && !m.hasLiveWorkingChild() &&
+		m.pendingPrompt == "" && !m.turnSendPending {
 		return false
 	}
-	if m.question != nil || m.approval != nil || m.gate != nil {
+	// An open approval does NOT disarm [stop]: the underlying turn is still
+	// live and the operator may cancel instead of answering (chat_ux_actions).
+	if m.question != nil || m.gate != nil {
 		return false
 	}
-	if m.pendingPrompt != "" {
+	if m.pendingPrompt != "" || m.turnSendPending {
 		return true
 	}
 	// Dispatch operator attention (CP-51 Task-256): while an uncertain turn /
