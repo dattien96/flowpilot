@@ -414,6 +414,9 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case worktreeMergeMsg:
+		return m.handleWorktreeMergeMsg(msg)
+
 	case chatPostureMsg:
 		if msg.Err != nil {
 			if m.chatPostureSaving {
@@ -4473,9 +4476,16 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		}
 
 	case "/worktree", "/wt":
+		if len(args) > 0 && args[0] == "merge" {
+			return m, m.cmdWorktreeMerge(args[1:])
+		}
 		// CP-71: arm the next run for worktree isolation (per-chat toggle —
 		// a live binding pins the flag until merged/discarded).
 		return m, m.toggleWorktree()
+
+	case "/wt-merge", "/wtm":
+		// Task-437: resolve a live/merge_pending worktree binding.
+		return m, m.cmdWorktreeMerge(args)
 
 	case "/yolo":
 		if m.mode != ModeChat || m.launch.IsArmed() {

@@ -137,6 +137,15 @@ func (s ConnStatus) String() string {
 // Exported tea.Msg types so tests can simulate events without a live server.
 
 // ErrMsg carries an error to the Update loop.
+// Task-437: /wt-merge outcome — Res set on resolve success, Snap on the
+// no-arg binding probe; Err carries *client.APIError for the 409 branches.
+type worktreeMergeMsg struct {
+	Res  *client.WorktreeResolveResult
+	Snap *client.RunSnapshot
+	Err  error
+	Mode string // attempted resolve mode — reprinted in the --confirm hint
+}
+
 type ErrMsg struct{ Err error }
 
 // chatPostureMsg carries the runner's chat-posture document after a GET/PUT so
@@ -863,6 +872,7 @@ var knownSlashCommands = []slashCommand{
 	{"/sync", "Push session to Drive — /sync · /sync all"},
 	{"/restore", "Pull a Drive-backed chat — /restore · /restore all"},
 	{"/init", "Init — /init skill (flow-pack) · /init all (full engine)"},
+	{"/wt-merge", "Resolve worktree merge — /wt-merge apply_patch|keep_branch|discard [--confirm]"},
 }
 
 // hasModalOpen returns true if any full-screen or popup modal is open.
