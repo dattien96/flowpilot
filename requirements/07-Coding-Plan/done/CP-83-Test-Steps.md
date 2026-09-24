@@ -90,9 +90,9 @@ node --require ../../scripts/phase1-runtime.js --test ../../.phase1-tests/apps/d
 | # | Item | How | Tick |
 |---|---|---|---|
 | P1 | node-pty built | `npm i` in app dir; native module loads (no ABI error in devtools console) | [x] PASS — NAPI prebuild verified under Electron runtime (Node 20.18.3) |
-| P2 | App live | `npm run dev` window opens | [ ] |
-| P3 | Scratch project | git repo project registered | [ ] |
-| P4 | Worktree run | one run with worktree toggle ON completed/started | [ ] |
+| P2 | App live | `npm run dev` window opens | [ ] — _operator: required for M-2..M-7 devtools pass_ |
+| P3 | Scratch project | git repo project registered | [x] — KR-005 live round: `C:\temp\fp-live-ws` |
+| P4 | Worktree run | one run with worktree toggle ON completed/started | [x] — KR-005 live round: multiple `worktree:true` runs driven through full resolve matrix on `:4317` |
 
 ---
 

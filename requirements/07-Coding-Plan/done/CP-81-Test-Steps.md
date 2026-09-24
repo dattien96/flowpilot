@@ -173,14 +173,14 @@
 
 ## K. Sign-off Checklist
 
-- [ ] TUI + Desktop can coexist on one runner.
-- [ ] Closing one client never kills the other client's runner.
-- [ ] Last client normal close → 30-second idle shutdown.
-- [ ] Last client crash → TTL expiry then 30-second idle shutdown.
-- [ ] Active work prevents idle shutdown and is durably stopped on force.
-- [ ] `Turn off FlowPilot` is warn-then-force.
-- [ ] Planned restart reconnects; unplanned runner death closes clients with notice.
-- [ ] Stale runner auto-replaces only when idle.
-- [ ] No unknown process is killed for port occupancy.
-- [ ] No orphaned Go wrapper/compiled runner remains after shutdown.
-- [ ] Logs identify requester and lifecycle reason for every destructive event.
+- [ ] TUI + Desktop can coexist on one runner. — _operator: needs two real clients on one runner_
+- [ ] Closing one client never kills the other client's runner. — _operator: real-client close; lease semantics covered by `quit_kills_reused_runner_test.go` (J5)_
+- [ ] Last client normal close → 30-second idle shutdown. — _operator: wall-clock idle timing on real processes_
+- [ ] Last client crash → TTL expiry then 30-second idle shutdown. — _operator: requires real client kill (Task Manager / kill -9); TTL path covered by lease-expiry test (J6)_
+- [ ] Active work prevents idle shutdown and is durably stopped on force. — _operator: real in-flight turn + force-stop; durable-stop semantics covered by Task-415 lifecycle API tests_
+- [ ] `Turn off FlowPilot` is warn-then-force. — _operator: desktop UI flow_
+- [ ] Planned restart reconnects; unplanned runner death closes clients with notice. — _operator: real restart + kill scenarios_
+- [ ] Stale runner auto-replaces only when idle. — _operator: stale-binary detection on real spawn_
+- [ ] No unknown process is killed for port occupancy. — _operator: needs a foreign process squatting the port_
+- [ ] No orphaned Go wrapper/compiled runner remains after shutdown. — _operator: process-list inspection post-shutdown_
+- [ ] Logs identify requester and lifecycle reason for every destructive event. — _operator: log inspection on real events_
