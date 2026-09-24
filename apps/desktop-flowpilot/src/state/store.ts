@@ -3978,6 +3978,18 @@ function startRunUpdatesStream(
 const MUX_BACKOFF_MIN_MS = 500;
 const MUX_BACKOFF_MAX_MS = 30_000;
 
+// KR-005 test seam: drives/stops the reconnect loop deterministically from
+// unit tests without tripping the once-only muxUpdatesStarted flag. The seam
+// only wraps existing behavior — production wiring still goes through
+// startRunUpdatesStream.
+export const runUpdatesLoopTestHooks = {
+  consume: (client: RunnerClient, set: (fn: (s: AppState) => Partial<AppState>) => void, get: () => AppState) =>
+    consumeRunUpdatesLoop(client, set, get),
+  stop: (): void => {
+    muxUpdatesController?.abort();
+  },
+};
+
 async function consumeRunUpdatesLoop(
   client: RunnerClient,
   set: (fn: (s: AppState) => Partial<AppState>) => void,
