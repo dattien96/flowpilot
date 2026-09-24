@@ -619,6 +619,12 @@ func (s *InteractiveService) forceStartVibeTaskSlicer(parentRunID string) {
 	if id := vibeCPIDForPath(cwd, prompt); id != "" {
 		rs.vibeCpDocID = id
 	}
+	// BUG-469: same pin for the slicer's bound cp_md input — the resolved
+	// path overrides the generic "newest matching" input mention so a
+	// multi-CP bed can't slice a different CP than this run's source.
+	if strings.HasSuffix(prompt, ".md") {
+		rs.vibeLockedCP = prompt
+	}
 	rs.vibeAwaitingLock = false
 	rs.vibeResumeConfirm = false
 	rs.vibeResumeFromNode = ""
@@ -643,6 +649,23 @@ func (s *InteractiveService) forceStartVibeTaskSlicer(parentRunID string) {
 	s.setFlowStepStatus(context.Background(), parentRunID, vibeTaskSlicerNodeID, StepStatusPending)
 	s.startResolvedFlowFromNode(context.Background(), parentRunID, workingmode.PackPrefix+vibeCpIngestFlowID, prompt, vibeTaskSlicerNodeID)
 	go s.persistParentSession(parentRunID)
+}
+
+// vibeResolvedSlicerSource (BUG-469) returns the run's pinned source
+// document for templated file_artifact INPUT bindings — non-empty only for
+// Vibe runs that pinned a CP (cp-ingest admission + cp_lock approval stamp
+// rs.vibeLockedCP; forceStartVibeTaskSlicer pins the CP it resolved). The
+// task_slicer delegate prompt uses it to override the generic "find the
+// newest matching" input mention, which on a multi-CP bed resolved to a
+// different CP than the one the run ingested (live run-96970).
+func (s *InteractiveService) vibeResolvedSlicerSource(parentRunID string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rs := s.runs[parentRunID]
+	if rs == nil || rs.workingMode != workingmode.Vibe {
+		return ""
+	}
+	return strings.TrimSpace(rs.vibeLockedCP)
 }
 
 func (s *InteractiveService) maybeChainVibeSprint(parentRunID, completedNodeID string) {

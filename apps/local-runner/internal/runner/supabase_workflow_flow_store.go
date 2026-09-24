@@ -330,6 +330,17 @@ func recordFromWorkflowRow(row dbWorkflowRow) FlowDefinitionRecord {
 				if n.Posture == "" {
 					n.Posture = src.Posture
 				}
+				// BUG-469: step_artifact_bindings rows are only seeded for the
+				// harness flows (and only when the mirror re-upserts), so a
+				// builtin mirror synced before/without the seed drops every
+				// declared artifactBinding — vibe-cp-ingest's task_slicer then
+				// composed with no bound-input section and sliced the newest
+				// CP on disk instead of the run's CP (live run-96970). For a
+				// built-in the embedded pack is authoritative; restore only
+				// when the mirror has none, matching run/posture precedence.
+				if len(n.ArtifactBindings) == 0 && len(src.ArtifactBindings) > 0 {
+					n.ArtifactBindings = src.ArtifactBindings
+				}
 				if n.ContextProfile == "" {
 					n.ContextProfile = src.ContextProfile
 				}

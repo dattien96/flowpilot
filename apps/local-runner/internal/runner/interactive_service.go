@@ -2508,6 +2508,7 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 				resumePrompt = strings.TrimSpace(feedback) + "\n\n---\n\n" + resumePrompt
 			}
 			resumePrompt = composeFlowNodeAgentPrompt(s.workspaceCwdFor(parentRunID), resumePrompt, node)
+			resumePrompt = appendResolvedVibeTemplatedInputs(resumePrompt, node, s.vibeResolvedSlicerSource(parentRunID))
 			// BUG-424: same contract-scope inject on the reinvoke retry prompt.
 			resumePrompt = appendChangeContractIfAnyWithSecret(s.workspaceCwdFor(parentRunID), parentRunID, resumePrompt, s.markerSecret)
 			expectedAgent := flowNodeAgentName(node)
@@ -2542,6 +2543,7 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 			if agentName != "" {
 				agentDef, _ := resolvePackAgentDefinition(agentName)
 				prompt := composeFlowNodeAgentPrompt(s.workspaceCwdFor(parentRunID), "[flow-engine] Retrying failed delegate after user Continue.", node)
+				prompt = appendResolvedVibeTemplatedInputs(prompt, node, s.vibeResolvedSlicerSource(parentRunID))
 				if feedback != "" {
 					prompt = feedback + "\n\n---\n\n" + prompt
 				}

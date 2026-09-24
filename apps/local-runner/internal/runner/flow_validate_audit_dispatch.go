@@ -1067,6 +1067,7 @@ func (s *InteractiveService) advanceToNextInlineOrDelegate(ctx context.Context, 
 		// Task-247 / CP-50 P-4: inline-dispatch delegate must carry change.contract.
 		cwd := s.workspaceCwdFor(parentRunID)
 		prompt := composeFlowNodeAgentPrompt(cwd, resultMessage, nextNode)
+		prompt = appendResolvedVibeTemplatedInputs(prompt, nextNode, s.vibeResolvedSlicerSource(parentRunID))
 		prompt = appendChangeContractIfAnyWithSecret(cwd, parentRunID, prompt, s.markerSecret)
 		agentDef, _ := resolvePackAgentDefinition(agentName)
 		if _, err := s.spawnChildRun(ctx, parentRunID, SpawnAgentInput{

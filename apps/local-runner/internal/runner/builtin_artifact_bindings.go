@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+
+	"flowpilot-runner/internal/agentpack"
 )
 
 // builtinContextArtifactInstanceID is the well-known, fixed UUID of the
@@ -26,9 +28,10 @@ const builtinContextCodingReviewSynthesisFlowID = "context-coding-review-synthes
 // cp_md / task_md). Fixed literals, same pattern as
 // builtinContextArtifactInstanceID, so the binding seed needs no lookup.
 const (
-	builtinHarnessPlanMdInstanceID = "00000000-0000-0000-0000-000000000002"
-	builtinHarnessCpMdInstanceID   = "00000000-0000-0000-0000-000000000003"
-	builtinHarnessTaskMdInstanceID = "00000000-0000-0000-0000-000000000004"
+	builtinHarnessPlanMdInstanceID        = "00000000-0000-0000-0000-000000000002"
+	builtinHarnessCpMdInstanceID          = "00000000-0000-0000-0000-000000000003"
+	builtinHarnessTaskMdInstanceID        = "00000000-0000-0000-0000-000000000004"
+	builtinHarnessTddSignaturesInstanceID = "00000000-0000-0000-0000-000000000005"
 )
 
 // builtinHarnessArtifactInstanceIDs maps the pack YAML slot names to the
@@ -36,17 +39,27 @@ const (
 // in this map is skipped by the seed (the FS path still resolves it by its
 // own id; only the DB mirror needs the UUID mapping).
 var builtinHarnessArtifactInstanceIDs = map[string]string{
-	"plan_md": builtinHarnessPlanMdInstanceID,
-	"cp_md":   builtinHarnessCpMdInstanceID,
-	"task_md": builtinHarnessTaskMdInstanceID,
+	"plan_md":        builtinHarnessPlanMdInstanceID,
+	"cp_md":          builtinHarnessCpMdInstanceID,
+	"task_md":        builtinHarnessTaskMdInstanceID,
+	"tdd_signatures": builtinHarnessTddSignaturesInstanceID,
 }
 
 // builtinHarnessArtifactFlowIDs are the CP-58 harness flows whose mirrored
 // definitions carry node-level file_artifact bindings (Task-305/306).
+// BUG-469: vibe-ingest/vibe-cp-ingest/vibe-sprint/bug-plan-harness declare
+// the same file_artifact bindings in the pack YAML but were missing here,
+// so their mirrored step_artifact_bindings were never seeded — a stale or
+// fresh mirror resolved to nodes with ArtifactBindings=nil and the slicer
+// fell back to globbing the newest CP on disk.
 var builtinHarnessArtifactFlowIDs = map[string]struct{}{
 	"task-harness":     {},
 	"cp-harness":       {},
 	"cp-harness-smoke": {},
+	"bug-plan-harness": {},
+	"vibe-ingest":      {},
+	"vibe-cp-ingest":   {},
+	"vibe-sprint":      {},
 }
 
 // builtinHarnessArtifactBindingSeeder is implemented by
@@ -90,6 +103,55 @@ func EnsureBuiltinArtifactBindingsWithStore(ctx context.Context, store FlowDefin
 				continue
 			}
 			if err := seeder.SeedBuiltinHarnessArtifactBindings(ctx, record); err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	return firstErr
+}
+
+// EnsureAllBuiltinArtifactBindingsWithStore (BUG-469) seeds
+// step_artifact_bindings for EVERY binding-bearing built-in pack flow, not
+// only the records SyncBuiltins re-upserted this boot. EnsureBuiltinArtifact
+// BindingsWithStore receives only `synced` records, so a mirror that is
+// already "fresh" by pack hash/version but predates the binding seed (or was
+// synced while its flow id was absent from builtinHarnessArtifactFlowIDs)
+// would never heal — its resolved nodes then carry no ArtifactBindings and
+// delegate prompts lose the bound file artifacts (live run-96970). This is
+// best-effort and non-fatal exactly like its sibling: callers log failures.
+func EnsureAllBuiltinArtifactBindingsWithStore(ctx context.Context, store FlowDefinitionStore) error {
+	pack, err := agentpack.LoadBuiltinPack()
+	if err != nil {
+		return fmt.Errorf("seed all builtin artifact bindings: load embedded pack: %w", err)
+	}
+	var firstErr error
+	contextSeeder, hasContextSeeder := store.(builtinArtifactBindingSeeder)
+	harnessSeeder, hasHarnessSeeder := store.(builtinHarnessArtifactBindingSeeder)
+	if !hasContextSeeder && !hasHarnessSeeder {
+		return nil
+	}
+	for i, def := range pack.Flows {
+		isContext := hasContextSeeder && def.ID == builtinContextCodingReviewSynthesisFlowID
+		_, isHarness := builtinHarnessArtifactFlowIDs[def.ID]
+		if !isContext && !(hasHarnessSeeder && isHarness) {
+			continue
+		}
+		raw, err := agentpack.ReadBuiltinFlowRaw(pack.Manifest.Flows[i].Path)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("seed all builtin artifact bindings: read %q: %w", pack.Manifest.Flows[i].Path, err)
+			}
+			continue
+		}
+		record := builtinRecordFromFlow(pack.Manifest, def, raw)
+		record.Source = "supabase_builtin_mirror"
+		if isContext {
+			if err := contextSeeder.SeedBuiltinContextArtifactBindings(ctx, record); err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+		if hasHarnessSeeder && isHarness {
+			if err := harnessSeeder.SeedBuiltinHarnessArtifactBindings(ctx, record); err != nil && firstErr == nil {
 				firstErr = err
 			}
 		}

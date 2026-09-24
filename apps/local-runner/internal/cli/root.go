@@ -238,6 +238,15 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 				if err := runner.EnsureBuiltinArtifactBindingsWithStore(ctx, flowDefStore, synced); err != nil {
 					log.Printf("[runner] builtin artifact binding seed failed: %v", err)
 				}
+				// BUG-469: the synced-only seed above leaves mirrors that are
+				// already fresh (hash+version match) but predate the binding
+				// seed permanently missing step_artifact_bindings — resolved
+				// nodes then carry no ArtifactBindings. Seed every
+				// binding-bearing builtin unconditionally; upserts make it
+				// idempotent. Best-effort, same contract.
+				if err := runner.EnsureAllBuiltinArtifactBindingsWithStore(ctx, flowDefStore); err != nil {
+					log.Printf("[runner] builtin artifact binding heal failed: %v", err)
+				}
 			}()
 			mux.HandleFunc("GET /client/projects/{projectId}/chat-sync/google-drive/status", func(w http.ResponseWriter, r *http.Request) {
 				status, err := instance.GetGoogleDriveChatSyncConnectionStatus(r.PathValue("projectId"), r.URL.Query().Get("sessionId"))

@@ -205,6 +205,7 @@ func (s *InteractiveService) startResolvedFlowFromNode(ctx context.Context, pare
 		)
 		agentDef, _ := resolvePackAgentDefinition(agentName)
 		entryPrompt := composeFlowNodeAgentPrompt(s.workspaceCwdFor(parentRunID), userPrompt, node)
+		entryPrompt = appendResolvedVibeTemplatedInputs(entryPrompt, node, s.vibeResolvedSlicerSource(parentRunID))
 		entryPrompt = appendChangeContractIfAnyWithSecret(s.workspaceCwdFor(parentRunID), parentRunID, entryPrompt, s.markerSecret)
 		if _, err := s.spawnChildRun(ctx, parentRunID, SpawnAgentInput{
 			Agent:             agentName,
@@ -1501,6 +1502,7 @@ func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID
 		baseReviewPrompt := buildFlowReviewHandoffPrompt(completedNodeID, resultMessage, node)
 		// Task-223: each target node gets its own INPUT path inject + OUTPUT write contract.
 		prompt := composeFlowNodeAgentPrompt(cwd, baseReviewPrompt, node)
+		prompt = appendResolvedVibeTemplatedInputs(prompt, node, s.vibeResolvedSlicerSource(parentRunID))
 		prompt = appendChangeContractIfAnyWithSecret(cwd, parentRunID, prompt, s.markerSecret)
 		if flowNodeReusesChild(node) {
 			// BUG-318: pass THIS round's cohort id + size so a reinvoke-lifecycle
