@@ -59,13 +59,23 @@ go test -count=1 ./internal/flowgate/ ./internal/changecontract/ ./internal/agen
 
 | # | Item | How | Status |
 |---|------|-----|--------|
-| P-1 | HEAD = post-rebase `cp_live_test` (contains main CP-81..84) | `git merge-base --is-ancestor origin/main HEAD` → exit 0 | ☐ |
-| P-2 | Runner builds | `cd apps/local-runner && go build ./...` | ☐ |
-| P-3 | Bed: clean git repo w/ Go module (e.g. `~/fp-beds/full`); **not** `/tmp`, not this repo | `git -C <bed> status` clean-ish | ☐ |
-| P-4 | Runner up on a fresh port | `go run ./cmd/flowpilot --port 19400` (or `just runner-dev`); `GET /health` 200 | ☐ |
-| P-5 | Providers: `devin` (swe-2-max) + `opencode` reachable; `grok` optional (402-prone) | `/providers` catalog | ☐ |
-| P-6 | Bed bound as project | `POST /client/projects` → `.flowpilot/engine-init.json` + skills installed | ☐ |
-| P-7 | Log capture | `runner.log` tail + `dispatch.ndjson` + `run-*-turns.ndjson` under `.flowpilot/` | ☐ |
+| P-1 | HEAD = post-rebase `cp_live_test` (contains main CP-81..84) | `git merge-base --is-ancestor origin/main HEAD` → exit 0 | ☑ PASS (HEAD 6086acfd, includes CA-950/951) |
+| P-2 | Runner builds | `cd apps/local-runner && go build ./...` | ☑ PASS (binary rebuilt 2026-09-24) |
+| P-3 | Bed: clean git repo w/ Go module (e.g. `~/fp-beds/full`); **not** `/tmp`, not this repo | `git -C <bed> status` clean-ish | ☑ PASS (`~/fp-beds/full`, module `livebed`, committed) |
+| P-4 | Runner up on a fresh port | `go run ./cmd/flowpilot --port 19400` (or `just runner-dev`); `GET /health` 200 | ☑ PASS (pid 44253, `/health` online, instance `instance_0612bdce`, gen 1) |
+| P-5 | Providers: `devin` (swe-2-max) + `opencode` reachable; `grok` optional (402-prone) | `/providers` catalog | ☑ PASS w/ caveat — `/client/provider-accounts`: codex✓ devin✓ gemini✓ grok✓ opencode✓ connected; **claude absent** (no account on this machine — tournament 2-provider merge limited to devin+opencode/codex/gemini/grok) |
+| P-6 | Bed bound as project | `POST /client/projects` → `.flowpilot/engine-init.json` + skills installed | ☑ PASS (project `957928cc-1f80-43ce-a7e8-2cf2ebb36595` "lt-full"; `.flowpilot/{canonical,catalog,ledger,guard,settings,structure}` + `.agents/skills/` installed) |
+| P-7 | Log capture | `runner.log` tail + `dispatch.ndjson` + `run-*-turns.ndjson` under `.flowpilot/` | ☑ PASS (`~/Library/Application Support/FlowPilot/logs/runner.log`; per-project `.flowpilot/chats/957928cc*/`) |
+
+**§0 automated gate evidence (2026-09-24, HEAD 6086acfd):** `go build ./...` clean;
+`go test -count=1 ./internal/...` → reds = 9, all BUG-454 baseline class: env-waived
+(`TestDetectProvidersPopulatesInventoryShape`, `TestResolveGoogleDriveMcpProviderStatuses_AllNotStarted`,
+`TestCleanupSessionsTearsDownProviderPools`, `TestFirebaseToolsMcpAdapterFetchEndToEnd`,
+`TestCatalogStoreForFallsBackToFake`, `TestFlowDefinitionStoreForUnconfiguredRunnerYieldsNil` —
+last one verified identical on clean `origin/main`) + TempDir flake family
+(`TestBug414_TieCardCandidateChoiceMerges`, `TestFlowCodingPromptSpawnWrappedDoesNotDuplicateHistory`,
+`TestStartTurnGrokCrossAccountLegacyThreadPromotesCopiesAndLoads` — all PASS isolated).
+No new reds → no post-rebase regression. ✅ GATE PASS.
 
 Evidence convention: every row gets runId + log line / artifact path. UI-only rows are
 marked `UI` — backend evidence still required where noted.
