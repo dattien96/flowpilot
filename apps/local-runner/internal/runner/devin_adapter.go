@@ -58,6 +58,11 @@ type devinAdapter struct {
 	// modelCatalog caches the configOptions "model" choices observed on this
 	// process's sessions — the per-model supportsImages flags live there.
 	modelCatalog []DevinConfigChoice
+	// thoughtLevels caches the configOptions "thought_level" values (Task-438).
+	// New-schema CLIs (3000.11.x) expose it as a session-level reasoning knob;
+	// empty means the session predates it and reasoning falls back to the
+	// effort-suffix model remap.
+	thoughtLevels []string
 }
 
 // Post-result text-wait knobs, mirroring the CA-707/CA-712 opencode rules.
@@ -628,20 +633,32 @@ func (a *devinAdapter) ensureSession(ctx context.Context, req TurnRequest, cwd s
 
 // captureModelCatalog stores the session result's "model" config option
 // choices — the live per-model catalog (with supportsImages flags) used by
-// the vision gate and the Task-402 detection path.
+// the vision gate and the Task-402 detection path — plus the "thought_level"
+// option's values (Task-438: the new-schema session-level reasoning knob; nil
+// when the CLI predates it).
 func (a *devinAdapter) captureModelCatalog(result map[string]any) {
 	if a == nil || result == nil {
 		return
 	}
 	opt := devinConfigOptionFromResult(result, "model")
 	choices := devinConfigOptionChoices(opt)
+	thoughts := devinConfigOptionChoices(devinConfigOptionFromResult(result, "thought_level"))
+	levels := make([]string, 0, len(thoughts))
+	for _, c := range thoughts {
+		if v := strings.TrimSpace(c.Value); v != "" {
+			levels = append(levels, v)
+		}
+	}
+	a.mu.Lock()
+	a.thoughtLevels = levels
+	a.mu.Unlock()
 	if len(choices) == 0 {
 		return
 	}
 	a.mu.Lock()
 	a.modelCatalog = choices
 	a.mu.Unlock()
-	recordDevinModelCatalog(choices)
+	recordDevinModelCatalogWithEfforts(choices, levels)
 }
 
 func (a *devinAdapter) recordSession(ctx context.Context, req TurnRequest, sessionID string) {
@@ -663,17 +680,32 @@ func (a *devinAdapter) recordSession(ctx context.Context, req TurnRequest, sessi
 	})
 }
 
-// applyDevinSessionConfig applies per-turn model + mode via
-// session/set_config_option. Devin exposes both as configOptions selects —
-// model takes a bare catalog id (the FlowPilot "devin/" prefix is stripped),
-// mode takes accept-edits/smart/ask/plan/bypass resolved from the turn's
-// YOLO + posture (resolveDevinSessionMode).
+// applyDevinSessionConfig applies per-turn model + mode (+ thought_level on
+// new-schema CLIs) via session/set_config_option. Devin exposes all three as
+// configOptions selects — model takes a bare catalog id (the FlowPilot
+// "devin/" prefix is stripped), mode takes accept-edits/smart/ask/plan/bypass
+// resolved from the turn's YOLO + posture (resolveDevinSessionMode), and
+// thought_level takes the session's advertised reasoning values (Task-438:
+// medium/high/max — the knob that actually produces "SWE-2 Max" etc.).
 func (a *devinAdapter) applyDevinSessionConfig(ctx context.Context, sessionID string, req TurnRequest) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" || a.dispatcher == nil {
 		return
 	}
-	modelName := devinModelForTurn(req)
+	a.mu.Lock()
+	thoughtLevels := append([]string(nil), a.thoughtLevels...)
+	catalog := append([]DevinConfigChoice(nil), a.modelCatalog...)
+	a.mu.Unlock()
+	var modelName string
+	if len(thoughtLevels) > 0 {
+		// New schema: effort lives on thought_level, so the model id only
+		// needs to be catalog-valid — resolve stale effort-suffixed ids to
+		// their family sibling instead of remapping the suffix (those ids no
+		// longer exist).
+		modelName = devinCatalogModelFor(devinModelIDForACP(req.ModelName), catalog)
+	} else {
+		modelName = devinModelForTurn(req)
+	}
 	if modelName != "" {
 		func() {
 			cfgCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -692,6 +724,15 @@ func (a *devinAdapter) applyDevinSessionConfig(ctx context.Context, sessionID st
 			defer cancel()
 			if _, err := a.dispatcher.call(cfgCtx, "session/set_config_option", devinACPSessionSetConfigParams(sessionID, "mode", mode)); err != nil {
 				log.Printf("[devin] session/set_config_option mode=%q session=%q err=%v", mode, sessionID, err)
+			}
+		}()
+	}
+	if level := devinThoughtLevelForEffort(req.ReasoningEffort, thoughtLevels); level != "" {
+		func() {
+			cfgCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+			if _, err := a.dispatcher.call(cfgCtx, "session/set_config_option", devinACPSessionSetConfigParams(sessionID, "thought_level", level)); err != nil {
+				log.Printf("[devin] session/set_config_option thought_level=%q session=%q err=%v", level, sessionID, err)
 			}
 		}()
 	}
@@ -990,38 +1031,46 @@ func devinPermissionKind(toolCall, rawInput map[string]any) string {
 	return "other"
 }
 
+// devinAccountEnv builds the launch env for one managed account — the same
+// HOME/XDG isolation + ExtraEnv mapping devinLaunchEnv applies — so callers
+// that warm a specific account (Task-439 prewarm) get an identical env even
+// when that account is not the active slot yet.
+func devinAccountEnv(account ProviderAccount) map[string]string {
+	env := map[string]string{}
+	for k, v := range account.ExtraEnv {
+		env[k] = v
+	}
+	if account.HomePath != "" {
+		env["HOME"] = account.HomePath
+		env["XDG_CONFIG_HOME"] = filepath.Join(account.HomePath, ".config")
+		env["XDG_DATA_HOME"] = filepath.Join(account.HomePath, ".local", "share")
+		if drive, path, ok := windowsHomeDriveAndPath(account.HomePath); ok {
+			env["USERPROFILE"] = account.HomePath
+			env["APPDATA"] = filepath.Join(account.HomePath, "AppData", "Roaming")
+			env["LOCALAPPDATA"] = filepath.Join(account.HomePath, "AppData", "Local")
+			env["HOMEDRIVE"] = drive
+			env["HOMEPATH"] = path
+		}
+	}
+	return env
+}
+
 // devinLaunchEnv resolves the account-scoped scopeKey + launch env for a
 // `devin acp` process (shared by the turn adapter factory and probes, mirroring
 // opencodeLaunchEnv). Devin resolves config under XDG_CONFIG_HOME and
 // credentials/sessions under XDG_DATA_HOME.
 func (r *Runner) devinLaunchEnv() (string, map[string]string, error) {
 	scopeKey := "default"
-	env := map[string]string{}
 	account, err := r.ResolveProviderAccount(string(ProviderKeyDevin), "")
 	if err == nil {
-		scopeKey = account.ID
-		for k, v := range account.ExtraEnv {
-			env[k] = v
-		}
-		if account.HomePath != "" {
-			env["HOME"] = account.HomePath
-			env["XDG_CONFIG_HOME"] = filepath.Join(account.HomePath, ".config")
-			env["XDG_DATA_HOME"] = filepath.Join(account.HomePath, ".local", "share")
-			if drive, path, ok := windowsHomeDriveAndPath(account.HomePath); ok {
-				env["USERPROFILE"] = account.HomePath
-				env["APPDATA"] = filepath.Join(account.HomePath, "AppData", "Roaming")
-				env["LOCALAPPDATA"] = filepath.Join(account.HomePath, "AppData", "Local")
-				env["HOMEDRIVE"] = drive
-				env["HOMEPATH"] = path
-			}
-		}
-		return scopeKey, env, nil
+		return account.ID, devinAccountEnv(account), nil
 	}
 	home := strings.TrimSpace(os.Getenv("HOME"))
 	if home == "" {
 		return "", nil, err
 	}
 	scopeKey = "env:" + home
+	env := map[string]string{}
 	env["HOME"] = home
 	env["XDG_CONFIG_HOME"] = filepath.Join(home, ".config")
 	env["XDG_DATA_HOME"] = filepath.Join(home, ".local", "share")

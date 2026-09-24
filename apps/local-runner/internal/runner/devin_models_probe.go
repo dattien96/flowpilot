@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -87,7 +88,17 @@ func probeDevinModelCatalog(ctx context.Context, dispatcher *devinDispatcher, cw
 	}
 
 	choices := devinConfigOptionChoices(devinConfigOptionFromResult(result, "model"))
-	models := devinCatalogChoicesToProviderModels(choices)
+	// Task-438: new-schema CLIs expose reasoning as a session-level
+	// "thought_level" option rather than effort-suffixed model ids — harvest
+	// its values so the detected models carry the real reasoning capabilities.
+	thoughts := devinConfigOptionChoices(devinConfigOptionFromResult(result, "thought_level"))
+	levels := make([]string, 0, len(thoughts))
+	for _, c := range thoughts {
+		if v := strings.TrimSpace(c.Value); v != "" {
+			levels = append(levels, v)
+		}
+	}
+	models := devinCatalogChoicesToProviderModelsWithEfforts(choices, levels)
 	if len(models) == 0 {
 		return nil, fmt.Errorf("devin session/new returned no model options")
 	}

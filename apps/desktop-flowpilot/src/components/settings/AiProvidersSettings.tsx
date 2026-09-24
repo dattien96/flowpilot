@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { LocalRunnerProvider, SupportedModel } from "@flowpilot/client-core";
+import { staleDetectedModelRows } from "./aiProvidersDetect";
 import { getAdminUseCases } from "@/clientCore";
 import { toErrorMessage } from "@/components/settings/settingsHelpers";
 import { useStore } from "@/state/store";
@@ -175,9 +176,21 @@ export function AiProvidersSettings(): React.ReactElement {
         importedCount++;
       }
 
+      // Task-438: a detected row absent from the live catalog is stale (e.g.
+      // devin/swe-2-max after Devin folded effort into thought_level) —
+      // disable it so pickers stop offering an id the provider rejects. Never
+      // delete (user edits/history survive) and never touch manual rows.
+      let staleCount = 0;
+      for (const stale of staleDetectedModelRows(models, detected, providerKey)) {
+        await admin.providers.updateSupportedModel(stale.id, { isEnabled: false });
+        staleCount++;
+      }
+
       setDetectSummary((prev) => ({
         ...prev,
-        [providerKey]: `${importedCount} new model(s) imported, ${refreshedCount} refreshed with latest reasoning/context data.`,
+        [providerKey]:
+          `${importedCount} new model(s) imported, ${refreshedCount} refreshed with latest reasoning/context data.` +
+          (staleCount > 0 ? ` ${staleCount} stale detected model(s) disabled.` : ""),
       }));
       await refresh();
     } catch (error) {

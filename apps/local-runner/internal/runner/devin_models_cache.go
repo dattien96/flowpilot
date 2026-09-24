@@ -140,6 +140,14 @@ func devinBareModelIDs(models []ProviderModel) []string {
 // to ProviderModel entries — ids keep the bare Devin catalog id; callers that
 // display them through the provider registry add the "devin/" prefix.
 func devinCatalogChoicesToProviderModels(choices []DevinConfigChoice) []ProviderModel {
+	return devinCatalogChoicesToProviderModelsWithEfforts(choices, nil)
+}
+
+// devinCatalogChoicesToProviderModelsWithEfforts is the effort-aware variant:
+// session-level "thought_level" option values (new-schema CLIs — Task-438)
+// apply to every model, so they win over the sibling-suffix derivation; old
+// catalogs (nil sessionEfforts) keep the suffix-derived effort lists.
+func devinCatalogChoicesToProviderModelsWithEfforts(choices []DevinConfigChoice, sessionEfforts []string) []ProviderModel {
 	models := make([]ProviderModel, 0, len(choices))
 	ids := make([]string, 0, len(choices))
 	for _, c := range choices {
@@ -157,13 +165,17 @@ func devinCatalogChoicesToProviderModels(choices []DevinConfigChoice) []Provider
 		if name == "" {
 			name = id
 		}
+		supported := efforts[id]
+		if len(sessionEfforts) > 0 {
+			supported = sessionEfforts
+		}
 		models = append(models, ProviderModel{
 			ID:                        id,
 			DisplayName:               name,
 			Available:                 true,
 			Source:                    "devin-acp",
 			InputImage:                devinChoiceSupportsImages(c),
-			SupportedReasoningEfforts: efforts[id],
+			SupportedReasoningEfforts: supported,
 		})
 	}
 	return models
@@ -172,8 +184,15 @@ func devinCatalogChoicesToProviderModels(choices []DevinConfigChoice) []Provider
 // recordDevinModelCatalog persists the ACP-captured model catalog as
 // ProviderModel entries (devinCatalogChoicesToProviderModels).
 func recordDevinModelCatalog(choices []DevinConfigChoice) {
+	recordDevinModelCatalogWithEfforts(choices, nil)
+}
+
+// recordDevinModelCatalogWithEfforts is the effort-aware variant used by
+// captureModelCatalog — the session's thought_level values are persisted so
+// detection surfaces the real reasoning knobs (Task-438).
+func recordDevinModelCatalogWithEfforts(choices []DevinConfigChoice, sessionEfforts []string) {
 	if len(choices) == 0 {
 		return
 	}
-	writeDevinModelsCache(devinCatalogChoicesToProviderModels(choices))
+	writeDevinModelsCache(devinCatalogChoicesToProviderModelsWithEfforts(choices, sessionEfforts))
 }

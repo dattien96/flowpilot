@@ -114,6 +114,86 @@ func devinModelForEffort(model, effort string) string {
 	return mapped
 }
 
+// devinThoughtLevelForEffort maps a FlowPilot reasoning effort onto the
+// session's advertised thought_level options: exact match wins, otherwise the
+// nearest offered rank (xhigh→max; minimal/low→medium — the lowest offered).
+// "" when the request is empty/unmappable or the session advertises none.
+func devinThoughtLevelForEffort(effort string, options []string) string {
+	want, ok := devinCanonicalEffort(effort)
+	if !ok || len(options) == 0 {
+		return ""
+	}
+	wantRank := -1
+	for i, e := range devinEffortOrder {
+		if e == want {
+			wantRank = i
+			break
+		}
+	}
+	best := ""
+	bestRank := -1
+	bestDiff := len(devinEffortOrder) + 1
+	for _, o := range options {
+		o = strings.ToLower(strings.TrimSpace(o))
+		if o == "" {
+			continue
+		}
+		if o == want {
+			return o
+		}
+		rank := -1
+		for i, e := range devinEffortOrder {
+			if e == o {
+				rank = i
+				break
+			}
+		}
+		if rank < 0 || wantRank < 0 {
+			continue
+		}
+		d := rank - wantRank
+		if d < 0 {
+			d = -d
+		}
+		// Equidistant candidates round up (xhigh → max over high) so a
+		// request never silently under-thinks.
+		if d < bestDiff || (d == bestDiff && rank > bestRank) {
+			bestDiff = d
+			bestRank = rank
+			best = o
+		}
+	}
+	return best
+}
+
+// devinCatalogModelFor resolves a bare model id against the session's live
+// catalog: exact match wins; a stale effort-suffixed id falls back to the
+// same-family catalog id (new-schema catalogs keep one id per family — e.g.
+// "swe-2-max" → "swe-2-high"); unknown ids pass through unchanged so the
+// provider error stays honest.
+func devinCatalogModelFor(model string, catalog []DevinConfigChoice) string {
+	m := strings.TrimSpace(model)
+	if m == "" || len(catalog) == 0 {
+		return m
+	}
+	for _, c := range catalog {
+		if strings.EqualFold(c.Value, m) {
+			return c.Value
+		}
+	}
+	family, _, _ := devinSplitModelEffortScoped(m)
+	if family == "" {
+		return m
+	}
+	for _, c := range catalog {
+		f, _, _ := devinSplitModelEffortScoped(c.Value)
+		if f == family {
+			return c.Value
+		}
+	}
+	return m
+}
+
 // devinModelEffortsByID derives each catalog id's selectable efforts from its
 // sibling variants: models sharing the same (family, modifiers) scope offer
 // the union of effort tokens those siblings carry — so the pickers only
