@@ -1,5 +1,5 @@
 ---
-id: CA-934
+id: CA-934b
 title: Devin adapter — rejected model request not persisted as applied (BUG-451)
 type: BugFix
 feature: ai-providers

@@ -49,7 +49,7 @@
 
 `medium` — operator action duplicates escalation children and corrupts the gate reason; no data loss but the escalation ledger is unreliable.
 
-## Completion Notes (implemented 2026-09-23, CA-923)
+## Completion Notes (implemented 2026-09-23, CA-923b)
 
 - Root cause: `applyFlowControl`'s `continue` case mutated a parent already
   in `tournament_escalation` (Round++ → blocked → `maybeEscalateCapToTournament`

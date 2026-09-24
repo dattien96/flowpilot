@@ -50,7 +50,7 @@
 
 - medium
 
-## Completion Notes (implemented 2026-09-22, CA-916)
+## Completion Notes (implemented 2026-09-22, CA-916b)
 
 - Root cause: `CloseDevinProcessesForChildRun` existed but was never wired — child-run terminal teardown only called the Opencode variant, so Devin ACP child processes stayed alive until runner shutdown.
 - Fix: added `CloseDevinProcessesForChildRun(rs.id)` alongside the Opencode teardown in the child-terminal path (`interactive_service.go`); devin process registry already segmented scopes by `|child:<runID>`.

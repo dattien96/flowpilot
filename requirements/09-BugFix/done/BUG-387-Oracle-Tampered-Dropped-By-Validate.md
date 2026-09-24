@@ -53,6 +53,6 @@
 
 - `high` — evidence-tamper detection exists but is silently dropped at the gate that should enforce it; locked-file integrity is unverified at validate.
 
-## Completion Notes (implemented 2026-09-23, CA-919)
+## Completion Notes (implemented 2026-09-23, CA-919b)
 
 - runValidateWithOracleIfPossible forces ExitCode=1 + tamper detail when oracle.Tampered non-empty. Test: bug387_validate_tamper_test.go.

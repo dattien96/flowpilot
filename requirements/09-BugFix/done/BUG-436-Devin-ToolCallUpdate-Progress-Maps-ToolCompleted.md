@@ -48,7 +48,7 @@
 
 low
 
-## Completion Notes (implemented 2026-09-22, CA-916)
+## Completion Notes (implemented 2026-09-22, CA-916b)
 
 - Root cause: `mapDevinToolCallUpdate` emitted `tool_completed` for ANY non-empty status — live `in_progress` ticks double-fired the lifecycle and could mark a still-running mutation done (also dropped titles to "tool").
 - Fix: `devinToolCallStatusTerminal` gate — `in_progress`/`pending`/`running`/`queued`/empty consume the update without emitting; terminal statuses map normally; unknown statuses keep legacy emit (safer than dropping a completion). Correlation (BUG-375 index) restores the real title on terminal updates.

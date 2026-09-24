@@ -54,7 +54,7 @@
 
 - `high` — ungated production writes on flow runs; provenance and contract enforcement silently absent.
 
-## Completion Notes (implemented 2026-09-23, CA-920)
+## Completion Notes (implemented 2026-09-23, CA-920b)
 
 - `turnStartedAfterLoopDone` no longer suppresses post-turn gate evaluation; post-seal follow-up writes are now gated like any other turn. Admission semantics unchanged (blocked refused; done/stopped admit per BUG-302/308) and `pendingFlowGateSettle` stays unarmed per the BUG-305 pin.
 - Unit+E2E: `TestBug393_BlockedLoopStillRefused`, `TestBug393_PostSealTurnDoesNotArmSettle`, `TestBug393_GateEpochValidForPostSealTurn`, `TestBug393_PostSealTurnStillGateEvaluated` (e2e violation observed) — all green; `TestV10FlowEngineRootAfterLoopDoneCompletesImmediately` regression pin green.

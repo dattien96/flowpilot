@@ -1,5 +1,5 @@
 ---
-id: CA-922
+id: CA-922b
 title: Dispatch/durability fixes — leg-field reconstruction, terminal-commit seq ordering, repair-resolution idempotency, abandon terminalization, builtin-flow mirror fallback (BUG-405, 406, 407, 408, 409)
 type: BugFix
 feature: agent-flow-engine

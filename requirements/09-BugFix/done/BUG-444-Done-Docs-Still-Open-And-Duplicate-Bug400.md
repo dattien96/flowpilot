@@ -30,7 +30,7 @@ Search `^- Status: \`open\`` in `requirements/09-BugFix/done/BUG-4*.md` → 14 m
 ## 4. Acceptance and Verification
 Reconcile each report after verifying its fix; update status/date/Current Ask and merge BUG-400 notes into canonical report without losing evidence. Removing the duplicate file requires specific user confirmation under destructive-operation rules. Not changed here.
 
-## 5. Resolution (2026-09-23, CA-935)
+## 5. Resolution (2026-09-23, CA-935b)
 
 - 14 done reports reconciled: `Status: done`, `Last Updated: 2026-09-23`,
   Current Ask → completion notes.

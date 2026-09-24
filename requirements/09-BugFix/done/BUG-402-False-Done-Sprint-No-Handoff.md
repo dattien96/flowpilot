@@ -55,7 +55,7 @@
 
 `critical` — user-visible false completion on contracted multi-task work; audit artifact contract violated; both repros deterministic once the wedge state is reached.
 
-## Completion Notes (implemented 2026-09-23, CA-921)
+## Completion Notes (implemented 2026-09-23, CA-921b)
 
 - Root cause: nothing stopped an agent `done` verdict while `vibeTaskPlan - vibeSprintIndex > 0` — run-9/run-2290 published done mid-sprint with no handoff-sprint-*.yaml.
 - Fix: new `FlowControlInput.agentInitiated` set inside `turnBridge.SubmitFlowControl` (the single agent funnel); `applyFlowControl`'s done case refuses (unstamp one-decision + escalate) only for agent-initiated verdicts — operator settles (boundary cancel/decline, HTTP flow-control) remain unflagged so the human decision cannot wedge.

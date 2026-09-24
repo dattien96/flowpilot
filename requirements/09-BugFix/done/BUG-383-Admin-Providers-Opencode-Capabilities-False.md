@@ -52,7 +52,7 @@
 
 - low
 
-## Completion Notes (implemented 2026-09-23, CA-917)
+## Completion Notes (implemented 2026-09-23, CA-917b)
 
 - Fix: provider registrations advertise static capability literals — opencode
   and devin no longer evaluate `Capabilities()` on zero-value adapters

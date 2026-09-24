@@ -59,7 +59,7 @@ Dead-by-default provider path: users on multi-family opencode accounts who never
 
 - `low` — deterministic turn failure on an unset-model path; trivially worked around by picking a model, but the default is guaranteed-broken.
 
-## Completion Notes (implemented 2026-09-23, CA-917)
+## Completion Notes (implemented 2026-09-23, CA-917b)
 
 - Fix: `opencodeIsChatCapableModel` filters non-conversational families
   (deep-research/Interactions-API-only, embedding, veo, lyria, tts, live-*,

@@ -68,7 +68,7 @@ A default context source can disappear with zero observable signal — degrade-c
 
 - `medium` — silent loss of a default context section + repeated GitNexus failures on name-mismatched workspaces; no crash, but zero observability of the degradation.
 
-## Completion Notes (implemented 2026-09-23, CA-924)
+## Completion Notes (implemented 2026-09-23, CA-924b)
 
 - Root cause: `repoNameFromDir` used the current directory basename as the
   GitNexus repo name — wrong on beds renamed/cloned after indexing — and

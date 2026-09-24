@@ -1,5 +1,5 @@
 ---
-id: CA-935
+id: CA-935b
 title: Audit/doc integrity — ledger blocks, LSP test-file revert, done-doc metadata, baseline triage (BUG-442, BUG-443, BUG-444, BUG-445 triage)
 type: BugFix
 feature: dev-infra
@@ -13,7 +13,7 @@ status: done
   `flowpilot:change-ledger` block, and four feature keys used across the wave
   (`provider-runtime`, `flow-gates`, `engine-init`, `test-suite-health`) were
   not registered in `change-audit/FEATURE-KEYS.md`.
-- BUG-443: CA-918 edited the pre-existing `lsp/server_manager_test.go`
+- BUG-443: CA-918b edited the pre-existing `lsp/server_manager_test.go`
   (inserted notification recording into `lspHelperServe` + added
   `lspHelperRecordMethod`) contrary to the additive-tests-only rule.
 - BUG-444: fourteen `done/` reports still read `Status: open` with stale
@@ -27,9 +27,9 @@ status: done
 - `change-audit/FEATURE-KEYS.md`: registered `flow-gates` (flow-gate
   enforcement layer: tier-1 doc-scope rules, tier-2/3 audit gates,
   oracle/reproduce/replay gates).
-- CA-916/917 `feature:` migrated `provider-runtime` → `ai-providers`
-  (registered key, same adapter scope); CA-925 `engine-init` →
-  `skill-anchored-init`; CA-927 `test-suite-health` → `change-contract`
+- CA-916b/917 `feature:` migrated `provider-runtime` → `ai-providers`
+  (registered key, same adapter scope); CA-925b `engine-init` →
+  `skill-anchored-init`; CA-927b `test-suite-health` → `change-contract`
   (canonical-head validation is explicitly that key's scope). Ledger blocks
   appended to all nine missing CAs with accurate `source_doc_id`s.
 - `lsp/server_manager_test.go` restored byte-identical to HEAD

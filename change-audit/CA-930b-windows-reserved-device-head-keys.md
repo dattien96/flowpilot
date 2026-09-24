@@ -1,5 +1,5 @@
 ---
-id: CA-930
+id: CA-930b
 title: Canonical-head rejects Windows reserved device names (BUG-441)
 type: BugFix
 feature: change-contract
@@ -9,7 +9,7 @@ status: done
 
 ## Context
 
-BUG-441: `unsafeHeadFeatureKey` (CA-927) rejected NTFS-illegal characters and
+BUG-441: `unsafeHeadFeatureKey` (CA-927b) rejected NTFS-illegal characters and
 `..` traversal, but still accepted reserved Windows device names — `CON`,
 `PRN`, `AUX`, `NUL`, `COM1`–`COM9`, `LPT1`–`LPT9`, with or without a file
 extension. Staging `CON.json` as a Head file is unwritable on Windows and can

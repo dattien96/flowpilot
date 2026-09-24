@@ -54,6 +54,6 @@
 
 - `high` (assigned; field report rated critical) — false-alarm bug reports reach the coder; the reproduce gate's fail-closed contract is defeated by reprompt-induced fabrication.
 
-## Completion Notes (implemented 2026-09-23, CA-919)
+## Completion Notes (implemented 2026-09-23, CA-919b)
 
 - r-reproduce now requires a failing test that exercises a declared-scope symbol (ReproduceTargetChecked/ExercisesTarget, computed by reproduceFailuresExerciseTarget; Go targets, typed degradation otherwise). Tests: bug389_reproduce_target_test.go + bug389_target_resolution_test.go.

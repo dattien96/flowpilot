@@ -64,7 +64,7 @@ All dev harnesses are unarmable from the TUI (`task-harness`, `bug-harness`, `bu
 
 - `medium` — entire dev-flow arming surface dead in TUI; workaround via API or vibe-mode resolver quirk.
 
-## Completion Notes (implemented 2026-09-23, CA-926)
+## Completion Notes (implemented 2026-09-23, CA-926b)
 
 - Fix: new client method `ListFlowPickerOptions(ctx, workingMode)` →
   `GET /client/flow-picker-options?workingMode=…`; `cmdFetchFlows` now calls

@@ -53,7 +53,7 @@
 
 - low
 
-## Completion Notes (implemented 2026-09-22, CA-916)
+## Completion Notes (implemented 2026-09-22, CA-916b)
 
 - Root cause: `session/set_config_option` Invalid-params rejection was log-only; the turn ran on the session's previous model with no user-facing signal while records kept claiming the requested id.
 - Fix (shared fix with BUG-433): applied-model tracking — `appliedModel` per-session map seeded from `configOptions[].currentValue` on session/new|load and refreshed on accepted set_config_option; rejected or coerced values emit a `[model]`/`[mode]` message delta; `recordAppliedSessionModel` re-upserts the session record with the applied (not requested) model id.

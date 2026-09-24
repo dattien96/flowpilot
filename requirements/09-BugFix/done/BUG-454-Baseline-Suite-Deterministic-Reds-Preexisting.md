@@ -81,13 +81,13 @@ deterministic defects, not flakes.
 
 All 19 deterministic rows resolved — 5 real production fixes, 14 stale
 fixture/expectation corrections (each verified against the commit that
-changed the contract). CA-936 / CA-937 / CA-938.
+changed the contract). CA-936b / CA-937b / CA-938b.
 
 | Test | Resolution |
 |---|---|
-| TestResumeFlowWithFeedbackAfterEscalate | PROD FIX — `resumeFlowWithFeedback` restamps hub when `lastEscalatedInlineNodeID==""` (hub self-escalation). CA-936 |
+| TestResumeFlowWithFeedbackAfterEscalate | PROD FIX — `resumeFlowWithFeedback` restamps hub when `lastEscalatedInlineNodeID==""` (hub self-escalation). CA-936b |
 | TestTryAdvanceFlowFromNodeBailsOnNonDelegateTarget | STALE — `hub.inline` dispatches hub-notify inline since CP-58 `16e78b20`; bail coverage moved to `user.confirm` (control scope) |
-| TestFinalizerHookSurfacesArtifacts | PROD FIX — `handleListArtifacts` stops serving `fakeArtifacts` once a turn completed. CA-936 |
+| TestFinalizerHookSurfacesArtifacts | PROD FIX — `handleListArtifacts` stops serving `fakeArtifacts` once a turn completed. CA-936b |
 | TestIsFlowPlannerExcludedPathCoversSkillpackScaffold | STALE — `*.md` exclusion intentional since `e39d261d`; fixture now uses `docs/report.go` |
 | TestTask330_ResumeFromTddStartsSprintWhenNoTddOutput | STALE — Task-327 requires the locked SS artifact; fixture seeds `SS-1` + `vibeLockedSS` |
 | TestSpawnChildEmitsGraphAndBusEvents | STALE — bus event emits on async child completion; test polls event endpoint |
@@ -96,10 +96,10 @@ changed the contract). CA-936 / CA-937 / CA-938.
 | TestSupabaseCatalogStoreShaping | STALE — `platform` column added by CP-56 `4bb804e1` |
 | TestSkillsMergeClaudeProjectAndProviderHomeWithPrecedence | STALE — `.agents/skills` common pack loads for all providers since BUG-062 F-2 `bbca52dc` |
 | TestFlowEngineSynthesisPromptIncludesJoinedReviewerNote | STALE — reviewer fake must call `submit_review_outcome` (CP-67 machine verdict) |
-| TestE2EReviewLoop* x3 | PROD FIX — child reprompt on transient `turn_in_progress` parked undrainable `pendingHubReinvoke` on the child; retry now reschedules via `scheduleChildTurn`. CA-936 + red test `bug454_child_reprompt_retry_test.go` |
-| TestRepoNameFromDirUsesBasename | PROD FIX — `repoNameFromDir` splits `\` too. CA-938 |
+| TestE2EReviewLoop* x3 | PROD FIX — child reprompt on transient `turn_in_progress` parked undrainable `pendingHubReinvoke` on the child; retry now reschedules via `scheduleChildTurn`. CA-936b + red test `bug454_child_reprompt_retry_test.go` |
+| TestRepoNameFromDirUsesBasename | PROD FIX — `repoNameFromDir` splits `\` too. CA-938b |
 | TestScaffoldYAMLIsNotTreatedAsSkill / TestInstall_CommonOnlyForNonePlatform | STALE — `flow-harness-contract` + `vibe-lanes` intentionally added by Task-412/CA-903 `dd217c75`; counts updated |
-| TestPostDoneFollowUp_StepsPollInSendGapDoesNotSettle | PROD FIX — `turnIsActive` BUG-371 guard now exempts in-flight turns (`turnSendPending`/open `turnStream`). CA-937 |
+| TestPostDoneFollowUp_StepsPollInSendGapDoesNotSettle | PROD FIX — `turnIsActive` BUG-371 guard now exempts in-flight turns (`turnSendPending`/open `turnStream`). CA-937b |
 | TestApprovalBarAndStopAreClickable | STALE — CA-826 `8d3162d4` intentionally hides [stop] under an approval; test now asserts that contract |
 
 Post-fix full `./internal/...` run: remaining reds are only the six

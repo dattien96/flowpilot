@@ -49,7 +49,7 @@
 
 high
 
-## Completion Notes (implemented 2026-09-23, CA-921)
+## Completion Notes (implemented 2026-09-23, CA-921b)
 
 - Root cause: a flow-control decision that triggers a park cancelled the in-flight turn that submitted it, killing the provider turn mid-verdict.
 - Fix: dedicated `parkPreserveTurnID` marker armed only at the agent funnel (`turnBridge.SubmitFlowControl`); both park paths (`parkFlowForAwaitingUser` and the locked variant) preserve that turn while still cancelling unrelated in-flight work and arming `parkCancelCause`/`parkCancelSuppress`. The marker deliberately does NOT reuse `lastFlowControlTurnID` — engine-internal `applyFlowControl` calls (audit escalate, machine-verdict credit) stamp it too, and keying preserve on it regressed `TestRun203966AuditEscalateParkKeepsParentNonterminal` (engine escalate must still cancel an unrelated in-flight hub turn). Caught by the full-suite delta and corrected.

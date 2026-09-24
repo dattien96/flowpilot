@@ -51,7 +51,7 @@
 
 - low
 
-## Completion Notes (implemented 2026-09-23, CA-917)
+## Completion Notes (implemented 2026-09-23, CA-917b)
 
 - Fix A: `providerAccountsConfigPath` resolves an isolated
   `os.TempDir()/flowpilot-go-test/` path under `go test` when no

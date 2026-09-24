@@ -1,5 +1,5 @@
 ---
-id: CA-923
+id: CA-923b
 title: Tournament harness fixes — escalation child identity, duplicate-spawn guard, decision-card consumption, pack-ref entry spawn, partial-cohort join, patch-snapshot merge (BUG-412, 413, 414, 426)
 type: BugFix
 feature: agent-flow-engine

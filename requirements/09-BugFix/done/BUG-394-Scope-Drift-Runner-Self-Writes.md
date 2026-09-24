@@ -55,7 +55,7 @@
 
 - `high` — deterministic false-positive park on first run in non-gitignored workspaces; systematically blocks the implement→validate handoff and forces contract pollution to recover.
 
-## Completion Notes (implemented 2026-09-23, CA-920)
+## Completion Notes (implemented 2026-09-23, CA-920b)
 
 - New `changecontract.IsRunnerOwnedConfigPath` exempts exact runner/provider bookkeeping paths (`.flowpilot/guard/test_baseline.json`, `.flowpilot/settings/gate-config.json`, `.devin/mcp_config.local.json`) from frozen-contract scope drift — wired into the gate_hook exemption chain.
 - Exact-match only: the rest of `.flowpilot/**` stays covered (CA-427 boundary preserved).

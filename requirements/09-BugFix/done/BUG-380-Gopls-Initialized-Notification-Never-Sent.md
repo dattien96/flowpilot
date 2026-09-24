@@ -57,7 +57,7 @@
 
 - high
 
-## Completion Notes (implemented 2026-09-23, CA-918)
+## Completion Notes (implemented 2026-09-23, CA-918b)
 
 - Primary: `Client.Initialized()` sends the LSP `initialized` notification;
   `ServerManager.WaitReady` calls it after a successful `initialize` — gopls

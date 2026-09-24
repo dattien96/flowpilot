@@ -54,6 +54,6 @@
 
 - `high` — every reprompting gate is an unbounded provider-turn burner; combined with false-positive violations it deadlocks flows (CP-42/CP-50) or forces operator gate demotion (CP-66).
 
-## Completion Notes (implemented 2026-09-23, CA-919)
+## Completion Notes (implemented 2026-09-23, CA-919b)
 
 - repromptAttempts survives reprompt-delivery turns (scenarioGateReprompt) and resets on gate pass — the cap now bounds the loop. Test: bug391_reprompt_cap_test.go.

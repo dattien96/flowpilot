@@ -1,5 +1,5 @@
 ---
-id: CA-929
+id: CA-929b
 title: Gate reprompt carry + inferred-contract metadata fixes (BUG-439, BUG-440)
 type: BugFix
 feature: flow-gates

@@ -1,5 +1,5 @@
 ---
-id: CA-919
+id: CA-919b
 title: Oracle/reproduce gates — subtest parse, tamper propagation, lock paths, signature-record selection, reprompt cap, scaffold-RED, fabricated-RED (BUG-386..391, 398)
 type: BugFix
 feature: flow-gates

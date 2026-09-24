@@ -1,5 +1,5 @@
 ---
-id: CA-924
+id: CA-924b
 title: Context engine fixes — contract-scoped mid-flow produce, bare declared paths, glob-amplified catalog noise, GitNexus repo-name resolution + surfaced warnings, contextProfile wiring (BUG-417, 418, 419, 420, 421)
 type: BugFix
 feature: agent-flow-engine

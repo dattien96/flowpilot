@@ -70,7 +70,7 @@
 
 - `medium` (low per-item: instant-fail is recoverable via extend-cap+continue; orphans/stale gate are terminal-state hygiene) — grouped as one reconcile/terminal-hygiene defect family.
 
-## Completion Notes (implemented 2026-09-23, CA-921)
+## Completion Notes (implemented 2026-09-23, CA-921b)
 
 - Root cause: terminal flow completion left `waiting_user_approval` children orphaned, a stale `pendingGateBlock` survived, and child spawns raced a blocked parent loop — stale gate-decision state could fire remediation on a dead loop.
 - Fix: flow `done` reconciles waiting-user children to completed + clears `pendingGateBlock`; spawn path refuses new children while the parent loop is blocked; stale gate decisions reject when nothing is pending.

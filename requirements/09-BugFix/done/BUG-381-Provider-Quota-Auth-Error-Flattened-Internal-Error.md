@@ -54,7 +54,7 @@
 
 - high
 
-## Completion Notes (implemented 2026-09-23, CA-917)
+## Completion Notes (implemented 2026-09-23, CA-917b)
 
 - Fix: `jsonRpcErrorMessage` (sessions.go) unwraps `error.data.message`, then
   `error.data.http_status`, before falling back to the generic top-level

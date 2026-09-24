@@ -53,7 +53,7 @@
 
 `high` — silent stalls on the main review/debate paths plus deterministic suite failures; recoverable only via manual operator intervention, and remediation itself can be lost.
 
-## Completion Notes (implemented 2026-09-23, CA-921)
+## Completion Notes (implemented 2026-09-23, CA-921b)
 
 - Root cause: the missing-verdict reprompt path scheduled the child turn without setting `reinvokeInFlight`, so a `turn_in_progress` rejection left no armed recovery marker — the reprompt was dropped and the hub never re-fired.
 - Fix: `reinvokeInFlight` is set BEFORE `scheduleChildTurn` so its error handler re-arms + drains on rejection.

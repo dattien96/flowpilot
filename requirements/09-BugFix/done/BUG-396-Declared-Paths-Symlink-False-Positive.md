@@ -55,7 +55,7 @@
 
 - `medium` — environmental (requires symlinked workspace path) but deterministic there; blocks contract freeze outright and produces platform-dependent test failures.
 
-## Completion Notes (implemented 2026-09-23, CA-920)
+## Completion Notes (implemented 2026-09-23, CA-920b)
 
 - `NormalizeDeclaredCodePaths` resolves the workspace root via `EvalSymlinks` before comparing, so declared paths and workspace share one coordinate system; absolute paths and nonexistent in-scope paths handled; real escapes still rejected.
 - Side effect: previously-failing `TestRun147126_*` symlink-dependent baseline tests now pass on macOS `/var→/private/var` temp dirs.

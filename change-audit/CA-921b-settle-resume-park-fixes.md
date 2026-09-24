@@ -1,5 +1,5 @@
 ---
-id: CA-921
+id: CA-921b
 title: Settle/resume/park fixes — CP-ingest input gate, sprint-state durability, dead gate decisions, stale blockReason + quiet-loop re-drive, durable terminal retry, contract-scope reprompts (BUG-399, 401, 402, 403, 404, 410, 411, 424, 432, 437)
 type: BugFix
 feature: agent-flow-engine

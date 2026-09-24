@@ -1,5 +1,5 @@
 ---
-id: CA-918
+id: CA-918b
 title: LSP — send `initialized` handshake + URI-scoped diagnostics wait (BUG-380)
 type: BugFix
 feature: lsp-runtime

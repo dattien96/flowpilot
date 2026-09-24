@@ -75,10 +75,10 @@ go test ./internal/runner/ -run 'TestRun147126_AuditHonorsFrozenContract'       
 
 - `medium` — deterministic suite failure on clean HEAD + two platform-dependent failures; (3) maps to a real symlinked-workspace freeze defect (see also the CP-55 live finding family).
 
-## Completion Notes (implemented 2026-09-23, CA-927)
+## Completion Notes (implemented 2026-09-23, CA-927b)
 
 - Sub-bug (1) `TestFirstCoderContextUsesCurrentFlowDeclaredPaths` — resolved
-  by CA-924 (Cluster I): the reworked `runContextProduceNode` seeds
+  by CA-924b (Cluster I): the reworked `runContextProduceNode` seeds
   contract/feature context, so the freeze chain produces
   `planContextPackage` again. Verified green on this branch.
 - Sub-bug (3) `TestRun147126_AuditHonorsFrozenContract` — resolved by the
@@ -86,7 +86,7 @@ go test ./internal/runner/ -run 'TestRun147126_AuditHonorsFrozenContract'       
   workspace side is now `EvalSymlinks`-resolved so `/var`→`/private/var`
   no longer false-positives. Verified green on this branch.
 - Sub-bug (2) `TestFinalizePartialFailureCommitsNoHeadInTheBatch` — fixed
-  in CA-927 without touching the test: `changecontract.StageHeadWrite` now
+  in CA-927b without touching the test: `changecontract.StageHeadWrite` now
   rejects feature keys that cannot produce a portable Head filename
   (NTFS-illegal chars, `.`/`..`, control chars) via new
   `unsafeHeadFeatureKey`; `LoadHead` reports such keys absent. The

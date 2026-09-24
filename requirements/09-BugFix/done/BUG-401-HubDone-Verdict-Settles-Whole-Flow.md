@@ -55,7 +55,7 @@
 
 `critical` — deterministic false-completion path on the primary vibe sprint pipeline and on every harness hub, with no recovery surface.
 
-## Completion Notes (implemented 2026-09-23, CA-921)
+## Completion Notes (implemented 2026-09-23, CA-921b)
 
 - Root cause: a `done` flow-control verdict on the debate-synthesis terminal edge fell through to whole-run settle while sprint topology was stashed in `vibeParked*` fields — the parked sprint was silently dropped.
 - Fix: `advanceHubDoneThroughEdge` terminal-edge branch restores the stashed `vibeParkedNodes`/`Edges`/`Acceptance`/`FlowRef` before settling; HTTP `done` now routes through the same edge path.

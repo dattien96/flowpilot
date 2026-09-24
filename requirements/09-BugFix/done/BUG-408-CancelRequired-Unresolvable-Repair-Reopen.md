@@ -55,7 +55,7 @@
 
 `medium` — no data loss, but a permanent attention leak and unrecoverable record state that grows noisier each boot; undermines the operator reconciliation surface.
 
-## Completion Notes (implemented 2026-09-23, CA-922)
+## Completion Notes (implemented 2026-09-23, CA-922b)
 
 - Fix: `CommitRepairResolution` on `resolved_abandon` terminalizes every non-terminal DispatchRecord for the run (`terminal_cancelled`, `abandoned,resolved_by=operator`) through the legal edge table with attach revoke + intent clear + durable lines — the boot scanner skips terminal records so the attention leak stops. `OpenRepair` continues the revision sequence (`existing.RepairRevision+1`) instead of overwriting a resolved repair at rev=1.
 - Files: `internal/runner/dispatch_store_memory.go`.

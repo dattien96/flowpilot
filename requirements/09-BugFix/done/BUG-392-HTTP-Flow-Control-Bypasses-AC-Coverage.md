@@ -57,7 +57,7 @@
 
 - `high` — enforcement parity gap between the provider tool face and the HTTP/operator face on a CP-62 acceptance mechanism; AC coverage is unenforced where a human/UI submits.
 
-## Completion Notes (implemented 2026-09-23, CA-920)
+## Completion Notes (implemented 2026-09-23, CA-920b)
 
 - `turnBridge.SubmitFlowControl` now runs `validateReviewACCoverage` before routing; the delegate-child guard no longer pre-empts AC rejection for reviewer children.
 - HTTP `handleSubmitFlowControl` maps review outcomes through `reviewOutcomeToFlowControl` and enforces the same coverage check — both faces now reject partial/missing `verdicts`.

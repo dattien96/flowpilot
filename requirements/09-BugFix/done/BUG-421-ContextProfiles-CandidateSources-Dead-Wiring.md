@@ -65,7 +65,7 @@ Per CP-66 AC ("planner receives flow summary"): scout/plan_writer profiles carry
 
 - `medium` — feature-level dead wiring (high for CP-66 AC-2/AC-3: planner never receives `knowledge.flow` live); no crash.
 
-## Completion Notes (implemented 2026-09-23, CA-924)
+## Completion Notes (implemented 2026-09-23, CA-924b)
 
 - Root cause: `resolveEnabledContextSourceIDs` (which honors
   profile `candidateSources`) was only called on `startInlineEntryChain`;

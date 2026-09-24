@@ -59,7 +59,7 @@
 
 `high` — functional regression (switch-provider dead) plus durable data loss on every post-restart write for reconstructed legs.
 
-## Completion Notes (implemented 2026-09-23, CA-922)
+## Completion Notes (implemented 2026-09-23, CA-922b)
 
 - Fix: `reconstructRunInternal` restores `legState`/`legClosedReason`/`switchFromRunID` from `ProviderSessionState` (same class as BUG-330's chatID/legSeq restore). Reconstructed legs render correctly and switch-provider works post-restart; `persistSessionSnapshot` no longer rewrites durable rows with the fields `omitempty`-dropped.
 - Files: `internal/runner/interactive_resume.go`.

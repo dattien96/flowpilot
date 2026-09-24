@@ -1,5 +1,5 @@
 ---
-id: CA-927
+id: CA-927b
 title: Portable canonical-head feature-key validation — NTFS-illegal / traversal keys rejected at staging (BUG-427)
 type: BugFix
 feature: change-contract
@@ -12,7 +12,7 @@ status: done
 BUG-427 tracked three red tests on clean HEAD. Two were already resolved by
 earlier clusters on this branch:
 
-- `TestFirstCoderContextUsesCurrentFlowDeclaredPaths` — green since CA-924
+- `TestFirstCoderContextUsesCurrentFlowDeclaredPaths` — green since CA-924b
   (the reworked `runContextProduceNode` seeds contract/feature context so
   the freeze chain produces `planContextPackage` again).
 - `TestRun147126_AuditHonorsFrozenContract` — green since the

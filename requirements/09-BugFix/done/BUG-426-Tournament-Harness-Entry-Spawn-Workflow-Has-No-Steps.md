@@ -63,7 +63,7 @@ The entire tournament feature (arbiter ranking, retry ≤2, winner merge, worktr
 
 - `medium` (high for the feature) — tournament node types are dead code on the live path; env-dependent root cause needs re-test under a Supabase-mirrored catalog.
 
-## Completion Notes (implemented 2026-09-23, CA-923)
+## Completion Notes (implemented 2026-09-23, CA-923b)
 
 - Root cause (four layers): `createRun` required catalog `workflow_steps`
   rows so a pack-ref child hit `workflow_has_no_steps`; `parallel_rollout`

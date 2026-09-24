@@ -54,7 +54,7 @@
 
 - `low` — mode-boundary enforcement gap; observed flows executed correctly (no corruption), but the dev↔vibe isolation contract is unenforced on the turn surface.
 
-## Completion Notes (implemented 2026-09-23, CA-920)
+## Completion Notes (implemented 2026-09-23, CA-920b)
 
 - `handleStartTurn` applies `FlowAllowedForWorkingMode` to resolved `flowRef` before dispatch — `vibe-sprint` under `dev` rejected; allowed dev harness flows pass. Run-creation enforcement unchanged.
 - Unit: `TestBug400_TurnFlowRefRespectsWorkingMode`, `TestBug400_TurnFlowRefHarnessAllowedUnderDev` — green.

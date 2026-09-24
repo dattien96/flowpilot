@@ -70,7 +70,7 @@ All downstream context sections (canonical head, ranked feature history, chat su
 
 - `medium` — wrong-feature context packages in a live flow path; reproducible 3×; confined to the pre-freeze window.
 
-## Completion Notes (implemented 2026-09-23, CA-924)
+## Completion Notes (implemented 2026-09-23, CA-924b)
 
 - Root cause: `runContextProduceNode` built hints from `resultMessage` prose
   only — `ResolvedFeatureKey` was never seeded — so feature resolution ran

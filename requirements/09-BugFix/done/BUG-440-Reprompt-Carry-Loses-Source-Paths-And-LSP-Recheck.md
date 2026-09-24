@@ -6,7 +6,7 @@ version: 2
 created: 2026-09-23
 updated: 2026-09-23
 owner: FlowPilot
-linked: [BUG-425, CA-928]
+linked: [BUG-425, CA-928b]
 ---
 
 ## AI Quick View
@@ -19,7 +19,7 @@ linked: [BUG-425, CA-928]
 - Phase: `bugfix`
 - Status: `done`
 - Feature Keys: `change-contract`, `context-regression-engine`
-- Parent Documents: [BUG-425](../done/BUG-425-Inferred-Contracts-Capture-Near-Empty-Metadata.md), [CA-928](../../../change-audit/CA-928-reprompt-inferred-contract-original-paths.md)
+- Parent Documents: [BUG-425](../done/BUG-425-Inferred-Contracts-Capture-Near-Empty-Metadata.md), [CA-928b](../../../change-audit/CA-928-reprompt-inferred-contract-original-paths.md)
 
 ## 2. Symptom and Root Cause
 Root gate has full observed Git diff but stashes only `tr.WrittenPaths` if nonempty, falling back to `changedPaths` *only when empty* (`internal/runner/gate_hook.go:550-565`). `ChangedFiles` originates from provider `EventFileChanged` (`interactive_service.go:9158-9164`), which can be partial. E.g. diff includes `src/calc.go` + audit note, but only audit note emits a file event; carrier loses `src/calc.go`. Child uses the same exclusive fallback (`gate_hook.go:1488-1512`). In addition, root zero-violation path clears carry (`:414-424`) before LSP check (`:431-435`) and contract commit (`:442-467`). `blockTurnForLSPDiagnostics` queues a reprompt without restashing paths (`lsp_hook.go:45-71`). Severity: **high** for scope/metadata regression after retry.
@@ -30,7 +30,7 @@ Root gate has full observed Git diff but stashes only `tr.WrittenPaths` if nonem
 ## 4. Acceptance and Verification
 Union observed code diff with confirmed writes, preserve until all checks + commit succeed (or stop/cancel). Additive red tests for mixed partial events, LSP, multi-reprompt, restart/replay and provider differences; check `tr.GitDiff` still drives oracle only for current turn. Not fixed here.
 
-## 5. Resolution (2026-09-23, CA-929)
+## 5. Resolution (2026-09-23, CA-929b)
 
 - Root gate now populates/reads durable `pendingGateCodePaths`; reprompt stash
   is a union across chained reprompts; carry merges into

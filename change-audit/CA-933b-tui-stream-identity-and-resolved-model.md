@@ -1,5 +1,5 @@
 ---
-id: CA-933
+id: CA-933b
 title: TUI stream-open run identity + resolved-model propagation (BUG-450, BUG-452)
 type: BugFix
 feature: cli-tui

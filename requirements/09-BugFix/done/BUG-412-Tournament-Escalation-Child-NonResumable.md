@@ -52,7 +52,7 @@
 
 `medium` — the whole tournament-escalation feature is unreachable live; deterministic 409 on the first turn of every escalation child.
 
-## Completion Notes (implemented 2026-09-23, CA-923)
+## Completion Notes (implemented 2026-09-23, CA-923b)
 
 - Root cause: `escalateToTournament` hand-built the child `interactiveRun`
   and skipped everything `createRun` provisions — no `providerSessionID`,

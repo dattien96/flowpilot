@@ -53,7 +53,7 @@
 
 `medium` — recoverable only by abandoning the run; user-facing remediation option is a dead button; every owner-debate escalate can permanently wedge the sprint.
 
-## Completion Notes (implemented 2026-09-23, CA-921)
+## Completion Notes (implemented 2026-09-23, CA-921b)
 
 - Root cause: `SubmitGateDecision` consumed `pendingGateBlock` then dispatched via `go startTurn` — a parked (blocked) loop made `startTurn` reject `flow_awaiting_user`, the goroutine swallowed the error, and the API returned accepted-and-dead (debate remediation options did nothing).
 - Fix: when the target run's own loop — or its parent's — is blocked awaiting a decision, the option routes into `resumeFlowWithFeedback` so the parked hub re-drives with the remediation in its reinvoke note; dispatch rejection restores `pendingGateBlock` and returns the real error.

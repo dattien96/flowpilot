@@ -49,7 +49,7 @@
 
 low
 
-## Completion Notes (implemented 2026-09-22, CA-916)
+## Completion Notes (implemented 2026-09-22, CA-916b)
 
 - Root cause: `transcriptAssistantInsertIndex` appended the recovered `message_completed` after the turn's last own event — including after a replayed `turn_completed`, producing `turn_started → turn_completed → message_completed → turn_completed` (dup terminal).
 - Fix: the insert index now lands before the turn's first terminal event when one exists.

@@ -1,5 +1,5 @@
 ---
-id: CA-932
+id: CA-932b
 title: Dispatch durability — repair resolution ordering, receipt disk-before-RAM, seq rollback (BUG-447, BUG-448, BUG-449)
 type: BugFix
 feature: agent-flow-engine

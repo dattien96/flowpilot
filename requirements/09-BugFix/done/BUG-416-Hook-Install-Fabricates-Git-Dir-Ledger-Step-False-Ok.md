@@ -68,7 +68,7 @@
 
 - `low` — cosmetic/misleading init artifacts; no functional break.
 
-## Completion Notes (implemented 2026-09-23, CA-925)
+## Completion Notes (implemented 2026-09-23, CA-925b)
 
 - Root cause confirmed: `InstallPostCommitHook` unconditionally ran
   `os.MkdirAll(<dir>/.git/hooks)` — fabricating `.git/` on non-git dirs and

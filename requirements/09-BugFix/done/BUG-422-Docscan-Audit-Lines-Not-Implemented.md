@@ -60,7 +60,7 @@ Observability/compliance gap: operators cannot tell from logs that a doc scan ra
 
 - `medium` — contract/observability gap on a doc-rewriting feature; function itself works.
 
-## Completion Notes (implemented 2026-09-23, CA-925)
+## Completion Notes (implemented 2026-09-23, CA-925b)
 
 - Root cause confirmed: neither `docscan_scan_completed` nor
   `docscan_autofix_applied` existed anywhere in the runner.

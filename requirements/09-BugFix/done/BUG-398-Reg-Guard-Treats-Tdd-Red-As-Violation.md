@@ -52,6 +52,6 @@
 
 - `medium` — systematic false-positive on the designed TDD-RED state; drives flows into the owner-debate wedge path but is recoverable via debate verdicts.
 
-## Completion Notes (implemented 2026-09-23, CA-919)
+## Completion Notes (implemented 2026-09-23, CA-919b)
 
 - r-tests/r-reg return nil when tr.ScaffoldExpected — contracted RED owned by r-scaffold-red. Test: bug398_scaffold_red_suppression_test.go.

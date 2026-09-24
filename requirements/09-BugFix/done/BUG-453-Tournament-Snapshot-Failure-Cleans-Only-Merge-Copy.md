@@ -6,7 +6,7 @@ version: 1
 created: 2026-09-23
 updated: 2026-09-23
 owner: FlowPilot
-linked: [BUG-414, CA-923]
+linked: [BUG-414, CA-923b]
 ---
 
 ## AI Quick View
@@ -19,7 +19,7 @@ linked: [BUG-414, CA-923]
 - Phase: `bugfix`
 - Status: `done`
 - Feature Keys: `tournament-harness`
-- Parent Documents: [BUG-414](../done/BUG-414-TieCard-Resolution-Discarded.md), [CA-923](../../../change-audit/CA-923-tournament-escalation-dispatch-card-and-join-fixes.md)
+- Parent Documents: [BUG-414](../done/BUG-414-TieCard-Resolution-Discarded.md), [CA-923b](../../../change-audit/CA-923-tournament-escalation-dispatch-card-and-join-fixes.md)
 
 ## 2. Symptom and Impact
 `behaviorTournamentArbiter` snapshots each candidate patch only on successful `mgr.Diff`, silently ignoring a non-nil error (`internal/runner/tournament_behavior.go:354-361`). For escalate verdict, `finishTournamentArbiter` always calls `clean(ids)` **before** returning the optional `patches` payload (`:363-369,410-415`). If Diff failed for a candidate (e.g. unreadable git state), the decision card can still offer it, but its worktree is gone and no stored patch exists. `behaviorTournamentMerge` falls back to `mgr.MergeWinner` when `patch` is empty (`:436-456`), which returns 'no worktree for owner' — the exact BUG-414 incident this change purported to eliminate. An empty successful diff has the same fallback when no worktree survives. Severity: **high** for candidate data loss / unresolvable human choice.
@@ -30,7 +30,7 @@ Inject `mgr.Diff` error (or empty diff) for one candidate while arbiter chooses 
 ## 4. Acceptance and Verification
 Add assertion-first error/empty snapshot E2E test, verify any card option has a durable merge source after cleanup. On snapshot error fail closed or retain worktree and surface explicit status; preserve legitimate empty-patch behavior. Test crash/restart and merge conflict paths without weakening existing tests; live verify before marking BUG-414 complete.
 
-## 5. Resolution (2026-09-23, CA-931)
+## 5. Resolution (2026-09-23, CA-931b)
 
 - Arbiter fails closed on snapshot/diff acquisition errors; `winnerPatch`
   lookup is presence-aware so an absent entry is not mistaken for a valid

@@ -6,7 +6,7 @@ version: 1
 created: 2026-09-23
 updated: 2026-09-23
 owner: FlowPilot
-linked: [BUG-428, CA-926]
+linked: [BUG-428, CA-926b]
 ---
 
 ## AI Quick View
@@ -19,7 +19,7 @@ linked: [BUG-428, CA-926]
 - Phase: `bugfix`
 - Status: `done`
 - Feature Keys: `cli-tui`
-- Parent Documents: [BUG-428](../done/BUG-428-TUI-Post-Switch-Seed-Turn-Runs-Invisibly.md), [CA-926](../../../change-audit/CA-926-tui-post-switch-stream-flow-catalog-and-composer-fixes.md)
+- Parent Documents: [BUG-428](../done/BUG-428-TUI-Post-Switch-Seed-Turn-Runs-Invisibly.md), [CA-926b](../../../change-audit/CA-926-tui-post-switch-stream-flow-catalog-and-composer-fixes.md)
 
 ## 2. Symptom and Impact
 `cmdStartOrchestrationStream` captures old `runID` and returns `orchStreamOpenedMsg{EvCh, Cancel}` **without run ID/generation** (`internal/tui/app/turn_stream.go:37-40,89-100`). `applyChatSwitched` cancels the existing stream and switches handle to the new run (`chat_switch.go:317-343`). But `app.go:1664-1667` always accepts any late `orchStreamOpenedMsg`, calls `stopOrchestrationStream` (cancels the new stream if already open) and attaches the old channel. The BUG-428 `msg.st` identity guard applies only to `orchStreamEventMsg`/`orchStreamClosedMsg` (`app.go:1669-1742`), so the old seed turn is invisible again. Severity: **high** for intermittent approval/stop soft-lock.
@@ -30,7 +30,7 @@ Deterministic event-loop schedule: issue cmdStart for run-old while orchStream n
 ## 4. Acceptance and Verification
 Add test that delivers open messages out of order across switch, ensure stale open is canceled and ignored, new run stream remains active; include reconnect/history navigation and provider-parity matrix (shared TUI). No change to old tests.
 
-## 5. Resolution (2026-09-23, CA-933)
+## 5. Resolution (2026-09-23, CA-933b)
 
 - `orchStreamOpenedMsg` carries run/leg identity; stream-open application is
   guarded so only the current run/leg can open/displace stream state — a stale

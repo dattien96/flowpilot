@@ -57,6 +57,6 @@
 
 - `critical` — the flagship CP-67 coder-side guarantee never engages; signature drift ships silently and the renegotiation loop is dead code in live runs.
 
-## Completion Notes (implemented 2026-09-23, CA-919)
+## Completion Notes (implemented 2026-09-23, CA-919b)
 
 - frozenContractForRun now prefers the SignatureHash-bearing record (topology scan + ListForRun fallback); r-signature-lock arms and renegotiate_signatures advertises. Test: bug386_frozen_contract_preference_test.go.

@@ -68,7 +68,7 @@ Resolution/bucketing quality degrades as chore commits accumulate; coders are sh
 
 - `medium` — context quality + wrong-feature canonical injection into coder prompts; no crash, but it defeats the CP-43 negative-knowledge guarantee whenever noise features exist.
 
-## Completion Notes (implemented 2026-09-23, CA-924)
+## Completion Notes (implemented 2026-09-23, CA-924b)
 
 - Root cause: `ResolveFeature` scored glob-substring hits per glob per query
   token, so an auto-derived feature with a huge ledger glob set accumulated

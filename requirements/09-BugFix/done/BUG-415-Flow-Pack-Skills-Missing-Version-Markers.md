@@ -70,7 +70,7 @@ Every bind on golang/reactjs/react-native projects re-runs full init (file rewri
 
 - `medium` — functional idempotency break + permanent "stale" indicator on the dominant platform packs; no crash, no data loss.
 
-## Completion Notes (implemented 2026-09-23, CA-925)
+## Completion Notes (implemented 2026-09-23, CA-925b)
 
 - Root cause confirmed: 51 embedded flow-pack SKILL.md files carry YAML
   frontmatter but no `version:` key, so `fileMatchesVersion` returns false

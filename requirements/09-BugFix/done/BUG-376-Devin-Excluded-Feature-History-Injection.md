@@ -52,7 +52,7 @@
 
 - high
 
-## Completion Notes (implemented 2026-09-22, CA-916)
+## Completion Notes (implemented 2026-09-22, CA-916b)
 
 - Root cause: `shouldInjectFeatureHistory` allow-list omitted `ProviderKeyDevin`, so Devin turns received the raw prompt without canonical head/history/discussion context.
 - Fix: added `ProviderKeyDevin` to the allow-list (`interactive_service.go`).

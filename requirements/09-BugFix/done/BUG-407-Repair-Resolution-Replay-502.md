@@ -51,7 +51,7 @@
 
 `medium` — contract violation on an operator endpoint; replay produces a misleading 502, no data loss but no safe retry semantics.
 
-## Completion Notes (implemented 2026-09-23, CA-922)
+## Completion Notes (implemented 2026-09-23, CA-922b)
 
 - Fix: `BeginRepairResolution` returns typed `*RepairResolutionReplay{Revision, Outcome}` when the repair is already `resolved` under the same `resolutionID` (durable on the record — survives restart); handler maps it to HTTP 200 with the recorded outcome. `ErrRepairNotOpen` now maps to 409 `dispatch_conflict`, not 502.
 - Files: `internal/runner/dispatch_store_memory.go`, `internal/runner/dispatch_record.go`, `internal/runner/dispatch_operator.go`.

@@ -1,5 +1,5 @@
 ---
-id: CA-920
+id: CA-920b
 title: Flow-gate enforcement — review AC coverage on HTTP/bridge, post-seal gate evaluation, runner-owned drift exemptions, Acceptance-Check DoD, symlink workspace, frozen-contract rewind guard, turn flowRef working mode (BUG-392..397, 400)
 type: BugFix
 feature: flow-gates

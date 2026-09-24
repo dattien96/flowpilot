@@ -60,7 +60,7 @@ Drafts land in the wrong project's `requirements/` tree (or nowhere meaningful) 
 
 - `low` — wrong-root writes in non-default launch shapes; no corruption (docs land under a requirements/ tree of the cwd), but the operation targets the wrong workspace silently.
 
-## Completion Notes (implemented 2026-09-23, CA-925)
+## Completion Notes (implemented 2026-09-23, CA-925b)
 
 - Root cause confirmed: `standardizeWorkspaceRoot()` fell back to
   `os.Getwd()` and only tests ever called `SetStandardizeWorkspaceRoot` —

@@ -56,7 +56,7 @@
 
 - high (intermittent — demote to medium if triage shows a narrow trigger)
 
-## Completion Notes (implemented 2026-09-22, CA-916)
+## Completion Notes (implemented 2026-09-22, CA-916b)
 
 - Root cause (two stacked defects, cp37 run-1 live evidence): (1) the post-turn-gate blocked path only dispatched a queued reprompt when `pendingFlowGateSettle` was armed — which requires a `file_changed` event or flow-driven run; Devin emitted none (BUG-375), so the reprompt was dropped with only a single-shot tail idle-flush. (2) When `claimDurableIntentLocked` failed (same-gen lease held by a wedged/never-returned startTurn goroutine), no path re-armed delivery — the 30-min lease blocked every later flush with zero watchdog.
 - Fix: (a) unarmed-settle blocked branch now persists the reprompt checkpoint and dispatches via `scheduleRootGateRepromptOrPark`/`startTurnClearingIntent` identically to the armed branch (persist failure still blocks dispatch + backs off the gen); (b) `durableIntentRearmProbe` (15s) — a failed claim arms a bounded one-shot `notifyTurnIdle` that re-samples state and self-terminates once the intent clears or delivers.

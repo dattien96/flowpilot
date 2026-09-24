@@ -70,7 +70,7 @@ Three independent TUI polish defects observed in the same live wave:
 
 - `low` — three polish defects; (a) is the most disruptive (soft-lock), all recoverable without data loss.
 
-## Completion Notes (implemented 2026-09-23, CA-926)
+## Completion Notes (implemented 2026-09-23, CA-926b)
 
 - (a) `resumeFlowWithFeedback` detects `blockReason=="drift"` on a plain chat
   run and calls the new `resumeDriftParkedChat`, which dispatches a real turn

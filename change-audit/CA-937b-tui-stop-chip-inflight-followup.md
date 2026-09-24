@@ -1,5 +1,5 @@
 ---
-id: CA-937
+id: CA-937b
 title: TUI — composer [stop] stays armed for post-done follow-up turns; stale approval-bar test aligned to CA-826 (BUG-454)
 type: BugFix
 feature: cli-tui

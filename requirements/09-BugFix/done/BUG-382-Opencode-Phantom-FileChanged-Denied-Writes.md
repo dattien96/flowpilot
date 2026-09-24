@@ -54,7 +54,7 @@
 
 - medium
 
-## Completion Notes (implemented 2026-09-23, CA-917)
+## Completion Notes (implemented 2026-09-23, CA-917b)
 
 - Fix: `mapOpencodeToolCallUpdate` gates on mapped status — non-terminal
   statuses emit nothing (no premature tool_completed); `file_changed` only

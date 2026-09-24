@@ -55,7 +55,7 @@
 
 `high` — restart turns a recoverable negotiation park into silent false-done; pending remediation and undelivered work are dropped with a `done` verdict.
 
-## Completion Notes (implemented 2026-09-23, CA-921)
+## Completion Notes (implemented 2026-09-23, CA-921b)
 
 - Root cause: the debate-parked sprint topology (`vibeParkedNodes`/`Edges`/`Acceptance`/`FlowRef`) and buffered coder batch signatures lived only in RAM — a restart mid-negotiation lost them and the resumed flow false-done'd.
 - Fix: fields added to `ProviderSessionState` and round-tripped through `sessionStateOf`/reconstruct restore.

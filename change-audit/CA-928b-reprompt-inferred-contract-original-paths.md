@@ -1,5 +1,5 @@
 ---
-id: CA-928
+id: CA-928b
 title: Reprompt-turn inferred contracts now derive from the failing turn's carried code paths (BUG-425)
 type: BugFix
 feature: change-contract

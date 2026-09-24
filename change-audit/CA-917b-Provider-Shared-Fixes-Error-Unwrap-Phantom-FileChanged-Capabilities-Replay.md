@@ -1,5 +1,5 @@
 ---
-id: CA-917
+id: CA-917b
 title: Shared/provider fixes — JSON-RPC error.data unwrap, opencode phantom file_changed, admin capabilities, grok retry replay dedup, store pollution guard, opencode catalog filter
 type: BugFix
 feature: ai-providers
@@ -98,7 +98,7 @@ BUG-384, BUG-385, BUG-431.
   providers (grok 402 evidence; opencode/devin share the JSON-RPC envelope).
 - opencode mapper/registry changes are provider-specific; grok + devin mappers
   already carry equivalent correlation/terminal-status handling (BUG-436 work
-  in CA-916). Claude/codex unchanged — different transport.
+  in CA-916b). Claude/codex unchanged — different transport.
 - `dedupeRetryDuplicatedTurnStarts` is applied on the grok replay path only;
   the opencode path replays from the durable turn log (no provider-owned
   transcript file), claude from rollout files with different frame shapes.

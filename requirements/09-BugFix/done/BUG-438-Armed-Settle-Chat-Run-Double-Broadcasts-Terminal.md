@@ -64,7 +64,7 @@ the deferred (flow) and non-deferred (chat) paths.
 medium — event-stream correctness; UI may render duplicate terminal /
 double-fire completion handlers on every gated chat turn that touches code.
 
-## Completion Notes (implemented 2026-09-22, CA-916)
+## Completion Notes (implemented 2026-09-22, CA-916b)
 
 - Fix: `terminalBroadcastTurns` per-run set on `interactiveRun` — emitLocked
   records a turnID when its `turn_completed` actually reaches subscribers

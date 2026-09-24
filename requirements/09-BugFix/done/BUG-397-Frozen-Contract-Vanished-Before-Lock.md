@@ -55,7 +55,7 @@
 
 - `medium` (assigned; field report rated high) — intermittent silent contract loss; hard-blocks coder dispatch when it hits.
 
-## Completion Notes (implemented 2026-09-23, CA-920)
+## Completion Notes (implemented 2026-09-23, CA-920b)
 
 - New `contract_state_guard.go`: when a frozen contract is active, destructive git commands targeting `.flowpilot/**` (checkout/restore/reset/clean/rm/stash/switch incl. bare-token forms) are denied at the approval bridge — before YOLO auto-approval. No contract → no guard; safe git unaffected.
 - Live root cause confirmed in cp64 run-5307: agent replayed `git checkout -- .flowpilot/contracts/frozen_contracts.ndjson` ×25.

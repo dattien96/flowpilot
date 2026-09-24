@@ -47,7 +47,7 @@
 
 `high` — deterministic corruption of the durable dispatch log's ordering invariant; every terminal commit emits a duplicate seq and a gap.
 
-## Completion Notes (implemented 2026-09-23, CA-922)
+## Completion Notes (implemented 2026-09-23, CA-922b)
 
 - Fix: `commitTerminal` appends the `commit_terminal` audit BEFORE `commitLine`, matching every other mutation path — the record line takes the post-increment seq instead of duplicating the previous line and burning a gap.
 - Files: `internal/runner/dispatch_store_memory.go`.

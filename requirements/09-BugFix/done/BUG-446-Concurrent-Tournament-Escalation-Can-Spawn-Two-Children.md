@@ -6,7 +6,7 @@ version: 1
 created: 2026-09-23
 updated: 2026-09-23
 owner: FlowPilot
-linked: [BUG-413, CA-923]
+linked: [BUG-413, CA-923b]
 ---
 
 ## AI Quick View
@@ -19,7 +19,7 @@ linked: [BUG-413, CA-923]
 - Phase: `bugfix`
 - Status: `done`
 - Feature Keys: `agent-flow-engine`, `tournament-harness`
-- Parent Documents: [BUG-413](../done/BUG-413-Duplicate-Tournament-Escalation-Dispatch.md), [CA-923](../../../change-audit/CA-923-tournament-escalation-dispatch-card-and-join-fixes.md)
+- Parent Documents: [BUG-413](../done/BUG-413-Duplicate-Tournament-Escalation-Dispatch.md), [CA-923b](../../../change-audit/CA-923-tournament-escalation-dispatch-card-and-join-fixes.md)
 
 ## 2. Symptom and Impact
 BUG-413 claims repeated rescue triggers cannot dispatch duplicate tournament children. `maybeEscalateCapToTournament` first reads loop state, scans `s.runs` under `s.mu` for a child with label `tournament_escalation`, **releases** the mutex, then calls `escalateToTournament` (`internal/runner/tournament_escalation.go:203-234`). The latter calls `shouldEscalateToTournament` and acquires the mutex again before choosing a free child ID (`:99-151`), but does **not** recheck child existence or loop state inside that lock; its ID allocator deliberately picks `-2` when the first ID exists.
@@ -32,7 +32,7 @@ Code-path interleaving: A/B read `Status=blocked` → A/B independently scan zer
 ## 4. Acceptance and Verification
 Add an assertion-based concurrent E2E test using a synchronization barrier, plus restart/retry and different rescue-trigger combinations; enforce a single durable ownership claim/child ID and no duplicated first turn. Keep existing sequential tests unchanged, verify provider parity and write CA only after fix.
 
-## 5. Resolution (2026-09-23, CA-931)
+## 5. Resolution (2026-09-23, CA-931b)
 
 - Dedup membership check + child-run insertion now occur inside the same
   critical section in `tournament_escalation.go` — the check is authoritative;

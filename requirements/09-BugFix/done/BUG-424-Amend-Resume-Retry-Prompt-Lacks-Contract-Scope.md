@@ -60,7 +60,7 @@ A coder that was blocked for writing `X` and whose block was resolved by amendin
 
 - `low` — enforcement intact; prompt completeness gap only.
 
-## Completion Notes (implemented 2026-09-23, CA-921)
+## Completion Notes (implemented 2026-09-23, CA-921b)
 
 - Root cause: `resumeFlowWithFeedback` delegate-respawn prompts carried the user's amended-paths feedback but not the frozen change-contract scope block — the retried writer never learned the declared paths.
 - Fix: all three retry prompts (reinvoke failed child, fresh respawn, missing change-audit writer retry) go through `appendChangeContractIfAnyWithSecret` so the `flowpilot-cc:` scope block is injected.

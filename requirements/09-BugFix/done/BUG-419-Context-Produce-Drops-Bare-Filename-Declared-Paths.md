@@ -63,7 +63,7 @@ Context-quality gap: the very files the contract declares as in-scope are omitte
 
 - `medium` — context-quality gap on a default source section; asymmetric between the two production paths; no crash.
 
-## Completion Notes (implemented 2026-09-23, CA-924)
+## Completion Notes (implemented 2026-09-23, CA-924b)
 
 - Root cause: mid-flow `context.produce` populated `ExplicitSourcePaths`
   only from `extractPromptSourcePaths(resultMessage)`, which discards

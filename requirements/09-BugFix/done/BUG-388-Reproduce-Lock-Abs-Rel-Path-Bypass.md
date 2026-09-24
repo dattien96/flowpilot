@@ -57,6 +57,6 @@
 
 - `high` (assigned; field report rated critical) — the reproduce-first lock does not lock anything for absolute-path providers; evidence files are writable by the coder.
 
-## Completion Notes (implemented 2026-09-23, CA-919)
+## Completion Notes (implemented 2026-09-23, CA-919b)
 
 - ReadOnlyPaths now stored workspace-relative (LockReproduceTestPaths/LockScaffoldArtifactsForStep); IsReadOnlyLockedPathUnder tolerates legacy absolute records; deny bridge + drift filter updated. Test: bug388_reproduce_lock_abspath_test.go.

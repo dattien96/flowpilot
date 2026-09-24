@@ -49,7 +49,7 @@
 
 medium
 
-## Completion Notes (implemented 2026-09-22, CA-916)
+## Completion Notes (implemented 2026-09-22, CA-916b)
 
 - Root cause: exec permission requests carry the shell command under `toolCall._meta.cognition.ai/editableCommand`; the extractor only read title/rawInput → blank approval cards and lost the user-editable command surface.
 - Fix: `devinApprovalDetailsFromRequest` reads `editableCommand` first (canonical surface), then correlated rawInput command fields, then title/toolName; correlated `tool_call` metadata restores title/kind for the card.

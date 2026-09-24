@@ -57,6 +57,6 @@
 
 - `high` — deterministic deadlock of the reproduce gate on the normal "real bug regresses existing tests" case; poisoned baselines make it trigger on subtests alone. No in-product escape.
 
-## Completion Notes (implemented 2026-09-23, CA-919)
+## Completion Notes (implemented 2026-09-23, CA-919b)
 
 - parseSuiteTestNames uses strings.Index for --- PASS:/--- FAIL: markers (indent-tolerant); isInBaseline rejects '---' junk entries. Test: bug390_subtest_parse_test.go.

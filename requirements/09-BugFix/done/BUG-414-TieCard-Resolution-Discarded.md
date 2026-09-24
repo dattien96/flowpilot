@@ -52,7 +52,7 @@
 
 `medium` — silent discard of an explicit operator decision; tied tournaments cannot be resolved live even when the card renders.
 
-## Completion Notes (implemented 2026-09-23, CA-923)
+## Completion Notes (implemented 2026-09-23, CA-923b)
 
 - Root cause (three layers, all live-verified): (1) `decisionCardChosen` was
   captured but never consumed — resume fell through to a generic hub
@@ -79,4 +79,4 @@
 - Live: run-3589/run-4262 — card validated (no `decision_card_invalid`),
   `candidate-b` choice routed into `merge_and_audit`; merge executed and
   escalated with conflict evidence when the patch could not land (empty
-  candidate diffs in this bed — see CA-923 caveats).
+  candidate diffs in this bed — see CA-923b caveats).

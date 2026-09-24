@@ -64,7 +64,7 @@ Severe TUI wedge: a provider switch can strand the chat in an invisible `waiting
 
 - `medium` (severe for TUI UX) — invisible blocking approval state; recoverable only via raw API interrupt.
 
-## Completion Notes (implemented 2026-09-23, CA-926)
+## Completion Notes (implemented 2026-09-23, CA-926b)
 
 - Root cause corrected vs. the initial report: `seedTurnActive` suppresses
   only the seed's assistant envelope — `permission_required` was never gated

@@ -58,7 +58,7 @@
 
 - high
 
-## Completion Notes (implemented 2026-09-22, CA-916)
+## Completion Notes (implemented 2026-09-22, CA-916b)
 
 - Root cause: `tool_call_update` frames carry only `{toolCallId, status}` — mutation kind/paths exist only on the start `tool_call` frame, which mapped to tool_started and was dropped for file_changed purposes.
 - Fix: `devinCorrelateToolNotification` enriches bare update frames with cached title/kind/locations/rawInput so `mapDevinToolCallUpdate` sees a complete frame and emits `EventFileChanged` on terminal mutation updates.

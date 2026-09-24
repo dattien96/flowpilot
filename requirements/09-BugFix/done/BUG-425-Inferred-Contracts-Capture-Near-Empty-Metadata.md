@@ -65,7 +65,7 @@ The inferred contract is derived from the original turn's code diff — real `de
 
 - `medium` — contracts exist but are content-free, and each one can register a poison catalog feature; enforcement loop itself functions.
 
-## Completion Notes (implemented 2026-09-23, CA-928)
+## Completion Notes (implemented 2026-09-23, CA-928b)
 
 - Root cause confirmed: every `startTurn` re-captures `turnStartGitHead`,
   so a gate-reprompt turn's `observeTurnScopedDiff` legitimately contains

@@ -50,7 +50,7 @@
 
 `medium` — recoverable only via undocumented manual `flow-control`; durable state itself is intact, but every mid-flow crash produces an operator-visible wedge or a zombie running status.
 
-## Completion Notes (implemented 2026-09-23, CA-921)
+## Completion Notes (implemented 2026-09-23, CA-921b)
 
 - Root cause (restart symptom): `loadPersistedRun` kept a stale block-only `BlockReason` on a non-blocked restored loop, and `resumePendingLoopWork` only replayed durable intents — a hub that died mid-turn with no armed intent never re-drove (cancelled run + stale `hub_stalled` + inert resume).
 - Fix A: `loadPersistedRun` clears `BlockReason` when the restored loop isn't `blocked`; new `redriveQuietFlowLoop` re-drives the hub when a resumed flow parent's loop reads `running` but nothing is in flight/queued/parked anywhere (heals crash `cancelled`, re-arms `autoOrchestrate`). Wired into `resumeAgentLoop` + `/resume`.

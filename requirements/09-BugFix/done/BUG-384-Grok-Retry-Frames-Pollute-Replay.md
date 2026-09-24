@@ -55,7 +55,7 @@
 
 - low
 
-## Completion Notes (implemented 2026-09-23, CA-917)
+## Completion Notes (implemented 2026-09-23, CA-917b)
 
 - Fix 1: `dedupeRetryDuplicatedTurnStarts` collapses consecutive
   identical-prompt `turn_started` events in `seedGrokTranscriptFromDisk` —

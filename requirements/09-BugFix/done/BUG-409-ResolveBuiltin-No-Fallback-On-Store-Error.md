@@ -51,7 +51,7 @@
 
 `high` — one bad config file silently disables all built-in flows and lets agents write ungated production code; confirmed in three independent live sessions.
 
-## Completion Notes (implemented 2026-09-23, CA-922)
+## Completion Notes (implemented 2026-09-23, CA-922b)
 
 - Fix: `ResolveBuiltin` logs + falls through to the embedded pack on `GetByPackFlow` error (its documented contract); `ResolveFlowRef` remembers the `GetByRef` error and still attempts builtin resolution, re-surfacing the store error only for refs that aren't built-in (fail closed, never silent chat fallback).
 - Files: `internal/runner/flow_definition_resolver.go`.

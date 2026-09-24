@@ -1,5 +1,5 @@
 ---
-id: CA-936
+id: CA-936b
 title: Flow resume/reliability prod fixes — hub self-escalation stamp, child reprompt retry drain, post-completion fake artifacts (BUG-454)
 type: BugFix
 feature: agent-flow-engine

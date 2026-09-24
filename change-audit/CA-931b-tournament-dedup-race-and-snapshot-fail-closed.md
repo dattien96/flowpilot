@@ -1,5 +1,5 @@
 ---
-id: CA-931
+id: CA-931b
 title: Tournament escalation dedup race + snapshot fail-closed (BUG-446, BUG-453)
 type: BugFix
 feature: tournament-harness

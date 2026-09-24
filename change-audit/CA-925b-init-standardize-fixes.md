@@ -1,5 +1,5 @@
 ---
-id: CA-925
+id: CA-925b
 title: Init/standardize fixes — pack version stamping at install, truthful hook/ledger steps, docscan audit lines, workspace-rooted /standardize (BUG-415, 416, 422, 423)
 type: BugFix
 feature: skill-anchored-init

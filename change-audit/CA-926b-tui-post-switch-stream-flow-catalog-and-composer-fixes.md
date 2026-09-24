@@ -1,5 +1,5 @@
 ---
-id: CA-926
+id: CA-926b
 title: TUI fixes — post-switch orchestration stream reattach, /flow picker endpoint, drift-parked continue, provider model fallback, paste-token slash commands (BUG-428, 429, 430)
 type: BugFix
 feature: cli-tui

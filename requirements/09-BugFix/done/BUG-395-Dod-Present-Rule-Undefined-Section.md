@@ -53,7 +53,7 @@
 
 - `medium` — systematic audit-tier park on every harness run; recoverable via operator feedback/continue but makes unattended runs impossible.
 
-## Completion Notes (implemented 2026-09-23, CA-920)
+## Completion Notes (implemented 2026-09-23, CA-920b)
 
 - `ParseDefinitionOfDone` accepts the spec-mandated `## Acceptance Check` section as DoD-equivalent and keeps scanning later headings (union semantics); fenced blocks still ignored.
 - Unit: `bug395_dod_acceptance_check_test.go` green; real-repo corpus `TestParseDefinitionOfDone_RecognizesRealRepoDocs` green again.

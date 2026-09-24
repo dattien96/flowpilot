@@ -49,7 +49,7 @@
 
 medium
 
-## Completion Notes (implemented 2026-09-22, CA-916)
+## Completion Notes (implemented 2026-09-22, CA-916b)
 
 - Same root cause and fix as BUG-379 (dup report): silent fallback eliminated — rejection/coercion now surfaces a user-facing message delta and the provider-session record carries the applied model (`configOptions[].currentValue`), never the rejected id.
 - Files: `internal/runner/devin_adapter.go`. Tests: `bug379_devin_model_fallback_test.go`.

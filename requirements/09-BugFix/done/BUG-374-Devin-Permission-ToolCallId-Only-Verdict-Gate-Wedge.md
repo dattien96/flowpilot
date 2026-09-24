@@ -60,7 +60,7 @@
 
 - critical
 
-## Completion Notes (implemented 2026-09-22, CA-916)
+## Completion Notes (implemented 2026-09-22, CA-916b)
 
 - Root cause confirmed from live wire (cp46/cp70): `session/request_permission` `toolCall` carries only `{toolCallId, _meta.cognition.ai/editableCommand}` — no title/kind/rawInput.
 - Fix: `devinToolCallIndex` per-session cache populated by `session/update` `tool_call` start frames; `devinApprovalDetailsFromRequest(params, idx)` enriches the request from the correlated frame, falls back to parsing the MCP tool name from option labels, and reads `cognition.ai/editableCommand`. Reason now carries the real tool name so verdict/ask_user/read-only matchers fire.

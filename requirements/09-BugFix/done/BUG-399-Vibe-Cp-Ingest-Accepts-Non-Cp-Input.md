@@ -51,7 +51,7 @@
 
 - `medium` — fail-closed/quality gap; non-destructive in the observed run (parked at lock awaiting human), but no defense before that point.
 
-## Completion Notes (implemented 2026-09-23, CA-921)
+## Completion Notes (implemented 2026-09-23, CA-921b)
 
 - Root cause: the `vibe-cp-ingest` flow-start turn had no deterministic input check — `DetectVibeEntry`/`RejectNonCP` only run in the TUI picker and the cp_lock write-back; an API-pinned `flowRef` sent `README.md` straight to `cp_reader`.
 - Fix: `startTurn` admission validates the flow-starting turn (turnCount==0, non-restored) — source must resolve to `requirements/07-Coding-Plan/**/CP-*.md` (SourceDocID or first CP-shaped prompt token) whose file exists and carries `Document ID: CP-*`; fail-closed `invalid_cp_source` 422 otherwise.
