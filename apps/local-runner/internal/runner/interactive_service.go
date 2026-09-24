@@ -1415,6 +1415,23 @@ func (s *InteractiveService) stopAgentLoop(parentRunID string) (AgentGraphSnapsh
 			go s.maybeAutoReinvokeHubWithNote(m.parentRunID, note)
 		}
 	}
+	// BUG-464: the member stamps above only cover labelled cohort children. A
+	// non-member step — the inline hub node stamped RUNNING by an earlier join
+	// (loopIsAdvancing was still true then), or any node mid-RUNNING when Stop
+	// lands — keeps that status forever on the now-cancelled run because no
+	// later pass ever reconciles it. Normalize every non-terminal, non-PENDING
+	// row to CANCELED: in-flight work dies with the run; PENDING rows never
+	// started and stay PENDING (same convention as the restart evidence-walk).
+	if s.isFlowEngineDriven(parentRunID) {
+		if steps, err := s.workflowStore.LoadRunSteps(context.Background(), parentRunID); err == nil {
+			for _, st := range steps {
+				switch st.Status {
+				case StepStatusRunning, StepStatusWaitingUserApr:
+					s.setFlowStepStatus(context.Background(), parentRunID, st.ID, StepStatusCanceled)
+				}
+			}
+		}
+	}
 	snap := s.agentGraphSnapshot(parentRunID)
 	s.emitAgentGraph(parentRunID, snap)
 	if persistErr != nil {
