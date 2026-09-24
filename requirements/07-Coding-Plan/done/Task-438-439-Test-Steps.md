@@ -10,9 +10,9 @@
 - Last Updated: `2026-09-24`
 - Parent Documents: `Task-438, Task-439`
 - Child Documents: ``
-- Related Documents: `CA-965-Devin-ThoughtLevel-And-StaleModelDetect, CA-966-Devin-ACP-Prewarm-And-ProviderStatus, CA-967-Devin-Process-Exit-Watcher`
+- Related Documents: `CA-965-Devin-ThoughtLevel-And-StaleModelDetect, CA-966-Devin-ACP-Prewarm-And-ProviderStatus, CA-967-Devin-Process-Exit-Watcher, CA-968-Devin-Silent-ApiKey-Auth`
 - Replaces: ``
-- Tags: `verification, devin, acp, prewarm, reasoning, provider-status`
+- Tags: `verification, devin, acp, prewarm, reasoning, provider-status, silent-auth`
 
 ## AI Quick View
 
@@ -25,9 +25,13 @@
 
 ### Current Ask
 
-- Đã chạy xong: automated suites xanh + live matrix 5/5 trên runner thật
-  (`127.0.0.1:47788`, binary build từ `7fc921a9`). Desktop DETECT MODEL
-  vào Supabase chỉ cover ở unit level (không ghi DB thật trong live test).
+- Đã chạy xong: automated suites xanh + live matrix 6/6 trên runner thật
+  (`127.0.0.1:47788` rồi `:47789`, binary build từ `7fc921a9` + dirty).
+  Desktop DETECT MODEL vào Supabase chỉ cover ở unit level (không ghi DB
+  thật trong live test).
+- Follow-up (F-2): `authenticate` giờ thử silent `windsurf-api-key` +
+  `_meta.api_key` trước — account đã login không còn pop browser PKCE;
+  không key hoặc key bị reject → fallback `devin-browser` như cũ.
 
 ### Key Decisions
 
@@ -74,8 +78,9 @@ cd apps/local-runner && go test ./internal/tui/... -count=1
 | Prewarm | `devin_prewarm_test.go` (6 tests): boot/login/switch triggers, dedup per-scope, fail-closed khi chưa auth, warm predicate | warm handle đậu chat segment `""`, reuse bởi turn đầu |
 | Status event | `timelineReducer.test.ts` (36): `provider_status` → 1 system row update in-place (`connecting`→`ready`/`failed`) | không noise khi warm; `failed` → error row |
 | Process exit (F-1) | `TestEnsureDevinProcessExitMarksClosedWithoutStdoutEOF` | kill parent, grandchild giữ stdout → `isClosed()` < 3s qua `cmd.Wait` watcher |
+| Silent auth (F-2) | `devin_silent_auth_test.go` (3 tests) | key trong credentials.toml → `windsurf-api-key`+`_meta.api_key`; không key → `devin-browser`; silent RPC error → retry `devin-browser` |
 
-Kết quả: focused Go 13/13, desktop 40/40, typecheck sạch, TUI xanh.
+Kết quả: focused Go 16/16, desktop 40/40, typecheck sạch, TUI xanh.
 Full runner suite: timeout Windows + `TempDir RemoveAll` flakes — baseline
 đã documented (CA-319/342/637), không assertion fail trong vùng đụng tới.
 
@@ -169,6 +174,39 @@ process mới tinh: run/chat/session id không đổi, không session model song
 song, `provider_status` chỉ là event row additive (replay sẽ hiện lại —
 đúng lịch sử), warm turn không emit.
 
+### `L-6` Silent API-key auth, no browser — PASS
+
+Runner :47789 (binary dirty trên `7fc921a9` + silent-auth), account
+`ba805096…` connected, `credentials.toml` có `windsurf_api_key`.
+
+Boot prewarm — wire log + log của chính `devin.exe` (PID 13772):
+
+```
+16:49:13 send authenticate {methodId:"windsurf-api-key", _meta:{api_key:"[redacted]"}}
+         devin.exe: ACP: authenticate #1 (had_credentials=true,
+                    method_id=windsurf-api-key, meta_keys=["api_key"])
+         devin.exe: ACP: API key provided directly via authenticate meta
+16:49:16 recv {"id":2,"result":{}}          ← auth OK, busy 23ms
+16:49:16 prewarm ready reason="boot"
+```
+
+**Không có** dòng `Starting browser-based PKCE authentication flow`, không
+callback listener `127.0.0.1:xxxxx` nào được mở, không browser nào pop.
+So sánh trước fix (`L-1`): `methodId:"devin-browser"` → PKCE listener +
+browser kể cả khi `had_credentials=true`.
+
+Turn sau đó trên warm handle: `session/new → sassy-reward`,
+`set_config_option{model,"swe-2-high"}` + `{thought_level,"max"}` OK,
+trả `SA-OK` ~11s.
+
+Fallback probe trên binary thật (không đụng credentials của user):
+`authenticate{windsurf-api-key, _meta.api_key:"bogus-…"}` →
+`{"id":2,"error":{"code":-32603,"message":"…invalid api key"}}` — đúng
+shape RPC error mà `devinAuthenticate` bắt để retry `devin-browser`.
+Trình tự silent→browser đã chứng minh ở unit test
+(`SilentAuthFailureFallsBackToBrowser`); live PKCE pop không chạy vì sẽ
+mở browser thật trên máy user.
+
 ## 5. Finding F-1 — dead-process detection lag → FIXED live
 
 **Quan sát ban đầu:** `taskkill /PID 21804` lúc ~15:43:3x nhưng dispatcher
@@ -206,22 +244,28 @@ So với trước fix: turn-10 treo 142s → EOF fail. Sau fix: turn sau kill
 
 ## 6. Log & Audit Evidence
 
-- CA-965 (Task-438), CA-966 (Task-439); commits `0859b6b3`, `7fc921a9`.
+- CA-965 (Task-438), CA-966 (Task-439), CA-967 (F-1), CA-968 (silent auth);
+  commits `0859b6b3`, `7fc921a9`, `f0cd4b39`.
 - `gitnexus_detect_changes` trước commit: 44 symbols, medium risk, đúng
   scope khai báo.
-- Live artifacts: runner log `/tmp/fp-serve.log`, event stream
-  `/tmp/fp-events.ndjson` (trên máy test, tmpfs).
-- Cleanup: runner test PID 3396 killed, ACP child tự thoát theo;
-  `devin.exe` PID 16612 (hệ thống, parent 1708) không đụng;
-  `.livetest-ws` đã xóa.
+- Live artifacts: runner log `/tmp/fp-serve.log`, `/tmp/runner-sa.log`,
+  event stream `/tmp/fp-events.ndjson`, `/tmp/sa-events.log`;
+  devin.exe log `devin_20260924-164913_13772.log` (silent-auth proof).
+- Cleanup: runner test PID 3396 + 19236 killed, ACP child 23348/13772
+  terminated; `devin.exe` PID 16612 + 1708 (hệ thống) không đụng;
+  `.livetest-ws`, `.livetest-ws2` đã xóa.
 
 ## 7. Verification Complete When
 
-- [x] §2 automated xanh (Go focused 13/13; desktop 40/40; tsc; TUI).
-- [x] `L-1` → `L-5` ticked trên runner+account thật.
+- [x] §2 automated xanh (Go focused 16/16; desktop 40/40; tsc; TUI).
+- [x] `L-1` → `L-6` ticked trên runner+account thật.
 - [x] F-1 fixed (process-exit watcher) + live re-verified: kill → cold path
       + `provider_status` ngay, `session/load` resume, ~15s tổng.
+- [x] F-2 silent auth live: `windsurf-api-key`+`_meta.api_key` → auth ~3s,
+      zero browser/PKCE listener; bogus key → RPC error (fallback trigger);
+      warm turn + thought_level vẫn nguyên.
 - [ ] Desktop DETECT MODEL chạy thật vào Supabase (unit-covered; cần
       operator bấm trên UI để xác nhận stale row `swe-2-max` bị disable).
-- [ ] PKCE browser path chưa exercise live (credential cache sẵn → warm
-      auth ~6s; muốn test phải revoke credentials trước).
+- [ ] Live PKCE pop sau fallback chưa exercise (cần revoke credentials thật
+      → sẽ mở browser trên máy user; quyết định bỏ qua, unit + probe
+      invalid-key đã cover trigger).

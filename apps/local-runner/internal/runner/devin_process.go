@@ -518,7 +518,7 @@ func (r *Runner) ensureDevinProcessSegmented(ctx context.Context, scopeBase, sco
 	// (PKCE is ~3s warm, longer cold) and its failure must kill the process so
 	// a half-authenticated handle is never cached.
 	authCtx, authCancel := context.WithTimeout(ctx, devinAuthTimeout)
-	_, authErr := dispatcher.call(authCtx, "authenticate", devinACPAuthenticateParams())
+	authErr := devinAuthenticate(authCtx, dispatcher, extraEnv)
 	authCancel()
 	if authErr != nil {
 		dispatcher.fail(authErr)

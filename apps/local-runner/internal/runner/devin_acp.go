@@ -60,6 +60,19 @@ func devinACPAuthenticateParams() map[string]interface{} {
 	}
 }
 
+// devinACPAPIKeyAuthParams builds the silent `authenticate` request: the
+// account's stored windsurf_api_key travels in _meta.api_key. Live-verified
+// on devin.exe 3000.x — logs "ACP: API key provided directly via
+// authenticate meta" and returns in ~0.5s with no browser/PKCE listener.
+func devinACPAPIKeyAuthParams(apiKey string) map[string]interface{} {
+	return map[string]interface{}{
+		"methodId": "windsurf-api-key",
+		"_meta": map[string]interface{}{
+			"api_key": apiKey,
+		},
+	}
+}
+
 // devinACPSessionNewParams builds the `session/new` request params. Live
 // shape is {"cwd": "...", "mcpServers": [...]}. Model/mode are NOT params —
 // they are session config options applied via session/set_config_option.

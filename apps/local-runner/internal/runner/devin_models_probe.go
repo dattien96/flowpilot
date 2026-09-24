@@ -66,6 +66,14 @@ func detectDevinModelsLive(ctx context.Context) ([]ProviderModel, error) {
 // already-wired dispatcher and returns the session's model catalog. Split from
 // the spawn so tests can drive it over in-memory pipes (startFakeDevin).
 func probeDevinModelCatalog(ctx context.Context, dispatcher *devinDispatcher, cwd string) ([]ProviderModel, error) {
+	return probeDevinModelCatalogWithEnv(ctx, dispatcher, cwd, nil)
+}
+
+// probeDevinModelCatalogWithEnv is probeDevinModelCatalog with the launch env
+// so authenticate can prefer the silent windsurf-api-key path — the probe
+// spawns ambient (devinProcessEnv(nil)) so nil extraEnv still resolves the
+// user's own credentials.toml.
+func probeDevinModelCatalogWithEnv(ctx context.Context, dispatcher *devinDispatcher, cwd string, extraEnv map[string]string) ([]ProviderModel, error) {
 	initCtx, initCancel := context.WithTimeout(ctx, devinInitTimeout)
 	_, err := dispatcher.call(initCtx, "initialize", devinACPInitializeParams())
 	initCancel()
@@ -74,7 +82,7 @@ func probeDevinModelCatalog(ctx context.Context, dispatcher *devinDispatcher, cw
 	}
 
 	authCtx, authCancel := context.WithTimeout(ctx, devinAuthTimeout)
-	_, err = dispatcher.call(authCtx, "authenticate", devinACPAuthenticateParams())
+	err = devinAuthenticate(authCtx, dispatcher, extraEnv)
 	authCancel()
 	if err != nil {
 		return nil, fmt.Errorf("devin authenticate: %w", err)
