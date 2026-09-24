@@ -351,6 +351,13 @@ No new reds → no post-rebase regression. ✅ GATE PASS.
   absorbed (`hub_reinvoke_skipped_vibe_lock_sealed`) with no card options,
   so the only operator close is stop/cancel. Worth a "plan exhausted →
   done" terminal distinction follow-up.
+- **Doc-scope gate on a plain chat turn has real teeth**: a `status?`
+  question on run-46465 (post-cancel follow-up) tripped `r-task` because
+  the reply referenced Task ids whose docs were deleted — the reprompt
+  turn then *recreated* Task-1/Task-2 in `done/` from git history. Correct
+  per BUG-152 (normal chat keeps the full rule set) and the recovery was
+  accurate, but a read-only-looking question produced writes — worth
+  noting for chat posture expectations.
 
 Evidence convention: every row gets runId + log line / artifact path. UI-only rows are
 marked `UI` — backend evidence still required where noted.
@@ -428,7 +435,7 @@ marked `UI` — backend evidence still required where noted.
 | A-41-2 | Validation retry + max | fail-once → `Retry 1/3`; always-fail → `failed_validation_max_retries`, no 4th | unit | ☐ |
 | A-41-3 | Env error | missing binary → `skipped_env_error`, retryAttempt stays 0 | unit | ☐ |
 | A-41-4 | Audit blocked | missing feature key → `blocked_missing_feature_key` | unit | ☐ |
-| A-41-5 | flowRef respects working mode | turn-level `flowRef` denied in wrong mode (BUG-400) | `bug400_*` | ☐ |
+| A-41-5 | flowRef respects working mode | turn-level `flowRef` denied in wrong mode (BUG-400) | `bug400_*` | ☑ live run-46461/46463: vibe run + `task-harness` → `working_mode_flow_forbidden`; dev run + `vibe-ingest` → same; also vibe + `vibe-sprint` (system-only) rejected |
 
 ### A-8 CP-43 + CP-55 — change contract & preflight/canonical
 
@@ -448,7 +455,7 @@ marked `UI` — backend evidence still required where noted.
 
 | ID | Case | Pass criteria | Auto | Status |
 |----|------|---------------|------|--------|
-| A-60-1 | Mode gate | `/vibe` on clean bed → only vibe flows armable; dev `1/2/3` cards absent in vibe | workingmode tests | ☐ |
+| A-60-1 | Mode gate | `/vibe` on clean bed → only vibe flows armable; dev `1/2/3` cards absent in vibe | workingmode tests | ☑ live run-46461/46463: vibe↔harness and dev↔vibe-ingest both rejected `working_mode_flow_forbidden`; system-only `vibe-sprint` also rejected for user start |
 | A-60-2 | Snake MVP end-to-end | vibe run → SS → CP → tasks → sprint → playable `snake` (build+run green). **Was PARTIAL: owner-debate parked forever (BUG-411, fixed) — re-run required** | unit | ☑ run-37268+run-41626: Task-3 sprint FULL engine chain DONE; Task-4/5 sprints via agent-orchestrated `vibe-sprint` children (run-42033/run-43155) — `go test ./...` green, `go vet` clean, `snake/cmd` renders+quits. BUG-462/463 found+fixed live. Caveat: CP-01 interactive-playthrough DoD awaits human sign-off (documented) |
 | A-60-3 | Fail-closed probes | `rm -rf`-class → refused + parked | unit | ☐ |
 | A-60-4 | Resume checkpoint matrix §11 | R-SS/R-CP/R-TK keep + delete demotion (Task→CP→SS→empty); N-CP/N-SS/N-TK/N-DEL new-flow skip — **all unchecked live** | — | ☐ DEFERRED-LIVE |
@@ -465,9 +472,9 @@ marked `UI` — backend evidence still required where noted.
 
 | ID | Case | Pass criteria | Auto | Status |
 |----|------|---------------|------|--------|
-| B-51-1 | Crash mid-turn | `kill -9` during live turn → restart → `POST resume` → reconcile-not-retry; `dispatch.ndjson` seqs unique+contiguous (BUG-406) | `bug447_449_*`, dispatch tests | ☐ |
-| B-51-2 | Stop mid-flow | children cancelled, parent terminal, stop gen advanced; no ghost RUNNING | unit | ☐ |
-| B-51-3 | Post-stop + post-done follow-up | admitted, answered, persisted across restart (BUG-302/305/306/307/308) | unit | ☐ |
+| B-51-1 | Crash mid-turn | `kill -9` during live turn → restart → `POST resume` → reconcile-not-retry; `dispatch.ndjson` seqs unique+contiguous (BUG-406) | `bug447_449_*`, dispatch tests | ☑ live run-46465: SIGKILL mid-devin-stream → restart → run `cancelled` (no phantom retry), partial file `docs/durability-drill.md` survived, dispatch.ndjson seqs 1..1754 contiguous no dupes; boot settle finalized leftover turn-44931 |
+| B-51-2 | Stop mid-flow | children cancelled, parent terminal, stop gen advanced; no ghost RUNNING | unit | ◑ run-41626 operator stop → `cancelled`, children all terminal (run-41631/42033/43155 completed before stop); mid-flow child-cancel leg not drilled |
+| B-51-3 | Post-stop + post-done follow-up | admitted, answered, persisted across restart (BUG-302/305/306/307/308) | unit | ☑ live run-46465: new turn admitted on cancelled run (turn-46477), answered, r-task gate reprompt (turn-46868) ran and settled — agent recovered deleted Task-1/2 into `done/` from git history |
 | B-51-4 | Gate reprompt idempotency | ×2 reprompts → durable keys `…0001`→`…0002`, no turn replay | unit | ☐ |
 | B-51-5 | Repair/uncertain surfaces | forced repair → listed + resolved atomically; `repair-resolution` replay → recorded outcome 200 not 502 (BUG-407); cancel_required resolvable (BUG-408) | `bug405..409` refs | ☐ |
 | B-51-6 | Restart mid-flow restore | kill during child/synthesis → resume → steps+agent cards+timeline from durable rows; hub's unsent first prompt reappears; `run-*-turns.ndjson` identical pre/post | restart tests | ☐ (agent-graph restore was PARTIAL — verify) |
