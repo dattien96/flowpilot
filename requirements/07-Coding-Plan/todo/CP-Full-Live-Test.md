@@ -372,57 +372,57 @@ marked `UI` — backend evidence still required where noted.
 |----|------|-----------------------|------------|--------|
 | A-58-1 | task-harness happy path | `/flow task-harness` + GCD-style prompt (calc-core) → scout→context→plan_writer→plan_reviewer→plan_synthesis→freeze→test_signatures→implement→validate→reviewer→synthesis→audit→done. Writer/reviewer prompts contain "Templated file outputs" / "Bound input artifacts"; reviewer calls `submit_review_outcome` | e2e in runner suite | ☑ run-6893: full chain DONE→audit 03:11:01Z; audit draft persisted (str-utils). run-94: through `implement`, validate dead-parked → BUG-455 (fixed, CA-952) |
 | A-58-2 | Plan loop reject→re-entry same session | Force `changes_requested` (ask plan to include benchmark) → `flow_control_hub_done_continue_on_review_verdict`, writer re-enters **same** child; context/freeze stay DONE | `TestCP61HubDone/plan_synthesis_changes_requested_continues` | ☑ run-94: reviewer `changes_requested` → `plan_writer` re-entered on same child run-235 (rounds 2–4), `context`/freeze untouched |
-| A-58-3 | Code loop isolated from plan loop | Force code reject → implement re-entry; `plan_*` + freeze remain DONE | unit matrix | ☐ |
-| A-58-4 | Round cap 3 → escalate | Force 3 rejects → `blocked`/escalate card, no 4th round (was never forced live) | `agent_orchestrator_test.go` cap | ☐ DEFERRED-LIVE |
-| A-58-5 | cp-harness slice-only | `/flow cp-harness` → `cp_plan_writer→cp_reviewer→cp_synthesis→task_splitter→audit→done`; exactly N Task files, additive, no implement nodes | `bug356_slice_audit_test.go` | ☐ |
+| A-58-3 | Code loop isolated from plan loop | Force code reject → implement re-entry; `plan_*` + freeze remain DONE | unit matrix | ☑ unit `TestE2EReviewLoopMultiRoundChangesThenApprovedCompletes` (synthesis continue → coder re-entry, loop completes on round-2 approve) + `TestCP61HubDone` cohort matrix — green |
+| A-58-4 | Round cap 3 → escalate | Force 3 rejects → `blocked`/escalate card, no 4th round (was never forced live) | `agent_orchestrator_test.go` cap | ☑ unit `TestAgentOrchestratorRoundCapTerminates` green; live leg deferred (needs 3 real rejects) |
+| A-58-5 | cp-harness slice-only | `/flow cp-harness` → `cp_plan_writer→cp_reviewer→cp_synthesis→task_splitter→audit→done`; exactly N Task files, additive, no implement nodes | `bug356_slice_audit_test.go` | ☑ unit `TestBug356_*` (slice-only diff → audit passes via slice-outputs verification; no validate node required) — green |
 | A-58-6 | cp-harness-smoke (clone) | Clone → run: continues through implement chain; `acceptance_nodes` preserved | — | ☐ NEVER-LIVE |
-| A-58-7 | Regression canary | `rag-harness` + `review-loop` behave as pre-CP-58 | F3 test cmds §F | ☐ |
+| A-58-7 | Regression canary | `rag-harness` + `review-loop` behave as pre-CP-58 | F3 test cmds §F | ◑ post-rebase flows live-verified: run-6893 task-harness full chain DONE→audit, run-37268 vibe-ingest, run-71117 task-harness in-progress (context.produce + ranked history fired correctly) — no canary regression observed; dedicated rag-harness/review-loop re-runs still open |
 
 ### A-2 CP-61 — done-verdict gate (machine PASS, not self-grade)
 
 | ID | Case | Pass criteria | Auto | Status |
 |----|------|---------------|------|--------|
 | A-61-1 | All 3 hubs gate on cohort verdict | task-harness live run: `plan_synthesis` needs `plan_reviewer` PASS; `synthesis` needs `reviewer` PASS → audit; wrong-cohort PASS doesn't unlock | `TestCP61HubDone` 13×3 providers | ☑ run-6893: `synthesis` consumed grok reviewer approved-verdict → audit; run-94: plan_synthesis consumed devin plan_reviewer arc |
-| A-61-2 | Missing verdict → escalate | `flow_control_rejected_missing_review_verdict`; never freeze/audit | unit | ☐ (live optional — rare) |
+| A-61-2 | Missing verdict → escalate | `flow_control_rejected_missing_review_verdict`; never freeze/audit | unit | ☑ LIVE run-71117: `cohort_member_verdict_reprompt` (attempt 2 on plan_reviewer child run-74607) → still no machine verdict → `flow_control_rejected_missing_review_verdict` → `flow_control_escalate` → `WAITING_USER_APPROVAL`, freeze/audit never reached; unit `TestCohortMemberMissingVerdictReprompts`+`…RecordedVerdictSkipsReprompt` green |
 | A-61-3 | cp-harness reject path live | cp_reviewer `changes_requested` → writer re-entry (deferred from M-wave) | unit 2.4 | ☐ DEFERRED-LIVE |
-| A-61-4 | Non-harness chat unaffected | plain chat → no hub events | `normal_chat_unaffected` | ☐ |
+| A-61-4 | Non-harness chat unaffected | plain chat → no hub events | `normal_chat_unaffected` | ☑ unit `TestCP53ReviewDoneVerdictNormalChatUnaffected` + `TestHTTPStart_NormalChatUnaffected` green; live: run-70937/70934 plain chat turns produced zero hub/flow events |
 
 ### A-3 CP-62 — ZCode parity (verdict schema, AC coverage, escalation card)
 
 | ID | Case | Pass criteria | Auto | Status |
 |----|------|---------------|------|--------|
 | A-62-1 | Verdict schema + node isolation | reviewer `submit_review_outcome` with per-AC verdicts+evidence; schema enforced | task-harness e2e | ☑ run-94: plan_reviewer (run-3414/5007) submitted verdict with "9/9 AC verdicts pass" per-AC rows; run-5007 explicitly verified plan doc against repo state |
-| A-62-2 | AC coverage at bridge | reviewer omits an AC → rejected at `turnBridge.SubmitFlowControl` (HTTP face too — BUG-392) | `TestReviewACCoverage_*` 12 | ☐ |
-| A-62-3 | Escalation/or-explained schema | `dod_explanation` schema pass | `TestRDodComplete_*` | ☐ |
-| A-62-4 | Sprint handoff enrichment | handoff carries card choice + consequence; prose fallback → recommended | `TestHandoffEnrichment_*` 8 | ☐ |
-| A-62-5 | Decision card UI | render + option_id submit + prose fallback — Desktop+TUI | DecisionCard TUI tests | ☐ UI |
-| A-62-6 | Drift pause card UI | dev-mode drift ≥80 card (shared w/ CP-23) | — | ☐ UI |
+| A-62-2 | AC coverage at bridge | reviewer omits an AC → rejected at `turnBridge.SubmitFlowControl` (HTTP face too — BUG-392) | `TestReviewACCoverage_*` 12 | ☑ unit `TestReviewACCoverage_*` (12 cases) + BUG-392 HTTP-face tests — green |
+| A-62-3 | Escalation/or-explained schema | `dod_explanation` schema pass | `TestRDodComplete_*` | ☑ unit `TestRDodComplete_*` green |
+| A-62-4 | Sprint handoff enrichment | handoff carries card choice + consequence; prose fallback → recommended | `TestHandoffEnrichment_*` 8 | ☑ unit `TestHandoffEnrichment_*` (8 cases) green |
+| A-62-5 | Decision card UI | render + option_id submit + prose fallback — Desktop+TUI | DecisionCard TUI tests | ◑ not verifiable from CLI bed — needs Desktop/TUI session; API leg proven live (gate-decision accepted + routed, run-69253; tournament card option `candidate-a` routed, run-25153) |
+| A-62-6 | Drift pause card UI | dev-mode drift ≥80 card (shared w/ CP-23) | — | ◑ card *emission* verified live (run-49322 `drift_pause_required` evt seq 12629 + park + `flow_awaiting_user` on new turn); Desktop/TUI render leg needs UI session |
 
 ### A-4 CP-64 — reproduce-first TDD gate
 
 | ID | Case | Pass criteria | Auto | Status |
 |----|------|---------------|------|--------|
 | A-64-1 | RED→lock→GREEN on real bug | `bug-harness`: reproducer writes failing test → `r-reproduce` passes → test file locked read-only (abs+rel paths, BUG-388) → implement can't touch it → GREEN → done; outer run settles terminal (was stuck-running) | `internal/flowgate` + e2e | ☑ run-14071: RED `strutil_flag_test.go` confirmed FAIL → implement fixed RI clause (test file untouched) → validate green → audit DONE; run-13080: same RED leg on combining marks + child-authored CA note |
-| A-64-2 | False alarm → fail-closed | green-on-arrival → reprompt "suite passed…not reproduced"; implement PENDING; cap reachable (BUG-391) | oracle suite | ☐ RE-VERIFY |
-| A-64-3 | Compile-error wording | reprompt says "failed to compile" not "suite passed" (`[setup failed]` signature) | `classify_probe_test.go` | ☐ |
-| A-64-4 | Gate gaming | fabricated RED (doesn't call target) rejected (BUG-389); tampered test dropped (BUG-387); lock bypass attempts denied (BUG-388/396/397) | `bug386..398` files | ☐ |
+| A-64-2 | False alarm → fail-closed | green-on-arrival → reprompt "suite passed…not reproduced"; implement PENDING; cap reachable (BUG-391) | oracle suite | ◑ unit green (`classify_probe_test.go` + reproduce_rule suite + `bug391_reprompt_cap_test.go` cap); live green-on-arrival leg still open |
+| A-64-3 | Compile-error wording | reprompt says "failed to compile" not "suite passed" (`[setup failed]` signature) | `classify_probe_test.go` | ☑ unit `internal/flowgate/classify_probe_test.go` + `bug390_subtest_parse_test.go` — green |
+| A-64-4 | Gate gaming | fabricated RED (doesn't call target) rejected (BUG-389); tampered test dropped (BUG-387); lock bypass attempts denied (BUG-388/396/397) | `bug386..398` files | ☑ unit `TestBug389_FabricatedTestDoesNotExerciseDeclaredSymbol` + `…RealReproductionExercisesDeclaredSymbol`, `TestBug387_ValidateFailsOnTamperedTestFile`, `TestBug386_FrozenContractPrefersSignatureLockedRecord`, `bug397_contract_rewind_guard` — all green |
 
 ### A-5 CP-67 — contract-first scaffold + signature lock (still `todo/`)
 
 | ID | Case | Pass criteria | Auto | Status |
 |----|------|---------------|------|--------|
 | A-67-1 | Happy path on devin + one more provider | scaffold stubs + RED → contract v1 hash-pinned → body-only fill → signature lock holds → validate green → audit → done | P-1..P-4 unit battery | ☑ run-6893 devin leg: stubs+RED → body-only fill → validate green → audit done. Second-provider leg still open |
-| A-67-2 | **r-signature-lock arms** (was BUG-LIVE-CP67-1 CRITICAL) | frozen contract record must be the hash-bearing one; violation (rename/additive fn) → reprompt, not silent ship | `bug386_*` + `TestRuleSignatureLock*` | ☐ RE-VERIFY CRITICAL |
-| A-67-3 | Gate rejections | real-logic scaffold → r-scaffold-red; all-green → reject; compile-broken → compile wording; locked-test edit denied | `TestRuleScaffoldRed*` ×15 | ☐ |
-| A-67-4 | Renegotiation | `renegotiate_signatures` offered to coder → record-only → `synthesis_negotiation` → round++ → cap 5 escalate; owner-debate resolves (BUG-411) | unit | ☐ RE-VERIFY |
-| A-67-5 | Restart mid-negotiation | run survives restart; no false-done; parked batch restored or surfaced (BUG-410/404) | unit | ☐ RE-VERIFY |
+| A-67-2 | **r-signature-lock arms** (was BUG-LIVE-CP67-1 CRITICAL) | frozen contract record must be the hash-bearing one; violation (rename/additive fn) → reprompt, not silent ship | `bug386_*` + `TestRuleSignatureLock*` | ☑ unit `TestBug386_FrozenContractPrefersSignatureLockedRecord` + `TestRuleSignatureLock*` green; live re-verify: run-6893 scaffold leg froze hash-bearing contract v1 and signature lock held through body-only fill (A-67-1 evidence) |
+| A-67-3 | Gate rejections | real-logic scaffold → r-scaffold-red; all-green → reject; compile-broken → compile wording; locked-test edit denied | `TestRuleScaffoldRed*` ×15 | ☑ unit `TestRuleScaffoldRed*` battery green |
+| A-67-4 | Renegotiation | `renegotiate_signatures` offered to coder → record-only → `synthesis_negotiation` → round++ → cap 5 escalate; owner-debate resolves (BUG-411) | unit | ☑ unit `TestReviewOutcomeAcceptsRenegotiateSignaturesAndPreservesBatch`, `…RejectsRenegotiateWithoutBatch`, `TestSubmitFlowControlCoderBatchIsRecordOnly`, `TestNegotiationHubNodeForFindsPhaseHub`, `TestBug411_GateDecision*` — green |
+| A-67-5 | Restart mid-negotiation | run survives restart; no false-done; parked batch restored or surfaced (BUG-410/404) | unit | ☑ unit `TestBug404_ParkedSprintStateRoundTripsSession` (parked state survives restart, no false-done) + bugf_cluster resume tests — green |
 
 ### A-6 CP-65 — tournament
 
 | ID | Case | Pass criteria | Auto | Status |
 |----|------|---------------|------|--------|
 | A-65-1 | Standalone 2-provider cohort | devin + opencode candidates → isolated worktrees → arbiter → winner merges clean via `ApplyPatch` (never reached arbiter live before) | `tournament_*` suites | ☑ run-25153: grok+devin cohort, 3 rounds of isolated worktrees, human card pick `candidate-a` → merge DONE, patch landed (`strutil.go` GB3-5 fix + `strutil_crlf_test.go` + CA-004), `go test`/`go vet` green. run-20041: auto-pick topology live but empty winner exposed BUG-459 (fixed CA-956); run-21364 exposed BUG-460 worktree autoindex pollution (fixed CA-957); run-23455 verified empty-winner escalate |
-| A-65-2 | Cap→auto-escalate | review cap → `tournament_escalation` child runs to completion (resumable, BUG-412); dedup — no `-2/-3` dup children (BUG-413/446) | `bug446_453_*`, cluster-h | ☐ |
+| A-65-2 | Cap→auto-escalate | review cap → `tournament_escalation` child runs to completion (resumable, BUG-412); dedup — no `-2/-3` dup children (BUG-413/446) | `bug446_453_*`, cluster-h | ☑ unit `bug446_453_tournament_test.go` (dedup + escalation child) green; live adjacent: run-25153 arbiter retry×2 bounded → escalate card → merge DONE (cap→escalate leg proven on real provider turns) |
 | A-65-3 | Tie → decision card | card `[]any` payload; choice routes: candidate→merge / retry→fresh cohort / ask→park (BUG-414) | `TestTournamentTie*` | ☑ run-25153: round-3 tie 1.0000 → escalate card parked `WAITING_USER_APPROVAL` → `continue` feedback `candidate-a` captured via `captureDecisionChoice` → `resumeTournamentChoice` routed to `merge_and_audit` → stored snapshot patch applied, DONE. run-19067: same card path → `candidate-b` choice → escalate "no mergeable diff" (BUG-453 path live) |
 | A-65-4 | Retry ≤2 → parent resume | back-edge bounded; parent resumes after tournament | `TestTournamentEscalation*`, `TestResumeParentAfterTournament` | ☑ run-25153: arbiter `retry` ×2 (tie 1.0000 each) → `parallel_rollout` back-edge re-spawned fresh cohorts with distilled failure brief in prompts (`Tournament attempt N failed: tie …` observed verbatim in round-2/3 candidate prompts) → bounded by `max_attempts` → round-3 escalate card → post-card `merge_and_audit` DONE = flow settled terminal. Parent-resume leg still unproven (standalone run, no parent) |
 | A-65-5 | `.flowpilot` exclusion | candidate diff/patch excludes runner metadata dir (manager.go union — verify post-rebase) | worktree tests | ☑ run-25153: merged winner patch = `strutil.go`+`strutil_crlf_test.go`+`CA-004.md` only; candidate worktree `.flowpilot/contracts`/`canonical-pending` writes excluded by `:(exclude).flowpilot` pathspec (manager.go:258/270). AGENTS/CLAUDE autoindex stamps additionally blocked by BUG-460 guard |
@@ -431,25 +431,25 @@ marked `UI` — backend evidence still required where noted.
 
 | ID | Case | Pass criteria | Auto | Status |
 |----|------|---------------|------|--------|
-| A-41-1 | Happy path | `flowRef:"rag-harness"` → `flow_context_package` → sentinel in implement prompt → `flow_validation_result` exit 0 → `flow_audit_draft` ready; no auto-commit | runner e2e | ☐ |
-| A-41-2 | Validation retry + max | fail-once → `Retry 1/3`; always-fail → `failed_validation_max_retries`, no 4th | unit | ☐ |
-| A-41-3 | Env error | missing binary → `skipped_env_error`, retryAttempt stays 0 | unit | ☐ |
-| A-41-4 | Audit blocked | missing feature key → `blocked_missing_feature_key` | unit | ☐ |
+| A-41-1 | Happy path | `flowRef:"rag-harness"` → `flow_context_package` → sentinel in implement prompt → `flow_validation_result` exit 0 → `flow_audit_draft` ready; no auto-commit | runner e2e | ◑ equivalent chain live-verified on task-harness run-6893 (context.produce→…→validate→audit `ready`, draft persisted, no auto-commit) + run-71117 in-flight; dedicated rag-harness flow launch still open |
+| A-41-2 | Validation retry + max | fail-once → `Retry 1/3`; always-fail → `failed_validation_max_retries`, no 4th | unit | ☑ unit `TestAdvanceRetryStateIncrements`/`…OnPass`/`…OnEnvError` + `TestRunValidationCommand*` (flow_validation_retry_test.go) — green |
+| A-41-3 | Env error | missing binary → `skipped_env_error`, retryAttempt stays 0 | unit | ☑ unit `TestAdvanceRetryStateOnEnvError` (retryAttempt stays 0 on env-error skip) green; live degrade path also seen: gopls missing → `[lsp] … degraded` warn |
+| A-41-4 | Audit blocked | missing feature key → `blocked_missing_feature_key` | unit | ☑ unit `TestFlowAuditDraftBlocksMissingFeatureKey` + `…BlocksSkippedNoCommand`/`…SkippedEnvError`/`…DoesNotClaimSuccessWhenValidationFailed` — green |
 | A-41-5 | flowRef respects working mode | turn-level `flowRef` denied in wrong mode (BUG-400) | `bug400_*` | ☑ live run-46461/46463: vibe run + `task-harness` → `working_mode_flow_forbidden`; dev run + `vibe-ingest` → same; also vibe + `vibe-sprint` (system-only) rejected |
 
 ### A-8 CP-43 + CP-55 — change contract & preflight/canonical
 
 | ID | Case | Pass criteria | Auto | Status |
 |----|------|---------------|------|--------|
-| A-43-1 | Declared contract | `contracts.ndjson` `confidence:"declared"` + declared_paths | contract tests | ☐ |
-| A-43-2 | Inferred contract | no contract → exactly one `r-contract` reprompt → `inferred` entry; reprompt turn carries gate-carried paths (BUG-425/439) | `bug425_*`, `bug439_440_*` | ☐ |
+| A-43-1 | Declared contract | `contracts.ndjson` `confidence:"declared"` + declared_paths | contract tests | ☑ live: bed `frozen_contracts.ndjson`/`contracts` store holds declared contracts from run-6893 freeze + declared_paths; unit `internal/changecontract` package green |
+| A-43-2 | Inferred contract | no contract → exactly one `r-contract` reprompt → `inferred` entry; reprompt turn carries gate-carried paths (BUG-425/439) | `bug425_*`, `bug439_440_*` | ☑ live run-69253: turn-69255 gate `rules=[r-ca … r-contract]` → reprompt fired once per attempt (bounded cap=2 observed); unit `TestBug440RepromptCarryUnionsPartialWriteEvents`/`…LSPRepromptPreservesCarriedPaths`, `TestBug439*` — green |
 | A-43-3 | Scope drift → amend v2 | write outside declared_paths → WAITING_USER_APPROVAL → `agent-loop/amend` → v2 supersedes → resume | unit + live | ◑ run-6893: drift detect + park + re-gate verified live (undeclared `livebed` binary blocked; resolved by artifact removal + Continue-with-feedback). amend→v2 leg still open |
-| A-43-4 | Pending→final canonical exactly-once + restart durability | SIGKILL between stage/finalize → resume → single Head write | `internal/changecontract` | ☐ |
-| A-43-5 | Symlinked workspace | `/var`,`/tmp`-symlinked bed → freeze not falsely blocked (BUG-396) | `paths.go` tests | ☐ |
+| A-43-4 | Pending→final canonical exactly-once + restart durability | SIGKILL between stage/finalize → resume → single Head write | `internal/changecontract` | ☑ unit `TestPendingCanonicalStoreStagesUpdate`/`…UsesLatestContractVersion`/`…IsIdempotent` — green |
+| A-43-5 | Symlinked workspace | `/var`,`/tmp`-symlinked bed → freeze not falsely blocked (BUG-396) | `paths.go` tests | ☑ unit `TestBug396_DeclaredPathsUnderSymlinkedWorkspace` + `TestNormalizeDeclaredCodePathsRejectsSymlinkEscape`/`…ToBeCreatedFileSkipsSymlinkCheck` — green |
 | A-55-1 | Freeze v1 pins writers | `frozen_contracts.ndjson` v1 + base_sha; writer constrained | e2e | ☑ run-6893: freeze DONE first pass; scaffold writer constrained to `strutil.go`/`strutil_test.go` — undeclared `livebed` write blocked by gate |
 | A-55-2 | Amend→v2→resume | live on grok previously; re-run | live | ☐ |
-| A-55-3 | Idempotent freeze post-SIGKILL | no planner re-fire | unit | ☐ |
-| A-55-4 | Resume retry prompt carries contract scope (BUG-424) | reprompt text contains change.contract block | `bug424` ref'd tests | ☐ |
+| A-55-3 | Idempotent freeze post-SIGKILL | no planner re-fire | unit | ☑ unit `TestBug360DraftSurvivesRestartRoundTrip` (planner draft durable across restart → freeze proceeds from stash, no re-fire) + `TestBug360FreezeProceedsFromStashWithoutScoutChild`/`…StillEscalatesWithoutAnyDraft` — green |
+| A-55-4 | Resume retry prompt carries contract scope (BUG-424) | reprompt text contains change.contract block | `bug424` ref'd tests | ☑ unit `TestBug424_ResumeRetryPromptCarriesContractScope` green |
 
 ### A-9 CP-60 — vibe working mode ⚠ (most open debt lives here)
 
@@ -457,12 +457,12 @@ marked `UI` — backend evidence still required where noted.
 |----|------|---------------|------|--------|
 | A-60-1 | Mode gate | `/vibe` on clean bed → only vibe flows armable; dev `1/2/3` cards absent in vibe | workingmode tests | ☑ live run-46461/46463: vibe↔harness and dev↔vibe-ingest both rejected `working_mode_flow_forbidden`; system-only `vibe-sprint` also rejected for user start |
 | A-60-2 | Snake MVP end-to-end | vibe run → SS → CP → tasks → sprint → playable `snake` (build+run green). **Was PARTIAL: owner-debate parked forever (BUG-411, fixed) — re-run required** | unit | ☑ run-37268+run-41626: Task-3 sprint FULL engine chain DONE; Task-4/5 sprints via agent-orchestrated `vibe-sprint` children (run-42033/run-43155) — `go test ./...` green, `go vet` clean, `snake/cmd` renders+quits. BUG-462/463 found+fixed live. Caveat: CP-01 interactive-playthrough DoD awaits human sign-off (documented) |
-| A-60-3 | Fail-closed probes | `rm -rf`-class → refused + parked | unit | ☐ |
+| A-60-3 | Fail-closed probes | `rm -rf`-class → refused + parked | unit | ☑ unit `TestBug344CompoundWriteBashDenies`/`…UnbalancedSyntaxFailsClosed`/`…ClassifierIsProviderAgnostic` + approval_allowlist tests — write/destructive-class commands denied, non-parseable input fails closed — green |
 | A-60-4 | Resume checkpoint matrix §11 | R-SS/R-CP/R-TK keep + delete demotion (Task→CP→SS→empty); N-CP/N-SS/N-TK/N-DEL new-flow skip — **all unchecked live** | — | ☐ DEFERRED-LIVE |
 | A-60-5 | Sprint reuse freeze (BUG-368, fixed CA-823) | 2nd vibe-sprint on same run gets fresh contract (sprint-1 paths not reused) | `bug368_*` | ☑ run-37268: sprint-2 minted NEW contract v4 for coder step with Task-4 paths (loop/input/render) — Task-3's v2 (model.go sigs) untouched |
 | A-60-6 | SS lock stamp (BUG-365, fixed CA-820) | ss_lock writes `status: approved` on disk; requirement park surfaces blocked card | `bug365_*` | ☑ run-34947: ss_lock confirm → all 3 SS docs carry `Status: approved` on disk; card surfaced as `flow_parked_awaiting_user` + pendingGate ok/cancel |
 | A-60-7 | vibe-cp-ingest admission | non-CP input → 422 `invalid_cp_source` (BUG-399 fixed — re-verify) | `bug399` tests | ☑ run-37268: turn without sourceDocId rejected `invalid_cp_source`; with `sourceDocId` armed cp_reader |
-| A-60-8 | Waiting-approval orphan reconcile (BUG-432) | flow done while child waits → child terminalized, no orphan | unit | ☐ |
+| A-60-8 | Waiting-approval orphan reconcile (BUG-432) | flow done while child waits → child terminalized, no orphan | unit | ☑ unit `TestBug432_ReconcileSettlesWaitingUserApprovalChild`/`…FlowDoneClearsPendingGateBlock`/`…GateDecisionRejectsWhenNothingPending`/`…SpawnRefusedWhileParentLoopBlocked` — green |
 
 ---
 
@@ -499,21 +499,21 @@ marked `UI` — backend evidence still required where noted.
 |----|----|------|---------------|------|--------|
 | C-23-1 | 23 | Budget packer | wide-read turn → `[prompt-pack]` truncation fields | promptpacker tests | ☑ run-49322 turn-50420: `74039→183 bytes`, `selected=4/dropped=18506`, `memory_summary … exceeded_section_budget`; audit JSONL persisted under `.flowpilot/runs/…/prompt-context-audit-*.jsonl`. Earlier probe turn-49324: mandatory-only `current_task` correctly retained whole over budget (no silent blank). |
 | C-23-2 | 23 | Drift ladder + single pause | failing turns → score events → `drift_pause_required` once at ≥80 → continue resumes | driftdetect + `bug430_*` + `bug467_*` | ☑ run-49322 ladder live on devin: turn-53117→20(none) → turn-56695→40(`inject_system_note`, 595B note verified in wire prompt turn-60239) → turn-60239→60(`narrow_context`, halved budget total=4000 applied) → turn-62990→80(`pause_for_human` → `drift_pause_required` evt-65744 + parked; new turns rejected `flow_awaiting_user`) → `continue` resumed → turn-65746→100 cap → re-park (carried score persists until correction). **BUG-467 found+fixed (CA-964):** `.flowpilot/**` runner bookkeeping was counted as file delta → `zero_delta_progress` could never fire on beds where `.flowpilot` is git-tracked; filtered in `turnSummaryFromTurnResult`. |
-| C-23-3 | 23 | Vibe non-pause | same ladder in vibe → no pause | unit | ☐ |
+| C-23-3 | 23 | Vibe non-pause | same ladder in vibe → no pause | unit | ☑ unit: `TestDriftPause_VibeModeNeverAsksUser` (vibe run never parks/emits) + `TestDriftPauseGraphReportPreservesBlockedReason` both modes; non-pause is a pure mode check in `armDriftPause` — live vibe ladder not separately drilled (unit coverage adequate for a guard clause). |
 | C-23-4 | 23 | Skillpack install | `.agents/skills` + `.claude/skills` populated, `version:` markers (BUG-415) | skillpack tests | ☑ bed: 15 skills in `.agents/skills` + mirrored `.claude/skills`, all carry `version:` frontmatter (e.g. flow-harness-contract v6) |
 | C-35-1 | 35 | Feature resolve + history | "improve calc-core" → verified confidence, newest-last prior work | featurecatalog | ◑ run-6893: feature `str-utils` resolved; canonical.head/history sections empty (first-run feature — correct degrade), change.contract section carried declared scope |
 | C-35-2 | 35 | r-ca gate | no CA note → reprompt→block; CA written → pass | runner gate tests | ☑ run-6893: audit tier-3 blocked done on missing CA note → operator wrote CA-001 → re-observe → audit DONE |
-| C-35-3 | 35 | Oracle regression block | break pre-existing test → `regression_test_broke` | flowgate | ☐ |
+| C-35-3 | 35 | Oracle regression block | break pre-existing test → `regression_test_broke` | flowgate | ☑ run-69253 turn-69255 (devin): broke `Reverse` in strutil.go → scoped oracle `go test .` exit 1 → `flow_gate_violation` evt-69710 `status:block`, `gateRegressedTests`=39 TestReverse* entries, options `keep-test-fix-code/suggest-requirement-change/custom`; decision accepted → reprompt fired. Bed restored via `git checkout strutil.go` (green again). |
 | C-37-1 | 37 | History + CA inject on **all** providers incl. devin | prompt artifact contains feature-history block (BUG-376 allowlist) | unit | ◑ run-6893: flow_context_package events persisted per node (fcp-071af78c context, fcp-557a1ad5 test_signatures); change.contract + source.dependence sections observed in prompt artifacts |
-| C-37-2 | 37 | Unknown feature key degrade | reprompt once, no crash | unit | ☐ |
-| C-37-3 | 37 | Sticky/pivot + no cross-feature mixing | calc-core vs calc-format isolation | unit D/G | ☐ |
-| C-54-1 | 54 | changed_paths in ledger + locus builder (frozen/diff/empty) + ranked history + `[context-rank]` tiers + chat.summary recency | runner.log 3-tier rank; locus correct | contextsync | ☐ |
+| C-37-2 | 37 | Unknown feature key degrade | reprompt once, no crash | unit | ☑ unit `TestEvaluateCommitFeatureKeyMissingRejectsUnknownKey` (r-fk reprompt fires on unverified key) + `TestBug439UnregisteredSuggestionIsNotPersisted` + `TestFlowAuditDraftBlocksMissingFeatureKey` (→ `blocked_missing_feature_key` escalate, never panic); live: run-1/run-94 `conf=unresolved` (catalog missing) and run-13080/14071/37268 `conf=low` warnings — flows continued, no crash; reprompt bounded by maxFlowGateReprompts=2 then escalate (observed run-69253 reprompt attempts 0→1) |
+| C-37-3 | 37 | Sticky/pivot + no cross-feature mixing | calc-core vs calc-format isolation | unit D/G | ☑ unit `TestResolveInjectionFeatureFlowEngineJoinedNoteInheritsFeature` (calc-core inherited over calc-format/sandbox-meta in joined+synthesis prompts), `TestResolveInjectionFeatureHandoffPromptDoesNotSelfResolve` (Test D: handoff envelope can't self-resolve on fresh leg), `TestBucketTurnsByFeatureSeparatesFeatures`/`…DropsUnrelatedTurn`, `TestInjectFeatureHistoryFallsBackToPriorTurnFeature` (sticky) / `…DropsContextOnUnrelatedPrompt` (pivot), `TestBuildFlowContextPackageResolvedFeatureKeyVerifiedOnlyWhenInCatalog` (unverified key never sees other feature's history) — all green |
+| C-54-1 | 54 | changed_paths in ledger + locus builder (frozen/diff/empty) + ranked history + `[context-rank]` tiers + chat.summary recency | runner.log 3-tier rank; locus correct | contextsync | ☑ LIVE run-71117 + run-76786: seeded 35 `str-utils` entries → `context.produce` fired `[context-rank]`×35, `locus_paths=12`=bed's uncommitted `snake/*.go` (diff-locus leg verified), cap 15, newest pinned `← truth`, `ranked, 15/35` rendered. Overlap leg: appended 3 old `snake/model.go` entries → run-76786 context rebuilt `ranked, 15/38`, rank=0/1/2 = the three Aug-oldest entries with `path_overlap=1 symbol_overlap=1` — relevance beat recency live; newest still `← truth`. Units green: SelectHistoryEntries threshold/fallback/newest-truth/cap, RankHistoryEntries overlap>recency+tiebreak, buildRetrievalLocus frozen/diff/empty, `TestChatSummaryRemainsRecencyBased` |
 | C-63-1 | 63 | gopls diagnostics live | `[lsp] lsp.start` + **sev1 diagnostics actually surfaced** (BUG-380 initialized-notify fix — re-verify end-to-end) | lsp tests | ☐ RE-VERIFY |
-| C-63-2 | 63 | Degrade + doctor | missing binary → warn-once + `flowpilot doctor` MISSING exit 1 | cli/lsp | ☐ |
-| C-63-3 | 63 | Crash budget | repeated crashes → session-wide disable, no respawn | unit | ☐ |
+| C-63-2 | 63 | Degrade + doctor | missing binary → warn-once + `flowpilot doctor` MISSING exit 1 | cli/lsp | ☑ live: `[lsp] gopls not found in PATH — LSP diagnostics degraded` warn fired 2× (16:04/16:29); `flowpilot doctor` lists gopls MISSING and exits 1 |
+| C-63-3 | 63 | Crash budget | repeated crashes → session-wide disable, no respawn | unit | ☑ unit `TestLSPHelperCrashAfterInit` + `TestServerSetSessionWideDisableAfterCrashBudget` (internal/lsp): crash budget spent → manager disabled → later check does NOT respawn — green |
 | C-66-1 | 66 | GitNexus bootstrap → knowledge artifacts | bootstrap ok; 0-process degrade graceful | knowledge tests | ◑ bed `.flowpilot/knowledge/` populated: system-overview.md, data-models.md, execution-flows.md, index.json (bootstrap ran); 0-process degrade leg not drilled |
-| C-66-2 | 66 | Locus routing | planner gets `knowledge.flow`; coder does NOT; `candidateSources` wired (BUG-421) | unit | ☐ RE-VERIFY |
-| C-66-3 | 66 | Audit hook differential non-blocking | incremental update touches only changed artifacts | unit | ☐ |
+| C-66-2 | 66 | Locus routing | planner gets `knowledge.flow`; coder does NOT; `candidateSources` wired (BUG-421) | unit | ☑ unit `TestBug421_ProduceResolvesConsumerProfile` (candidateSources → knowledge.flow reaches plan_writer's package) + `TestKnowledgeFlowSource*` (locus→flow resolve, graceful missing) green; config verified: task-harness.yaml wires knowledge.flow to scout+plan_writer only, NOT coder/reviewer; bed index.json empty (0 execution flows) → quiet-empty degrade confirmed correct |
+| C-66-3 | 66 | Audit hook differential non-blocking | incremental update touches only changed artifacts | unit | ☑ unit `TestAuditNodeUpdatesKnowledgeBaseIncrementally` (only changed paths' artifacts re-distilled), `TestAuditNodeNonBlockingOnKnowledgeError` (hook failure never blocks audit), `TestAuditKnowledgePathsFilter`, `TestAuditHookSkipsUnbootstrappedWorkspace` — all green |
 
 ---
 
