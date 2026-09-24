@@ -8683,6 +8683,27 @@ func (s *InteractiveService) finishTurn(rs *interactiveRun, turnID string, err e
 			dispatchErrMsg = "interrupted by flow park"
 			break
 		}
+		// Live-found (run-1, devin chat): the turn context is cancelled during
+		// normal post-settle teardown and can reach this branch AFTER the run
+		// already settled terminal. Terminal status is sticky — a
+		// completed/failed/cancelled turn is never re-stamped cancelled, and
+		// the "interrupted by user" emit must not fire on a finished run.
+		// (Gate-pending runs are NOT covered: a user interrupt during a
+		// pending gate must still cancel.)
+		if rs.status == RunStatusCompleted || rs.status == RunStatusFailed ||
+			rs.status == RunStatusCancelled {
+			rs.parkCancelCause = false
+			rs.parkCancelSuppress = false
+			switch rs.status {
+			case RunStatusCompleted:
+				dispatchOutcome = "completed"
+			case RunStatusFailed:
+				dispatchOutcome = "failed"
+			case RunStatusCancelled:
+				dispatchOutcome = "cancelled"
+			}
+			break
+		}
 		// Real user interrupt (or a Stop-guard fallthrough): the park-cancel
 		// flags must not leak into the generic "interrupted by user" branch —
 		// a Cancelled stamp here is genuine, not park poison.
