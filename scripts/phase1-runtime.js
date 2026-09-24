@@ -22,6 +22,30 @@ const CLIENT_CORE = path.join(ROOT, "packages", "flowpilot-client-core", "src");
 
 const originalResolve = Module._resolveFilename;
 Module._resolveFilename = function (request, ...rest) {
+  // KR-005: compiled tests live under .phase1-tests — Node's walk-up can hit
+  // the ROOT node_modules first and load a second React copy (hooks then die
+  // with "Cannot read properties of null (reading 'useCallback')"). Pin the
+  // React family + zustand to the app's own node_modules so renderer and
+  // components always share one instance.
+  if (
+    request === "react" ||
+    request === "react-dom" ||
+    request.startsWith("react/") ||
+    request.startsWith("react-dom/") ||
+    request === "zustand" ||
+    request.startsWith("zustand/") ||
+    request === "scheduler"
+  ) {
+    try {
+      const [parent, isMain, options] = rest;
+      return originalResolve.call(this, request, parent, isMain, {
+        ...(options || {}),
+        paths: [DESKTOP_NM],
+      });
+    } catch {
+      // fall through to normal resolution
+    }
+  }
   const candidates = [];
   if (request.startsWith("@/")) {
     const rel = request.slice(2);

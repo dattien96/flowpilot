@@ -72,12 +72,14 @@
     "zustand": "^5.0.8"
   },
   "devDependencies": {
+    "@types/jsdom": "^30.0.0",
     "@types/node": "20.19.41",
     "@types/react": "19.2.14",
     "@types/react-dom": "^19.2.2",
     "@vitejs/plugin-react": "^4.4.1",
     "electron": "^33.4.11",
     "electron-builder": "^25.1.8",
+    "jsdom": "^29.1.1",
     "typescript": "5.9.3",
     "vite": "^6.1.0",
     "vite-plugin-electron": "^0.29.0",

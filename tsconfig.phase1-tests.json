@@ -21,6 +21,8 @@
     "packages/flowpilot-client-core/src/**/*.ts",
     "apps/desktop-flowpilot/src/app/**/*.ts",
     "apps/desktop-flowpilot/src/**/*.test.ts",
+    "apps/desktop-flowpilot/src/**/*.test.tsx",
+    "apps/desktop-flowpilot/src/testhelpers/**/*.ts",
     "apps/desktop-flowpilot/src/auth/desktopAdminSupabaseClient.ts",
     "apps/desktop-flowpilot/src/auth/desktopBridgeHttp.ts",
     "apps/desktop-flowpilot/src/components/settings/settingsHelpers.ts",
