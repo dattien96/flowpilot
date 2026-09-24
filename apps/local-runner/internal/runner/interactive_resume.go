@@ -867,6 +867,15 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 		// Align non-terminal / in-flight labels with normalized run status.
 		agentStatus = string(normalizedStatus)
 	}
+	// BUG-455: heal runs persisted before the create-time default — a durable
+	// record with no working directory gets the same fallback the provider
+	// session path already applies (Runner.workspace), so Go-inline consumers
+	// (validate baseline load, captureGitHead, contract inject) do not see ""
+	// after a restart and dead-park skipped_no_command.
+	restoredWorkspaceCwd := strings.TrimSpace(st.WorkingDirectory)
+	if restoredWorkspaceCwd == "" && s.runner != nil {
+		restoredWorkspaceCwd = strings.TrimSpace(s.runner.workspace)
+	}
 	rs := &interactiveRun{
 		id:                     st.RunID,
 		projectID:              st.ProjectID,
@@ -888,7 +897,7 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 		// turnResumeProviderSessionID.
 		lastOpencodeTurnSessionID: st.ProviderSessionID,
 		providerAccountID:         st.ProviderAccountID,
-		workspaceCwd:              st.WorkingDirectory,
+		workspaceCwd:              restoredWorkspaceCwd,
 		worktree:                  worktreeBindingFromSession(st),
 		runKind:                   st.RunKind,
 		// BUG-330 residual: the handle echo reads rs.chatID/legSeq, but the

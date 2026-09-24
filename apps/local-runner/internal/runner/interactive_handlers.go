@@ -877,6 +877,18 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 	if e := s.enforceWorktreeStart(&in); e != nil {
 		return RunHandle{}, e
 	}
+	// BUG-455 (live run-94): an API-launched run with a bound project but no
+	// explicit cwd must still resolve a workspace — provider sessions fall
+	// back to Runner.workspace (sessions.go) and worktreeRepoDir applies the
+	// same in.Cwd → runner.workspace default, so without this the run record
+	// carries "" while children work in the real dir: every Go-inline consumer
+	// (command.validate's baseline load, captureGitHead, contract-scope inject,
+	// handoff, gate hooks) then sees no workspace — validate escalates
+	// skipped_no_command forever and Continue can never clear the park.
+	// Explicit in.Cwd stays authoritative; runner workspace is only a default.
+	if strings.TrimSpace(in.Cwd) == "" && s.runner != nil {
+		in.Cwd = strings.TrimSpace(s.runner.workspace)
+	}
 	// CA-638: ensure the target workspace is GitNexus-indexed so scope-drift
 	// HighSeverity and source.dependence can query real dependents. Runs once
 	// per process per workspace; non-blocking.
