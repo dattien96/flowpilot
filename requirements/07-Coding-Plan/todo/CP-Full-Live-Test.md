@@ -77,6 +77,33 @@ last one verified identical on clean `origin/main`) + TempDir flake family
 `TestStartTurnGrokCrossAccountLegacyThreadPromotesCopiesAndLoads` — all PASS isolated).
 No new reds → no post-rebase regression. ✅ GATE PASS.
 
+**Live findings so far (2026-09-24, bed `~/fp-beds/full`, project `957928cc`):**
+
+- **run-1 (opencode/gemini leg)**: `gemini-3-flash` free-tier quota exhausted →
+  child `turn_failed` surfaced full "usage limit" detail (not flattened to
+  "Internal error" — BUG-374/381 verified live) → hub `submit_review_outcome
+  {blocked}` → fail-closed park `awaiting_user` → operator Continue routed
+  reprompt turn-83 to the correct node. ✅ quota classification + fail-closed
+  + BUG-411 gate-decision→resume all live-verified.
+- **run-94 (devin/swe-2-high, task-harness)**: full plan loop live —
+  `preflight_contract_plan`→`context`→`plan_writer`→`plan_reviewer`
+  (`changes_requested` round 1) → writer re-entry same child → `approved`
+  with openIssues → **Task-325 plan-approval park fired** (churned plan) →
+  operator bare-Continue approved → `preflight_contract_freeze` +
+  `test_signatures` + `implement` DONE (real `calc.go`/`calc_test.go` written,
+  tests-before-impl ordering observed) → `validate` escalated
+  `skipped_no_command` → **BUG-455 found**: run created without `cwd` left
+  `workspaceCwd=""` → `loadValidateCommand("")` never reads the baseline →
+  dead park (both documented resolutions were no-ops). Fixed via CA-952
+  (create-time default + resume heal; 5 additive tests). Runner restart
+  confirmed the heal (`workingDirectory` now resolves) but the parked run
+  normalizes to `cancelled` on reconstruct — parked-at-gate runs do NOT
+  survive runner restart; noted as observation, flagged for review whether
+  parked-but-resumable should persist.
+- **Dispatch durability (CP-51)**: `prepared → send_claimed → send_started →
+  terminal_completed` chain with envelope hashes observed on every provider
+  turn across run-1/run-94 records.
+
 Evidence convention: every row gets runId + log line / artifact path. UI-only rows are
 marked `UI` — backend evidence still required where noted.
 
@@ -88,8 +115,8 @@ marked `UI` — backend evidence still required where noted.
 
 | ID | Case | Steps → Pass criteria | Auto cover | Status |
 |----|------|-----------------------|------------|--------|
-| A-58-1 | task-harness happy path | `/flow task-harness` + GCD-style prompt (calc-core) → scout→context→plan_writer→plan_reviewer→plan_synthesis→freeze→test_signatures→implement→validate→reviewer→synthesis→audit→done. Writer/reviewer prompts contain "Templated file outputs" / "Bound input artifacts"; reviewer calls `submit_review_outcome` | e2e in runner suite | ☐ |
-| A-58-2 | Plan loop reject→re-entry same session | Force `changes_requested` (ask plan to include benchmark) → `flow_control_hub_done_continue_on_review_verdict`, writer re-enters **same** child; context/freeze stay DONE | `TestCP61HubDone/plan_synthesis_changes_requested_continues` | ☐ |
+| A-58-1 | task-harness happy path | `/flow task-harness` + GCD-style prompt (calc-core) → scout→context→plan_writer→plan_reviewer→plan_synthesis→freeze→test_signatures→implement→validate→reviewer→synthesis→audit→done. Writer/reviewer prompts contain "Templated file outputs" / "Bound input artifacts"; reviewer calls `submit_review_outcome` | e2e in runner suite | ◑ run-94: all nodes DONE through `implement`; `validate` dead-parked → BUG-455 (fixed, CA-952); reviewer→audit legs pending re-run |
+| A-58-2 | Plan loop reject→re-entry same session | Force `changes_requested` (ask plan to include benchmark) → `flow_control_hub_done_continue_on_review_verdict`, writer re-enters **same** child; context/freeze stay DONE | `TestCP61HubDone/plan_synthesis_changes_requested_continues` | ☑ run-94: reviewer `changes_requested` → `plan_writer` re-entered on same child run-235 (rounds 2–4), `context`/freeze untouched |
 | A-58-3 | Code loop isolated from plan loop | Force code reject → implement re-entry; `plan_*` + freeze remain DONE | unit matrix | ☐ |
 | A-58-4 | Round cap 3 → escalate | Force 3 rejects → `blocked`/escalate card, no 4th round (was never forced live) | `agent_orchestrator_test.go` cap | ☐ DEFERRED-LIVE |
 | A-58-5 | cp-harness slice-only | `/flow cp-harness` → `cp_plan_writer→cp_reviewer→cp_synthesis→task_splitter→audit→done`; exactly N Task files, additive, no implement nodes | `bug356_slice_audit_test.go` | ☐ |
@@ -100,7 +127,7 @@ marked `UI` — backend evidence still required where noted.
 
 | ID | Case | Pass criteria | Auto | Status |
 |----|------|---------------|------|--------|
-| A-61-1 | All 3 hubs gate on cohort verdict | task-harness live run: `plan_synthesis` needs `plan_reviewer` PASS; `synthesis` needs `reviewer` PASS → audit; wrong-cohort PASS doesn't unlock | `TestCP61HubDone` 13×3 providers | ☐ |
+| A-61-1 | All 3 hubs gate on cohort verdict | task-harness live run: `plan_synthesis` needs `plan_reviewer` PASS; `synthesis` needs `reviewer` PASS → audit; wrong-cohort PASS doesn't unlock | `TestCP61HubDone` 13×3 providers | ◑ run-94: plan_synthesis consumed plan_reviewer verdicts (changes_requested→blocked→approved arc observed); code-loop `synthesis` leg pending |
 | A-61-2 | Missing verdict → escalate | `flow_control_rejected_missing_review_verdict`; never freeze/audit | unit | ☐ (live optional — rare) |
 | A-61-3 | cp-harness reject path live | cp_reviewer `changes_requested` → writer re-entry (deferred from M-wave) | unit 2.4 | ☐ DEFERRED-LIVE |
 | A-61-4 | Non-harness chat unaffected | plain chat → no hub events | `normal_chat_unaffected` | ☐ |
@@ -109,7 +136,7 @@ marked `UI` — backend evidence still required where noted.
 
 | ID | Case | Pass criteria | Auto | Status |
 |----|------|---------------|------|--------|
-| A-62-1 | Verdict schema + node isolation | reviewer `submit_review_outcome` with per-AC verdicts+evidence; schema enforced | task-harness e2e | ☐ |
+| A-62-1 | Verdict schema + node isolation | reviewer `submit_review_outcome` with per-AC verdicts+evidence; schema enforced | task-harness e2e | ☑ run-94: plan_reviewer (run-3414/5007) submitted verdict with "9/9 AC verdicts pass" per-AC rows; run-5007 explicitly verified plan doc against repo state |
 | A-62-2 | AC coverage at bridge | reviewer omits an AC → rejected at `turnBridge.SubmitFlowControl` (HTTP face too — BUG-392) | `TestReviewACCoverage_*` 12 | ☐ |
 | A-62-3 | Escalation/or-explained schema | `dod_explanation` schema pass | `TestRDodComplete_*` | ☐ |
 | A-62-4 | Sprint handoff enrichment | handoff carries card choice + consequence; prose fallback → recommended | `TestHandoffEnrichment_*` 8 | ☐ |
