@@ -55,20 +55,26 @@ spectator pane.
 
 ## 2. Automated — run first
 
-Working dir: `apps/desktop-flowpilot` (vitest) and `apps/local-runner` (go).
+Working dir: `apps/desktop-flowpilot` (node --test on compiled `.phase1-tests`
+output — vitest is NOT the runner) and `apps/local-runner` (go).
 
 ```bash
+# Compile once, then run compiled tests with the phase1 runtime hook:
+npm run test:phase1   # tsc -p ../../tsconfig.phase1-tests.json && node --require ../../scripts/phase1-runtime.js --test <dirs>
+# Focused run (after tsc):
+#   node --require ../../scripts/phase1-runtime.js --test ../../.phase1-tests/apps/desktop-flowpilot/src/state/boardModel.test.js
+
 # 1. Board model + component (Task-422)
-npx vitest run src/state/boardModel.test.ts src/components/SessionsBoard.test.ts
+node --require ../../scripts/phase1-runtime.js --test ../../.phase1-tests/apps/desktop-flowpilot/src/state/boardModel.test.js
 
 # 2. Inline attention actions (Task-423)
-npx vitest run src/state/attentionQueue.inline.test.ts src/state/store.attention-actions.test.ts
+node --require ../../scripts/phase1-runtime.js --test ../../.phase1-tests/apps/desktop-flowpilot/src/state/attentionQueue.inline.test.js ../../.phase1-tests/apps/desktop-flowpilot/src/state/store.attention-actions.test.js
 
 # 3. Spectator pane (Task-425)
-npx vitest run src/state/store.spectator.test.ts src/components/SpectatorPane.test.ts
+node --require ../../scripts/phase1-runtime.js --test ../../.phase1-tests/apps/desktop-flowpilot/src/state/store.spectator.test.js
 
 # 4. Existing suites must stay green (regression gate)
-npx vitest run src/state/attention_queue.test.ts src/styles.tokens.test.ts
+node --require ../../scripts/phase1-runtime.js --test ../../.phase1-tests/apps/desktop-flowpilot/src/state/attention_queue.test.js ../../.phase1-tests/apps/desktop-flowpilot/src/styles.tokens.test.js
 
 # 5. Worktree uniqueness (Task-424) — Go
 cd ../local-runner

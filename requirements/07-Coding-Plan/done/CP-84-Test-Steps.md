@@ -61,8 +61,7 @@ không bị đánh cắp.
 ```bash
 cd apps/local-runner && go test ./internal/runner/ -run 'TestRunUpdates|TestDecisionPayloads' -count=1
 cd apps/local-runner && go test -race ./internal/runner/ -run 'TestRunUpdates' -count=1
-cd apps/desktop-flowpilot && npx vitest run src/state src/components --reporter=verbose
-cd apps/desktop-flowpilot && npx vitest run   # full suite — zero failures
+cd apps/desktop-flowpilot && npm run test:phase1   # tsc + node --test on .phase1-tests (vitest is NOT the runner)
 cd apps/local-runner && go test ./internal/runner/ -count=1   # regression rộng
 ```
 

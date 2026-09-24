@@ -61,15 +61,17 @@ cd apps/local-runner
 go test ./internal/runner -run 'TestRunHistoryItem_IncludesWorktreePath|TestRunHistoryItem_OmitsWorktreePath' -count=1 -v
 
 # 2. Pty manager + preload bridge (Task-427)
+# Desktop tests run on compiled output — NOT vitest:
 cd ../desktop-flowpilot
-npx vitest run electron/terminal.test.ts src/preload.term.test.ts
+../../node_modules/.bin/tsc -p ../../tsconfig.phase1-tests.json   # or: npm run test:phase1
+node --require ../../scripts/phase1-runtime.js --test ../../.phase1-tests/apps/desktop-flowpilot/src/terminal/terminal.test.js
 
 # 3. Panel + cwd resolver (Task-428)
-npx vitest run src/terminal/cwd.test.ts src/components/TerminalPanel.test.ts
+node --require ../../scripts/phase1-runtime.js --test ../../.phase1-tests/apps/desktop-flowpilot/src/terminal/terminalPanel.test.js
 
 # 4. Regression gates
 npx tsc --noEmit && npx vite build
-npx vitest run src/styles.tokens.test.ts
+node --require ../../scripts/phase1-runtime.js --test ../../.phase1-tests/apps/desktop-flowpilot/src/styles.tokens.test.js
 ```
 
 | Step | Check | Pass when | Tick |
