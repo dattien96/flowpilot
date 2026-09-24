@@ -679,7 +679,11 @@ export interface AppState {
   chooseDecisionOption(itemId: string, optionId: string): Promise<void>;
   stop(): Promise<void>;
   reconnect(): Promise<void>;
-  loadRunHistory(): Promise<void>;
+  /** `silent` (CP-85): background refresh — updates data without toggling
+   *  `historyLoading`, so interval polls no longer flash "Loading" in the
+   *  Navigator history header. The flag still clears on settle so a superseded
+   *  non-silent load can never wedge it true. */
+  loadRunHistory(options?: { silent?: boolean }): Promise<void>;
   /** Fetch+cache one project's history without touching the active project —
    *  used by the Navigator's project groups and the attention inbox so runs
    *  outside the selected project still show counts and attention items. */
@@ -2736,7 +2740,7 @@ export const useStore = create<AppState>((set, get) => ({
     startOrchestrationStream(runId, client, set, get);
   },
 
-  async loadRunHistory() {
+  async loadRunHistory(options) {
     const { client, selectedProjectId } = get();
     if (!selectedProjectId) {
       attentionQueue.ingestHistory([], "");
@@ -2745,7 +2749,7 @@ export const useStore = create<AppState>((set, get) => ({
     }
     // F-3: stale-response guard — bump seq before the async call, discard result if seq moved on
     const seq = get()._historyLoadSeq + 1;
-    set({ historyLoading: true, _historyLoadSeq: seq });
+    set({ ...(options?.silent ? {} : { historyLoading: true }), _historyLoadSeq: seq });
     try {
       const runHistory = await client.listRunHistory(selectedProjectId);
       if (get()._historyLoadSeq !== seq) return;

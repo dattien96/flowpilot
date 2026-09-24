@@ -1818,9 +1818,13 @@ body[data-platform="darwin"] .app-header {
   top: calc(100% + var(--space-1));
   right: 0;
   z-index: 80;
-  width: min(320px, 90vw);
+  /* BUG-386: expand with the window instead of a fixed 320px cap — only the
+     viewport bound shrinks it when the app is dragged thin. */
+  width: min(560px, calc(100vw - 2 * var(--space-4)));
   max-height: min(60vh, 480px);
   overflow-y: auto;
+  /* Rows ellipsize, never scroll sideways (same contract as .navigator). */
+  overflow-x: hidden;
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   background: var(--bg-2);
@@ -1829,6 +1833,12 @@ body[data-platform="darwin"] .app-header {
   -webkit-app-region: no-drag;
 }
 .attention-inbox-head {
+  /* BUG-386: flex so margin-left:auto on .inbox-batch-approve actually
+     right-aligns the button (a plain block ignores it). */
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
   padding: var(--space-1) var(--space-2);
   font-size: 9px;
   font-weight: 600;
@@ -1851,6 +1861,7 @@ body[data-platform="darwin"] .app-header {
 }
 .attention-inbox-item {
   width: 100%;
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: var(--space-2);
@@ -1982,16 +1993,27 @@ body[data-platform="darwin"] .app-header {
 .project-history-section {
   display: grid;
   gap: var(--space-2);
-}
-.project-history-section--remote {
-  padding-top: var(--space-2);
-  border-top: 1px solid var(--border);
+  /* CP-85: grid children default to min-width:auto — a long section row would
+     propagate min-content up and overflow the narrow rail instead of
+     ellipsizing. */
+  min-width: 0;
 }
 .project-rail-head {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: var(--space-2);
+}
+/* CP-85: real layout for the section-head action cluster (refresh, exit-
+   selection). Was an unstyled div — at narrow rail widths it could not shrink
+   and crowded/overlapped the section toggle. */
+.project-rail-head-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin-left: auto;
+  flex: 0 0 auto;
+  min-width: 0;
 }
 .project-rail-head label {
   display: block;
@@ -2007,7 +2029,7 @@ body[data-platform="darwin"] .app-header {
   font-size: 9px;
   line-height: 1.45;
 }
-/* Collapsible section head inside a project group (History / Remote Chats). */
+/* Collapsible section head inside a project group (History). */
 .project-section-toggle {
   display: inline-flex;
   align-items: center;
@@ -2018,6 +2040,9 @@ body[data-platform="darwin"] .app-header {
   padding: 0;
   cursor: pointer;
   text-align: left;
+  /* CP-85: let the label side shrink so the head never overflows the rail. */
+  flex: 1 1 auto;
+  min-width: 0;
 }
 .project-section-toggle:hover {
   color: var(--text);
@@ -2026,6 +2051,7 @@ body[data-platform="darwin"] .app-header {
   font-size: 9px;
   text-transform: uppercase;
   letter-spacing: 0.5px;
+  white-space: nowrap;
 }
 .project-rail-list,
 .project-history-groups {
@@ -2033,7 +2059,6 @@ body[data-platform="darwin"] .app-header {
   gap: var(--space-2);
 }
 .project-rail-empty,
-.project-rail-state,
 .project-history-error {
   padding: var(--space-2);
   border: 1px dashed var(--border);
@@ -2128,6 +2153,53 @@ body[data-platform="darwin"] .app-header {
   color: var(--text-dim);
   background: transparent;
 }
+
+/* CP-85: entry point to the sync screen — full-width quiet row at the bottom
+   of the History section; badge counts locally-flagged unsynced chats. */
+.project-history-open-sync {
+  width: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-lg);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 10px;
+  transition: border-color var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard);
+}
+.project-history-open-sync:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.project-history-open-sync-badge {
+  min-width: 16px;
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-pill);
+  background: var(--bg-3);
+  color: var(--text-dim);
+  font-size: 9px;
+  line-height: 16px;
+  text-align: center;
+}
+.project-history-open-sync:hover .project-history-open-sync-badge {
+  color: var(--accent);
+}
+
+/* CP-85 sync screen (RemoteSyncPanel): reuses the board overlay/panel shell. */
+.sync-panel-list {
+  padding-left: 0;
+}
+.project-history-item--static {
+  cursor: default;
+}
+.project-history-item--static:hover {
+  border-color: var(--border);
+}
 .project-rail-head-label {
   display: flex;
   align-items: center;
@@ -2152,6 +2224,8 @@ body[data-platform="darwin"] .app-header {
   margin: 0;
   font-size: 9px;
   color: var(--text-dim);
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 /* Project-grouped navigator: each project is a collapsible group whose body
    holds that project's chat history + remote chats (only rendered for the
@@ -7797,6 +7871,10 @@ body.is-resizing-sidebar {
 .attention-inbox-li {
   display: flex;
   flex-direction: column;
+  /* BUG-386: grid item of .attention-inbox-list — default min-width:auto would
+     size the track to the row's min-content and force a horizontal scrollbar;
+     let it shrink so the inner flex row constrains and titles ellipsize. */
+  min-width: 0;
 }
 
 .attention-inbox-item .attention-inbox-title {

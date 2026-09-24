@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useStore } from "@/state/store";
-import type { RemoteChatSessionSummary, RunHistoryItem } from "@/types/contract";
-import { filterVisibleHistory, isAgentHistoryItem, isProjectSyncing, isSyncableRun } from "@/components/navigatorHistory";
+import type { RunHistoryItem } from "@/types/contract";
+import { filterVisibleHistory, isAgentHistoryItem, isSyncableRun } from "@/components/navigatorHistory";
 import { flattenGroupedHistory, groupRunsByChatId } from "../state/chatHistory";
-import { CloseIcon, DisclosureCaret, PlusIcon } from "@/components/icons";
+import { CloseIcon, DisclosureCaret, GlobeIcon, PlusIcon } from "@/components/icons";
+import { RemoteSyncPanel } from "@/components/RemoteSyncPanel";
 
 const HISTORY_LIMIT = 5;
-const REMOTE_CHATS_LIMIT = 4;
 
 const RUN_TIME_FORMAT = new Intl.DateTimeFormat(undefined, {
   month: "short",
@@ -42,29 +42,7 @@ function runTypeLabel(item: RunHistoryItem, statusOverride?: RunHistoryItem["sta
   return isAgentHistoryItem(item) ? `Agent · ${item.agentName || item.role || "sub-agent"}` : RUN_LABEL[statusOverride ?? item.status];
 }
 
-// Upload-arrow glyph for per-chat and per-project sync buttons (sync = upload to Drive).
-function SyncGlyph(): React.ReactElement {
-  return (
-    <svg width="11" height="11" viewBox="0 0 12 12" fill="none" aria-hidden="true">
-      <polyline points="4,5.5 6,3 8,5.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
-      <line x1="6" y1="3" x2="6" y2="9" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
-      <line x1="2.5" y1="10.5" x2="9.5" y2="10.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-// Download-arrow glyph for individual restore buttons.
-function RestoreGlyph(): React.ReactElement {
-  return (
-    <svg width="11" height="11" viewBox="0 0 12 12" fill="none" aria-hidden="true">
-      <polyline points="4,6.5 6,9 8,6.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
-      <line x1="6" y1="9" x2="6" y2="3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
-      <line x1="2.5" y1="10.5" x2="9.5" y2="10.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-// Circular-arrow glyph for manual refresh buttons.
+// Circular-arrow glyph for the manual refresh button.
 function RefreshGlyph(): React.ReactElement {
   return (
     <svg width="11" height="11" viewBox="0 0 12 12" fill="none" aria-hidden="true">
@@ -118,6 +96,13 @@ function sortByRecent(items: RunHistoryItem[]): RunHistoryItem[] {
   });
 }
 
+/**
+ * CP-85: the Navigator is a local-only surface — it renders each project's
+ * local chat history and nothing else. No remote (Drive-synced) session list
+ * is shown or fetched here; that whole flow lives behind the "Open Sync"
+ * button, which mounts RemoteSyncPanel and runs the fetch + sync logic only
+ * while that screen is open.
+ */
 export function Navigator(): React.ReactElement {
   const projects = useStore((s) => s.projects);
   const selectedProjectId = useStore((s) => s.selectedProjectId);
@@ -125,25 +110,17 @@ export function Navigator(): React.ReactElement {
   const runHistory = useStore((s) => s.runHistory);
   const historyLoading = useStore((s) => s.historyLoading);
   const historyLoadError = useStore((s) => s.historyLoadError);
-  const remoteChatSessions = useStore((s) => s.remoteChatSessions);
-  const remoteHistoryLoading = useStore((s) => s.remoteHistoryLoading);
-  const remoteHistoryLoadError = useStore((s) => s.remoteHistoryLoadError);
   const loadProjects = useStore((s) => s.loadProjects);
   const selectProject = useStore((s) => s.selectProject);
   const runId = useStore((s) => s.runId);
   const loadRunHistory = useStore((s) => s.loadRunHistory);
-  const loadRemoteChatSessions = useStore((s) => s.loadRemoteChatSessions);
   const openHistoryRun = useStore((s) => s.openHistoryRun);
   const loadProjectHistory = useStore((s) => s.loadProjectHistory);
   const loadAllProjectHistories = useStore((s) => s.loadAllProjectHistories);
   const projectHistoryById = useStore((s) => s.projectHistoryById);
   const attentionItems = useStore((s) => s.attentionItems);
   const resetRun = useStore((s) => s.resetRun);
-  const syncRuns = useStore((s) => s.syncRuns);
-  const syncAllInProject = useStore((s) => s.syncAllInProject);
-  const syncBatchProgress = useStore((s) => s.syncBatchProgress);
   const deleteHistoryRun = useStore((s) => s.deleteHistoryRun);
-  const restoreRemoteChatSession = useStore((s) => s.restoreRemoteChatSession);
   const visibleRunHistory = useMemo(() => filterVisibleHistory(runHistory), [runHistory]);
   const gateBlockedRunIds = useStore((s) => s._gateBlockedRunIds);
 
@@ -153,56 +130,19 @@ export function Navigator(): React.ReactElement {
 
   const [newlyCompleted, setNewlyCompleted] = useState<Set<string>>(new Set());
   const [recentProjectIds, setRecentProjectIds] = useState<string[]>([]);
-  const [remoteChatSessionsByProjectId, setRemoteChatSessionsByProjectId] = useState<Record<string, RemoteChatSessionSummary[]>>({});
   const [expandedHistoryIds, setExpandedHistoryIds] = useState<Set<string>>(new Set());
   const [collapsedProjectIds, setCollapsedProjectIds] = useState<Set<string>>(new Set());
-  // Per-project collapse state for the History / Remote Chats sub-sections
-  // inside a group body — keyed "<projectId>:history" | "<projectId>:remote".
+  // Per-project collapse state for the History sub-section inside a group body.
   const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set());
   const [selectionModeProjectId, setSelectionModeProjectId] = useState<string | null>(null);
   const [selectedRunIds, setSelectedRunIds] = useState<Set<string>>(new Set());
-  const [confirmAction, setConfirmAction] = useState<{ type: "delete" | "sync"; runIds: string[]; projectId: string } | null>(null);
+  const [confirmAction, setConfirmAction] = useState<{ runIds: string[]; projectId: string } | null>(null);
   const longPressRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [restoringIds, setRestoringIds] = useState<Set<string>>(new Set());
-  const [restoringAll, setRestoringAll] = useState(false);
-  const [restoreProgress, setRestoreProgress] = useState<{ done: number; total: number } | null>(null);
-  const [showAllRemoteChats, setShowAllRemoteChats] = useState(false);
-  const [remoteSelectionMode, setRemoteSelectionMode] = useState(false);
-  const [selectedRemoteKeys, setSelectedRemoteKeys] = useState<Set<string>>(new Set());
-  const remoteLongPressRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [syncPanelOpen, setSyncPanelOpen] = useState(false);
 
   const exitSelectionMode = useCallback(() => {
     setSelectionModeProjectId(null);
     setSelectedRunIds(new Set());
-  }, []);
-
-  const exitRemoteSelectionMode = useCallback(() => {
-    setRemoteSelectionMode(false);
-    setSelectedRemoteKeys(new Set());
-  }, []);
-
-  const toggleRemoteSelection = useCallback((key: string) => {
-    setSelectedRemoteKeys((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
-  }, []);
-
-  const startRemoteLongPress = useCallback((key: string) => {
-    remoteLongPressRef.current = setTimeout(() => {
-      remoteLongPressRef.current = null;
-      setRemoteSelectionMode(true);
-      setSelectedRemoteKeys(new Set([key]));
-    }, 500);
-  }, []);
-
-  const cancelRemoteLongPress = useCallback(() => {
-    if (remoteLongPressRef.current) {
-      clearTimeout(remoteLongPressRef.current);
-      remoteLongPressRef.current = null;
-    }
   }, []);
 
   const toggleItemSelection = useCallback((runId: string) => {
@@ -229,68 +169,20 @@ export function Navigator(): React.ReactElement {
     }
   }, []);
 
-  const requestConfirm = useCallback((type: "delete" | "sync", runIds: string[], projectId: string) => {
-    // A "sync" click must never be a silent dead click: even when the selection
-    // filters down to zero syncable items (e.g. all already synced/unavailable),
-    // still open the dialog so its "No syncable chats selected..." branch
-    // renders instead of nothing happening at all. "delete" has no such empty
-    // state to explain, so it still bails.
-    if (runIds.length === 0 && type !== "sync") return;
-    setConfirmAction({ type, runIds, projectId });
+  const requestDeleteConfirm = useCallback((runIds: string[], projectId: string) => {
+    if (runIds.length === 0) return;
+    setConfirmAction({ runIds, projectId });
   }, []);
-
-  const restoreItem = useCallback(async (item: Parameters<typeof restoreRemoteChatSession>[0]) => {
-    const key = `${item.sourceMachineId}:${item.sourceRunId}`;
-    setRestoringIds((prev) => new Set(prev).add(key));
-    try {
-      await restoreRemoteChatSession(item);
-    } finally {
-      setRestoringIds((prev) => { const next = new Set(prev); next.delete(key); return next; });
-    }
-  }, [restoreRemoteChatSession]);
-
-  const restoreAll = useCallback(async () => {
-    const targets = remoteChatSessions.filter((item) => !item.unavailableReason);
-    setRestoringAll(true);
-    setRestoreProgress({ done: 0, total: targets.length });
-    try {
-      for (const item of targets) {
-        const key = `${item.sourceMachineId}:${item.sourceRunId}`;
-        setRestoringIds((prev) => new Set(prev).add(key));
-        try {
-          // Skip the per-item history refresh + auto-open here: doing a full
-          // refresh after every single item serializes N extra round trips into
-          // the loop (each item waits on the previous one's refresh before it can
-          // even start), which is why the spinner looked stuck until the whole
-          // batch finished. One combined refresh after the loop below is enough,
-          // and auto-opening every restored run in turn would hijack the active
-          // chat panel N times over.
-          await restoreRemoteChatSession(item, undefined, { refresh: false, open: false });
-        } finally {
-          setRestoringIds((prev) => { const next = new Set(prev); next.delete(key); return next; });
-          setRestoreProgress((prev) => (prev ? { ...prev, done: prev.done + 1 } : prev));
-        }
-      }
-      await Promise.all([loadRunHistory(), loadRemoteChatSessions()]);
-    } finally {
-      setRestoringAll(false);
-      setRestoreProgress(null);
-    }
-  }, [remoteChatSessions, restoreRemoteChatSession, loadRunHistory, loadRemoteChatSessions]);
 
   const executeConfirm = useCallback(async () => {
     if (!confirmAction) return;
-    const { type, runIds, projectId } = confirmAction;
+    const { runIds } = confirmAction;
     setConfirmAction(null);
     exitSelectionMode();
-    if (type === "delete") {
-      for (const runId of runIds) {
-        try { await deleteHistoryRun(runId); } catch { /* best effort */ }
-      }
-    } else {
-      await syncRuns(runIds, projectId);
+    for (const runId of runIds) {
+      try { await deleteHistoryRun(runId); } catch { /* best effort */ }
     }
-  }, [confirmAction, deleteHistoryRun, exitSelectionMode, syncRuns]);
+  }, [confirmAction, deleteHistoryRun, exitSelectionMode]);
 
   useEffect(() => {
     void loadProjects();
@@ -299,8 +191,7 @@ export function Navigator(): React.ReactElement {
   useEffect(() => {
     if (!selectedProjectId) return;
     void loadRunHistory();
-    void loadRemoteChatSessions();
-  }, [loadRemoteChatSessions, loadRunHistory, selectedProjectId]);
+  }, [loadRunHistory, selectedProjectId]);
 
   useEffect(() => {
     if (!selectedProjectId) return;
@@ -310,7 +201,9 @@ export function Navigator(): React.ReactElement {
       status === "waiting_approval" ||
       status === "waiting_question";
     const ms = active ? 3_000 : 10_000;
-    const id = setInterval(() => void loadRunHistory(), ms);
+    // CP-85: silent poll — keeps the list fresh without toggling
+    // historyLoading, so the header no longer flashes "Loading" every tick.
+    const id = setInterval(() => void loadRunHistory({ silent: true }), ms);
     return () => clearInterval(id);
   }, [selectedProjectId, status, loadRunHistory]);
 
@@ -351,25 +244,6 @@ export function Navigator(): React.ReactElement {
     return () => clearInterval(id);
   }, [projects, loadAllProjectHistories]);
 
-  // Cache the remote (Drive-synced) chat list per project so switching back to an
-  // already-visited project shows its last-known list instantly instead of
-  // resetting to empty/"Loading" every time -- loadRemoteChatSessions still runs
-  // in the background on every switch to keep it fresh (stale-while-revalidate),
-  // but the visible list no longer has to wait on that round trip each time.
-  // Gated on remoteHistoryLoading (unlike the runHistory cache above) because,
-  // unlike sync-up's per-item optimistic updates, there is no same-project
-  // incremental local mutation of remoteChatSessions to protect -- it only ever
-  // changes via a full fetch completing, so waiting for that fetch to settle
-  // before caching is exactly what avoids writing a mid-switch project's stale
-  // list under the new project's cache key.
-  useEffect(() => {
-    if (!selectedProjectId || remoteHistoryLoading) return;
-    setRemoteChatSessionsByProjectId((current) => ({
-      ...current,
-      [selectedProjectId]: remoteChatSessions,
-    }));
-  }, [selectedProjectId, remoteHistoryLoading, remoteChatSessions]);
-
   useEffect(() => {
     setSelectionModeProjectId(null);
     setSelectedRunIds(new Set());
@@ -401,19 +275,10 @@ export function Navigator(): React.ReactElement {
   }, [selectedProjectId, projectHistoryById]);
   const showAllHistory = expandedHistoryIds.has(selectedProjectId ?? "");
   const visibleHistory = showAllHistory ? activeHistory : activeHistory.slice(0, HISTORY_LIMIT);
-  const activeRemoteChatSessions = selectedProjectId ? (remoteChatSessionsByProjectId[selectedProjectId] ?? []) : [];
-  const unsyncedCount = activeHistory.filter((item) => isSyncableRun(item, activeRemoteChatSessions)).length;
-  const activeSyncProgress =
-    syncBatchProgress && syncBatchProgress.projectId === selectedProjectId ? syncBatchProgress : undefined;
-  // Drive the chip off the batch itself (active continuously from the first item to the last),
-  // not off isProjectSyncing's per-row "is some row syncing at this exact instant" snapshot --
-  // that flips false in the gap between one item finishing and the next one starting (the row
-  // is briefly "synced" while the next row hasn't flipped to "syncing" yet), which made the
-  // spinner and x/y counter flicker away and reappear between every item instead of holding
-  // steady until the whole batch reaches total/total. isProjectSyncing stays as a fallback for
-  // any row-level sync state that did not originate from a syncRuns-driven batch.
-  const projectSyncing = Boolean(activeSyncProgress) || isProjectSyncing(activeHistory, selectedProjectId ?? "");
-  const syncProgressLabel = activeSyncProgress ? `${activeSyncProgress.done}/${activeSyncProgress.total}` : "Syncing…";
+  // CP-85: local-flag-only hint for the Open Sync badge — no remote list is
+  // fetched here, so this can over-count vs the Drive index; the sync panel
+  // recomputes against the fresh remote list once opened.
+  const unsyncedCount = activeHistory.filter((item) => isSyncableRun(item)).length;
 
   const toggleShowAllHistory = (projectId: string) => {
     setExpandedHistoryIds((current) => {
@@ -565,14 +430,12 @@ export function Navigator(): React.ReactElement {
             )}
           </button>
           <div className="project-rail-head-actions">
-            {historyLoading && <span className="project-rail-state">Loading</span>}
             {selectedProjectId && (
               <button
                 type="button"
                 className="project-history-refresh"
                 onClick={() => {
                   void loadRunHistory();
-                  void loadRemoteChatSessions();
                 }}
                 disabled={historyLoading}
                 title="Refresh history"
@@ -581,7 +444,7 @@ export function Navigator(): React.ReactElement {
                 {historyLoading ? <span className="history-status-spinner" aria-hidden="true" /> : <RefreshGlyph />}
               </button>
             )}
-            {selectionModeProjectId === selectedProjectId ? (
+            {selectionModeProjectId === selectedProjectId && (
               <button
                 type="button"
                 className="project-history-selection-exit"
@@ -591,28 +454,6 @@ export function Navigator(): React.ReactElement {
               >
                 ←
               </button>
-            ) : (
-              unsyncedCount > 0 && selectedProjectId && (
-                <button
-                  type="button"
-                  className="project-history-sync-all"
-                  onClick={() => void syncAllInProject(selectedProjectId)}
-                  disabled={projectSyncing}
-                  title={
-                    projectSyncing
-                      ? `Syncing chats to Drive (${syncProgressLabel})`
-                      : `Sync ${unsyncedCount} chat${unsyncedCount > 1 ? "s" : ""} to Drive`
-                  }
-                  aria-label={
-                    projectSyncing
-                      ? `Syncing chats to Drive, ${syncProgressLabel} done`
-                      : `Sync all ${unsyncedCount} unsynced chats to Drive`
-                  }
-                >
-                  {projectSyncing ? <span className="history-status-spinner" aria-hidden="true" /> : <SyncGlyph />}
-                  <span>{projectSyncing ? syncProgressLabel : unsyncedCount}</span>
-                </button>
-              )
             )}
           </div>
         </div>
@@ -627,7 +468,11 @@ export function Navigator(): React.ReactElement {
 
         {activeHistory.length === 0 ? (
           <div className="project-rail-empty">
-            {selectedProjectId ? "Open a run to build project history." : "Select a project to load history."}
+            {historyLoading
+              ? "Loading chats…"
+              : selectedProjectId
+                ? "Open a run to build project history."
+                : "Select a project to load history."}
           </div>
         ) : (
           <div className="project-history-list">
@@ -638,24 +483,9 @@ export function Navigator(): React.ReactElement {
                 </span>
                 <button
                   type="button"
-                  className="project-history-selection-action"
-                  disabled={selectedRunIds.size === 0}
-                  onClick={() => {
-                    const syncable = [...selectedRunIds].filter((id) => {
-                      const it = activeHistory.find((h) => h.runId === id);
-                      return it && isSyncableRun(it, activeRemoteChatSessions);
-                    });
-                    requestConfirm("sync", syncable, selectedProjectId!);
-                  }}
-                  title="Sync selected chats to Drive"
-                >
-                  <SyncGlyph /> Sync
-                </button>
-                <button
-                  type="button"
                   className="project-history-selection-action project-history-selection-action--delete"
                   disabled={selectedRunIds.size === 0}
-                  onClick={() => requestConfirm("delete", [...selectedRunIds], selectedProjectId!)}
+                  onClick={() => requestDeleteConfirm([...selectedRunIds], selectedProjectId!)}
                   title="Delete selected chats"
                 >
                   Delete
@@ -664,7 +494,7 @@ export function Navigator(): React.ReactElement {
                   type="button"
                   className="project-history-selection-action project-history-selection-action--delete"
                   disabled={activeHistory.length === 0}
-                  onClick={() => requestConfirm("delete", activeHistory.map((h) => h.runId), selectedProjectId!)}
+                  onClick={() => requestDeleteConfirm(activeHistory.map((h) => h.runId), selectedProjectId!)}
                   title="Delete all chats"
                 >
                   Delete All
@@ -690,9 +520,7 @@ export function Navigator(): React.ReactElement {
               const hasIcon = isNew || effectiveStatus === "running" || effectiveStatus === "starting" ||
                 effectiveStatus === "waiting_approval" || effectiveStatus === "waiting_question";
               const isUnavailable = Boolean(item.unavailableReason);
-              const showSync = isSyncableRun(item, activeRemoteChatSessions);
               const isSyncing = item.syncStatus === "syncing";
-              const syncFailed = item.syncStatus === "failed";
               const inSelectionMode = selectionModeProjectId === selectedProjectId;
               const showRowSpinner = isSyncing && !inSelectionMode;
               const isSelected = selectedRunIds.has(item.runId);
@@ -735,22 +563,10 @@ export function Navigator(): React.ReactElement {
                       </span>
                     </div>
                     <div className="project-history-item-actions">
-                      {showSync && (
-                        <button
-                          type="button"
-                          className={`project-history-sync-icon${syncFailed ? " project-history-sync-icon--failed" : ""}`}
-                          disabled={isSyncing}
-                          onClick={(e) => { e.stopPropagation(); requestConfirm("sync", [item.runId], selectedProjectId!); }}
-                          title={syncFailed ? "Sync failed — click to retry" : "Sync this chat to Drive"}
-                          aria-label="Sync chat to Drive"
-                        >
-                          {isSyncing ? <span className="history-status-spinner" aria-hidden="true" /> : <SyncGlyph />}
-                        </button>
-                      )}
                       <button
                         type="button"
                         className="project-history-delete-icon"
-                        onClick={(e) => { e.stopPropagation(); requestConfirm("delete", [item.runId], selectedProjectId!); }}
+                        onClick={(e) => { e.stopPropagation(); requestDeleteConfirm([item.runId], selectedProjectId!); }}
                         title="Delete this chat"
                         aria-label="Delete chat"
                       >
@@ -811,169 +627,22 @@ export function Navigator(): React.ReactElement {
                 {showAllHistory ? "Show less" : `Show all (${activeHistory.length - HISTORY_LIMIT} more)`}
               </button>
             )}
-          </div>
-        )}
-        </>)}
-      </section>
 
-      <section className="project-history-section project-history-section--remote">
-        <div className="project-rail-head">
-          <button
-            type="button"
-            className="project-section-toggle"
-            aria-expanded={!collapsedSections.has(`${project.id}:remote`)}
-            onClick={() => toggleSection(`${project.id}:remote`)}
-          >
-            <DisclosureCaret open={!collapsedSections.has(`${project.id}:remote`)} />
-            <span className="project-section-toggle-label">Remote Chats</span>
-            {activeRemoteChatSessions.length > 0 && (
-              <span className="project-history-chat-count">{activeRemoteChatSessions.length}</span>
-            )}
-          </button>
-          <div className="project-rail-head-actions">
-            {remoteHistoryLoading && <span className="project-rail-state">Loading</span>}
-            {remoteSelectionMode ? (
-              <button
-                type="button"
-                className="project-history-selection-exit"
-                onClick={exitRemoteSelectionMode}
-                title="Exit selection mode"
-                aria-label="Exit selection mode"
-              >
-                ←
-              </button>
-            ) : (
-              activeRemoteChatSessions.filter((item) => !item.unavailableReason).length > 0 && (
-                <button
-                  type="button"
-                  className="project-history-sync-all"
-                  onClick={() => void restoreAll()}
-                  disabled={restoringAll || restoringIds.size > 0}
-                  title={restoringAll && restoreProgress ? `Restoring ${restoreProgress.done}/${restoreProgress.total}…` : "Restore all remote chats"}
-                  aria-label={restoringAll && restoreProgress ? `Restoring remote chats, ${restoreProgress.done}/${restoreProgress.total} done` : "Restore all remote chats"}
-                >
-                  {restoringAll ? <span className="history-status-spinner" aria-hidden="true" /> : <RestoreGlyph />}
-                  {restoringAll && restoreProgress && <span>{restoreProgress.done}/{restoreProgress.total}</span>}
-                </button>
-              )
-            )}
-          </div>
-        </div>
-
-        {!collapsedSections.has(`${project.id}:remote`) && (<>
-        {remoteHistoryLoadError && (
-          <div className="project-history-error">
-            <strong>Remote history failed to load</strong>
-            <span>{remoteHistoryLoadError}</span>
-          </div>
-        )}
-
-        {activeRemoteChatSessions.length === 0 ? (
-          <div className="project-rail-empty">
-            {selectedProjectId ? "No remote chats have been synced for this project yet." : "Select a project to load remote chats."}
-          </div>
-        ) : (
-          <div className="project-history-list">
-            {remoteSelectionMode && (
-              <div className="project-history-selection-toolbar">
-                <span className="project-history-selection-count">
-                  {selectedRemoteKeys.size} selected
+            <button
+              type="button"
+              className="project-history-open-sync"
+              onClick={() => setSyncPanelOpen(true)}
+              title="Open the sync screen — fetch remote (Drive) chats, restore them here, or upload unsynced local chats"
+              aria-label="Open chat sync screen"
+            >
+              <GlobeIcon size={12} />
+              <span>Open Sync</span>
+              {unsyncedCount > 0 && (
+                <span className="project-history-open-sync-badge" title={`${unsyncedCount} local chat${unsyncedCount > 1 ? "s" : ""} not synced to Drive`}>
+                  {unsyncedCount}
                 </span>
-                <button
-                  type="button"
-                  className="project-history-selection-action"
-                  disabled={restoringAll || restoringIds.size > 0}
-                  onClick={() => void restoreAll()}
-                  title="Restore all remote chats"
-                >
-                  {restoringAll ? <span className="history-status-spinner" aria-hidden="true" /> : <RestoreGlyph />}
-                  {restoringAll && restoreProgress ? `Restoring ${restoreProgress.done}/${restoreProgress.total}` : "Restore All"}
-                </button>
-              </div>
-            )}
-            {(showAllRemoteChats ? activeRemoteChatSessions : activeRemoteChatSessions.slice(0, REMOTE_CHATS_LIMIT)).map((item) => {
-              const key = `${item.sourceMachineId}:${item.sourceRunId}`;
-              const isRestoring = restoringIds.has(key);
-              const isSelected = selectedRemoteKeys.has(key);
-
-              if (remoteSelectionMode) {
-                return (
-                  <div
-                    key={key}
-                    className={`project-history-item-row project-history-item-row--selectable${isSelected ? " project-history-item-row--selected" : ""}${item.unavailableReason ? " project-history-item-row--disabled" : ""}`}
-                    onClick={() => { if (!item.unavailableReason) toggleRemoteSelection(key); }}
-                  >
-                    <input
-                      type="checkbox"
-                      className="project-history-item-checkbox"
-                      checked={isSelected}
-                      disabled={Boolean(item.unavailableReason)}
-                      onChange={() => toggleRemoteSelection(key)}
-                      onClick={(e) => e.stopPropagation()}
-                      aria-label={`Select ${runTitle(item.lastPrompt || item.lastMessage)}`}
-                    />
-                    <div className="project-history-item project-history-item--selectable">
-                      <span className="project-history-item-top">
-                        <span className="project-history-item-title">
-                          {runTitle(item.lastPrompt || item.lastMessage)}
-                        </span>
-                      </span>
-                      <span className="project-history-item-meta">
-                        {item.providerKey} · {item.updatedAt ? RUN_TIME_FORMAT.format(new Date(item.updatedAt)) : "Remote"}
-                      </span>
-                    </div>
-                    {!item.unavailableReason && (
-                      <button
-                        type="button"
-                        className="project-history-sync-icon"
-                        disabled={isRestoring || restoringAll}
-                        onClick={(e) => { e.stopPropagation(); void restoreItem(item); }}
-                        title="Restore this chat"
-                        aria-label="Restore chat"
-                      >
-                        {isRestoring ? <span className="history-status-spinner" aria-hidden="true" /> : <RestoreGlyph />}
-                      </button>
-                    )}
-                  </div>
-                );
-              }
-
-              return (
-                <div key={key} className="project-history-item-row">
-                  <button
-                    type="button"
-                    className={`project-history-item${item.unavailableReason ? " project-history-item--disabled" : ""}`}
-                    disabled={Boolean(item.unavailableReason) || isRestoring}
-                    onPointerDown={() => startRemoteLongPress(key)}
-                    onPointerUp={cancelRemoteLongPress}
-                    onPointerLeave={cancelRemoteLongPress}
-                    onClick={() => { if (!item.unavailableReason && !isRestoring) void restoreItem(item); }}
-                    title={item.unavailableReason || `${item.sourceMachineId}/${item.sourceRunId}`}
-                  >
-                    <span className="project-history-item-top">
-                      {isRestoring && <span className="history-status-spinner" aria-hidden="true" />}
-                      <span className="project-history-item-title">
-                        {runTitle(item.lastPrompt || item.lastMessage)}
-                      </span>
-                    </span>
-                    <span className="project-history-item-meta">
-                      {item.providerKey} · {item.updatedAt ? RUN_TIME_FORMAT.format(new Date(item.updatedAt)) : "Remote"}
-                    </span>
-                  </button>
-                </div>
-              );
-            })}
-            {activeRemoteChatSessions.length > REMOTE_CHATS_LIMIT && (
-              <button
-                type="button"
-                className="project-history-more"
-                onClick={() => setShowAllRemoteChats((v) => !v)}
-              >
-                {showAllRemoteChats
-                  ? "Show less"
-                  : `Show all (${activeRemoteChatSessions.length - REMOTE_CHATS_LIMIT} more)`}
-              </button>
-            )}
+              )}
+            </button>
           </div>
         )}
         </>)}
@@ -1044,34 +713,29 @@ export function Navigator(): React.ReactElement {
           onClick={() => setConfirmAction(null)}
           role="dialog"
           aria-modal="true"
-          aria-label={confirmAction.type === "delete" ? "Confirm delete" : "Confirm sync"}
+          aria-label="Confirm delete"
         >
           <div className="project-history-confirm-modal" onClick={(e) => e.stopPropagation()}>
             <p className="project-history-confirm-message">
-              {confirmAction.type === "delete"
-                ? `Delete ${confirmAction.runIds.length} chat${confirmAction.runIds.length > 1 ? "s" : ""}? This also removes the provider session file.`
-                : confirmAction.runIds.length === 0
-                  ? "No syncable chats selected (all may already be synced or unavailable)."
-                  : `Sync ${confirmAction.runIds.length} chat${confirmAction.runIds.length > 1 ? "s" : ""} to Drive?`
-              }
+              {`Delete ${confirmAction.runIds.length} chat${confirmAction.runIds.length > 1 ? "s" : ""}? This also removes the provider session file.`}
             </p>
             <div className="project-history-confirm-actions">
               <button type="button" className="project-history-confirm-cancel" onClick={() => setConfirmAction(null)}>
                 Cancel
               </button>
-              {(confirmAction.type === "delete" || confirmAction.runIds.length > 0) && (
-                <button
-                  type="button"
-                  className={`project-history-confirm-ok${confirmAction.type === "delete" ? " project-history-confirm-ok--delete" : ""}`}
-                  onClick={() => void executeConfirm()}
-                >
-                  {confirmAction.type === "delete" ? "Delete" : "Sync"}
-                </button>
-              )}
+              <button
+                type="button"
+                className="project-history-confirm-ok project-history-confirm-ok--delete"
+                onClick={() => void executeConfirm()}
+              >
+                Delete
+              </button>
             </div>
           </div>
         </div>
       )}
+
+      {syncPanelOpen && <RemoteSyncPanel onClose={() => setSyncPanelOpen(false)} />}
     </div>
   );
 }
