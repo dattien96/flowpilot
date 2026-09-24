@@ -150,6 +150,15 @@ export function App(): React.ReactElement {
     });
   }, []);
 
+  // Kick the workspace data pipeline the moment we're authenticated — it runs
+  // in the background while the user sits in Settings, and the chat tab shows
+  // its boot overlay until the data lands. Navigator's own mount call dedupes
+  // via loadProjectsInFlight.
+  useEffect(() => {
+    if (phase !== "authenticated") return;
+    void useStore.getState().loadProjects();
+  }, [phase]);
+
   // On every authenticated boot, run a bind-time engine init for all projects so
   // the change ledger picks up commits made since the last session — without the
   // user having to click "Re-init" or save project settings.

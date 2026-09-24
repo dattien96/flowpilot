@@ -15,6 +15,7 @@ import { OrchestrationBoard } from "@/components/OrchestrationBoard";
 import { FlowAwaitingUserCard } from "@/components/FlowAwaitingUserCard";
 import { DispatchAttentionCard } from "@/components/DispatchAttentionCard";
 import { ChatPosturePanel } from "@/components/ChatPosturePanel";
+import { ChatBootOverlay } from "@/components/ChatBootOverlay";
 import { LSPStatusNotice } from "@/components/LSPStatusNotice";
 import { gateBlockSecondaryAction } from "@/components/gateBlockActions";
 import { GateIcon, WarnIcon } from "@/components/icons";
@@ -502,6 +503,7 @@ export function ChatWorkspace({
   const chatMode = useStore((s) => s.chatMode);
   const chatStartMode = useStore((s) => s.chatStartMode);
   const runStatus = useStore((s) => s.status);
+  const chatBootStatus = useStore((s) => s.chatBoot.status);
 
   const activeChatSubMode = chatStartMode;
   const chatAreaClass =
@@ -629,6 +631,10 @@ export function ChatWorkspace({
           </>
         )}
         <TerminalPanel />
+        {/* Boot gate covers the workspace main column (chat and board alike) —
+            header tabs, sidebars, and the terminal dock stay interactive while
+            workspace data loads. */}
+        {chatBootStatus !== "ready" && <ChatBootOverlay />}
       </main>
 
       <SpectatorPane />
