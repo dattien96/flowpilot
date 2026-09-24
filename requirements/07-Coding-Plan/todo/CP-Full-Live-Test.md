@@ -167,6 +167,32 @@ No new reds → no post-rebase regression. ✅ GATE PASS.
   bug-harness `posture: read_only` nodes ran unrestricted, and tournament
   `max_attempts: 2` degraded to the 1 default. Posture-enforcement and
   retry-cap live rows must be re-verified on the CA-955 build.
+- **run-19067 (post-CA-955, candidates claude+codex)**: full topology
+  verified live — scout DONE → `parallel_rollout` passthrough spawned both
+  candidates in isolated worktrees → `join:all` held → arbiter round-1
+  `retry` → fresh cohort → round-2 tie escalate → human picked
+  `candidate-b` → routed to merge → escalate "no mergeable diff"
+  (codex-mini wrote nothing). claude unavailable → typed fail-closed
+  candidate failure, counted by the barrier (not skipped).
+- **run-20041 (candidates grok+codex via admin model override) → BUG-459
+  (found live)**: grok candidate-a wrote a real green `Mul`+`TestMul`+CA
+  note; codex candidate-b's worktree stayed clean. Arbiter auto-picked
+  **candidate-b** — an untouched baseline out-scored the real fix on the
+  20% blast-radius leg. `merge_and_audit` then reported "merged" while
+  applying nothing: the arbiter's `done` branch never stashed
+  `rs.tournamentPatches` (escalate-only), so merge took the
+  live-worktree path where `Apply` treats an empty diff as a successful
+  empty win. **Fixed (CA-956)**: snapshots stash on every verdict →
+  empty winner patch escalates explicitly (`reason: empty_patch`), winner
+  worktree preserved for the human to pick another candidate's recorded
+  patch. RED test `TestBug459AutoPickedEmptyWinnerPatchEscalates`.
+- **Provider observations**: codex `gpt-5.4-mini` completed candidate
+  turns in <1s/7s with prose-only responses and zero file writes on three
+  consecutive runs — candidate-prompt + template were confirmed injected;
+  this is provider behavior, not a dispatch defect. Grok honored the gate
+  reprompt (added the required CA note on turn 2). Claude remains
+  unconnected; Devin free-tier rate-limited when both candidates inherited
+  the hub model pre-CA-955.
 - **Dispatch durability (CP-51)**: `prepared → send_claimed → send_started →
   terminal_completed` chain with envelope hashes observed on every provider
   turn across run-1/run-94/run-6893/run-14071 records.
@@ -233,10 +259,10 @@ marked `UI` — backend evidence still required where noted.
 
 | ID | Case | Pass criteria | Auto | Status |
 |----|------|---------------|------|--------|
-| A-65-1 | Standalone 2-provider cohort | devin + opencode candidates → isolated worktrees → arbiter → winner merges clean via `ApplyPatch` (never reached arbiter live before) | `tournament_*` suites | ☐ DEFERRED-LIVE (needs 2 providers) |
+| A-65-1 | Standalone 2-provider cohort | devin + opencode candidates → isolated worktrees → arbiter → winner merges clean via `ApplyPatch` (never reached arbiter live before) | `tournament_*` suites | ◑ run-20041: full topology live — grok+codex cohort, both isolated worktrees (`candidate-candidate-a/b` + `.base`), join:all barrier, arbiter scored + auto-picked, merge node dispatched. **BUT winner's diff was empty → BUG-459 found+fixed (CA-956)**: silent no-op "merged" now escalates. A real-patch merge still not observed live |
 | A-65-2 | Cap→auto-escalate | review cap → `tournament_escalation` child runs to completion (resumable, BUG-412); dedup — no `-2/-3` dup children (BUG-413/446) | `bug446_453_*`, cluster-h | ☐ |
-| A-65-3 | Tie → decision card | card `[]any` payload; choice routes: candidate→merge / retry→fresh cohort / ask→park (BUG-414) | `TestTournamentTie*` | ☐ |
-| A-65-4 | Retry ≤2 → parent resume | back-edge bounded; parent resumes after tournament | `TestTournamentEscalation*`, `TestResumeParentAfterTournament` | ☐ DEFERRED-LIVE |
+| A-65-3 | Tie → decision card | card `[]any` payload; choice routes: candidate→merge / retry→fresh cohort / ask→park (BUG-414) | `TestTournamentTie*` | ☑ run-19067: arbiter tie 1.0000 (failed claude worktree clean = baseline 1.0) → escalate card with candidate-a/b/retry/ask options → captured `candidate-b` choice routed to `merge_and_audit` → escalate "no mergeable diff" (codex empty diff, BUG-453 path live) |
+| A-65-4 | Retry ≤2 → parent resume | back-edge bounded; parent resumes after tournament | `TestTournamentEscalation*`, `TestResumeParentAfterTournament` | ◑ run-19067: arbiter round-1 verdict `retry` → `parallel_rollout` back-edge → fresh cohort spawned (bounded by restored `max_attempts:2` — BUG-458 config restore proven) → round-2 escalate. Parent-resume leg still unproven (standalone run, no parent) |
 | A-65-5 | `.flowpilot` exclusion | candidate diff/patch excludes runner metadata dir (manager.go union — verify post-rebase) | worktree tests | ☐ |
 
 ### A-7 CP-41 — RAG harness flow mode

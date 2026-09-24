@@ -198,6 +198,19 @@ func (s *InteractiveService) runTournamentArbiterNode(ctx context.Context, paren
 		s.setFlowStepStatus(ctx, parentRunID, node.ID, StepStatusDone)
 	}
 
+	// Stash the per-candidate patch snapshots for EVERY verdict, not just
+	// escalate: BUG-459 (live run-20041) — an auto-picked winner whose diff is
+	// empty reached merge with an absent patch key, took the live-worktree
+	// path, and reported "merged" on a no-op instead of the BUG-453 explicit
+	// empty-patch escalate. Snapshots are per-round; a retry's next arbiter
+	// verdict overwrites them.
+	if patches, ok := out.Payload["patches"].(map[string]string); ok {
+		s.mu.Lock()
+		if rs := s.runs[parentRunID]; rs != nil {
+			rs.tournamentPatches = patches
+		}
+		s.mu.Unlock()
+	}
 	switch strings.TrimSpace(out.Status) {
 	case "done":
 		// Winner picked — hand it to the merge node via the run record and
@@ -222,17 +235,8 @@ func (s *InteractiveService) runTournamentArbiterNode(ctx context.Context, paren
 	default:
 		// escalate/ask — park with the ranking decision card (BUG-414: the
 		// card's options are the candidate ids plus retry/ask so a captured
-		// choice can route back into merge or a fresh rollout). Stash the
-		// per-candidate patch snapshots: escalate cleans the worktrees, so a
-		// picked candidate merges from its stored patch.
+		// choice can route back into merge or a fresh rollout).
 		card := tournamentDecisionCard(out)
-		if patches, ok := out.Payload["patches"].(map[string]string); ok {
-			s.mu.Lock()
-			if rs := s.runs[parentRunID]; rs != nil {
-				rs.tournamentPatches = patches
-			}
-			s.mu.Unlock()
-		}
 		if s.isFlowEngineDriven(parentRunID) {
 			s.stampLastEscalatedInlineNode(parentRunID, node.ID)
 			s.setFlowStepStatus(ctx, parentRunID, node.ID, StepStatusWaitingUserApr)

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 
+	"flowpilot-runner/internal/agentpack"
 	"flowpilot-runner/internal/tournament"
 )
 
@@ -127,6 +128,101 @@ func TestBug453SnapshotFailureFailsClosed(t *testing.T) {
 		if fi, statErr := os.Stat(tournament.WorktreePath(repo, id)); statErr == nil && fi.IsDir() {
 			t.Fatalf("failed arbiter must clean worktree %q", id)
 		}
+	}
+}
+
+// BUG-459 (live run-20041): the arbiter's auto-pick "done" branch stashed
+// rs.tournamentWinner but never rs.tournamentPatches — only the escalate/ask
+// branch did. A winner picked without a human card therefore reached
+// runTournamentMergeNode with an ABSENT patch key, took the legacy
+// MergeWinner path, and an untouched winner worktree merged as a silent
+// no-op "tournament winner candidate-b merged" — the flow completed having
+// applied nothing (candidate-b's clean baseline out-scored candidate-a's
+// real green fix on blast radius alone). The done branch must stash the
+// patch snapshots exactly like the escalate branch so a recorded-but-empty
+// winner patch hits the BUG-453 explicit escalate.
+func TestBug459AutoPickedEmptyWinnerPatchEscalates(t *testing.T) {
+	repo := tournamentE2EGreenRepo(t)
+	ctx := context.Background()
+	var mgr tournament.WorktreeManager
+	base := tournamentHead(t, repo)
+
+	pathA, err := mgr.Create(repo, base, "candidate-a")
+	if err != nil {
+		t.Fatalf("Create A: %v", err)
+	}
+	if _, err := mgr.Create(repo, base, "candidate-b"); err != nil {
+		t.Fatalf("Create B: %v", err)
+	}
+	t.Cleanup(func() { _ = mgr.Cleanup(repo, []string{"candidate-a", "candidate-b"}) })
+	// candidate-a lands a real green change; candidate-b never writes.
+	if err := os.WriteFile(filepath.Join(pathA, "mul.go"),
+		[]byte("package tournamentmini\n\nfunc Mul(a, b int) int { return a * b }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// candidate-a pays a blast-radius penalty for touching depended-on code;
+	// the untouched worktree still out-scores it 1.00 vs 0.86 — an auto-pick
+	// on an empty diff, exactly the live shape.
+	oldLSP, oldDeps := TournamentLSPProbe, TournamentDependentsProbe
+	TournamentLSPProbe = func(context.Context, string, []string) int { return 0 }
+	TournamentDependentsProbe = func(_ context.Context, dir string, _ []string) int {
+		if strings.Contains(dir, "candidate-a") {
+			return 5
+		}
+		return 0
+	}
+	t.Cleanup(func() { TournamentLSPProbe, TournamentDependentsProbe = oldLSP, oldDeps })
+
+	svc, _ := newTestServerWith(t, DefaultProviderRegistry(), newInteractiveCatalog(), newFakeWorkflowStore())
+	parent, aerr := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if aerr != nil {
+		t.Fatalf("parent: %v", aerr)
+	}
+	childA, aerr := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if aerr != nil {
+		t.Fatalf("childA: %v", aerr)
+	}
+	childB, aerr := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if aerr != nil {
+		t.Fatalf("childB: %v", aerr)
+	}
+
+	nodes := []agentpack.FlowNode{
+		{ID: "candidate-a", Cohort: "tournament"},
+		{ID: "candidate-b", Cohort: "tournament"},
+		{ID: "tournament_arbiter", Run: "inline", Behavior: "tournament.arbiter", Join: "all"},
+		{ID: "merge_and_audit", Run: "inline", Behavior: "tournament.merge"},
+	}
+	edges := []agentpack.FlowEdge{
+		{From: "candidate-a", To: "tournament_arbiter", When: "done", Kind: "forward"},
+		{From: "candidate-b", To: "tournament_arbiter", When: "done", Kind: "forward"},
+		{From: "tournament_arbiter", To: "merge_and_audit", When: "done", Kind: "forward"},
+	}
+	svc.mu.Lock()
+	prs := svc.runs[parent.RunID]
+	prs.flowEngineDriven = true
+	prs.workspaceCwd = repo
+	prs.flowStartGitHead = base
+	prs.activeFlowNodes = nodes
+	for _, pair := range [][2]string{{childA.RunID, "candidate-a"}, {childB.RunID, "candidate-b"}} {
+		crs := svc.runs[pair[0]]
+		crs.parentRunID = parent.RunID
+		crs.label = pair[1]
+		crs.status = RunStatusCompleted
+	}
+	svc.mu.Unlock()
+
+	svc.runTournamentArbiterNode(ctx, parent.RunID, edges, nodes, nodes[2], "")
+
+	svc.mu.Lock()
+	prs = svc.runs[parent.RunID]
+	_, recorded := prs.tournamentPatches["candidate-b"]
+	svc.mu.Unlock()
+	if !recorded {
+		t.Fatal("arbiter done branch must stash patch snapshots — an auto-picked empty winner currently merges as a silent no-op")
+	}
+	if st := svc.agentOrchestrator.loopStateFor(parent.RunID); st.Status == "done" {
+		t.Fatal("merge on an empty winner patch must escalate, not settle the flow done")
 	}
 }
 
