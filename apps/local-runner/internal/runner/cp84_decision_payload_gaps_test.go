@@ -287,3 +287,41 @@ func TestRunUpdates_ReconnectSnapshotReconcilesMissedTerminalRemove(t *testing.T
 		}
 	}
 }
+
+// TestRunUpdates_TerminalLaneRemovedOnceNoResurrection: live-found flicker —
+// on a real devin turn the wire showed upsert(running) -> remove -> upsert
+// (running, lastSummary=DONE) inside one second while the run settled. A lane
+// that has been tombstoned must not resurrect on a later dirty mark while the
+// run is still terminal: the remove is the lane's last word until the run
+// genuinely becomes non-terminal again.
+func TestRunUpdates_TerminalLaneRemovedOnceNoResurrection(t *testing.T) {
+	svc := NewInteractiveService()
+	rs := mkDecisionRun(svc, "run-430-flicker", "proj-1")
+
+	subID, _, snap := svc.subscribeRunUpdates()
+	defer svc.unsubscribeRunUpdates(subID)
+	if len(snap) != 1 {
+		t.Fatalf("snapshot lanes = %d, want 1", len(snap))
+	}
+
+	// Settle terminal -> remove tombstone.
+	svc.mu.Lock()
+	rs.status = RunStatusCompleted
+	rs.lastMessage = "DONE"
+	svc.markRunRealtimeDirtyLocked(rs.id)
+	svc.mu.Unlock()
+	frames := svc.drainRunUpdates(subID)
+	if len(frames) != 1 || frames[0].Kind != RunRealtimeRemove || frames[0].RunID != rs.id {
+		t.Fatalf("settle drain = %+v, want a single remove", frames)
+	}
+
+	// A second dirty mark while STILL terminal must emit nothing — the live
+	// flicker came from a completed lane briefly reading non-terminal then
+	// flapping back; while terminal, no upsert may follow the remove.
+	svc.mu.Lock()
+	svc.markRunRealtimeDirtyLocked(rs.id)
+	svc.mu.Unlock()
+	if frames := svc.drainRunUpdates(subID); len(frames) != 0 {
+		t.Fatalf("terminal lane emitted %+v after its remove — must stay silent", frames)
+	}
+}
