@@ -708,3 +708,57 @@ test("user_decision_card_requested pushes a decision_card timeline item", () => 
   assert.equal(card.card.recommended, "opt_jwt");
   assert.equal(next.status, "waiting_question");
 });
+
+// Task-439: provider_status — the Devin ACP cold-start (spawn + PKCE auth)
+// sits silent for tens of seconds; these events turn that window into a
+// visible progress row that resolves in place instead of stacking rows.
+test("provider_status connecting pushes an info system row", () => {
+  const state = thinkingState([{ kind: "prompt", id: "prompt-1", text: "hi" }]);
+  const next = applyTimelineEvent(state, baseEvent({
+    id: "evt-ps-1",
+    type: "provider_status",
+    status: "connecting",
+    text: "Devin is starting — first run may open a browser sign-in.",
+  }));
+  const row = next.timeline?.find((it) => it.kind === "system" && it.id === "provider-status-run-1");
+  assert.ok(row && row.kind === "system");
+  assert.equal(row.tone, "info");
+  assert.match(row.text, /Devin is starting/);
+  // No dangling "Thinking..." — the status row is itself the progress signal.
+  assert.ok(!next.timeline?.some((it) => it.kind === "thinking"));
+});
+
+test("provider_status ready updates the connecting row in place", () => {
+  let s = thinkingState([]);
+  s = { ...s, ...applyTimelineEvent(s, baseEvent({
+    id: "evt-ps-1", type: "provider_status", status: "connecting", text: "Devin is starting",
+  })) } as TimelineState;
+  const next = applyTimelineEvent(s, baseEvent({
+    id: "evt-ps-2", type: "provider_status", status: "ready", text: "Devin agent ready.",
+  }));
+  const rows = next.timeline?.filter((it) => it.kind === "system" && it.id === "provider-status-run-1") ?? [];
+  assert.equal(rows.length, 1, "ready must resolve the same row, not stack a second");
+  assert.equal(rows[0].kind === "system" ? rows[0].text : "", "Devin agent ready.");
+});
+
+test("provider_status failed renders the row as an error", () => {
+  let s = thinkingState([]);
+  s = { ...s, ...applyTimelineEvent(s, baseEvent({
+    id: "evt-ps-1", type: "provider_status", status: "connecting", text: "Devin is starting",
+  })) } as TimelineState;
+  const next = applyTimelineEvent(s, baseEvent({
+    id: "evt-ps-2", type: "provider_status", status: "failed", text: "Devin failed to start: timeout",
+  }));
+  const row = next.timeline?.find((it) => it.kind === "system" && it.id === "provider-status-run-1");
+  assert.ok(row && row.kind === "system");
+  assert.equal(row.tone, "error");
+  assert.match(row.text, /failed to start/);
+});
+
+test("provider_status does not flip run status", () => {
+  const state = thinkingState([]);
+  const next = applyTimelineEvent(state, baseEvent({
+    type: "provider_status", status: "connecting", text: "x",
+  }));
+  assert.equal(next.status, "running");
+});

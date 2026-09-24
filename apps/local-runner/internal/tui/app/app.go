@@ -2168,6 +2168,18 @@ func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 			return m, m.cmdRefreshStepsRuntime()
 		}
 
+	case "provider_status":
+		// Task-439: provider cold-start lifecycle (Devin ACP spawn+PKCE can sit
+		// silent for tens of seconds). Surface it on the statusline — and on
+		// failure as a transcript line — instead of a frozen-looking wait.
+		if ev.Text != "" {
+			m.statusMsg = ev.Text
+		}
+		if ev.Status == "failed" {
+			m.connStatus = ConnError
+			m.addMessage("system", ev.Text, "error")
+		}
+
 	case "tool_started":
 		if ev.ToolName != "" {
 			m.addMessage("tool", fmt.Sprintf("→ %s", ev.ToolName), "tool")

@@ -498,6 +498,24 @@ export function applyTimelineEvent(s: TimelineState, e: ProviderEventDTO): Parti
       shouldKeepThinking = thinkingItem !== undefined;
       break;
 
+    case "provider_status": {
+      // Task-439: one row per run for the provider cold-start lifecycle —
+      // "connecting" pushes it, "ready"/"failed" resolve it in place so the
+      // timeline shows progress instead of stacking a row per stage. The row
+      // is keyed off workflowRunId (the event carries no providerTurnId — it
+      // precedes turn_started).
+      const rowId = `provider-status-${e.workflowRunId}`;
+      const tone = e.status === "failed" ? "error" : "info";
+      const idx = timeline.findIndex((it) => it.kind === "system" && it.id === rowId);
+      if (idx >= 0) {
+        timeline[idx] = { kind: "system", id: rowId, text: e.text ?? "", tone };
+      } else if (!wasEvicted(rowId)) {
+        timeline.push({ kind: "system", id: rowId, text: e.text ?? "", tone });
+      }
+      shouldKeepThinking = thinkingItem !== undefined;
+      break;
+    }
+
     case "flow_audit_draft":
       // BUG-243 F-3: the first UI surface for a produced audit draft (Task-171's
       // "inspectable before any write/commit" acceptance criterion — this

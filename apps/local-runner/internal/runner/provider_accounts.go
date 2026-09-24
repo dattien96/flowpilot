@@ -138,6 +138,12 @@ func (r *Runner) VerifyProviderAccount(accountID string) (ProviderAccount, bool,
 		return ProviderAccount{}, false, err
 	}
 
+	// Task-439: a devin account that just verified pays the ACP PKCE/initialize
+	// handshake now, in the background — the first chat turn after login must
+	// not stall on cold auth. Warm THIS account (it may not be active yet).
+	if verified {
+		r.warmDevinAccountAsync(account, "login")
+	}
 	return account, verified, nil
 }
 
@@ -172,6 +178,12 @@ func (r *Runner) ActivateProviderAccount(accountID string) (ProviderAccount, err
 		return ProviderAccount{}, err
 	}
 
+	// Task-439: switching the active devin account warms the NEW account's ACP
+	// process — the scope switch inside ensureDevinProcess reclaims the old
+	// account's process, so the first turn on the new account stays warm.
+	if account.ProviderKey == string(ProviderKeyDevin) {
+		r.warmDevinAccountAsync(account, "account-switch")
+	}
 	return account, nil
 }
 

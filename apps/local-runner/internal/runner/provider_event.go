@@ -71,6 +71,11 @@ const (
 	EventFlowValidationRetry ProviderEventType = "flow_validation_retry"
 	// Emitted when the Audit step prepares its draft (Task-171).
 	EventFlowAuditDraft ProviderEventType = "flow_audit_draft"
+	// Emitted around a provider's cold-start lifecycle (Task-439): the Devin
+	// ACP spawn+PKCE handshake can sit silent for tens of seconds — this
+	// event carries Status ("connecting"|"ready"|"failed") + Text so the
+	// desktop renders progress instead of a frozen-looking wait.
+	EventProviderStatus ProviderEventType = "provider_status"
 )
 
 // ApprovalDecisionOption is one decision the runtime offers for an approval.

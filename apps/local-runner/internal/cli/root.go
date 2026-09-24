@@ -156,6 +156,10 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 				go interactive.ScanDispatchRecoveryOnBoot(ctx)
 			}
 			interactive.AttachRunner(instance)
+			// Task-439: warm the Devin ACP process at boot whenever a connected
+			// account exists — regardless of the currently-selected provider —
+			// so the first chat turn never pays spawn+PKCE cold-start latency.
+			instance.WarmDevinProcessAsync("boot")
 
 			// CP-81 (SS-24/SD-28): attach the shared lifecycle authority. The
 			// manager owns leases/phases; on a draining transition it hands off

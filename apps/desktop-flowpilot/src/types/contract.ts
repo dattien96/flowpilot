@@ -699,6 +699,15 @@ export type ProviderEventDTO =
        *  happened — this is strictly an inspectable draft. */
       type: "flow_audit_draft";
       flowAuditDraft: FlowAuditDraftDTO;
+    })
+  | (ProviderEventBaseDTO & {
+      /** Task-439: provider cold-start lifecycle. The Devin ACP spawn+PKCE
+       *  handshake can sit silent for tens of seconds — the runner emits this
+       *  around AdapterWithScope so the timeline shows progress instead of a
+       *  frozen-looking wait. */
+      type: "provider_status";
+      status: "connecting" | "ready" | "failed";
+      text?: string;
     });
 
 /** Mirrors the Go FlowAuditDraft struct (flow_audit_draft.go) field-for-field. */

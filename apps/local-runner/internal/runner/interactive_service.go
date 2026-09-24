@@ -9010,7 +9010,36 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 	// per-turn session/new (fresh MCP token) cannot reset a concurrent parent
 	// turn's MCP connection (opencode keys MCP clients by server NAME per
 	// process — the F-section spawn_agent "Connection closed" failure).
+	//
+	// Task-439: a Devin cold start runs spawn + initialize + PKCE authenticate
+	// synchronously inside AdapterWithScope — tens of seconds of silence that
+	// read as a hang. When no live same-scope process exists, publish a
+	// provider_status row first so subscribers see "connecting" while the
+	// handshake runs, then ready/failed once it resolves.
+	devinCold := rs.providerKey == ProviderKeyDevin && (s.runner == nil || !s.runner.devinChatProcessWarm())
+	if devinCold {
+		s.emitLocked(rs, ProviderEvent{
+			Type:   EventProviderStatus,
+			Status: "connecting",
+			Text:   "Devin is starting — first run may open a browser sign-in.",
+		})
+	}
 	adapter, aerr := s.registry.AdapterWithScope(rs.providerKey, turnModel, turnEffort, opencodeChildScopeHint(rs))
+	if devinCold {
+		if aerr != nil {
+			s.emitLocked(rs, ProviderEvent{
+				Type:   EventProviderStatus,
+				Status: "failed",
+				Text:   "Devin failed to start: " + aerr.Error(),
+			})
+		} else {
+			s.emitLocked(rs, ProviderEvent{
+				Type:   EventProviderStatus,
+				Status: "ready",
+				Text:   "Devin agent ready.",
+			})
+		}
+	}
 	if aerr != nil {
 		s.mu.Unlock()
 		return "", newAPIErr(http.StatusBadRequest, "provider_unavailable", aerr.Error())
