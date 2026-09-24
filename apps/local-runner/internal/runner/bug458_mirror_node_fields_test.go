@@ -128,6 +128,38 @@ func TestRecordFromWorkflowRowBuiltinMirrorRestoresArbiterConfig(t *testing.T) {
 	}
 }
 
+// TestRecordFromWorkflowRowBuiltinMirrorRestoresContextProfiles covers the
+// flow-level `contextProfiles` map — it has no workflows/step_definitions
+// column either, so mirrored vibe-sprint rows reconstructed with an empty map
+// while BUG-458's node-level restore re-attached `contextProfile: scout` to
+// preflight_contract_plan. ValidateFlowContextSources then failed the flow
+// load ("node ... declares unknown context profile \"scout\"") and the vibe
+// sprint could not start (live run-34947). For builtin mirrors the embedded
+// pack is again the authoritative source — restore the whole map so node
+// profile refs resolve.
+func TestRecordFromWorkflowRowBuiltinMirrorRestoresContextProfiles(t *testing.T) {
+	packID, packFlowID := "flowpilot-core-flow-pack", "vibe-sprint"
+	planID, planBehavior, planLifecycle := "preflight_contract_plan", "agent.delegate", "once"
+	row := dbWorkflowRow{
+		ID: "wf-vibe-sprint", Name: "Vibe Sprint",
+		IsBuiltin: true, PackID: &packID, PackFlowID: &packFlowID,
+		WorkflowSteps: []dbWorkflowStepRow{
+			{StepType: "x_plan", OrderIndex: 0, StepDefinition: dbStepDefinitionRow{
+				StepType: "x_plan", NodeID: &planID, BehaviorID: &planBehavior, NodeLifecycle: &planLifecycle}},
+		},
+	}
+	rec := recordFromWorkflowRow(row)
+	if len(rec.Definition.ContextProfiles) == 0 {
+		t.Fatalf("ContextProfiles empty on builtin mirror — pack-declared profiles must be restored (node contextProfile refs fail validation otherwise)")
+	}
+	if _, ok := rec.Definition.ContextProfiles["scout"]; !ok {
+		t.Fatalf("ContextProfiles missing \"scout\" — got keys %#v", rec.Definition.ContextProfiles)
+	}
+	if err := ValidateFlowContextSources(rec.Definition); err != nil {
+		t.Fatalf("ValidateFlowContextSources = %v, want nil after ContextProfiles restore", err)
+	}
+}
+
 // TestRecordFromWorkflowRowDerivesRunForUserRows covers non-builtin rows
 // (cloned/user-authored flows): no embedded counterpart exists, so `run`
 // must be derived from the node's behavior — agent.* spawns a child

@@ -303,6 +303,20 @@ func recordFromWorkflowRow(row dbWorkflowRow) FlowDefinitionRecord {
 	// those fields were synced FROM (nothing admin-editable exists in the
 	// schema to override them), so restore them from the pack definition.
 	if row.IsBuiltin && row.PackID != nil && row.PackFlowID != nil {
+		if embeddedDef := embeddedFlowDefinition(*row.PackID, *row.PackFlowID); embeddedDef != nil {
+			// Flow-level `contextProfiles` (CP-62 P-5) has no workflows column
+			// either — without it the node-level ContextProfile restore above
+			// re-attaches refs (e.g. vibe-sprint's preflight_contract_plan
+			// contextProfile: scout) that ValidateFlowContextSources then
+			// rejects as unknown, failing the whole flow load (live
+			// run-34947). Restore the map from the same embedded source.
+			if len(def.ContextProfiles) == 0 && len(embeddedDef.ContextProfiles) > 0 {
+				def.ContextProfiles = embeddedDef.ContextProfiles
+			}
+			if len(def.Tools) == 0 && len(embeddedDef.Tools) > 0 {
+				def.Tools = embeddedDef.Tools
+			}
+		}
 		if embedded := embeddedFlowNodesByID(*row.PackID, *row.PackFlowID); embedded != nil {
 			for i := range def.Nodes {
 				src, ok := embedded[def.Nodes[i].ID]
@@ -355,27 +369,38 @@ func recordFromWorkflowRow(row dbWorkflowRow) FlowDefinitionRecord {
 	return rec
 }
 
+// embeddedFlowDefinition returns the embedded pack's FlowDefinition for
+// packID/flowID, or nil when the flow is not a built-in pack flow (or the
+// embedded pack fails to load). Flow-level fields the workflows schema cannot
+// store (contextProfiles, tools) are restored from it (BUG-458 follow-up).
+func embeddedFlowDefinition(packID, flowID string) *agentpack.FlowDefinition {
+	pack, err := agentpack.LoadBuiltinPack()
+	if err != nil || pack.Manifest.ID != packID {
+		return nil
+	}
+	for i := range pack.Flows {
+		if pack.Flows[i].ID == flowID {
+			return &pack.Flows[i]
+		}
+	}
+	return nil
+}
+
 // embeddedFlowNodesByID returns the embedded pack's node set for
 // packID/flowID keyed by node id, or nil when the flow is not a built-in
 // pack flow (or the embedded pack fails to load). Used by
 // recordFromWorkflowRow to restore pack-declared node fields the
 // step_definitions schema cannot store (BUG-458).
 func embeddedFlowNodesByID(packID, flowID string) map[string]agentpack.FlowNode {
-	pack, err := agentpack.LoadBuiltinPack()
-	if err != nil || pack.Manifest.ID != packID {
+	def := embeddedFlowDefinition(packID, flowID)
+	if def == nil {
 		return nil
 	}
-	for _, def := range pack.Flows {
-		if def.ID != flowID {
-			continue
-		}
-		nodes := make(map[string]agentpack.FlowNode, len(def.Nodes))
-		for _, n := range def.Nodes {
-			nodes[n.ID] = n
-		}
-		return nodes
+	nodes := make(map[string]agentpack.FlowNode, len(def.Nodes))
+	for _, n := range def.Nodes {
+		nodes[n.ID] = n
 	}
-	return nil
+	return nodes
 }
 
 func (s *SupabaseWorkflowFlowStore) fetchOne(ctx context.Context, query string) (FlowDefinitionRecord, bool, error) {
