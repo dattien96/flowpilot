@@ -493,6 +493,16 @@ func (r *Runner) ensureDevinProcessSegmented(ctx context.Context, scopeBase, sco
 	dispatcher := newDevinDispatcher(stdin, nil)
 	dispatcher.start(stdout)
 
+	// Process exit is the authoritative liveness signal: devin spawns MCP
+	// children that inherit the stdout pipe, so on Windows the pipe can stay
+	// open for minutes after the ACP parent dies — EOF alone leaves a zombie
+	// handle reporting "warm" (live-verified: ~142s lag). Wait() also closes
+	// the parent-side pipes, unblocking the read loop.
+	go func() {
+		_ = cmd.Wait()
+		dispatcher.fail(fmt.Errorf("devin acp process exited"))
+	}()
+
 	initCtx, cancel := context.WithTimeout(ctx, devinInitTimeout)
 	initResult, err := dispatcher.call(initCtx, "initialize", devinACPInitializeParams())
 	cancel()
