@@ -354,7 +354,12 @@ func worktreeDecisionPayload(rs *interactiveRun) (DecisionPayload, bool) {
 			} else if v, ok := m["conflictPaths"].([]string); ok {
 				conflicts = v
 			}
-			if v, ok := m["patch_ref"].(string); ok {
+			// The merge-requested emitter writes `patchArtifactRef`
+			// (run_worktree_merge.go); keep the snake/short spellings so
+			// durable events written by any older build still project.
+			if v, ok := m["patchArtifactRef"].(string); ok {
+				patchRef = v
+			} else if v, ok := m["patch_ref"].(string); ok {
 				patchRef = v
 			} else if v, ok := m["patchRef"].(string); ok {
 				patchRef = v
