@@ -110,7 +110,10 @@ func (l *gitnexusProcessLister) ListModelCandidates(ctx context.Context) ([]stru
 // auto-indexer guarantees.
 func (s *InteractiveService) ensureKnowledgeBaseForWorkspace(workspace string) {
 	workspace = strings.TrimSpace(workspace)
-	if workspace == "" {
+	if workspace == "" || isRunnerManagedWorktreePath(workspace) {
+		// Runner-managed worktrees are ephemeral scratch — never distill into
+		// them (same BUG-460 pollution vector as the auto-indexer: writes land
+		// in the candidate's captured diff).
 		return
 	}
 	ensureKnowledgeBaseAsync(workspace, func(ctx context.Context) error {
