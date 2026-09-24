@@ -40,6 +40,11 @@ type opencodeAdapter struct {
 	mcpBaseURL      func() string
 	extraMCPServers func(yolo bool) map[string]claudeMcpServer
 
+	// mcpReadyTimeout bounds how long SendTurn withholds the prompt waiting for
+	// the MCP client to connect (tools/list). 0 => claudeMCPReadyDefaultTimeout.
+	// Tests set a small value because the scripted fake process never connects.
+	mcpReadyTimeout time.Duration
+
 	mu                 sync.Mutex
 	bridges            map[string]TurnBridge
 	lastSessionID      string
@@ -291,7 +296,7 @@ func (a *opencodeAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge 
 	a.applyOpencodeSessionConfig(ctx, sessionID, req.ModelName, req.ReasoningEffort)
 
 	if mcpToken != "" {
-		_ = a.mcpServer.waitReady(ctx, mcpToken, claudeMCPReadyDefaultTimeout)
+		_ = a.mcpServer.waitReady(ctx, mcpToken, a.mcpReadyTimeout)
 	}
 
 	notif, err := a.dispatcher.registerSession(sessionID)
