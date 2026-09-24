@@ -1459,10 +1459,12 @@ func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID
 				continue
 			}
 			rec, frozenOK, _ := store.GetFrozenForStep(parentRunID, node.ID)
-			// BUG-462: scaffold-pinned LockedSignatures on this step's frozen
-			// contract are durable TDD evidence — the filesystem glob alone
-			// cannot see full-body test files the scaffold adopted/locked.
-			hasTddEvidence := hasVibeTddOutput(cwd) || (frozenOK && len(rec.LockedSignatures) > 0)
+			// BUG-462: post-freeze lock evidence on this step's frozen contract
+			// (LockedSignatures or ReadOnlyPaths) is durable TDD evidence — the
+			// filesystem glob alone cannot see full-body test files the scaffold
+			// adopted/locked, and BUG-463 can leave sigs empty while paths lock.
+			hasTddEvidence := hasVibeTddOutput(cwd) ||
+				(frozenOK && (len(rec.LockedSignatures) > 0 || len(rec.ReadOnlyPaths) > 0))
 			if vibeCoderSpawnBlocked(mode, node.ID, hasTddEvidence) {
 				s.flowDiagLog(parentRunID, "vibe_tdd_missing", "coder refused; tdd artifact missing",
 					"completed_node_id", completedNodeID,

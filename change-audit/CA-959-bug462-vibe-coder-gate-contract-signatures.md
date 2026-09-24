@@ -36,6 +36,9 @@ of adopted full-body tests rather than `tdd-signatures.md`.
 - `TestBUG462_AdvanceTddToCoderUsesContractSignatures` — forward advance.
 - `TestBUG462_ResumeCoderUsesContractSignatures` — restart/resume path.
 - `TestBUG462_FrozenContractWithoutSignaturesStillParks` — guard rail.
+- `TestBUG462_ReadOnlyLockWithoutSignaturesSatisfiesGate` — extended in
+  CA-960: `ReadOnlyPaths` on the coder contract (post-freeze lock with no
+  signatures, the exact sprint-2 live shape after BUG-463) also counts.
 
 ## Provider parity
 

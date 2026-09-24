@@ -109,6 +109,43 @@ func TestBUG462_ResumeCoderUsesContractSignatures(t *testing.T) {
 	}
 }
 
+// Live sprint-2 shape (run-37268): the scaffold gate locked test files
+// read-only but pinned EMPTY signatures (BUG-463's absolute-path read
+// failure). The ReadOnlyPaths on the coder contract are still the runner's
+// own post-freeze attestation — the gate must accept them.
+func TestBUG462_ReadOnlyLockWithoutSignaturesSatisfiesGate(t *testing.T) {
+	dir, head := newContractFreezeTestRepo(t)
+	svc := newFreezeTestService(t)
+	edges, nodes := vibeSprintWriterChain()
+	runID := newFreezeTestRun(t, svc, dir, edges, nodes, head)
+	svc.mu.Lock()
+	rs := svc.runs[runID]
+	rs.workingMode = workingmode.Vibe
+	rs.vibeCheckpointNode = "tdd"
+	svc.mu.Unlock()
+
+	freezeNode, _ := findFlowNode(nodes, "preflight_contract_freeze")
+	if !svc.runContractFreezeNode(context.Background(), runID, edges, nodes, freezeNode, validPlannerDraft) {
+		t.Fatal("expected freeze to be handled")
+	}
+	if _, err := changecontract.LockReproduceTestPaths(dir, runID, "coder",
+		[]string{"snake/model_test.go"}, time.Now()); err != nil {
+		t.Fatalf("LockReproduceTestPaths: %v", err)
+	}
+	if hasVibeTddOutput(dir) {
+		t.Fatal("fixture invalid: no filesystem artifact must exist")
+	}
+
+	svc.maybeResumeVibeCoderAfterTdd(runID)
+	waitLoop(t, "coder spawned via read-only lock evidence", 3*time.Second, func() bool {
+		return countChildrenWithLabel(svc, runID, "coder") == 1
+	})
+	loop := svc.agentOrchestrator.loopStateFor(runID)
+	if strings.Contains(loop.GateReason, "tdd artifact missing") {
+		t.Fatalf("read-only lock on the contract must satisfy the tdd gate: %+v", loop)
+	}
+}
+
 // Guard rail: a frozen contract WITHOUT locked signatures (preflight freeze
 // only, tdd never ran) must still park — the contract check must not weaken
 // the fail-closed gate.

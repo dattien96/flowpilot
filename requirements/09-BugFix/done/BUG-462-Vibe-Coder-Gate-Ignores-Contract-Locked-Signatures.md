@@ -48,7 +48,10 @@ decision fired.
 
 `vibe_sprint.go`: new `vibeTddEvidencePresent(parentRunID, coderStepID,
 cwd)` — FS artifact OR active frozen contract for the coder step carrying
-non-empty `LockedSignatures`. Applied at all three gate call sites:
+post-freeze lock evidence: non-empty `LockedSignatures` OR `ReadOnlyPaths`
+(CA-960 extension — sprint-2 live showed a scaffold lock that pinned empty
+signatures after BUG-463; the read-only lock rows still attest TDD ran).
+Applied at all three gate call sites:
 
 - `flow_executor.go` auto-advance (tdd→coder): store opened before the
   evidence check so the same `GetFrozenForStep` result feeds both the

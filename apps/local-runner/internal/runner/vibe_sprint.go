@@ -96,7 +96,15 @@ func (s *InteractiveService) vibeTddEvidencePresent(parentRunID, coderStepID, cw
 		return false
 	}
 	rec, ok, _ := store.GetFrozenForStep(parentRunID, coderStepID)
-	return ok && len(rec.LockedSignatures) > 0
+	if !ok {
+		return false
+	}
+	// LockedSignatures pin proves the scaffold gate passed; ReadOnlyPaths on the
+	// coder record likewise only land via a post-freeze test lock (scaffold or
+	// reproduce gate) — either is the runner's own durable attestation that TDD
+	// produced an artifact. A bare v1 freeze carries neither and still fails
+	// closed. (BUG-463 could leave sigs empty while read-only paths did lock.)
+	return len(rec.LockedSignatures) > 0 || len(rec.ReadOnlyPaths) > 0
 }
 
 func vibeStripComments(s string) string {

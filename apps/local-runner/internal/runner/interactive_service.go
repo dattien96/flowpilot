@@ -9300,7 +9300,7 @@ func (s *InteractiveService) finalizeInputLocked(rs *interactiveRun, turnID stri
 			}
 		case EventFileChanged:
 			if e.Path != "" {
-				in.ChangedFiles = append(in.ChangedFiles, e.Path)
+				in.ChangedFiles = append(in.ChangedFiles, workspaceRelPath(rs.workspaceCwd, e.Path))
 			}
 		}
 	}
