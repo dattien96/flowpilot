@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"flowpilot-runner/internal/agentpack"
+	"flowpilot-runner/internal/changecontract"
 	"flowpilot-runner/internal/workingmode"
 )
 
@@ -74,6 +75,28 @@ func hasVibeTddOutput(cwd string) bool {
 		return true
 	}
 	return len(collectVibeSignatureTestRels(cwd)) > 0
+}
+
+// vibeTddEvidencePresent is the fail-closed TDD-evidence check (BUG-462): the
+// filesystem artifact OR a frozen contract that already carries scaffold-
+// pinned LockedSignatures for the coder step. The signature lock only lands
+// after the scaffold gate passed for THIS run's contract, so it is strictly
+// stronger evidence than a path glob and cannot be satisfied by stale
+// full-body test files (CA-769 stays intact). A pre-tdd freeze (v1, no
+// signatures) still fails the check.
+func (s *InteractiveService) vibeTddEvidencePresent(parentRunID, coderStepID, cwd string) bool {
+	if hasVibeTddOutput(cwd) {
+		return true
+	}
+	if strings.TrimSpace(parentRunID) == "" || strings.TrimSpace(cwd) == "" {
+		return false
+	}
+	store, err := changecontract.NewFrozenStore(cwd)
+	if err != nil {
+		return false
+	}
+	rec, ok, _ := store.GetFrozenForStep(parentRunID, coderStepID)
+	return ok && len(rec.LockedSignatures) > 0
 }
 
 func vibeStripComments(s string) string {
@@ -513,7 +536,7 @@ func (s *InteractiveService) resumeVibeAfterTddGate(parentRunID string) {
 	}
 	s.mu.Unlock()
 	tddDone := checkpoint == "tdd" || s.vibeTddStepDone(parentRunID)
-	if hasVibeTddOutput(cwd) && tddDone {
+	if s.vibeTddEvidencePresent(parentRunID, "coder", cwd) && tddDone {
 		s.maybeResumeVibeCoderAfterTdd(parentRunID)
 		return
 	}
@@ -552,7 +575,7 @@ func (s *InteractiveService) maybeResumeVibeCoderAfterTdd(parentRunID string) {
 		return
 	}
 	tddDone := checkpoint == "tdd" || s.vibeTddStepDone(parentRunID)
-	if !hasVibeTddOutput(cwd) {
+	if !s.vibeTddEvidencePresent(parentRunID, "coder", cwd) {
 		if tddDone {
 			s.parkVibeRequirement(parentRunID, "tdd artifact missing before coder (no bypass)")
 		}

@@ -1450,14 +1450,6 @@ func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID
 				mode = p.workingMode
 			}
 			s.mu.Unlock()
-			if vibeCoderSpawnBlocked(mode, node.ID, hasVibeTddOutput(cwd)) {
-				s.flowDiagLog(parentRunID, "vibe_tdd_missing", "coder refused; tdd artifact missing",
-					"completed_node_id", completedNodeID,
-					"target_node_id", node.ID,
-				)
-				s.parkVibeRequirement(parentRunID, "tdd artifact missing before coder (no bypass)")
-				continue
-			}
 			store, storeErr := changecontract.NewFrozenStore(cwd)
 			if storeErr != nil {
 				s.flowDiagLog(parentRunID, "flow_advance_writer_store_failed", "cannot open frozen contract store for writer spawn",
@@ -1467,6 +1459,18 @@ func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID
 				continue
 			}
 			rec, frozenOK, _ := store.GetFrozenForStep(parentRunID, node.ID)
+			// BUG-462: scaffold-pinned LockedSignatures on this step's frozen
+			// contract are durable TDD evidence — the filesystem glob alone
+			// cannot see full-body test files the scaffold adopted/locked.
+			hasTddEvidence := hasVibeTddOutput(cwd) || (frozenOK && len(rec.LockedSignatures) > 0)
+			if vibeCoderSpawnBlocked(mode, node.ID, hasTddEvidence) {
+				s.flowDiagLog(parentRunID, "vibe_tdd_missing", "coder refused; tdd artifact missing",
+					"completed_node_id", completedNodeID,
+					"target_node_id", node.ID,
+				)
+				s.parkVibeRequirement(parentRunID, "tdd artifact missing before coder (no bypass)")
+				continue
+			}
 			if !frozenOK {
 				s.flowDiagLog(parentRunID, "flow_advance_writer_no_contract", "agent.code target has no frozen contract; blocking spawn",
 					"target_node_id", node.ID,
