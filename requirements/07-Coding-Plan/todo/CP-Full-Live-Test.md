@@ -186,8 +186,49 @@ No new reds → no post-rebase regression. ✅ GATE PASS.
   empty winner patch escalates explicitly (`reason: empty_patch`), winner
   worktree preserved for the human to pick another candidate's recorded
   patch. RED test `TestBug459AutoPickedEmptyWinnerPatchEscalates`.
+- **run-21364 (post-CA-956) → BUG-460 (found live)**: grok candidate-a
+  escalated on Change-Contract reprompt cap (continued via feedback, then
+  completed with a real patch); codex candidate-b no-op'd again — but its
+  "empty" worktree carried `AGENTS.md`/`CLAUDE.md` GitNexus header stamps
+  (`indexed as candidate-candidate-b`) written by `ensureGitNexusIndexAsync`
+  + knowledge bootstrap running *inside the managed worktree*. The noise
+  diff won the tie-break, merged into main, and rewrote main's index
+  headers. **Fixed (CA-957)**: `isRunnerManagedWorktreePath` guard skips
+  auto-index + knowledge distillation on `.flowpilot/worktrees/` paths;
+  normal workspaces unaffected. RED test
+  `TestBug460AutoIndexSkipsManagedWorktree` (proven red: guard removed →
+  auto-index fired on the worktree path).
+- **run-23455 (post-CA-957, candidates grok+codex)**: BUG-459 escalate path
+  verified live — arbiter auto-picked candidate-b (empty diff again) →
+  `merge_and_audit` parked `WAITING_USER_APPROVAL` with
+  `flow_control_escalate: "tournament winner candidate-b produced no
+  mergeable diff"` instead of the silent no-op "merged". **Open
+  observation**: the merge-stage escalate card offers no way to select the
+  *other* candidate's stashed snapshot — when an auto-picked winner's patch
+  is empty, the losing candidate's non-empty patch is unreachable from
+  that card and the run strand-parks (operator must abandon the run).
+  Candidate-vs-merge decision ownership may warrant a dedicated card kind
+  (options = each recorded patch + retry + discard).
+- **run-25153 (post-CA-957, candidates grok+devin via admin model
+  override `step_definitions.model` = grok-4.5 / devin/swe-2-high) —
+  A-65-1 FULL PASS**: scout (devin) discovered a real defect
+  (`graphemeClusters` splitting CR×LF — UAX #29 GB3/GB4/GB5 violation) →
+  `parallel_rollout` fanned out → **3 full rounds** of isolated-worktree
+  cohorts, all six candidate children completing with real patches →
+  arbiter verdict `retry` twice (tie at total 1.0000 both rounds —
+  `max_attempts` restore from CA-955 exercised) → round-3 tie → escalate
+  decision card parked → human picked `candidate-a` → `merge_and_audit`
+  DONE and the patch **actually landed**: `strutil.go` gained
+  `graphemeBreak`/`isGraphemeControl` (GB3 CR×LF + GB4/GB5 control
+  ordering), `strutil_crlf_test.go` (12 cases), `change-audit/CA-004.md`.
+  `go test ./... -count=1` green, `go vet` clean. No `AGENTS.md`/
+  `CLAUDE.md`/`.gitnexus`/knowledge writes in the merged diff (BUG-460
+  guard verified live). `.flowpilot` bookkeeping excluded from the patch
+  (`:(exclude).flowpilot` in `manager.go` Diff) — only the worktree-root
+  `.gitignore` line exists, written by the manager's ensure, not by the
+  merge. Worktrees cleaned post-merge, no orphans.
 - **Provider observations**: codex `gpt-5.4-mini` completed candidate
-  turns in <1s/7s with prose-only responses and zero file writes on three
+  turns in <1s/7s with prose-only responses and zero file writes on four
   consecutive runs — candidate-prompt + template were confirmed injected;
   this is provider behavior, not a dispatch defect. Grok honored the gate
   reprompt (added the required CA note on turn 2). Claude remains
@@ -259,11 +300,11 @@ marked `UI` — backend evidence still required where noted.
 
 | ID | Case | Pass criteria | Auto | Status |
 |----|------|---------------|------|--------|
-| A-65-1 | Standalone 2-provider cohort | devin + opencode candidates → isolated worktrees → arbiter → winner merges clean via `ApplyPatch` (never reached arbiter live before) | `tournament_*` suites | ◑ run-20041: full topology live — grok+codex cohort, both isolated worktrees (`candidate-candidate-a/b` + `.base`), join:all barrier, arbiter scored + auto-picked, merge node dispatched. **BUT winner's diff was empty → BUG-459 found+fixed (CA-956)**: silent no-op "merged" now escalates. A real-patch merge still not observed live |
+| A-65-1 | Standalone 2-provider cohort | devin + opencode candidates → isolated worktrees → arbiter → winner merges clean via `ApplyPatch` (never reached arbiter live before) | `tournament_*` suites | ☑ run-25153: grok+devin cohort, 3 rounds of isolated worktrees, human card pick `candidate-a` → merge DONE, patch landed (`strutil.go` GB3-5 fix + `strutil_crlf_test.go` + CA-004), `go test`/`go vet` green. run-20041: auto-pick topology live but empty winner exposed BUG-459 (fixed CA-956); run-21364 exposed BUG-460 worktree autoindex pollution (fixed CA-957); run-23455 verified empty-winner escalate |
 | A-65-2 | Cap→auto-escalate | review cap → `tournament_escalation` child runs to completion (resumable, BUG-412); dedup — no `-2/-3` dup children (BUG-413/446) | `bug446_453_*`, cluster-h | ☐ |
-| A-65-3 | Tie → decision card | card `[]any` payload; choice routes: candidate→merge / retry→fresh cohort / ask→park (BUG-414) | `TestTournamentTie*` | ☑ run-19067: arbiter tie 1.0000 (failed claude worktree clean = baseline 1.0) → escalate card with candidate-a/b/retry/ask options → captured `candidate-b` choice routed to `merge_and_audit` → escalate "no mergeable diff" (codex empty diff, BUG-453 path live) |
-| A-65-4 | Retry ≤2 → parent resume | back-edge bounded; parent resumes after tournament | `TestTournamentEscalation*`, `TestResumeParentAfterTournament` | ◑ run-19067: arbiter round-1 verdict `retry` → `parallel_rollout` back-edge → fresh cohort spawned (bounded by restored `max_attempts:2` — BUG-458 config restore proven) → round-2 escalate. Parent-resume leg still unproven (standalone run, no parent) |
-| A-65-5 | `.flowpilot` exclusion | candidate diff/patch excludes runner metadata dir (manager.go union — verify post-rebase) | worktree tests | ☐ |
+| A-65-3 | Tie → decision card | card `[]any` payload; choice routes: candidate→merge / retry→fresh cohort / ask→park (BUG-414) | `TestTournamentTie*` | ☑ run-25153: round-3 tie 1.0000 → escalate card parked `WAITING_USER_APPROVAL` → `continue` feedback `candidate-a` captured via `captureDecisionChoice` → `resumeTournamentChoice` routed to `merge_and_audit` → stored snapshot patch applied, DONE. run-19067: same card path → `candidate-b` choice → escalate "no mergeable diff" (BUG-453 path live) |
+| A-65-4 | Retry ≤2 → parent resume | back-edge bounded; parent resumes after tournament | `TestTournamentEscalation*`, `TestResumeParentAfterTournament` | ☑ run-25153: arbiter `retry` ×2 (tie 1.0000 each) → `parallel_rollout` back-edge re-spawned fresh cohorts with distilled failure brief in prompts (`Tournament attempt N failed: tie …` observed verbatim in round-2/3 candidate prompts) → bounded by `max_attempts` → round-3 escalate card → post-card `merge_and_audit` DONE = flow settled terminal. Parent-resume leg still unproven (standalone run, no parent) |
+| A-65-5 | `.flowpilot` exclusion | candidate diff/patch excludes runner metadata dir (manager.go union — verify post-rebase) | worktree tests | ☑ run-25153: merged winner patch = `strutil.go`+`strutil_crlf_test.go`+`CA-004.md` only; candidate worktree `.flowpilot/contracts`/`canonical-pending` writes excluded by `:(exclude).flowpilot` pathspec (manager.go:258/270). AGENTS/CLAUDE autoindex stamps additionally blocked by BUG-460 guard |
 
 ### A-7 CP-41 — RAG harness flow mode
 
@@ -378,7 +419,10 @@ escaped originally).
 ## E. Env/executor-blocked (record BLOCKED, don't fake)
 
 - CP-59 Drive G1-G7 — needs Drive creds
-- A-65-1 real winner merge — needs ≥2 working providers (claude unconnected historically)
+- ~~A-65-1 real winner merge~~ — DONE run-25153 (grok+devin via admin
+  `step_definitions.model` override; note the override rows live only in
+  the Supabase mirror — a fresh env without them falls back to the pack's
+  claude/codex pair)
 - Any `grok` leg while account is 402-quota'd
 - Desktop UI rows (A-62-5/6, BUG-367/369/371 chips) — need Desktop app session
 
