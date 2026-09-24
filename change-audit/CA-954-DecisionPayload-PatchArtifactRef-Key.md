@@ -20,7 +20,9 @@ payload kinds.
 - `apps/local-runner/internal/runner/cp84_decision_payload_gaps_test.go` — NEW
 - `apps/local-runner/internal/runner/cp84_mux_stream_test.go` — NEW
   (HTTP-level `handleAllEventsStream`: chunked snapshot + Complete flag,
-  resync closes stream, subscriber isolation)
+  resync closes stream, heartbeat comment, cancel/write-failure unsubscribe)
+- `decision_payload.go` also changes `muxHeartbeatInterval` from const to var
+  so the heartbeat test can shrink it (production value unchanged, 25s)
 
 ## Verified
 

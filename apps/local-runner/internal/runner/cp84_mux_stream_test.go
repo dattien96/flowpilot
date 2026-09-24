@@ -299,6 +299,36 @@ func TestMuxHTTP_CancelUnsubscribesSubscriber(t *testing.T) {
 	t.Fatal("subscriber still registered after request cancel")
 }
 
+// TestMuxHTTP_HeartbeatKeepsIdleStreamAlive: with no dirty lanes, the handler
+// must emit `: heartbeat` comment lines so proxies don't idle-close the mux
+// (T-5). The interval is a var so the test shrinks it instead of waiting 25s.
+func TestMuxHTTP_HeartbeatKeepsIdleStreamAlive(t *testing.T) {
+	svc := NewInteractiveService()
+	mkDecisionRun(svc, "run-mux-hb", "proj-1")
+
+	orig := muxHeartbeatInterval
+	muxHeartbeatInterval = 30 * time.Millisecond
+	defer func() { muxHeartbeatInterval = orig }()
+
+	srv, resp, reader, cancel := startMuxStream(t, svc)
+	defer srv.Close()
+	defer resp.Body.Close()
+	defer cancel()
+	readSSEFrame(t, reader) // snapshot
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			t.Fatalf("stream closed before heartbeat: %v", err)
+		}
+		if strings.TrimRight(line, "\r\n") == ": heartbeat" {
+			return
+		}
+	}
+	t.Fatal("no heartbeat comment within 3s (interval shrunk to 30ms)")
+}
+
 // TestMuxHTTP_WriteFailureUnsubscribesSubscriber: when the client disappears
 // mid-stream, the next write fails and the handler unwinds the subscriber
 // (T-7). Close the body, then force a dirty drain so a write is attempted.

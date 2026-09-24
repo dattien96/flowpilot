@@ -917,4 +917,5 @@ func ssLockSyntheticFrame(g *ssLockGate) (RunRealtimeFrame, bool) {
 }
 
 // muxHeartbeatInterval keeps proxies/clients from idle-closing the mux.
-const muxHeartbeatInterval = 25 * time.Second
+// var (not const) so tests can shrink it — production value stays 25s.
+var muxHeartbeatInterval = 25 * time.Second
