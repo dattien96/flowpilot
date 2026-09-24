@@ -872,7 +872,7 @@ func (s *InteractiveService) onVibeCpNodeDone(parentRunID, completedNodeID strin
 			if strings.TrimSpace(cpID) != "" {
 				reason = fmt.Sprintf("task_slicer produced no Task files parented to %s under requirements/08-Task/todo/; refusing to sprint foreign/stale tasks", cpID)
 			}
-			s.parkVibeRequirement(parentRunID, reason)
+			s.parkVibeRequirementFrom(parentRunID, reason, completedNodeID)
 			return
 		}
 		s.mu.Lock()

@@ -222,6 +222,11 @@ type interactiveRun struct {
 	// Scopes collectVibeTaskPlan so foreign/stale Task files never join the
 	// sprint plan. Empty = legacy unscoped (pre-fix runs, fixtures).
 	vibeCpDocID             string
+	// BUG-471: the completed node whose advance parked on blocked/requirement
+	// ("resume:coder" marks maybeResumeVibeCoderAfterTdd parks). Continue
+	// re-invokes the same advance so the parked condition is re-evaluated —
+	// the generic hub reinvoke no-ops on post-lock vibe runs (vibeHubSealed).
+	vibeRequirementFromNode string
 	vibeSprintIndex         int
 	vibeSprintBudget        int
 	vibeLockedCP            string
@@ -2386,6 +2391,13 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 	// it, and a second Continue after consume is a no-op, never a re-run.
 	if prevBlockReason == vibeSprintBoundaryReason {
 		s.continueVibeSprintBoundary(parentRunID, normalizeBoundaryNote(feedback))
+		return s.agentGraphSnapshot(parentRunID), nil
+	}
+
+	// BUG-471: a vibe requirement park (missing tasks/contract/tdd artifact)
+	// re-invokes the advance that parked — the generic hub reinvoke no-ops
+	// on post-lock vibe runs (vibeHubSealed) and strands the loop running.
+	if prevBlockReason == "requirement" && s.resumeVibeRequirement(parentRunID, feedback) {
 		return s.agentGraphSnapshot(parentRunID), nil
 	}
 
@@ -4679,6 +4691,7 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 		VibeAwaitingLock:           rs.vibeAwaitingLock,
 		VibeTaskPlan:               append([]string(nil), rs.vibeTaskPlan...),
 		VibeCpDocID:                rs.vibeCpDocID,
+		VibeRequirementFromNode:   rs.vibeRequirementFromNode,
 		VibeSprintIndex:            rs.vibeSprintIndex,
 		VibeSprintBudget:           rs.vibeSprintBudget,
 		VibeSprintBoundaryDeclined: rs.vibeSprintBoundaryDeclined,

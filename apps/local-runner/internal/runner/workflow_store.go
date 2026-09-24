@@ -155,6 +155,7 @@ type ProviderSessionState struct {
 	VibeAwaitingLock           bool
 	VibeTaskPlan               []string
 	VibeCpDocID                string
+	VibeRequirementFromNode    string
 	VibeSprintIndex            int
 	VibeSprintBudget           int
 	VibeSprintBoundaryDeclined bool

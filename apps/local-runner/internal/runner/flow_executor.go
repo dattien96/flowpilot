@@ -1456,7 +1456,7 @@ func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID
 				s.flowDiagLog(parentRunID, "flow_advance_writer_store_failed", "cannot open frozen contract store for writer spawn",
 					"target_node_id", node.ID, "error", storeErr.Error(),
 				)
-				s.parkVibeRequirement(parentRunID, "cannot open frozen contract store for coder")
+				s.parkVibeRequirementFrom(parentRunID, "cannot open frozen contract store for coder", completedNodeID)
 				continue
 			}
 			rec, frozenOK, _ := store.GetFrozenForStep(parentRunID, node.ID)
@@ -1471,14 +1471,14 @@ func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID
 					"completed_node_id", completedNodeID,
 					"target_node_id", node.ID,
 				)
-				s.parkVibeRequirement(parentRunID, "tdd artifact missing before coder (no bypass)")
+				s.parkVibeRequirementFrom(parentRunID, "tdd artifact missing before coder (no bypass)", completedNodeID)
 				continue
 			}
 			if !frozenOK {
 				s.flowDiagLog(parentRunID, "flow_advance_writer_no_contract", "agent.code target has no frozen contract; blocking spawn",
 					"target_node_id", node.ID,
 				)
-				s.parkVibeRequirement(parentRunID, "coder has no frozen contract after tdd")
+				s.parkVibeRequirementFrom(parentRunID, "coder has no frozen contract after tdd", completedNodeID)
 				continue
 			}
 			if err := s.spawnFrozenWriterChild(context.Background(), parentRunID, node, rec); err != nil {
@@ -1486,7 +1486,7 @@ func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID
 				s.flowDiagLog(parentRunID, "flow_advance_writer_spawn_failed", "writer spawn failed",
 					"target_node_id", node.ID, "error", err.Error(),
 				)
-				s.parkVibeRequirement(parentRunID, "coder spawn failed after tdd")
+				s.parkVibeRequirementFrom(parentRunID, "coder spawn failed after tdd", completedNodeID)
 				continue
 			}
 			spawnedAny = true

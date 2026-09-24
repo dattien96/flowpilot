@@ -99,6 +99,10 @@ func (s *InteractiveService) applyVibeGateResolver(runID, parentID, turnID strin
 		if r := s.runs[runID]; r != nil {
 			r.status = RunStatusWaitingUserApr
 			r.agentStatus = string(RunStatusWaitingUserApr)
+			// BUG-471: this gate park records no advance context — clear any
+			// stale one so Continue takes the generic path, never a replay of
+			// an earlier advance-path park's node.
+			r.vibeRequirementFromNode = ""
 			s.emitLocked(r, ProviderEvent{
 				Type:           EventFlowGateViolation,
 				ProviderTurnID: turnID,

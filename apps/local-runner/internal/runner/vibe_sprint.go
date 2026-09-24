@@ -218,10 +218,27 @@ func (s *InteractiveService) countChildRunsWithLabelLocked(parentRunID, label st
 	return n
 }
 
+// vibeRequirementResumeCoder marks requirement parks reached from
+// maybeResumeVibeCoderAfterTdd — Continue re-runs that resume function
+// instead of tryAdvanceFlowFromNode (BUG-471).
+const vibeRequirementResumeCoder = "resume:coder"
+
 func (s *InteractiveService) parkVibeRequirement(parentRunID, gateReason string) {
+	s.parkVibeRequirementFrom(parentRunID, gateReason, "")
+}
+
+func (s *InteractiveService) parkVibeRequirementFrom(parentRunID, gateReason, retryFromNode string) {
 	if s == nil || s.agentOrchestrator == nil || strings.TrimSpace(parentRunID) == "" {
 		return
 	}
+	s.mu.Lock()
+	if rs := s.runs[parentRunID]; rs != nil {
+		// BUG-471: record the advance context that parked so Continue can
+		// re-invoke it — the generic hub reinvoke no-ops on post-lock vibe
+		// runs (vibeHubSealed), leaving a running loop with no work.
+		rs.vibeRequirementFromNode = retryFromNode
+	}
+	s.mu.Unlock()
 	snap := s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
 		st.Status = "blocked"
 		st.BlockReason = "requirement"
@@ -234,6 +251,41 @@ func (s *InteractiveService) parkVibeRequirement(parentRunID, gateReason string)
 	// run-646702). Mirrors parkVibeLock.
 	s.emitAgentGraph(parentRunID, snap)
 	go s.persistParentSession(parentRunID)
+}
+
+// resumeVibeRequirement re-invokes the advance that parked on
+// blocked/requirement (BUG-471). The generic hub reinvoke cannot drive a
+// post-lock vibe run — vibeHubSealed skips it — so a bare Continue would
+// leave the loop running with no work until the stall watchdog fires.
+// Re-running the same advance re-evaluates the parked condition: tasks /
+// contract / tdd artifacts fixed while parked proceed normally; still
+// missing re-parks with the same reason. Returns false for requirement
+// parks with no recorded node (gate-classified parks keep the generic path).
+func (s *InteractiveService) resumeVibeRequirement(parentRunID, feedback string) bool {
+	s.mu.Lock()
+	fromNode := ""
+	if rs := s.runs[parentRunID]; rs != nil {
+		fromNode = strings.TrimSpace(rs.vibeRequirementFromNode)
+		rs.vibeRequirementFromNode = ""
+	}
+	s.mu.Unlock()
+	if fromNode == "" {
+		return false
+	}
+	if fromNode == vibeRequirementResumeCoder {
+		s.maybeResumeVibeCoderAfterTdd(parentRunID)
+		return true
+	}
+	msg := "resume after requirement park"
+	if trimmed := strings.TrimSpace(feedback); trimmed != "" {
+		msg = trimmed
+	}
+	if !s.tryAdvanceFlowFromNode(parentRunID, fromNode, msg) {
+		s.flowDiagLog(parentRunID, "vibe_requirement_resume_no_advance", "requirement resume produced no dispatch — loop may rely on stall watchdog",
+			"from_node", fromNode,
+		)
+	}
+	return true
 }
 
 func (s *InteractiveService) vibeTddStepDone(parentRunID string) bool {
@@ -586,7 +638,7 @@ func (s *InteractiveService) maybeResumeVibeCoderAfterTdd(parentRunID string) {
 	tddDone := checkpoint == "tdd" || s.vibeTddStepDone(parentRunID)
 	if !s.vibeTddEvidencePresent(parentRunID, "coder", cwd) {
 		if tddDone {
-			s.parkVibeRequirement(parentRunID, "tdd artifact missing before coder (no bypass)")
+			s.parkVibeRequirementFrom(parentRunID, "tdd artifact missing before coder (no bypass)", vibeRequirementResumeCoder)
 		}
 		return
 	}
@@ -604,7 +656,7 @@ func (s *InteractiveService) maybeResumeVibeCoderAfterTdd(parentRunID string) {
 		s.tryAdvanceFlowFromNode(parentRunID, "tdd", "resume after tdd")
 		return
 	}
-	s.parkVibeRequirement(parentRunID, "sprint graph missing; cannot resume coder")
+	s.parkVibeRequirementFrom(parentRunID, "sprint graph missing; cannot resume coder", vibeRequirementResumeCoder)
 }
 
 func hasVibeTestArtifact(cwd string) bool {
