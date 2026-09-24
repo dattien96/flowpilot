@@ -25,6 +25,15 @@ export type AttentionKind =
   | "quota"
   | "dispatch_attention";
 
+/** Task-435 T-2: the server refused a destructive worktree resolve until the
+ *  user explicitly confirms (409 requiresConfirm). Projected onto the item so
+ *  the card renders a confirm step instead of dead-ending on an error. */
+export interface WorktreeConfirm {
+  mode: string;
+  files: string[];
+  message: string;
+}
+
 export interface AttentionItem {
   runId: string;
   chatId: string;
@@ -46,6 +55,9 @@ export interface AttentionItem {
    * poll-only items (they render Open-only, never guessed).
    */
   decision?: DecisionPayload;
+  /** Task-435 T-2: pending explicit confirm for a destructive worktree
+   *  resolve — set by the store when the runner answers 409 requiresConfirm. */
+  worktreeConfirm?: WorktreeConfirm;
 }
 
 /** Minimal pending-fields projection — satisfied by the internal RunSnapshot
@@ -143,6 +155,8 @@ const dispatchViews: Record<string, Array<{ kind?: string }>> = {};
 // Task-423 T-3: runs resolved via inline actions stay hidden until the server
 // reports a non-waiting status (cleared inside deriveAttentionItems).
 const evictedRuns = new Set<string>();
+/** Task-435 T-2: worktree resolves awaiting explicit user confirm. */
+const worktreeConfirms = new Map<string, WorktreeConfirm>();
 // CP-84 (Task-431): runs with an in-flight inline decision — shared across
 // components so an item can't be double-submitted while a request is out.
 const actingRuns = new Set<string>();
@@ -294,6 +308,11 @@ function recompute(): void {
     }
     if (!seenKeys.has(key)) items.push(syn);
   }
+  // Task-435 T-2: overlay pending worktree confirms (keyed by runId).
+  for (const it of items) {
+    const c = worktreeConfirms.get(it.runId);
+    if (c) it.worktreeConfirm = c;
+  }
   // Oldest waiting runs first (spec AC) — across all projects.
   items.sort((a, b) => (a.waitingSince < b.waitingSince ? -1 : a.waitingSince > b.waitingSince ? 1 : 0));
   attentionQueue.items = items;
@@ -319,6 +338,9 @@ export const attentionQueue: {
   clearActing(runId: string): void;
   isActing(runId: string): boolean;
   evict(runId: string): void;
+  /** Task-435 T-2: set/clear a pending worktree-resolve confirm. */
+  setWorktreeConfirm(runId: string, c: WorktreeConfirm): void;
+  clearWorktreeConfirm(runId: string): void;
   resolvedPending(runId: string, resolved: { approvalId?: string; questionId?: string }): void;
   subscribe(fn: Listener): () => void;
 } = {
@@ -360,9 +382,17 @@ export const attentionQueue: {
   isActing(runId) {
     return actingRuns.has(runId);
   },
+  setWorktreeConfirm(runId, c) {
+    worktreeConfirms.set(runId, c);
+    recompute();
+  },
+  clearWorktreeConfirm(runId) {
+    if (worktreeConfirms.delete(runId)) recompute();
+  },
   evict(runId) {
     evictedRuns.add(runId);
     actingRuns.delete(runId);
+    worktreeConfirms.delete(runId);
     for (const key of [...syntheticItems.keys()]) {
       if (key.startsWith(`${runId}:`)) syntheticItems.delete(key);
     }

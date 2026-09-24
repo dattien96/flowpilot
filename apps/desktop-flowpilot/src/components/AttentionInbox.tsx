@@ -58,6 +58,7 @@ export function AttentionInbox(): React.ReactElement {
   const answerAttentionItem = useStore((s) => s.answerAttentionItem);
   const openSpectator = useStore((s) => s.openSpectator);
   const submitAttentionDecision = useStore((s) => s.submitAttentionDecision);
+  const dismissWorktreeConfirm = useStore((s) => s.dismissWorktreeConfirm);
   const focusedRunId = useStore((s) => s.runId);
   const projects = useStore((s) => s.projects);
   const [open, setOpen] = useState(false);
@@ -215,11 +216,12 @@ export function AttentionInbox(): React.ReactElement {
         <DecisionControls
           item={item}
           acting={acting}
-          onAct={(choice, customText) =>
+          onAct={(choice, customText, confirm) =>
             void act(item, `${item.runId}:${d.id}`, () =>
-              submitAttentionDecision(item.runId, d, choice, customText),
+              submitAttentionDecision(item.runId, d, choice, customText, confirm),
             )
           }
+          onDismiss={() => dismissWorktreeConfirm(item.runId)}
           onOpen={() => {
             setOpen(false);
             void openRunAtAttention(item.runId, item.chatId, item.projectId);

@@ -11,13 +11,38 @@ import type { DecisionPayload } from "@/types/contract";
 export interface ControlChoice {
   value: string;
   label: string;
+  /** Task-435 T-1: one-line consequence text shown under the action so the
+   *  user understands what each choice does before clicking. */
+  description?: string;
 }
+
+/** Task-435 T-1/T-5: worktree resolve modes with their consequence text.
+ *  Descriptions must stay honest about destructive outcomes — keep_branch
+ *  keeps only committed work; discard throws everything away. */
+export const WORKTREE_MODES: ControlChoice[] = [
+  {
+    value: "apply_patch",
+    label: "Apply patch",
+    description: "Merge all worktree changes into your project, then clean up.",
+  },
+  {
+    value: "keep_branch",
+    label: "Keep branch",
+    description: "Remove the worktree, keep the fp/* branch. Only committed work survives.",
+  },
+  {
+    value: "discard",
+    label: "Discard",
+    description: "Delete the worktree and its branch — all changes are thrown away.",
+  },
+];
 
 export type ControlModel =
   | { type: "choices"; choices: ControlChoice[]; prompt?: string }
   | { type: "gate"; options: ControlChoice[]; allowCustom: boolean }
   | { type: "ss_lock" }
   | { type: "worktree"; modes: ControlChoice[] }
+  | { type: "worktree_confirm"; mode: string; modeLabel: string; files: string[]; message: string }
   | { type: "quota"; candidateLabel: string };
 
 /** Kinds that may participate in "Approve all eligible" batch — safe,
@@ -85,14 +110,19 @@ export function decisionControlModel(item: AttentionItem): ControlModel | null {
     case "ss_lock":
       return { type: "ss_lock" };
     case "worktree_merge":
-      return {
-        type: "worktree",
-        modes: [
-          { value: "apply_patch", label: "Apply patch" },
-          { value: "keep_branch", label: "Keep branch" },
-          { value: "discard", label: "Discard" },
-        ],
-      };
+      // Task-435 T-5: a pending server-side confirm replaces the mode buttons
+      // with an explicit Cancel/Proceed step listing the files at stake.
+      if (item.worktreeConfirm) {
+        const c = item.worktreeConfirm;
+        return {
+          type: "worktree_confirm",
+          mode: c.mode,
+          modeLabel: WORKTREE_MODES.find((m) => m.value === c.mode)?.label ?? c.mode,
+          files: c.files,
+          message: c.message,
+        };
+      }
+      return { type: "worktree", modes: WORKTREE_MODES };
     case "quota":
       return {
         type: "quota",
@@ -180,10 +210,12 @@ export function DecisionPreview(props: { item: AttentionItem }): React.ReactElem
 export function DecisionControls(props: {
   item: AttentionItem;
   acting: boolean;
-  onAct: (choice: string, customText?: string) => void;
+  onAct: (choice: string, customText?: string, confirm?: boolean) => void;
+  /** Task-435: cancel a pending confirm step (back to the mode buttons). */
+  onDismiss?: () => void;
   onOpen: () => void;
 }): React.ReactElement | null {
-  const { item, acting, onAct, onOpen } = props;
+  const { item, acting, onAct, onDismiss, onOpen } = props;
   const model = decisionControlModel(item);
   const [gateChoice, setGateChoice] = useState("");
   const [customText, setCustomText] = useState("");
@@ -276,20 +308,45 @@ export function DecisionControls(props: {
       );
     case "worktree":
       return (
-        <div className="inbox-act-group">
+        <div className="inbox-act-group inbox-act-group--worktree">
           {model.modes.map((m) => (
-            <button
-              key={m.value}
-              type="button"
-              className={`inbox-act${m.value === "discard" ? " inbox-act--deny" : " inbox-act--approve"}`}
-              disabled={acting}
-              onClick={() => onAct(m.value)}
-            >
-              {m.label}
-            </button>
+            <div key={m.value} className="inbox-worktree-mode">
+              <button
+                type="button"
+                className={`inbox-act${m.value === "discard" ? " inbox-act--deny" : " inbox-act--approve"}`}
+                disabled={acting}
+                onClick={() => onAct(m.value)}
+              >
+                {m.label}
+              </button>
+              {m.description && <span className="inbox-act-desc">{m.description}</span>}
+            </div>
           ))}
           <button type="button" className="inbox-act" disabled={acting} onClick={onOpen}>
             Open
+          </button>
+        </div>
+      );
+    case "worktree_confirm":
+      return (
+        <div className="inbox-act-group inbox-act-group--confirm">
+          <span className="inbox-act-cmd">{model.message}</span>
+          {model.files.length > 0 && (
+            <span className="inbox-act-desc">
+              Will be lost: {model.files.slice(0, 5).join(", ")}
+              {model.files.length > 5 ? ` (+${model.files.length - 5})` : ""}
+            </span>
+          )}
+          <button type="button" className="inbox-act" disabled={acting} onClick={onDismiss}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="inbox-act inbox-act--deny"
+            disabled={acting}
+            onClick={() => onAct(model.mode, undefined, true)}
+          >
+            {model.modeLabel} anyway
           </button>
         </div>
       );

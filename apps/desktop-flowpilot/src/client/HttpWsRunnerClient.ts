@@ -160,6 +160,9 @@ export class HttpWsRunnerClient implements RunnerClient {
         err.code ?? "http_error",
         err.message ?? resp.statusText,
         data?.snapshot,
+        // Task-435 T-3: full body — 409 confirm/conflict payloads carry
+        // requiresConfirm/uncommitted/conflictPaths at top level.
+        data as Record<string, unknown> | undefined,
       );
     }
     return data as T;
@@ -628,6 +631,9 @@ export class RunnerApiError extends Error {
     message: string,
     /** Optional body field (e.g. stopAgentLoop snapshot after partial durable failure). */
     readonly snapshot?: unknown,
+    /** Task-435: full parsed response body for error-envelope side channels
+     *  (worktree resolve 409s carry requiresConfirm/uncommitted/untracked). */
+    readonly details?: Record<string, unknown>,
   ) {
     super(message);
     this.name = "RunnerApiError";

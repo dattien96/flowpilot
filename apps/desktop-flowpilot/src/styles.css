@@ -7862,6 +7862,43 @@ body.is-resizing-sidebar {
   border-color: rgba(255, 90, 90, 0.4);
 }
 
+/* Task-435: worktree modes stack vertically — each button carries a
+   one-line consequence description beneath it. */
+.inbox-act-group--worktree {
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-2);
+}
+
+.inbox-worktree-mode {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.inbox-worktree-mode .inbox-act {
+  flex: 0 0 auto;
+}
+
+.inbox-act-desc {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: var(--font-size-xs);
+  color: var(--text-dim);
+}
+
+.inbox-act-group--confirm {
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-2);
+}
+
+.inbox-act-group--confirm .inbox-act-cmd,
+.inbox-act-group--confirm .inbox-act-desc {
+  white-space: normal;
+}
+
 .inbox-error {
   padding: 0 var(--space-2) var(--space-2);
   font-size: var(--font-size-xs);
