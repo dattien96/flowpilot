@@ -1051,7 +1051,15 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 				// parks on FEATURE-KEYS.md and tdd-signatures.md made the
 				// coder ask_user-loop ("what is the FlowPilot failure?").
 				// flow-rules.json is not .md and still drifts (CA-427).
-				changecontract.IsMarkdownDocPath(p) {
+				changecontract.IsMarkdownDocPath(p) ||
+				// BUG-456 (live run-6893): build artifacts are not product
+				// code either — a writer verifying with bare `go build`
+				// emits a `livebed`-style binary at repo root, which parked
+				// the frozen drift gate forever (amend rejects non-concrete
+				// paths). CA-427 Finding 2 stays closed: this classifier
+				// matches binary extensions / build dirs / extension-less
+				// root files only — .flowpilot/** and every *.go still drift.
+				flowgate.IsBinaryOrBuildArtifact(p) {
 				continue
 			}
 			codeOnlyWritten = append(codeOnlyWritten, p)

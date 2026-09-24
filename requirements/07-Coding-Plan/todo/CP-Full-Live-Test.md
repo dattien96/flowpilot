@@ -100,6 +100,18 @@ No new reds → no post-rebase regression. ✅ GATE PASS.
   normalizes to `cancelled` on reconstruct — parked-at-gate runs do NOT
   survive runner restart; noted as observation, flagged for review whether
   parked-but-resumable should persist.
+- **run-6893 (devin/swe-2-high, task-harness, explicit `cwd`)**: clean plan
+  path — `preflight_contract_plan`→`context`→`plan_writer`→`plan_reviewer`→
+  `plan_synthesis`→`preflight_contract_freeze` all DONE first pass (no churn →
+  no Task-325 park) → `test_signatures` wrote `strutil.go` stubs
+  (`panic("not implemented")`) + `strutil_test.go` RED tests (failures
+  confirmed) → scaffold child ran bare `go build`, emitted a `livebed` binary
+  at repo root → **scope-drift gate fired** ("wrote outside the frozen
+  contract's declared paths: livebed") → park `awaiting_user` → operator
+  deleted the artifact + Continued with feedback (use `go vet`/`go test`,
+  never bare `go build`) → child re-verified clean → gate passed →
+  `test_signatures` DONE → `implement` RUNNING. Drift-detect → operator-
+  resolve → re-gate chain live-verified.
 - **Dispatch durability (CP-51)**: `prepared → send_claimed → send_started →
   terminal_completed` chain with envelope hashes observed on every provider
   turn across run-1/run-94 records.
@@ -115,7 +127,7 @@ marked `UI` — backend evidence still required where noted.
 
 | ID | Case | Steps → Pass criteria | Auto cover | Status |
 |----|------|-----------------------|------------|--------|
-| A-58-1 | task-harness happy path | `/flow task-harness` + GCD-style prompt (calc-core) → scout→context→plan_writer→plan_reviewer→plan_synthesis→freeze→test_signatures→implement→validate→reviewer→synthesis→audit→done. Writer/reviewer prompts contain "Templated file outputs" / "Bound input artifacts"; reviewer calls `submit_review_outcome` | e2e in runner suite | ◑ run-94: all nodes DONE through `implement`; `validate` dead-parked → BUG-455 (fixed, CA-952); reviewer→audit legs pending re-run |
+| A-58-1 | task-harness happy path | `/flow task-harness` + GCD-style prompt (calc-core) → scout→context→plan_writer→plan_reviewer→plan_synthesis→freeze→test_signatures→implement→validate→reviewer→synthesis→audit→done. Writer/reviewer prompts contain "Templated file outputs" / "Bound input artifacts"; reviewer calls `submit_review_outcome` | e2e in runner suite | ◑ run-94: through `implement`, validate dead-parked → BUG-455 (fixed, CA-952). run-6893 (cwd set): plan→freeze→test_signatures→implement all DONE incl. drift-gate round-trip; validate→audit legs pending |
 | A-58-2 | Plan loop reject→re-entry same session | Force `changes_requested` (ask plan to include benchmark) → `flow_control_hub_done_continue_on_review_verdict`, writer re-enters **same** child; context/freeze stay DONE | `TestCP61HubDone/plan_synthesis_changes_requested_continues` | ☑ run-94: reviewer `changes_requested` → `plan_writer` re-entered on same child run-235 (rounds 2–4), `context`/freeze untouched |
 | A-58-3 | Code loop isolated from plan loop | Force code reject → implement re-entry; `plan_*` + freeze remain DONE | unit matrix | ☐ |
 | A-58-4 | Round cap 3 → escalate | Force 3 rejects → `blocked`/escalate card, no 4th round (was never forced live) | `agent_orchestrator_test.go` cap | ☐ DEFERRED-LIVE |
@@ -156,7 +168,7 @@ marked `UI` — backend evidence still required where noted.
 
 | ID | Case | Pass criteria | Auto | Status |
 |----|------|---------------|------|--------|
-| A-67-1 | Happy path on devin + one more provider | scaffold stubs + RED → contract v1 hash-pinned → body-only fill → signature lock holds → validate green → audit → done | P-1..P-4 unit battery | ☐ |
+| A-67-1 | Happy path on devin + one more provider | scaffold stubs + RED → contract v1 hash-pinned → body-only fill → signature lock holds → validate green → audit → done | P-1..P-4 unit battery | ◑ run-6893: stubs `panic("not implemented")` + RED tests confirmed live; body-fill/validate/audit pending |
 | A-67-2 | **r-signature-lock arms** (was BUG-LIVE-CP67-1 CRITICAL) | frozen contract record must be the hash-bearing one; violation (rename/additive fn) → reprompt, not silent ship | `bug386_*` + `TestRuleSignatureLock*` | ☐ RE-VERIFY CRITICAL |
 | A-67-3 | Gate rejections | real-logic scaffold → r-scaffold-red; all-green → reject; compile-broken → compile wording; locked-test edit denied | `TestRuleScaffoldRed*` ×15 | ☐ |
 | A-67-4 | Renegotiation | `renegotiate_signatures` offered to coder → record-only → `synthesis_negotiation` → round++ → cap 5 escalate; owner-debate resolves (BUG-411) | unit | ☐ RE-VERIFY |
@@ -188,10 +200,10 @@ marked `UI` — backend evidence still required where noted.
 |----|------|---------------|------|--------|
 | A-43-1 | Declared contract | `contracts.ndjson` `confidence:"declared"` + declared_paths | contract tests | ☐ |
 | A-43-2 | Inferred contract | no contract → exactly one `r-contract` reprompt → `inferred` entry; reprompt turn carries gate-carried paths (BUG-425/439) | `bug425_*`, `bug439_440_*` | ☐ |
-| A-43-3 | Scope drift → amend v2 | write outside declared_paths → WAITING_USER_APPROVAL → `agent-loop/amend` → v2 supersedes → resume | unit + live | ☐ |
+| A-43-3 | Scope drift → amend v2 | write outside declared_paths → WAITING_USER_APPROVAL → `agent-loop/amend` → v2 supersedes → resume | unit + live | ◑ run-6893: drift detect + park + re-gate verified live (undeclared `livebed` binary blocked; resolved by artifact removal + Continue-with-feedback). amend→v2 leg still open |
 | A-43-4 | Pending→final canonical exactly-once + restart durability | SIGKILL between stage/finalize → resume → single Head write | `internal/changecontract` | ☐ |
 | A-43-5 | Symlinked workspace | `/var`,`/tmp`-symlinked bed → freeze not falsely blocked (BUG-396) | `paths.go` tests | ☐ |
-| A-55-1 | Freeze v1 pins writers | `frozen_contracts.ndjson` v1 + base_sha; writer constrained | e2e | ☐ |
+| A-55-1 | Freeze v1 pins writers | `frozen_contracts.ndjson` v1 + base_sha; writer constrained | e2e | ☑ run-6893: freeze DONE first pass; scaffold writer constrained to `strutil.go`/`strutil_test.go` — undeclared `livebed` write blocked by gate |
 | A-55-2 | Amend→v2→resume | live on grok previously; re-run | live | ☐ |
 | A-55-3 | Idempotent freeze post-SIGKILL | no planner re-fire | unit | ☐ |
 | A-55-4 | Resume retry prompt carries contract scope (BUG-424) | reprompt text contains change.contract block | `bug424` ref'd tests | ☐ |
