@@ -176,6 +176,16 @@ export type ChatMode = "normal_chat" | "workflow_step_auto";
 export type WorkspaceMainView = "chat" | "board";
 export type ChatStartMode = "normal" | "task" | "bugfix";
 
+/** Boot pipeline steps surfaced by the chat workspace overlay — each maps to a
+ *  section of loadProjects(). */
+export type ChatBootStep = "projects" | "catalog" | "accounts" | "session";
+export type ChatBootStatus = "idle" | "loading" | "ready" | "failed";
+export interface ChatBootState {
+  status: ChatBootStatus;
+  step: ChatBootStep;
+  error: string | null;
+}
+
 /** Task-433 (CP-84 P-5): stable scroll anchor — an item id plus the pixel
  *  offset of its top edge below the viewport top. Survives timeline height
  *  changes during revalidation, unlike a raw scrollTop. */
@@ -422,6 +432,13 @@ export interface AppState {
   providerAccounts: ProviderAccountSummary[];
   localProviders: LocalRunnerProvider[];
   supportedModels: SupportedModel[];
+  /**
+   * Workspace boot progress driven by loadProjects() — gates the chat tab's
+   * loading overlay until the data the composer needs (projects, provider
+   * catalog, accounts) has actually landed. Once "ready" it never re-locks:
+   * later loadProjects calls refresh silently in the background.
+   */
+  chatBoot: ChatBootState;
   selectedProjectId?: string;
   selectedWorkflowId?: string;
   selectedStepId?: string;
@@ -773,6 +790,7 @@ export const useStore = create<AppState>((set, get) => ({
   providerAccounts: [],
   localProviders: [],
   supportedModels: [],
+  chatBoot: { status: "idle", step: "projects", error: null },
   status: "idle",
   timeline: [],
   timelineHasOlder: false,
@@ -882,7 +900,22 @@ export const useStore = create<AppState>((set, get) => ({
       set((s) => (s.status === "idle" ? { status: "starting" } : {}));
     }
 
+    // Chat boot gate: only the first load (or a retry after "failed") locks the
+    // chat UI behind the boot overlay. Once "ready", later calls refresh data
+    // silently so the overlay never re-appears over a usable workspace.
+    const bootLocked = get().chatBoot.status !== "ready";
+    if (bootLocked) {
+      set({ chatBoot: { status: "loading", step: "projects", error: null } });
+    }
+    const setBootStep = (step: ChatBootStep) => {
+      if (bootLocked) set((s) => ({ chatBoot: { ...s.chatBoot, step } }));
+    };
+
     loadProjectsInFlight = (async () => {
+      // First failure on a boot-critical section (projects / catalog /
+      // accounts) wins — without it the composer can never enable, so the
+      // overlay switches to a failed state with Retry instead of hiding.
+      let bootError: string | null = null;
       // The runner starts via `go run`, which compiles first (~10-30s) before it
       // listens — so the first fetches can hit connection-refused ("Failed to fetch").
       // Retry ONLY connection-level errors (not HTTP errors like 502, which won't fix
@@ -916,6 +949,7 @@ export const useStore = create<AppState>((set, get) => ({
       } catch (err) {
         // eslint-disable-next-line no-console
         console.error("[FlowPilot] listProjects failed:", err);
+        bootError ??= "Could not load projects from the local runner.";
         set((s) => ({
           ...(s.runId ? {} : { status: "failed" }),
           timeline: [
@@ -924,6 +958,7 @@ export const useStore = create<AppState>((set, get) => ({
           ],
         }));
       }
+      setBootStep("catalog");
       try {
         const admin = await getAdminUseCases();
         const [workflowDefinitions, stepDefinitions, supportedModels, localProviders] = await Promise.all([
@@ -943,7 +978,9 @@ export const useStore = create<AppState>((set, get) => ({
       } catch (err) {
         // eslint-disable-next-line no-console
         console.error("[FlowPilot] definition catalog failed:", err);
+        bootError ??= "Could not load the provider and model catalog.";
       }
+      setBootStep("accounts");
       try {
         const provider = get().selectedProvider ?? "codex";
         const skills = await withRetry(() => client.listSkills(provider, selectedProjectPath(get())));
@@ -958,7 +995,9 @@ export const useStore = create<AppState>((set, get) => ({
       } catch (err) {
         // eslint-disable-next-line no-console
         console.error("[FlowPilot] listProviderAccounts failed:", err);
+        bootError ??= "Could not load provider accounts.";
       }
+      setBootStep("session");
       // Restore last Chat vs Workflow surface (Desktop parity with TUI tui-session.json Mode)
       try {
         if (!get().runId) {
@@ -975,9 +1014,11 @@ export const useStore = create<AppState>((set, get) => ({
       // the TUI SessionDefaultsMsg restore. Uses the same withRetry so the
       // boot-time GET survives the runner compile window.
       try {
-        const getPosture = client.getChatPosture;
-        if (getPosture) {
-          const config = await withRetry(() => getPosture());
+        // Keep the call bound to `client` — detaching the method (`const f =
+        // client.getChatPosture`) loses `this` and every boot-time restore
+        // silently throws TypeError instead of applying the persisted posture.
+        if (client.getChatPosture) {
+          const config = await withRetry(() => client.getChatPosture!());
           const active = (config.active as ChatPosture) ?? get().chatPosture;
           const profile = (config.profiles as Record<string, ChatPostureProfile>)[active] ?? {};
           set(() => ({
@@ -996,9 +1037,26 @@ export const useStore = create<AppState>((set, get) => ({
         // eslint-disable-next-line no-console
         console.error("[FlowPilot] loadChatPostureConfig (boot) failed:", err);
       }
-    })().finally(() => {
-      loadProjectsInFlight = null;
-    });
+      if (bootLocked) {
+        set((s) => ({
+          chatBoot: bootError
+            ? { status: "failed", step: s.chatBoot.step, error: bootError }
+            : { status: "ready", step: "session", error: null },
+        }));
+      }
+    })()
+      .catch(() => {
+        // Unreachable today (every section is try/catch-ed) — kept so a future
+        // stray throw can never leave the boot overlay stuck on "loading".
+        if (bootLocked) {
+          set((s) => ({
+            chatBoot: { status: "failed", step: s.chatBoot.step, error: "Unexpected error while preparing the workspace." },
+          }));
+        }
+      })
+      .finally(() => {
+        loadProjectsInFlight = null;
+      });
 
     return loadProjectsInFlight;
   },
