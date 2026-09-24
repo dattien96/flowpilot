@@ -3424,9 +3424,31 @@ func turnSummaryFromTurnResult(turnID string, tr *flowgate.TurnResult, tokensCon
 	}
 	// FilesChanged: AI tool-call writes (WrittenPaths) plus the observed
 	// turn-scoped diff paths; TestResults: ordinary failures + regressions.
-	summary.FilesChanged = appendUniqueStrings(append([]string(nil), tr.WrittenPaths...), tr.ChangedPaths...)
+	// BUG-467: .flowpilot/** is runner bookkeeping (dispatch/sessions/turns
+	// ndjson appended during EVERY turn), not agent progress — on workspaces
+	// where it is git-tracked it lands in every turn diff and would suppress
+	// zero_delta_progress forever. Same exclusion as BUG-288 #16/F-25.
+	summary.FilesChanged = appendUniqueStrings(
+		stripRuntimeMetadataPaths(append([]string(nil), tr.WrittenPaths...)),
+		stripRuntimeMetadataPaths(tr.ChangedPaths)...)
 	summary.TestResults = appendUniqueStrings(append([]string(nil), tr.Tests.Failed...), tr.Tests.Regressed...)
 	return summary
+}
+
+// stripRuntimeMetadataPaths drops .flowpilot/** paths — runner-owned state
+// (BUG-288 #16/F-25), never evidence of agent progress (BUG-467).
+func stripRuntimeMetadataPaths(paths []string) []string {
+	if len(paths) == 0 {
+		return paths
+	}
+	out := paths[:0]
+	for _, p := range paths {
+		if strings.HasPrefix(filepath.ToSlash(p), ".flowpilot/") {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
 }
 
 // recordDriftTelemetry is the Task-335 post-turn drift hook. Called after
