@@ -265,28 +265,31 @@ func extractCodexMcpResponse(result map[string]interface{}) (string, string) {
 
 func jsonRpcErrorMessage(message map[string]interface{}) string {
 	if errObj, ok := message["error"].(map[string]interface{}); ok {
-		// BUG-381: ACP servers put the informative payload in error.data
-		// ({http_status, message}) while top-level error.message is a generic
-		// "Internal error". Prefer data.message; surface http_status when the
-		// detail string is absent so quota/auth failures never collapse to a
-		// bare "Internal error".
-		if data, ok := errObj["data"].(map[string]interface{}); ok {
-			if msg, ok := data["message"].(string); ok && strings.TrimSpace(msg) != "" {
-				return msg
+		// BUG-374/BUG-381: ACP servers put the informative payload in
+		// error.data ({http_status, message}) while top-level error.message is
+		// a generic "Internal error". Keep the top-level message AND append
+		// the data detail — never drop either — and surface http_status when
+		// data carries no detail string, so quota/auth failures never collapse
+		// to a bare "Internal error".
+		top, _ := errObj["message"].(string)
+		if top = strings.TrimSpace(top); top != "" {
+			if detail := jsonRpcErrorDataDetail(errObj["data"]); detail != "" && !strings.Contains(top, detail) {
+				return top + ": " + detail
 			}
-			top, _ := errObj["message"].(string)
-			if status, ok := toInt64(data["http_status"]); ok && status > 0 {
-				if strings.TrimSpace(top) != "" {
+			if data, ok := errObj["data"].(map[string]interface{}); ok {
+				if status, ok := toInt64(data["http_status"]); ok && status > 0 {
 					return fmt.Sprintf("%s (http_status %d)", top, status)
 				}
+			}
+			return top
+		}
+		if detail := jsonRpcErrorDataDetail(errObj["data"]); detail != "" {
+			return detail
+		}
+		if data, ok := errObj["data"].(map[string]interface{}); ok {
+			if status, ok := toInt64(data["http_status"]); ok && status > 0 {
 				return fmt.Sprintf("JSON-RPC error (http_status %d)", status)
 			}
-		}
-		if msg, ok := errObj["message"].(string); ok && strings.TrimSpace(msg) != "" {
-			if detail := jsonRpcErrorDataDetail(errObj["data"]); detail != "" && !strings.Contains(msg, detail) {
-				return msg + ": " + detail
-			}
-			return msg
 		}
 	}
 
