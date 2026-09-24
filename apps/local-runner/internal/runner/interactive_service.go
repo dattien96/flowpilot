@@ -4488,6 +4488,47 @@ func (s *InteractiveService) flowRootIDLocked(rs *interactiveRun) string {
 	return ""
 }
 
+// healMirroredQuestionWaitLocked clears the CA-642 mirrored waiting_question
+// stamp on a resolved/expired question's root flow run (BUG-470). The mirror
+// emitLocked flips root.status to waiting_question via applyRunEventLocked,
+// but owner-run healing only touches s.runs[rec.runID] — the root stayed
+// waiting_question with no pending question (live run-102429). Heal only when
+// the resolved question was the last pending wait mirrored onto that root: a
+// root-owned pending question (pendingQuestionID), a pending approval, or
+// another pending question owned by a sibling in the same flow tree keeps the
+// wait. Caller must hold s.mu.
+func (s *InteractiveService) healMirroredQuestionWaitLocked(owner *interactiveRun, resolvedQuestionID string) {
+	if owner == nil {
+		return
+	}
+	rootID := s.flowRootIDLocked(owner)
+	if rootID == "" {
+		return
+	}
+	root := s.runs[rootID]
+	if root == nil || root.status != RunStatusWaitingQuestion {
+		return
+	}
+	if root.pendingQuestionID != "" {
+		return
+	}
+	for id, rec := range s.questions {
+		if rec == nil || rec.status != "pending" || id == resolvedQuestionID {
+			continue
+		}
+		if other := s.runs[rec.runID]; other != nil && s.flowRootIDLocked(other) == rootID {
+			return
+		}
+	}
+	if root.pendingApprovalID != "" {
+		root.status = RunStatusWaitingApproval
+		root.agentStatus = string(RunStatusWaitingApproval)
+		return
+	}
+	root.status = RunStatusRunning
+	root.agentStatus = string(RunStatusRunning)
+}
+
 func (s *InteractiveService) nextID(prefix string) string {
 	return prefix + "-" + strconv.FormatInt(s.idCounter.Add(1), 10)
 }
@@ -4977,6 +5018,7 @@ func (s *InteractiveService) rehydratePendingGatesLocked(runID string) {
 	var repairQuestions []ProviderQuestionState
 	gotPendingApproval := false
 	gotPendingQuestion := false
+	questionScanOK := false
 	if ahr, ok := s.workflowStore.(ApprovalHistoryReader); ok {
 		if states, err := ahr.ListApprovalsByRun(context.Background(), runID); err == nil {
 			for _, st := range states {
@@ -5078,6 +5120,7 @@ func (s *InteractiveService) rehydratePendingGatesLocked(runID string) {
 	}
 	if qhr, ok := s.workflowStore.(QuestionHistoryReader); ok {
 		if states, err := qhr.ListQuestionsByRun(context.Background(), runID); err == nil {
+			questionScanOK = true
 			for _, st := range states {
 				if !strings.EqualFold(strings.TrimSpace(st.Status), "pending") {
 					continue
@@ -5161,6 +5204,15 @@ func (s *InteractiveService) rehydratePendingGatesLocked(runID string) {
 	} else if gotPendingQuestion {
 		rs.status = RunStatusWaitingQuestion
 		rs.agentStatus = string(RunStatusWaitingQuestion)
+	} else if questionScanOK && rs.status == RunStatusWaitingQuestion && rs.pendingQuestionID == "" {
+		// BUG-470: pre-fix CA-642 mirrored-question leak persisted
+		// waiting_question with no durable pending card on this run — a real
+		// wait is always backed by an owner-run pending record, so anything
+		// reaching here is the leaked phantom. Heal instead of resurrecting
+		// it forever (live run-102429). Gated on questionScanOK: a failed
+		// durable read must not clear a possibly-real wait.
+		rs.status = RunStatusRunning
+		rs.agentStatus = string(RunStatusRunning)
 	}
 	// Persist durable card repairs outside the hot path — spawn after unlock via
 	// a deferred list stored on the service is awkward under lock; repair inline
@@ -7861,15 +7913,18 @@ func (s *InteractiveService) expireQuestion(id string) {
 	if rec := s.questions[id]; rec != nil && rec.status == "pending" {
 		rec.status = "expired"
 		rec.revision++
-		if rs := s.runs[rec.runID]; rs != nil && rs.pendingQuestionID == id {
-			rs.pendingQuestionID = ""
-			// BUG-289 H4/F-4: flip off WAITING (mirror expireApproval).
-			if rs.status == RunStatusWaitingQuestion {
-				rs.status = RunStatusRunning
-				rs.agentStatus = string(RunStatusRunning)
-				settleRunID = rs.id
-				touchHubProgressLocked(rs)
+		if rs := s.runs[rec.runID]; rs != nil {
+			if rs.pendingQuestionID == id {
+				rs.pendingQuestionID = ""
+				// BUG-289 H4/F-4: flip off WAITING (mirror expireApproval).
+				if rs.status == RunStatusWaitingQuestion {
+					rs.status = RunStatusRunning
+					rs.agentStatus = string(RunStatusRunning)
+					settleRunID = rs.id
+					touchHubProgressLocked(rs)
+				}
 			}
+			s.healMirroredQuestionWaitLocked(rs, id)
 		}
 		state := questionStateFromRecord(rec, "", rec.expiresAt)
 		snapshot = &state
@@ -7897,8 +7952,11 @@ func (s *InteractiveService) clearPendingQuestion(id string) {
 		snapshot = &state
 	}
 	if rec := s.questions[id]; rec != nil {
-		if rs := s.runs[rec.runID]; rs != nil && rs.pendingQuestionID == id {
-			rs.pendingQuestionID = ""
+		if rs := s.runs[rec.runID]; rs != nil {
+			if rs.pendingQuestionID == id {
+				rs.pendingQuestionID = ""
+			}
+			s.healMirroredQuestionWaitLocked(rs, id)
 		}
 	}
 	s.mu.Unlock()
@@ -10729,6 +10787,7 @@ func (s *InteractiveService) AnswerQuestion(questionID string, choice []string) 
 		restartStepID = rec.resolvingRestartStepID
 		restartPrompt = rec.resolvingRestartPrompt
 		restartGen = rec.resolvingRestartGen
+		s.healMirroredQuestionWaitLocked(s.runs[rec.runID], questionID)
 		s.mu.Unlock()
 	} else {
 		if len(choice) == 0 {
@@ -10797,6 +10856,7 @@ func (s *InteractiveService) AnswerQuestion(questionID string, choice []string) 
 					rs.pendingResumeQuestionChoices = append([]string(nil), choice...)
 				}
 			}
+			s.healMirroredQuestionWaitLocked(rs, questionID)
 		}
 		if restartRunID != "" {
 			if child := s.runs[restartRunID]; child != nil {
