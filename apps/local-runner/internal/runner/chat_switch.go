@@ -214,6 +214,13 @@ func (s *InteractiveService) switchChatProvider(ctx context.Context, chatID stri
 	if chatID == "" {
 		return chatSwitchResponse{}, newAPIErr(http.StatusBadRequest, "invalid_request", "chatId is required")
 	}
+	// BUG-466: the transcript stack is lazy (chatOnce) — restored legs never
+	// run createRun, so on a fresh process the first switch can be the first
+	// transcript-touching call. Without this, buildChatHandoffContext saw a
+	// nil writer and silently degraded to fresh_start: no seed turn, zero
+	// context on the new leg, and an E-9 record durably logging the wrong
+	// stats. Initialize before Phase A so heal paths can append too.
+	s.ensureChatTranscriptWriter()
 
 	// ---- Phase A (s.mu): heal, guards, durable intent, release -------------
 	s.mu.Lock()
