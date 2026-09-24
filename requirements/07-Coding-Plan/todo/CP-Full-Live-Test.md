@@ -118,9 +118,58 @@ No new reds → no post-rebase regression. ✅ GATE PASS.
   (featureKey `str-utils`). **BUG-456 found live**: build artifacts counted as
   frozen-scope drift (CA-427 F2 dropped the IsBinaryOrBuildArtifact clause) —
   fixed via CA-953, 3 additive tests.
+- **run-13080 (bug-harness, devin)**: reproduce_test wrote
+  `strutil_combining_test.go` (RED confirmed FAIL on combining-mark bug) →
+  implement wrote grapheme-cluster fix + own CA note → implement parked on
+  **BUG-457**: the runner's own `.flowpilot/logs/**` diag output counted as
+  scope drift (append-only mid-turn write → fingerprint subtraction never
+  matches → dead park). Fixed via CA-954; run cancelled on runner restart
+  (same parked-run observation as run-94).
+- **run-14071 (bug-harness, devin impl / grok review) — CLEAN FULL PASS on
+  fixed binary**: injected RI-flag bug (regional-indicator clause removed
+  from `graphemeExtends`; baseline green, flag reversal scrambles) →
+  `reproduce_test` wrote `strutil_flag_test.go` (9 cases incl. odd-RI
+  singletons — RED confirmed FAIL) → `implement` restored RI clause + wrote
+  `CA-002-str-utils.md` itself → `validate` green → `reviewer` grok approved
+  → `synthesis` → `audit` DONE 03:47:01Z. **Zero parks** — BUG-456/457 fixes
+  verified live (no artifact/diag-log drift). CP-64 RED→GREEN chain fully
+  exercised end-to-end.
+- **run-16653 (tournament-harness, codex gpt-5.4 hub) — parity observation**:
+  Flow-Mode launch via `workflowId: <canonical flowRef>` works (BUG-426
+  flow-steps-from-definition path; `runKind:workflow`, steps seeded from
+  nodes). `problem_scout` delegate completed → hub synthesis turn on codex
+  finished in prose *twice* without calling `flowpilot_submit_review_outcome`
+  even though the DynamicToolSpec was advertised (`OfferReviewOutcomeTool`
+  gate true — BUG-226 escalate fired correctly both times, loopState
+  blocked + "(no progress since last continue)"). Devin hub calls the tool
+  reliably; codex gpt-5.4 hub ignored it — watch whether this recurs
+  (possible prompt/tool-name drift: prompt says `submit_review_outcome`,
+  codex tool is `flowpilot_submit_review_outcome`; devin's MCP name is
+  `mcp__flowpilot__submit_review_outcome`).
+- **run-16693 (tournament-harness, devin hub) → BUG-458 (found live)**:
+  scout completed but `parallel_rollout` never dispatched — diag showed
+  `flow_advance_target_not_spawnable behavior=""`. Root cause: the active
+  definition came from the **Supabase mirror** (service-role key in
+  keychain → `FlowDefinitionStoreFor` non-nil), and
+  `recordFromWorkflowRow`/`upsertNodeStepDefinitions` never round-trip
+  `run`/`posture`/`contextProfile`/`config` (no `step_definitions`
+  columns). `parallel_rollout` is behaviorless — identified ONLY by
+  `run: inline` — so the rollout passthrough rejected it. Verified against
+  Supabase directly (mirror row `behavior_id=null`, no run field) while a
+  probe of the embedded pack returned `passthrough ok=true`.
+  **Fixed (CA-955, db027d8e)**: builtin mirrors restore pack-declared
+  `run`/`posture`/`context_profile`/`config` from the embedded pack; all
+  rows derive `run` from behavior when still empty (`agent.*`→delegate,
+  else inline). 3 additive tests.
+- **⚠ Corollary (BUG-458)**: every earlier mirrored-flow live run
+  (run-6893, run-13080, run-14071 — all resolved via mirror) executed with
+  `posture`/`contextProfile`/`config` silently dropped. Concrete impact:
+  bug-harness `posture: read_only` nodes ran unrestricted, and tournament
+  `max_attempts: 2` degraded to the 1 default. Posture-enforcement and
+  retry-cap live rows must be re-verified on the CA-955 build.
 - **Dispatch durability (CP-51)**: `prepared → send_claimed → send_started →
   terminal_completed` chain with envelope hashes observed on every provider
-  turn across run-1/run-94/run-6893 records.
+  turn across run-1/run-94/run-6893/run-14071 records.
 
 Evidence convention: every row gets runId + log line / artifact path. UI-only rows are
 marked `UI` — backend evidence still required where noted.
@@ -165,7 +214,7 @@ marked `UI` — backend evidence still required where noted.
 
 | ID | Case | Pass criteria | Auto | Status |
 |----|------|---------------|------|--------|
-| A-64-1 | RED→lock→GREEN on real bug | `bug-harness`: reproducer writes failing test → `r-reproduce` passes → test file locked read-only (abs+rel paths, BUG-388) → implement can't touch it → GREEN → done; outer run settles terminal (was stuck-running) | `internal/flowgate` + e2e | ☐ RE-VERIFY |
+| A-64-1 | RED→lock→GREEN on real bug | `bug-harness`: reproducer writes failing test → `r-reproduce` passes → test file locked read-only (abs+rel paths, BUG-388) → implement can't touch it → GREEN → done; outer run settles terminal (was stuck-running) | `internal/flowgate` + e2e | ☑ run-14071: RED `strutil_flag_test.go` confirmed FAIL → implement fixed RI clause (test file untouched) → validate green → audit DONE; run-13080: same RED leg on combining marks + child-authored CA note |
 | A-64-2 | False alarm → fail-closed | green-on-arrival → reprompt "suite passed…not reproduced"; implement PENDING; cap reachable (BUG-391) | oracle suite | ☐ RE-VERIFY |
 | A-64-3 | Compile-error wording | reprompt says "failed to compile" not "suite passed" (`[setup failed]` signature) | `classify_probe_test.go` | ☐ |
 | A-64-4 | Gate gaming | fabricated RED (doesn't call target) rejected (BUG-389); tampered test dropped (BUG-387); lock bypass attempts denied (BUG-388/396/397) | `bug386..398` files | ☐ |

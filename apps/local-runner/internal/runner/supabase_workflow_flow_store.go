@@ -293,8 +293,89 @@ func recordFromWorkflowRow(row dbWorkflowRow) FlowDefinitionRecord {
 		}
 		def.Nodes = append(def.Nodes, node)
 	}
+	// BUG-458: step_definitions has no column for a node's `run`,
+	// `posture`, `context_profile`, or free-form `config:` map, so every
+	// mirrored definition used to drop them. The tournament-harness
+	// parallel_rollout marker is behaviorless and identified ONLY by
+	// run:inline — reconstructed as "", the executor's rollout passthrough
+	// rejected it and the flow stalled after problem_scout (run-16693).
+	// For a built-in mirror the embedded pack is the authoritative source
+	// those fields were synced FROM (nothing admin-editable exists in the
+	// schema to override them), so restore them from the pack definition.
+	if row.IsBuiltin && row.PackID != nil && row.PackFlowID != nil {
+		if embedded := embeddedFlowNodesByID(*row.PackID, *row.PackFlowID); embedded != nil {
+			for i := range def.Nodes {
+				src, ok := embedded[def.Nodes[i].ID]
+				if !ok {
+					continue
+				}
+				n := &def.Nodes[i]
+				if n.Run == "" {
+					n.Run = src.Run
+				}
+				if n.Posture == "" {
+					n.Posture = src.Posture
+				}
+				if n.ContextProfile == "" {
+					n.ContextProfile = src.ContextProfile
+				}
+				if n.Config == nil {
+					n.Config = src.Config
+				}
+				// Model is a real column but mirror sync never writes the
+				// pack value (the column is reserved for admin overrides), so
+				// pack-declared `model:` is lost the same way. Restoring it
+				// only when the row carries none keeps admin precedence
+				// (resolveConfiguredModelForAgent consults the row first) and
+				// matches embedded resolution exactly — e.g. tournament
+				// candidates must spawn on their pack-declared providers.
+				if n.Model == "" {
+					n.Model = src.Model
+				}
+			}
+		}
+	}
+	// Non-builtin rows (cloned/user-authored) and builtin nodes missing from
+	// the embedded pack still need a valid `run`: it is never stored, so ""
+	// is never a correct reconstructed value. Derive it from the behavior —
+	// agent.* spawns a child (delegate); every other behavior and every
+	// behaviorless marker executes in-process (inline).
+	for i := range def.Nodes {
+		n := &def.Nodes[i]
+		if n.Run != "" {
+			continue
+		}
+		if canonical, ok := agentpack.NormalizeBehaviorID(n.Behavior); ok && strings.HasPrefix(canonical, "agent.") {
+			n.Run = "delegate"
+		} else {
+			n.Run = "inline"
+		}
+	}
 	rec.Definition = def
 	return rec
+}
+
+// embeddedFlowNodesByID returns the embedded pack's node set for
+// packID/flowID keyed by node id, or nil when the flow is not a built-in
+// pack flow (or the embedded pack fails to load). Used by
+// recordFromWorkflowRow to restore pack-declared node fields the
+// step_definitions schema cannot store (BUG-458).
+func embeddedFlowNodesByID(packID, flowID string) map[string]agentpack.FlowNode {
+	pack, err := agentpack.LoadBuiltinPack()
+	if err != nil || pack.Manifest.ID != packID {
+		return nil
+	}
+	for _, def := range pack.Flows {
+		if def.ID != flowID {
+			continue
+		}
+		nodes := make(map[string]agentpack.FlowNode, len(def.Nodes))
+		for _, n := range def.Nodes {
+			nodes[n.ID] = n
+		}
+		return nodes
+	}
+	return nil
 }
 
 func (s *SupabaseWorkflowFlowStore) fetchOne(ctx context.Context, query string) (FlowDefinitionRecord, bool, error) {
