@@ -5,11 +5,11 @@
 - Document ID: `BUG-368`
 - Title: `Sequential vibe-sprints on one run reuse the previous frozen contract so Task-911/912 cannot write new files`
 - Phase: `bugfix`
-- Status: `in_progress`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-09-10`
-- Last Updated: `2026-09-10`
+- Last Updated: `2026-09-24`
 - Parent Documents: [CP-60](../../07-Coding-Plan/done/CP-60-Vibe-Working-Mode.md), [CP-55](../../07-Coding-Plan/done/CP-55-Flow-First-Preflight-Contract-Context-Retrieval-And-Canonical-Acceptance.md)
 - Child Documents: `None`
 - Related Documents: [BUG-367](./BUG-367-Vibe-Task-Status-DoD-And-Progress-Chip.md), [CA-817](../../../change-audit/CA-817-Vibe-Sprint-Boundary-Continue-Gate.md)

@@ -5,11 +5,11 @@
 - Document ID: `BUG-366`
 - Title: `Allow on doc/audit frozen-scope drift 422s — change-audit/FEATURE-KEYS.md cannot widen scope`
 - Phase: `bugfix`
-- Status: `in_progress`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-09-10`
-- Last Updated: `2026-09-10`
+- Last Updated: `2026-09-24`
 - Parent Documents: [Task-309: TUI And Desktop Retry/Stop/Allow For Frozen-Contract Drift](../../08-Task/done/Task-309-TUI-Desktop-Retry-Stop-Allow-For-Frozen-Contract-Drift.md), [Task-266: Enforce Frozen Scope At Coder Gate And Amendments](../../08-Task/done/Task-266-Enforce-Frozen-Scope-At-Coder-Gate-And-Amendments.md), [CP-55](../../07-Coding-Plan/done/CP-55-Flow-First-Preflight-Contract-Context-Retrieval-And-Canonical-Acceptance.md)
 - Child Documents: `None`
 - Related Documents: [CA-427](../../../change-audit/CA-427-enforce-frozen-scope-at-coder-gate-and-amendments.md), [BUG-278](../done/) (CA notes exempt; FEATURE-KEYS.md is not), [BUG-327](../done/)

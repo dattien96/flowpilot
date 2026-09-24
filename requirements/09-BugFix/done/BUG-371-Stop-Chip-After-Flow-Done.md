@@ -5,11 +5,11 @@
 - Document ID: `BUG-371`
 - Title: `Composer still shows [stop] when the loop is done (task 3/3 · [stop] · done)`
 - Phase: `bugfix`
-- Status: `in_progress`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-09-11`
-- Last Updated: `2026-09-11`
+- Last Updated: `2026-09-24`
 - Parent Documents: [CP-60](../../07-Coding-Plan/done/CP-60-Vibe-Working-Mode.md)
 - Child Documents: `None`
 - Related Documents: [CA-537](../../../change-audit/), run-189839 settle chrome

@@ -5,7 +5,7 @@
 - Document ID: `BUG-363`
 - Title: `Vibe ingest writer outputs unverified — cp_writer wrong path + slicer silent fallback (run-635006)`
 - Phase: `bugfix`
-- Status: `in_progress`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-09-09`

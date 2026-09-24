@@ -5,11 +5,11 @@
 - Document ID: `BUG-369`
 - Title: `/agents` picker repeats the same names (3× coder, 3× preflight_contract_plan) with no task x/y`
 - Phase: `bugfix`
-- Status: `in_progress`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-09-10`
-- Last Updated: `2026-09-10`
+- Last Updated: `2026-09-24`
 - Parent Documents: [CP-60](../../07-Coding-Plan/done/CP-60-Vibe-Working-Mode.md), [BUG-367](./BUG-367-Vibe-Task-Status-DoD-And-Progress-Chip.md)
 - Child Documents: `None`
 - Related Documents: [CA-822](../../../change-audit/CA-822-Vibe-Task-DoD-And-Progress-Chip.md)

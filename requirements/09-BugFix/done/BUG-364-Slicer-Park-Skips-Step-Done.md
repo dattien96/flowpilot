@@ -5,7 +5,7 @@
 - Document ID: `BUG-364`
 - Title: `Slicer park skips step DONE — tryAdvance parks before stamping the completed node (run-640953)`
 - Phase: `bugfix`
-- Status: `in_progress`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-09-09`
