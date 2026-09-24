@@ -216,8 +216,12 @@ type interactiveRun struct {
 	// workingMode is Task-326 local SSOT ("dev"|"vibe"); empty reconstructs as dev.
 	workingMode string
 	// Task-321: CP lock + sequential vibe-sprint queue (local only).
-	vibeAwaitingLock        bool
-	vibeTaskPlan            []string
+	vibeAwaitingLock bool
+	vibeTaskPlan     []string
+	// BUG-468: CP document id (e.g. "CP-02") this run's task set belongs to.
+	// Scopes collectVibeTaskPlan so foreign/stale Task files never join the
+	// sprint plan. Empty = legacy unscoped (pre-fix runs, fixtures).
+	vibeCpDocID             string
 	vibeSprintIndex         int
 	vibeSprintBudget        int
 	vibeLockedCP            string
@@ -4631,6 +4635,7 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 		WorkingMode:                rs.workingMode,
 		VibeAwaitingLock:           rs.vibeAwaitingLock,
 		VibeTaskPlan:               append([]string(nil), rs.vibeTaskPlan...),
+		VibeCpDocID:                rs.vibeCpDocID,
 		VibeSprintIndex:            rs.vibeSprintIndex,
 		VibeSprintBudget:           rs.vibeSprintBudget,
 		VibeSprintBoundaryDeclined: rs.vibeSprintBoundaryDeclined,

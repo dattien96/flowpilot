@@ -154,6 +154,7 @@ type ProviderSessionState struct {
 	// Task-321: vibe lock + sequential sprint queue (sessions.ndjson only).
 	VibeAwaitingLock           bool
 	VibeTaskPlan               []string
+	VibeCpDocID                string
 	VibeSprintIndex            int
 	VibeSprintBudget           int
 	VibeSprintBoundaryDeclined bool

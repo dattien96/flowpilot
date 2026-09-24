@@ -981,6 +981,7 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 		workingMode:                     st.WorkingMode,
 		vibeAwaitingLock:                st.VibeAwaitingLock,
 		vibeTaskPlan:                    append([]string(nil), st.VibeTaskPlan...),
+		vibeCpDocID:                     st.VibeCpDocID,
 		vibeSprintIndex:                 st.VibeSprintIndex,
 		vibeSprintBudget:                st.VibeSprintBudget,
 		vibeSprintBoundaryDeclined:      st.VibeSprintBoundaryDeclined,

@@ -7,6 +7,7 @@ import (
 )
 
 var cpDocumentID = regexp.MustCompile("(?i)Document ID:\\s*`?CP-[0-9]+")
+var cpDocumentIDValue = regexp.MustCompile("(?i)Document ID:\\s*`?(CP-[0-9]+)")
 
 // IsCodingPlanCPPath reports whether p is requirements/07-Coding-Plan/**/CP-*.md.
 func IsCodingPlanCPPath(p string) bool {
@@ -26,6 +27,16 @@ func IsCodingPlanCPPath(p string) bool {
 // HasCPDocumentID reports SS-13 CP frontmatter Document ID: CP-*.
 func HasCPDocumentID(content string) bool {
 	return cpDocumentID.MatchString(content)
+}
+
+// CPDocumentID extracts the normalized CP-* value from Document ID: CP-*
+// frontmatter (uppercased, e.g. "CP-02"). Empty when absent.
+func CPDocumentID(content string) string {
+	m := cpDocumentIDValue.FindStringSubmatch(content)
+	if len(m) < 2 {
+		return ""
+	}
+	return strings.ToUpper(m[1])
 }
 
 // RejectNonCP is the deterministic /vibe-cp rejection (path + optional body).

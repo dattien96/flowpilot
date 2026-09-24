@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -250,6 +251,25 @@ func collectLatestVibeCP(cwd string) string {
 	return filepath.ToSlash(rel)
 }
 
+// vibeCPIDForPath reads the CP document at rel (cwd-relative or absolute) and
+// returns its Document ID value (e.g. "CP-02"). Best-effort — empty on any
+// failure, matching collectLatestVibeCP's tolerate-missing contract.
+func vibeCPIDForPath(cwd, rel string) string {
+	rel = strings.TrimSpace(rel)
+	if rel == "" {
+		return ""
+	}
+	abs := rel
+	if !filepath.IsAbs(abs) && strings.TrimSpace(cwd) != "" {
+		abs = filepath.Join(cwd, filepath.FromSlash(rel))
+	}
+	b, err := os.ReadFile(abs)
+	if err != nil {
+		return ""
+	}
+	return workingmode.CPDocumentID(string(b))
+}
+
 // vibeCPArtifactsPresent reports whether a non-empty CP-*.md exists under the
 // coding-plan tree. Empty cwd = unknown/present (Task-328 / Task-327 T-1).
 func vibeCPArtifactsPresent(cwd string) bool {
@@ -364,12 +384,13 @@ func (s *InteractiveService) maybeParkVibeCpJoinResume(parentRunID string) bool 
 	// Already joined cp-ingest with Tasks → nothing to park here.
 	cwd := rs.workspaceCwd
 	bare := workingmode.BareFlowID(rs.chatFlowRef)
+	cpID := rs.vibeCpDocID
 	s.mu.Unlock()
 
 	if !vibeCPArtifactsPresent(cwd) || !vibeSSLockArtifactsPresent(cwd, rs) {
 		return false
 	}
-	if len(collectVibeTaskPlan(cwd)) > 0 {
+	if len(collectVibeTaskPlanForCP(cwd, cpID)) > 0 {
 		return false
 	}
 	// vibe-cp-ingest without Tasks yet: still need Resume → task_slicer.
@@ -434,6 +455,10 @@ func (s *InteractiveService) validateVibeCpIngestSource(rs *interactiveRun, in T
 		return newAPIErr(http.StatusUnprocessableEntity, "invalid_cp_source",
 			fmt.Sprintf("vibe-cp-ingest source %q is not a CP document (missing `Document ID: CP-*`)", src))
 	}
+	// BUG-468: pin the ingested CP so the sprint plan and every "this run's
+	// tasks" presence check scope to tasks parented to this document —
+	// foreign/stale Task files on a shared bed must never join the plan.
+	rs.vibeCpDocID = workingmode.CPDocumentID(string(b))
 	return nil
 }
 
@@ -485,6 +510,7 @@ func (s *InteractiveService) restartVibeTaskSlicerForMissingTasks(parentRunID st
 	bare := workingmode.BareFlowID(rs.chatFlowRef)
 	plan := append([]string(nil), rs.vibeTaskPlan...)
 	cpNode := rs.vibeCheckpointNode
+	cpID := rs.vibeCpDocID
 	s.mu.Unlock()
 
 	// Empty cwd = unknown (Task-327 T-1 / CA-770 reconstruct fixtures).
@@ -494,7 +520,7 @@ func (s *InteractiveService) restartVibeTaskSlicerForMissingTasks(parentRunID st
 	if !vibeCPArtifactsPresent(cwd) {
 		return false
 	}
-	if len(collectVibeTaskPlan(cwd)) > 0 {
+	if len(collectVibeTaskPlanForCP(cwd, cpID)) > 0 {
 		return false
 	}
 	// Require evidence we already passed slicer / entered sprint — not mere
@@ -587,6 +613,12 @@ func (s *InteractiveService) forceStartVibeTaskSlicer(parentRunID string) {
 	if prompt == "" {
 		prompt = "requirements/07-Coding-Plan/todo/"
 	}
+	// BUG-468: the slicer consumes this CP — pin its Document ID so the sprint
+	// plan scopes to tasks parented to it (live run-91517/91606 sprinted a
+	// stale calc task under a snake CP on a shared bed).
+	if id := vibeCPIDForPath(cwd, prompt); id != "" {
+		rs.vibeCpDocID = id
+	}
 	rs.vibeAwaitingLock = false
 	rs.vibeResumeConfirm = false
 	rs.vibeResumeFromNode = ""
@@ -653,6 +685,52 @@ func collectVibeTaskPlan(cwd string) []string {
 		out = append(out, filepath.ToSlash(rel))
 	}
 	return out
+}
+
+var vibeTaskParentDocsLine = regexp.MustCompile(`(?im)^\s*-?\s*Parent Documents\s*:(.*)$`)
+var vibeTaskCPRef = regexp.MustCompile(`CP-[0-9]+`)
+
+// collectVibeTaskPlanForCP is the BUG-468 scoped variant: only tasks whose
+// `Parent Documents` metadata line names cpID belong to this run's plan.
+// The Parent-Documents line alone is parsed — a Related-Documents mention of
+// another CP (Task-12 names CP-01 as a prior plan) must not pull the task in.
+// Empty cpID returns the legacy unscoped glob so pre-fix runs and fixtures
+// keep identical behavior.
+func collectVibeTaskPlanForCP(cwd, cpID string) []string {
+	cpID = strings.ToUpper(strings.TrimSpace(cpID))
+	if cpID == "" {
+		return collectVibeTaskPlan(cwd)
+	}
+	all := collectVibeTaskPlan(cwd)
+	out := make([]string, 0, len(all))
+	for _, rel := range all {
+		b, err := os.ReadFile(filepath.Join(cwd, filepath.FromSlash(rel)))
+		if err != nil {
+			continue
+		}
+		m := vibeTaskParentDocsLine.FindSubmatch(b)
+		if len(m) < 2 {
+			continue
+		}
+		for _, ref := range vibeTaskCPRef.FindAll(m[1], -1) {
+			if strings.ToUpper(string(ref)) == cpID {
+				out = append(out, rel)
+				break
+			}
+		}
+	}
+	return out
+}
+
+// collectVibeSprintPlanForCP scopes the sprint plan the same way; unlike
+// collectVibeSprintPlan there is no SS fallback — a scoped run whose slicer
+// produced no matching tasks must hit the fail-closed park, never sprint a
+// fallback plan.
+func collectVibeSprintPlanForCP(cwd, cpID string) []string {
+	if strings.TrimSpace(cpID) == "" {
+		return collectVibeSprintPlan(cwd)
+	}
+	return collectVibeTaskPlanForCP(cwd, cpID)
 }
 
 func collectVibeSprintPlan(cwd string) []string {
@@ -752,12 +830,13 @@ func (s *InteractiveService) onVibeCpNodeDone(parentRunID, completedNodeID strin
 		// unit shapes); the SS fallback in collectVibeSprintPlan itself is
 		// unchanged (pinned by CA-783).
 		s.mu.Lock()
-		var cwd string
+		var cwd, cpID string
 		if rs := s.runs[parentRunID]; rs != nil {
 			cwd = rs.workspaceCwd
+			cpID = rs.vibeCpDocID
 		}
 		s.mu.Unlock()
-		if strings.TrimSpace(cwd) != "" && len(collectVibeTaskPlan(cwd)) == 0 {
+		if strings.TrimSpace(cwd) != "" && len(collectVibeTaskPlanForCP(cwd, cpID)) == 0 {
 			// BUG-364: stamp the completed node DONE before parking.
 			// tryAdvanceFlowFromNode calls onVibeCpNodeDone BEFORE its
 			// loop-liveness gate and DONE writes (flow_executor.go:1160 vs
@@ -766,7 +845,11 @@ func (s *InteractiveService) onVibeCpNodeDone(parentRunID, completedNodeID strin
 			// run-640953). Mirrors the cohort self-settle and the :1203
 			// terminal write. Unlocked variant: s.mu is not held here.
 			s.setFlowStepStatus(context.Background(), parentRunID, completedNodeID, StepStatusDone)
-			s.parkVibeRequirement(parentRunID, "task_slicer produced no Task files under requirements/08-Task/todo/; refusing to sprint from fallback")
+			reason := "task_slicer produced no Task files under requirements/08-Task/todo/; refusing to sprint from fallback"
+			if strings.TrimSpace(cpID) != "" {
+				reason = fmt.Sprintf("task_slicer produced no Task files parented to %s under requirements/08-Task/todo/; refusing to sprint foreign/stale tasks", cpID)
+			}
+			s.parkVibeRequirement(parentRunID, reason)
 			return
 		}
 		s.mu.Lock()
@@ -775,7 +858,9 @@ func (s *InteractiveService) onVibeCpNodeDone(parentRunID, completedNodeID strin
 			// Disk Tasks after slicer are authoritative. Always reload and
 			// reset cursor — keeping a non-empty stale plan skipped the
 			// reload and left vibeSprintIndex>0 (chip task 2/3, 904 draft).
-			if collected := collectVibeSprintPlan(rs.workspaceCwd); len(collected) > 0 {
+			// BUG-468: scope to this run's CP so foreign/stale Task files
+			// never enter the sprint plan (live run-91517/91606).
+			if collected := collectVibeSprintPlanForCP(rs.workspaceCwd, rs.vibeCpDocID); len(collected) > 0 {
 				rs.vibeTaskPlan = collected
 				rs.vibeSprintIndex = 0
 				rs.vibeSprintBoundaryPending = false

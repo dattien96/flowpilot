@@ -490,6 +490,7 @@ func (s *InteractiveService) forceStartVibeSprintAtTdd(parentRunID string) bool 
 		return false
 	}
 	cwd := rs.workspaceCwd
+	cpID := rs.vibeCpDocID
 	prompt := ""
 	// vibeSprintIndex is started-count (chip task N/M), NOT a 0-based plan
 	// index. Using it as plan[idx] started Task-905 while chip said 2/3 and
@@ -508,7 +509,7 @@ func (s *InteractiveService) forceStartVibeSprintAtTdd(parentRunID string) bool 
 	}
 	s.mu.Unlock()
 	if prompt == "" {
-		if tasks := collectVibeTaskPlan(cwd); len(tasks) > 0 {
+		if tasks := collectVibeTaskPlanForCP(cwd, cpID); len(tasks) > 0 {
 			prompt = tasks[0]
 		}
 	}

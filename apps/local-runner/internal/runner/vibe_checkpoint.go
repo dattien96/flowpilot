@@ -84,7 +84,13 @@ func collectVibeArtifactsForNode(cwd, nodeID string, rs *interactiveRun) []strin
 		}
 		return nil
 	case vibeTaskSlicerNodeID, vibeSprintSlicerNodeID:
-		return collectVibeTaskPlan(cwd)
+		// BUG-468: foreign/stale Task files must not mark this run's slicer
+		// layer complete on resume — scope to the run's CP when pinned.
+		var cpID string
+		if rs != nil {
+			cpID = rs.vibeCpDocID
+		}
+		return collectVibeTaskPlanForCP(cwd, cpID)
 	case "tdd", "audit":
 		if hasVibeTddSignatures(cwd) {
 			return []string{vibeTddSignaturesRel}
