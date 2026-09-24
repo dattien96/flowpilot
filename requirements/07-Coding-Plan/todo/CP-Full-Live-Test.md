@@ -100,21 +100,27 @@ No new reds → no post-rebase regression. ✅ GATE PASS.
   normalizes to `cancelled` on reconstruct — parked-at-gate runs do NOT
   survive runner restart; noted as observation, flagged for review whether
   parked-but-resumable should persist.
-- **run-6893 (devin/swe-2-high, task-harness, explicit `cwd`)**: clean plan
-  path — `preflight_contract_plan`→`context`→`plan_writer`→`plan_reviewer`→
-  `plan_synthesis`→`preflight_contract_freeze` all DONE first pass (no churn →
-  no Task-325 park) → `test_signatures` wrote `strutil.go` stubs
+- **run-6893 (devin/swe-2-high, task-harness, explicit `cwd`) — FIRST FULL
+  HAPPY-PATH COMPLETION**: `preflight_contract_plan`→`context`→`plan_writer`→
+  `plan_reviewer`→`plan_synthesis`→`preflight_contract_freeze` DONE first pass
+  (no churn → no Task-325 park) → `test_signatures` wrote `strutil.go` stubs
   (`panic("not implemented")`) + `strutil_test.go` RED tests (failures
-  confirmed) → scaffold child ran bare `go build`, emitted a `livebed` binary
-  at repo root → **scope-drift gate fired** ("wrote outside the frozen
-  contract's declared paths: livebed") → park `awaiting_user` → operator
-  deleted the artifact + Continued with feedback (use `go vet`/`go test`,
-  never bare `go build`) → child re-verified clean → gate passed →
-  `test_signatures` DONE → `implement` RUNNING. Drift-detect → operator-
-  resolve → re-gate chain live-verified.
+  confirmed) → **scope-drift gate fired** on bare-root `livebed` binary from
+  the child's `go build` → park → operator deleted artifact + Continued with
+  steer → gate passed → `implement` filled bodies only (rune-aware Reverse,
+  letter-normalizing IsPalindrome — signatures preserved, CP-67 lock held) →
+  implement hit the SAME binary park once (child re-ran `go build`) → resolved
+  identically → `validate` ran real `go test ./...` against baseline → green
+  DONE → `reviewer` (grok-4.5, cross-provider cohort) approved → `synthesis`
+  DONE → `synthesis_negotiation` SKIPPED → `audit` tier-3 blocked on missing
+  `change-audit/CA-*.md` (r-ca backstop live-verified) → operator supplied
+  CA-001 → re-observe → `audit` DONE 03:11:01Z — `flow_audit_draft` persisted
+  (featureKey `str-utils`). **BUG-456 found live**: build artifacts counted as
+  frozen-scope drift (CA-427 F2 dropped the IsBinaryOrBuildArtifact clause) —
+  fixed via CA-953, 3 additive tests.
 - **Dispatch durability (CP-51)**: `prepared → send_claimed → send_started →
   terminal_completed` chain with envelope hashes observed on every provider
-  turn across run-1/run-94 records.
+  turn across run-1/run-94/run-6893 records.
 
 Evidence convention: every row gets runId + log line / artifact path. UI-only rows are
 marked `UI` — backend evidence still required where noted.
@@ -127,7 +133,7 @@ marked `UI` — backend evidence still required where noted.
 
 | ID | Case | Steps → Pass criteria | Auto cover | Status |
 |----|------|-----------------------|------------|--------|
-| A-58-1 | task-harness happy path | `/flow task-harness` + GCD-style prompt (calc-core) → scout→context→plan_writer→plan_reviewer→plan_synthesis→freeze→test_signatures→implement→validate→reviewer→synthesis→audit→done. Writer/reviewer prompts contain "Templated file outputs" / "Bound input artifacts"; reviewer calls `submit_review_outcome` | e2e in runner suite | ◑ run-94: through `implement`, validate dead-parked → BUG-455 (fixed, CA-952). run-6893 (cwd set): plan→freeze→test_signatures→implement all DONE incl. drift-gate round-trip; validate→audit legs pending |
+| A-58-1 | task-harness happy path | `/flow task-harness` + GCD-style prompt (calc-core) → scout→context→plan_writer→plan_reviewer→plan_synthesis→freeze→test_signatures→implement→validate→reviewer→synthesis→audit→done. Writer/reviewer prompts contain "Templated file outputs" / "Bound input artifacts"; reviewer calls `submit_review_outcome` | e2e in runner suite | ☑ run-6893: full chain DONE→audit 03:11:01Z; audit draft persisted (str-utils). run-94: through `implement`, validate dead-parked → BUG-455 (fixed, CA-952) |
 | A-58-2 | Plan loop reject→re-entry same session | Force `changes_requested` (ask plan to include benchmark) → `flow_control_hub_done_continue_on_review_verdict`, writer re-enters **same** child; context/freeze stay DONE | `TestCP61HubDone/plan_synthesis_changes_requested_continues` | ☑ run-94: reviewer `changes_requested` → `plan_writer` re-entered on same child run-235 (rounds 2–4), `context`/freeze untouched |
 | A-58-3 | Code loop isolated from plan loop | Force code reject → implement re-entry; `plan_*` + freeze remain DONE | unit matrix | ☐ |
 | A-58-4 | Round cap 3 → escalate | Force 3 rejects → `blocked`/escalate card, no 4th round (was never forced live) | `agent_orchestrator_test.go` cap | ☐ DEFERRED-LIVE |
@@ -139,7 +145,7 @@ marked `UI` — backend evidence still required where noted.
 
 | ID | Case | Pass criteria | Auto | Status |
 |----|------|---------------|------|--------|
-| A-61-1 | All 3 hubs gate on cohort verdict | task-harness live run: `plan_synthesis` needs `plan_reviewer` PASS; `synthesis` needs `reviewer` PASS → audit; wrong-cohort PASS doesn't unlock | `TestCP61HubDone` 13×3 providers | ◑ run-94: plan_synthesis consumed plan_reviewer verdicts (changes_requested→blocked→approved arc observed); code-loop `synthesis` leg pending |
+| A-61-1 | All 3 hubs gate on cohort verdict | task-harness live run: `plan_synthesis` needs `plan_reviewer` PASS; `synthesis` needs `reviewer` PASS → audit; wrong-cohort PASS doesn't unlock | `TestCP61HubDone` 13×3 providers | ☑ run-6893: `synthesis` consumed grok reviewer approved-verdict → audit; run-94: plan_synthesis consumed devin plan_reviewer arc |
 | A-61-2 | Missing verdict → escalate | `flow_control_rejected_missing_review_verdict`; never freeze/audit | unit | ☐ (live optional — rare) |
 | A-61-3 | cp-harness reject path live | cp_reviewer `changes_requested` → writer re-entry (deferred from M-wave) | unit 2.4 | ☐ DEFERRED-LIVE |
 | A-61-4 | Non-harness chat unaffected | plain chat → no hub events | `normal_chat_unaffected` | ☐ |
@@ -168,7 +174,7 @@ marked `UI` — backend evidence still required where noted.
 
 | ID | Case | Pass criteria | Auto | Status |
 |----|------|---------------|------|--------|
-| A-67-1 | Happy path on devin + one more provider | scaffold stubs + RED → contract v1 hash-pinned → body-only fill → signature lock holds → validate green → audit → done | P-1..P-4 unit battery | ◑ run-6893: stubs `panic("not implemented")` + RED tests confirmed live; body-fill/validate/audit pending |
+| A-67-1 | Happy path on devin + one more provider | scaffold stubs + RED → contract v1 hash-pinned → body-only fill → signature lock holds → validate green → audit → done | P-1..P-4 unit battery | ☑ run-6893 devin leg: stubs+RED → body-only fill → validate green → audit done. Second-provider leg still open |
 | A-67-2 | **r-signature-lock arms** (was BUG-LIVE-CP67-1 CRITICAL) | frozen contract record must be the hash-bearing one; violation (rename/additive fn) → reprompt, not silent ship | `bug386_*` + `TestRuleSignatureLock*` | ☐ RE-VERIFY CRITICAL |
 | A-67-3 | Gate rejections | real-logic scaffold → r-scaffold-red; all-green → reject; compile-broken → compile wording; locked-test edit denied | `TestRuleScaffoldRed*` ×15 | ☐ |
 | A-67-4 | Renegotiation | `renegotiate_signatures` offered to coder → record-only → `synthesis_negotiation` → round++ → cap 5 escalate; owner-debate resolves (BUG-411) | unit | ☐ RE-VERIFY |
@@ -258,10 +264,10 @@ marked `UI` — backend evidence still required where noted.
 | C-23-2 | 23 | Drift ladder + single pause | failing turns → score events → `drift_pause_required` once at ≥80 → continue resumes | driftdetect + `bug430_*` | ☐ |
 | C-23-3 | 23 | Vibe non-pause | same ladder in vibe → no pause | unit | ☐ |
 | C-23-4 | 23 | Skillpack install | `.agents/skills` + `.claude/skills` populated, `version:` markers (BUG-415) | skillpack tests | ☐ |
-| C-35-1 | 35 | Feature resolve + history | "improve calc-core" → verified confidence, newest-last prior work | featurecatalog | ☐ |
-| C-35-2 | 35 | r-ca gate | no CA note → reprompt→block; CA written → pass | runner gate tests | ☐ |
+| C-35-1 | 35 | Feature resolve + history | "improve calc-core" → verified confidence, newest-last prior work | featurecatalog | ◑ run-6893: feature `str-utils` resolved; canonical.head/history sections empty (first-run feature — correct degrade), change.contract section carried declared scope |
+| C-35-2 | 35 | r-ca gate | no CA note → reprompt→block; CA written → pass | runner gate tests | ☑ run-6893: audit tier-3 blocked done on missing CA note → operator wrote CA-001 → re-observe → audit DONE |
 | C-35-3 | 35 | Oracle regression block | break pre-existing test → `regression_test_broke` | flowgate | ☐ |
-| C-37-1 | 37 | History + CA inject on **all** providers incl. devin | prompt artifact contains feature-history block (BUG-376 allowlist) | unit | ☐ |
+| C-37-1 | 37 | History + CA inject on **all** providers incl. devin | prompt artifact contains feature-history block (BUG-376 allowlist) | unit | ◑ run-6893: flow_context_package events persisted per node (fcp-071af78c context, fcp-557a1ad5 test_signatures); change.contract + source.dependence sections observed in prompt artifacts |
 | C-37-2 | 37 | Unknown feature key degrade | reprompt once, no crash | unit | ☐ |
 | C-37-3 | 37 | Sticky/pivot + no cross-feature mixing | calc-core vs calc-format isolation | unit D/G | ☐ |
 | C-54-1 | 54 | changed_paths in ledger + locus builder (frozen/diff/empty) + ranked history + `[context-rank]` tiers + chat.summary recency | runner.log 3-tier rank; locus correct | contextsync | ☐ |
