@@ -664,7 +664,11 @@ export interface AppState {
   /** CP-84 (Task-431 T-3): submit one inbox decision — ID-scoped to the
    *  decision's own runId/id, never the focused run. On failure: toast +
    *  history refresh; the item stays in the queue. */
-  submitAttentionDecision(runId: string, decision: DecisionPayload, choice: string, customText?: string): Promise<boolean>;
+  submitAttentionDecision(runId: string, decision: DecisionPayload, choice: string, customText?: string, confirm?: boolean): Promise<boolean>;
+  /** Task-435: cancel a pending worktree-resolve confirm (back to mode buttons). */
+  dismissWorktreeConfirm(runId: string): void;
+  /** Task-436: dismiss a pending worktree-resolve conflict state. */
+  dismissWorktreeConflict(runId: string): void;
   /** CP-84 (Task-434 T-3): push a synthetic attention item for a non-focused
    *  modal-source event — the inbox replaces a would-be modal hijack. */
   ingestAttentionItem(item: AttentionItem): void;
@@ -2451,7 +2455,7 @@ export const useStore = create<AppState>((set, get) => ({
     attentionQueue.ingestAttentionItem(item);
   },
 
-  async submitAttentionDecision(runId, decision, choice, customText) {
+  async submitAttentionDecision(runId, decision, choice, customText, confirm) {
     const { client } = get();
     // ID-scoped: every call targets `runId`/the decision's own record id —
     // never get().runId (the focused run). (Task-431 constraint)
@@ -2522,17 +2526,65 @@ export const useStore = create<AppState>((set, get) => ({
           return true;
         case "worktree_merge":
           if (!client.resolveWorktreeMerge) return fail(new Error("client lacks resolveWorktreeMerge"));
-          await client.resolveWorktreeMerge(runId, choice);
+          await client.resolveWorktreeMerge(runId, choice, confirm === true);
           attentionQueue.evict(runId);
           return true;
         default:
           return false;
       }
     } catch (err) {
+      // Task-435 T-4: a dirty-worktree resolve answers 409 requiresConfirm —
+      // an explicit-confirmation request, not a failure. Flip the inbox card
+      // to a confirm step; Proceed resends with confirm:true.
+      if (
+        decision.kind === "worktree_merge" &&
+        err instanceof RunnerApiError &&
+        err.status === 409 &&
+        (err.details as { requiresConfirm?: boolean } | undefined)?.requiresConfirm === true
+      ) {
+        const det = (err.details ?? {}) as { uncommitted?: string[]; untracked?: string[] };
+        attentionQueue.setWorktreeConfirm(runId, {
+          mode: choice,
+          files: [...(det.uncommitted ?? []), ...(det.untracked ?? [])],
+          message: err.message,
+        });
+        return true;
+      }
+      // Task-436 T-2: an apply_patch conflict answers 409 with
+      // conflictPaths + patchArtifactRef — surface them in-card (fix the
+      // files, then Retry), not a toast. The wire body carries
+      // conflict:true rather than a code field (handleWorktreeResolve writes
+      // the evidence map bare), so detect on details first.
+      if (
+        decision.kind === "worktree_merge" &&
+        err instanceof RunnerApiError &&
+        err.status === 409 &&
+        ((err.details as { conflict?: boolean } | undefined)?.conflict === true ||
+          err.code === "worktree_merge_conflict")
+      ) {
+        const det = (err.details ?? {}) as { conflictPaths?: string[]; patchArtifactRef?: string; reason?: string };
+        attentionQueue.setWorktreeConflict(runId, {
+          mode: choice,
+          conflictPaths: det.conflictPaths ?? [],
+          patchRef: det.patchArtifactRef ?? "",
+          // On the wire the body has no error.message — err.message is just
+          // "Conflict" (statusText); the real reason lives in details.reason.
+          message: det.reason || err.message || "merge conflict",
+        });
+        return true;
+      }
       return fail(err);
     } finally {
       attentionQueue.clearActing(runId);
     }
+  },
+
+  dismissWorktreeConfirm(runId) {
+    attentionQueue.clearWorktreeConfirm(runId);
+  },
+
+  dismissWorktreeConflict(runId) {
+    attentionQueue.clearWorktreeConflict(runId);
   },
 
   async chooseDecisionOption(itemId, optionId) {
@@ -3977,6 +4029,18 @@ function startRunUpdatesStream(
 
 const MUX_BACKOFF_MIN_MS = 500;
 const MUX_BACKOFF_MAX_MS = 30_000;
+
+// KR-005 test seam: drives/stops the reconnect loop deterministically from
+// unit tests without tripping the once-only muxUpdatesStarted flag. The seam
+// only wraps existing behavior — production wiring still goes through
+// startRunUpdatesStream.
+export const runUpdatesLoopTestHooks = {
+  consume: (client: RunnerClient, set: (fn: (s: AppState) => Partial<AppState>) => void, get: () => AppState) =>
+    consumeRunUpdatesLoop(client, set, get),
+  stop: (): void => {
+    muxUpdatesController?.abort();
+  },
+};
 
 async function consumeRunUpdatesLoop(
   client: RunnerClient,

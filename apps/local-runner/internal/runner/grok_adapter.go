@@ -7,6 +7,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Task-207 (CP-46 P-3): the Grok provider adapter. Implements the
@@ -42,6 +43,11 @@ type grokAdapter struct {
 	mcpServer       *claudeMCPServer
 	mcpBaseURL      func() string
 	extraMCPServers func(yolo bool) map[string]claudeMcpServer
+
+	// mcpReadyTimeout bounds how long SendTurn withholds the prompt waiting for
+	// the MCP client to connect (tools/list). 0 => claudeMCPReadyDefaultTimeout.
+	// Tests set a small value because the scripted fake process never connects.
+	mcpReadyTimeout time.Duration
 
 	mu      sync.Mutex
 	bridges map[string]TurnBridge // sessionId -> active turn bridge
@@ -310,7 +316,7 @@ func (a *grokAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Turn
 	// same default timeout Claude uses; degrades to sending anyway on timeout
 	// rather than hanging the turn.
 	if mcpToken != "" {
-		_ = a.mcpServer.waitReady(ctx, mcpToken, claudeMCPReadyDefaultTimeout)
+		_ = a.mcpServer.waitReady(ctx, mcpToken, a.mcpReadyTimeout)
 	}
 
 	notif, err := a.dispatcher.registerSession(sessionID)

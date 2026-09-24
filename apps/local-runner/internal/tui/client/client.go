@@ -388,6 +388,48 @@ type RunSnapshot struct {
 	PendingGate     *GateInfo     `json:"pendingGate,omitempty"`
 	PendingApproval *ApprovalInfo `json:"pendingApproval,omitempty"`
 	PendingQuestion *QuestionInfo `json:"pendingQuestion,omitempty"`
+	// Task-437: nested worktree binding echo (state/path/branch/slug) so
+	// /wt-merge can show the live binding without trusting the badge cache.
+	Worktree *RunWorktreeInfo `json:"worktree,omitempty"`
+}
+
+// RunWorktreeInfo mirrors the run snapshot's worktree object (CP-71).
+type RunWorktreeInfo struct {
+	State  string `json:"state,omitempty"`
+	Path   string `json:"path,omitempty"`
+	Branch string `json:"branch,omitempty"`
+	Slug   string `json:"slug,omitempty"`
+}
+
+// WorktreeResolveResult mirrors POST /client/workflow-runs/{id}/worktree/resolve —
+// the success shape (worktreeState/branch/applied) plus the 409 confirm/conflict
+// evidence fields the body still carries (Task-437).
+type WorktreeResolveResult struct {
+	WorktreeState    string   `json:"worktreeState,omitempty"`
+	Branch           string   `json:"branch,omitempty"`
+	Applied          bool     `json:"applied,omitempty"`
+	Archived         bool     `json:"archived,omitempty"`
+	PriorChangesLost bool     `json:"priorChangesLost,omitempty"`
+	RequiresConfirm  bool     `json:"requiresConfirm,omitempty"`
+	Uncommitted      []string `json:"uncommitted,omitempty"`
+	Untracked        []string `json:"untracked,omitempty"`
+	Conflict         bool     `json:"conflict,omitempty"`
+	ConflictPaths    []string `json:"conflictPaths,omitempty"`
+	PatchArtifactRef string   `json:"patchArtifactRef,omitempty"`
+	Reason           string   `json:"reason,omitempty"`
+}
+
+// ResolveWorktree answers the merge decision for a run's worktree binding
+// (CP-71 SS-23). confirm=true is required for dirty keep_branch/discard —
+// without it the runner answers 409 requiresConfirm instead of proceeding.
+func (c *Client) ResolveWorktree(ctx context.Context, runID, mode string, confirm bool) (*WorktreeResolveResult, error) {
+	var out WorktreeResolveResult
+	err := c.postJSON(ctx, "/client/workflow-runs/"+neturl.PathEscape(runID)+"/worktree/resolve",
+		map[string]any{"mode": mode, "confirm": confirm}, &out)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 type GateInfo struct {
@@ -566,6 +608,10 @@ type APIError struct {
 	Status  int
 	Code    string
 	Message string
+	// Details carries the full response body — 409 confirm/conflict payloads
+	// expose requiresConfirm/uncommitted/conflictPaths at top level (Task-437,
+	// symmetric with the desktop RunnerApiError.details).
+	Details map[string]any
 }
 
 func (e *APIError) Error() string {
@@ -1717,6 +1763,10 @@ func (c *Client) methodJSONOn(hc *http.Client, ctx context.Context, method, path
 
 func parseAPIError(status int, body []byte) *APIError {
 	apiErr := &APIError{Status: status}
+	var raw map[string]any
+	if json.Unmarshal(body, &raw) == nil {
+		apiErr.Details = raw
+	}
 	var payload struct {
 		Error   any    `json:"error"`
 		Message string `json:"message"`

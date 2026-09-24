@@ -732,7 +732,9 @@ func TestListRemoteChatSessionsIncludesRecordsFromSameDriveRootWithDifferentProj
 	if len(summaries) != 2 {
 		t.Fatalf("expected both provider records from the selected Drive root, got %#v", summaries)
 	}
-	if summaries[0].ProviderKey != ProviderKeyClaude || summaries[1].ProviderKey != ProviderKeyCodex {
+	// listRemoteChatSessions sorts by UpdatedAt desc — the remote claude
+	// record is older, so the fresh local codex record leads.
+	if summaries[0].ProviderKey != ProviderKeyCodex || summaries[1].ProviderKey != ProviderKeyClaude {
 		t.Fatalf("expected Claude and Codex summaries, got %#v", summaries)
 	}
 }

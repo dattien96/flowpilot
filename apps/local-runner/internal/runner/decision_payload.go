@@ -354,7 +354,12 @@ func worktreeDecisionPayload(rs *interactiveRun) (DecisionPayload, bool) {
 			} else if v, ok := m["conflictPaths"].([]string); ok {
 				conflicts = v
 			}
-			if v, ok := m["patch_ref"].(string); ok {
+			// The merge-requested emitter writes `patchArtifactRef`
+			// (run_worktree_merge.go); keep the snake/short spellings so
+			// durable events written by any older build still project.
+			if v, ok := m["patchArtifactRef"].(string); ok {
+				patchRef = v
+			} else if v, ok := m["patch_ref"].(string); ok {
 				patchRef = v
 			} else if v, ok := m["patchRef"].(string); ok {
 				patchRef = v
@@ -912,4 +917,5 @@ func ssLockSyntheticFrame(g *ssLockGate) (RunRealtimeFrame, bool) {
 }
 
 // muxHeartbeatInterval keeps proxies/clients from idle-closing the mux.
-const muxHeartbeatInterval = 25 * time.Second
+// var (not const) so tests can shrink it — production value stays 25s.
+var muxHeartbeatInterval = 25 * time.Second

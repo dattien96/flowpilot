@@ -414,6 +414,9 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case worktreeMergeMsg:
+		return m.handleWorktreeMergeMsg(msg)
+
 	case chatPostureMsg:
 		if msg.Err != nil {
 			if m.chatPostureSaving {
@@ -3791,13 +3794,19 @@ func (m *AppModel) turnIsActive() bool {
 	// RUNNING child (screenshot: "done" + leftover [stop], possibly with a
 	// stale flowStepsActive) is not a turn the operator should Stop
 	// (BUG-371). A done loop with a still-RUNNING child still arms [stop].
-	if strings.EqualFold(strings.TrimSpace(m.flowLoopStatus), "done") && !m.hasLiveWorkingChild() {
+	// A pending send is live work too: the post-done follow-up's send→stream
+	// gap must keep [stop] armed (CA-544); turnSendPending was split from
+	// pendingPrompt in BUG-341 and must count here as well.
+	if strings.EqualFold(strings.TrimSpace(m.flowLoopStatus), "done") && !m.hasLiveWorkingChild() &&
+		m.pendingPrompt == "" && !m.turnSendPending {
 		return false
 	}
-	if m.question != nil || m.approval != nil || m.gate != nil {
+	// An open approval does NOT disarm [stop]: the underlying turn is still
+	// live and the operator may cancel instead of answering (chat_ux_actions).
+	if m.question != nil || m.gate != nil {
 		return false
 	}
-	if m.pendingPrompt != "" {
+	if m.pendingPrompt != "" || m.turnSendPending {
 		return true
 	}
 	// Dispatch operator attention (CP-51 Task-256): while an uncertain turn /
@@ -4467,9 +4476,16 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		}
 
 	case "/worktree", "/wt":
+		if len(args) > 0 && args[0] == "merge" {
+			return m, m.cmdWorktreeMerge(args[1:])
+		}
 		// CP-71: arm the next run for worktree isolation (per-chat toggle —
 		// a live binding pins the flag until merged/discarded).
 		return m, m.toggleWorktree()
+
+	case "/wt-merge", "/wtm":
+		// Task-437: resolve a live/merge_pending worktree binding.
+		return m, m.cmdWorktreeMerge(args)
 
 	case "/yolo":
 		if m.mode != ModeChat || m.launch.IsArmed() {

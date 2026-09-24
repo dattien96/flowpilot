@@ -55,20 +55,26 @@ spectator pane.
 
 ## 2. Automated — run first
 
-Working dir: `apps/desktop-flowpilot` (vitest) and `apps/local-runner` (go).
+Working dir: `apps/desktop-flowpilot` (node --test on compiled `.phase1-tests`
+output — vitest is NOT the runner) and `apps/local-runner` (go).
 
 ```bash
+# Compile once, then run compiled tests with the phase1 runtime hook:
+npm run test:phase1   # tsc -p ../../tsconfig.phase1-tests.json && node --require ../../scripts/phase1-runtime.js --test <dirs>
+# Focused run (after tsc):
+#   node --require ../../scripts/phase1-runtime.js --test ../../.phase1-tests/apps/desktop-flowpilot/src/state/boardModel.test.js
+
 # 1. Board model + component (Task-422)
-npx vitest run src/state/boardModel.test.ts src/components/SessionsBoard.test.ts
+node --require ../../scripts/phase1-runtime.js --test ../../.phase1-tests/apps/desktop-flowpilot/src/state/boardModel.test.js
 
 # 2. Inline attention actions (Task-423)
-npx vitest run src/state/attentionQueue.inline.test.ts src/state/store.attention-actions.test.ts
+node --require ../../scripts/phase1-runtime.js --test ../../.phase1-tests/apps/desktop-flowpilot/src/state/attentionQueue.inline.test.js ../../.phase1-tests/apps/desktop-flowpilot/src/state/store.attention-actions.test.js
 
 # 3. Spectator pane (Task-425)
-npx vitest run src/state/store.spectator.test.ts src/components/SpectatorPane.test.ts
+node --require ../../scripts/phase1-runtime.js --test ../../.phase1-tests/apps/desktop-flowpilot/src/state/store.spectator.test.js
 
 # 4. Existing suites must stay green (regression gate)
-npx vitest run src/state/attention_queue.test.ts src/styles.tokens.test.ts
+node --require ../../scripts/phase1-runtime.js --test ../../.phase1-tests/apps/desktop-flowpilot/src/state/attention_queue.test.js ../../.phase1-tests/apps/desktop-flowpilot/src/styles.tokens.test.js
 
 # 5. Worktree uniqueness (Task-424) — Go
 cd ../local-runner
@@ -91,11 +97,11 @@ go test ./internal/runner -run 'TestWorktree|TestProvisionRunWorktree|TestChatLe
 
 | # | Item | How | Tick |
 |---|---|---|---|
-| P1 | Runner built | `cd apps/local-runner && go build ./...` | [ ] |
-| P2 | Runner live | health check on configured port responds | [ ] |
-| P3 | Scratch project | git-initialized test dir registered as project | [ ] |
-| P4 | Second project | any second project for cross-project checks | [ ] |
-| P5 | Desktop app | `npm run dev` / packaged app launches | [ ] |
+| P1 | Runner built | `cd apps/local-runner && go build ./...` | [x] — KR-005 live round: runner `+dirty` build serving `:4317` |
+| P2 | Runner live | health check on configured port responds | [x] — KR-005 live round: `/client/...` endpoints driven on `:4317` |
+| P3 | Scratch project | git-initialized test dir registered as project | [x] — KR-005 live round: `C:\temp\fp-live-ws` used for 8-case worktree matrix |
+| P4 | Second project | any second project for cross-project checks | [x] — L-4 live evidence: 4 distinct projects in one mux stream (run-959553 area) |
+| P5 | Desktop app | `npm run dev` / packaged app launches | [ ] — _operator: required for M-1..M-7 UI pass_ |
 
 ---
 
@@ -225,7 +231,9 @@ submitApproval
 
 - [x] §2 automated all green; old suite untouched & green (or pre-existing
       failures matching HEAD baseline exactly). — 535 tests, 14 fails = baseline
-- [ ] M-1..M-7 observed PASS. — pending operator UI pass
+- [ ] M-1..M-7 observed PASS. — _operator: desktop UI pass pending; store-level
+      coverage: `SessionsBoard.render.test.tsx`, `store.spectator.test.ts`,
+      `attentionDeepLink.test.ts`, `attention_queue.test.ts`_
 - [x] L-1 verified with HTTP + on-disk evidence (run-257829); L-3 PASS live
       (worktree_create_failed on pre-created dir); L-2 covered by Go test.
       L-4 PASS live 2026-09-23 (macOS, runner build dd2ad5d1): mux snapshot on

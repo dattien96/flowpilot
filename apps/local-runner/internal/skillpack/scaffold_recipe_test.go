@@ -157,8 +157,8 @@ func TestScaffoldYAMLIsNotTreatedAsSkill(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SkillNames(react-native) error = %v", err)
 	}
-	if len(names) != 23 {
-		t.Fatalf("react-native skills = %d (%v), want 23 (13 common + 10 platform)", len(names), names)
+	if len(names) != 25 {
+		t.Fatalf("react-native skills = %d (%v), want 25 (15 common + 10 platform)", len(names), names)
 	}
 	for _, name := range names {
 		if strings.Contains(name, "scaffold.yaml") {

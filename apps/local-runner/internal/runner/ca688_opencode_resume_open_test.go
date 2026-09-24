@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -15,6 +16,14 @@ import (
 // found on this machine" on the CP-57 test guide's smoke step.
 
 func TestResumeRunSucceedsForOpencodeRealSessionWithoutFiles(t *testing.T) {
+	// This test opens the REAL ~/.local/share/opencode/opencode.db — a live
+	// probe by design (BUG-329). On machines without opencode, or where the DB
+	// is locked by a running opencode process, it hangs/fails through no fault
+	// of the code under test, so it is opt-in like the other FLOWPILOT_LIVE_*
+	// gates.
+	if os.Getenv("FLOWPILOT_LIVE_OPENCODE") == "" {
+		t.Skip("set FLOWPILOT_LIVE_OPENCODE=1 to run the real opencode.db probe")
+	}
 	store := newFakeWorkflowStore()
 	if err := store.UpsertProviderSession(context.Background(), ProviderSessionState{
 		RunID:             "run-oc-open-1",

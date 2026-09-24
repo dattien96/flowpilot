@@ -318,8 +318,12 @@ export class MockRunnerClient implements RunnerClient {
   // CP-84 (Task-431): record inbox decision calls so tests can assert routing.
   resolvedWorktrees: Array<{ runId: string; mode: string; confirm?: boolean }> = [];
   ssLockAnswers: Array<{ runId: string; action: string; edits?: string }> = [];
+  /** Task-435: tests can make a resolve throw (e.g. 409 requiresConfirm). */
+  resolveWorktreeMergeError?: (runId: string, mode: string) => unknown;
 
   async resolveWorktreeMerge(runId: string, mode: string, confirm?: boolean): Promise<void> {
+    const err = this.resolveWorktreeMergeError?.(runId, mode);
+    if (err) throw err;
     this.resolvedWorktrees.push({ runId, mode, confirm });
   }
 

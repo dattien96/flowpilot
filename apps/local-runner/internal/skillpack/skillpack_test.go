@@ -22,6 +22,8 @@ var commonSkills = []string{
 	"safe-fix-contract",
 	"web-design-guidelines",
 	"flow-mode-orchestrator",
+	"flow-harness-contract",
+	"vibe-lanes",
 }
 
 func TestInstall_CommonOnlyForNonePlatform(t *testing.T) {

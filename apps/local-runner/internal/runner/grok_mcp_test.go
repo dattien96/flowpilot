@@ -18,6 +18,10 @@ func TestGrokAdapterBuildsMcpServersArrayAndRegistersBridge(t *testing.T) {
 	a.initResult = liveGrokInitializeResult()
 	a.mcpServer = newClaudeMCPServer()
 	a.mcpBaseURL = func() string { return "http://127.0.0.1:9999" }
+	// The fake never connects to the MCP server — cap the ready gate at 50ms
+	// instead of burning the 30s production default (claude_mcp_matrix_test
+	// already sets mcpReadyTimeout for the same reason).
+	a.mcpReadyTimeout = 50 * time.Millisecond
 	a.extraMCPServers = func(bool) map[string]claudeMcpServer {
 		return map[string]claudeMcpServer{"google-drive": {Command: "npx", Args: []string{"-y", "@piotr-agier/google-drive-mcp"}}}
 	}

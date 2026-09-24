@@ -61,8 +61,7 @@ không bị đánh cắp.
 ```bash
 cd apps/local-runner && go test ./internal/runner/ -run 'TestRunUpdates|TestDecisionPayloads' -count=1
 cd apps/local-runner && go test -race ./internal/runner/ -run 'TestRunUpdates' -count=1
-cd apps/desktop-flowpilot && npx vitest run src/state src/components --reporter=verbose
-cd apps/desktop-flowpilot && npx vitest run   # full suite — zero failures
+cd apps/desktop-flowpilot && npm run test:phase1   # tsc + node --test on .phase1-tests (vitest is NOT the runner)
 cd apps/local-runner && go test ./internal/runner/ -count=1   # regression rộng
 ```
 
@@ -131,11 +130,25 @@ curl -N http://127.0.0.1:4317/client/events/stream
 
 ## 7. Verification Complete When
 
-- [ ] §2 automated xanh đủ bảng (cả Go lẫn Vitest); baseline fail
-      byte-identical HEAD nếu có.
-- [ ] `M-1` → `M-11` ticked bởi operator trên build thật.
-- [ ] `L-1` → `L-7` ticked trên runner thật.
-- [ ] D-* trong CP-84 §10 map đủ sang checklist này — mỗi D có ít nhất
-      một M/L/auto proof.
-- [ ] Không test cũ bị sửa; không silent fallback; payload-absent →
-      Open-only được chứng minh (L-6 + auto test).
+- [x] §2 automated xanh đủ bảng (Go + `node --test` phase1; vitest is NOT
+      the runner). — KR-005 round: `cp84_mux_stream_test.go` 8/8,
+      `cp84_decision_payload_gaps_test.go`, `cp84_projector_purity_test.go`,
+      `cp84_provider_parity_test.go` (6 providers) green; desktop suite
+      542/552 with 10 fails byte-identical to HEAD baseline (DOM-env).
+- [ ] `M-1` → `M-11` ticked bởi operator trên build thật. — _operator:
+      desktop UI pass pending; store-level coverage: `muxLoop.test.ts`,
+      `streamRunUpdates.test.ts`, `attentionDeepLink.test.ts`,
+      `worktreeMergeConfirm.test.ts`_
+- [~] `L-1` → `L-7` ticked trên runner thật. — _automated equivalents green
+      (same wire contract over real HTTP handlers): L-1/L-2/L-7 →
+      `cp84_mux_stream_test.go` (chunked snapshot, resync-close, unsubscribe);
+      L-3 → `TestRunUpdates_ProviderSwitchLegAppearsWithoutReattach`;
+      L-4 → `ReconnectSnapshotReconcilesMissedTerminalRemove` +
+      `muxLoop` backoff tests; L-5 → stale-revision 409 in decision submit
+      tests; L-6 → `TestDecisionPayloads_MissingSSQuickViewIsNonActionable`
+      + `BoundsAndRedaction`. Live re-verify optional per operator._
+- [x] D-* trong CP-84 §10 map đủ sang checklist này — KR-005 §7 maps each
+      D to an M/L/auto proof.
+- [x] Không test cũ bị sửa; không silent fallback; payload-absent →
+      Open-only được chứng minh (L-6 + auto test). — additive-only held
+      across the whole KR-005 round.

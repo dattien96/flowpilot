@@ -289,6 +289,38 @@ func (Manager) Untracked(_ context.Context, repoDir, ownerID, prefix string) ([]
 	return strings.Split(out, "\n"), nil
 }
 
+// Uncommitted lists every worktree path with uncommitted changes — staged,
+// unstaged, or untracked (`git status --porcelain`). keep_branch uses it as
+// the data-loss guard: the kept branch only contains commits, so removing the
+// worktree silently drops whatever this lists (SD-27 Q-2, live-found gap).
+func (Manager) Uncommitted(_ context.Context, repoDir, ownerID, prefix string) ([]string, error) {
+	if err := validateOwnerID(ownerID); err != nil {
+		return nil, err
+	}
+	path := Path(repoDir, ownerID, prefix)
+	out, err := gitOut(path, "status", "--porcelain")
+	if err != nil {
+		return nil, err
+	}
+	if out == "" {
+		return nil, nil
+	}
+	var paths []string
+	for _, line := range strings.Split(out, "\n") {
+		if len(line) <= 3 {
+			continue
+		}
+		// Porcelain v1: "XY <path>" — renames carry "orig -> new"; report the
+		// destination path so the warning names what exists now.
+		p := strings.TrimSpace(line[3:])
+		if i := strings.Index(p, " -> "); i >= 0 {
+			p = p[i+4:]
+		}
+		paths = append(paths, p)
+	}
+	return paths, nil
+}
+
 // ApplyOptions controls the conflict-detection policy for Apply.
 type ApplyOptions struct {
 	// StrictHead refuses to apply when main HEAD moved since Create
