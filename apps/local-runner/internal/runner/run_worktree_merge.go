@@ -233,6 +233,13 @@ func (s *InteractiveService) resolveWorktree(ctx context.Context, runID, mode st
 		if b.State != "lost" {
 			return nil, newAPIErr(http.StatusConflict, "worktree_not_lost", "worktree is not lost")
 		}
+		// External deletion (`git worktree remove` / rm -rf) leaves the
+		// fp/<slug>-<id> branch behind — `worktree add -b` then collides and
+		// the lost binding can never recover. priorChangesLost makes the
+		// stale tip disposable: drop it before recreating at the base commit.
+		if b.Branch != "" {
+			_ = exec.Command("git", "-C", repoDir, "branch", "-D", b.Branch).Run()
+		}
 		info, err := mgr.Create(ctx, repoDir, b.OwnerID, "", b.BaseCommit, b.Slug)
 		if err != nil {
 			return nil, newAPIErr(http.StatusConflict, "worktree_recreate_failed", err.Error())
