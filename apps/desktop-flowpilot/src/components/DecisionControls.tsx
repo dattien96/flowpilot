@@ -43,6 +43,7 @@ export type ControlModel =
   | { type: "ss_lock" }
   | { type: "worktree"; modes: ControlChoice[] }
   | { type: "worktree_confirm"; mode: string; modeLabel: string; files: string[]; message: string }
+  | { type: "worktree_conflict"; mode: string; modeLabel: string; conflictPaths: string[]; patchRef: string; message: string }
   | { type: "quota"; candidateLabel: string };
 
 /** Kinds that may participate in "Approve all eligible" batch — safe,
@@ -119,6 +120,19 @@ export function decisionControlModel(item: AttentionItem): ControlModel | null {
           mode: c.mode,
           modeLabel: WORKTREE_MODES.find((m) => m.value === c.mode)?.label ?? c.mode,
           files: c.files,
+          message: c.message,
+        };
+      }
+      // Task-436 T-3: a failed apply_patch parks the card on the conflict —
+      // show the conflicting paths + patch artifact, Retry resends the mode.
+      if (item.worktreeConflict) {
+        const c = item.worktreeConflict;
+        return {
+          type: "worktree_conflict",
+          mode: c.mode,
+          modeLabel: WORKTREE_MODES.find((m) => m.value === c.mode)?.label ?? c.mode,
+          conflictPaths: c.conflictPaths,
+          patchRef: c.patchRef,
           message: c.message,
         };
       }
@@ -347,6 +361,30 @@ export function DecisionControls(props: {
             onClick={() => onAct(model.mode, undefined, true)}
           >
             {model.modeLabel} anyway
+          </button>
+        </div>
+      );
+    case "worktree_conflict":
+      return (
+        <div className="inbox-act-group inbox-act-group--confirm">
+          <span className="inbox-act-cmd">{model.message}</span>
+          {model.conflictPaths.length > 0 && (
+            <span className="inbox-act-desc">
+              Conflicts in your project: {model.conflictPaths.slice(0, 5).join(", ")}
+              {model.conflictPaths.length > 5 ? ` (+${model.conflictPaths.length - 5})` : ""}
+            </span>
+          )}
+          {model.patchRef && <span className="inbox-act-desc">Patch kept at: {model.patchRef}</span>}
+          <button type="button" className="inbox-act" disabled={acting} onClick={onDismiss}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="inbox-act inbox-act--approve"
+            disabled={acting}
+            onClick={() => onAct(model.mode)}
+          >
+            Retry {model.modeLabel}
           </button>
         </div>
       );

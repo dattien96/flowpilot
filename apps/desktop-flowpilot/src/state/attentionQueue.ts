@@ -34,6 +34,16 @@ export interface WorktreeConfirm {
   message: string;
 }
 
+/** Task-436 T-1: an apply_patch resolve hit a real merge conflict
+ *  (409 worktree_merge_conflict) — the card shows the conflicting paths and
+ *  the patch artifact so the user can fix the files and retry. */
+export interface WorktreeConflict {
+  mode: string;
+  conflictPaths: string[];
+  patchRef: string;
+  message: string;
+}
+
 export interface AttentionItem {
   runId: string;
   chatId: string;
@@ -58,6 +68,9 @@ export interface AttentionItem {
   /** Task-435 T-2: pending explicit confirm for a destructive worktree
    *  resolve — set by the store when the runner answers 409 requiresConfirm. */
   worktreeConfirm?: WorktreeConfirm;
+  /** Task-436 T-1: pending conflict state for a failed apply_patch — the
+   *  card renders conflictPaths + patchRef + Retry instead of an error. */
+  worktreeConflict?: WorktreeConflict;
 }
 
 /** Minimal pending-fields projection — satisfied by the internal RunSnapshot
@@ -157,6 +170,8 @@ const dispatchViews: Record<string, Array<{ kind?: string }>> = {};
 const evictedRuns = new Set<string>();
 /** Task-435 T-2: worktree resolves awaiting explicit user confirm. */
 const worktreeConfirms = new Map<string, WorktreeConfirm>();
+/** Task-436 T-1: worktree resolves parked on a merge conflict. */
+const worktreeConflicts = new Map<string, WorktreeConflict>();
 // CP-84 (Task-431): runs with an in-flight inline decision — shared across
 // components so an item can't be double-submitted while a request is out.
 const actingRuns = new Set<string>();
@@ -308,10 +323,13 @@ function recompute(): void {
     }
     if (!seenKeys.has(key)) items.push(syn);
   }
-  // Task-435 T-2: overlay pending worktree confirms (keyed by runId).
+  // Task-435 T-2 / Task-436 T-1: overlay pending worktree confirm/conflict
+  // states (keyed by runId; mutually exclusive — latest set wins).
   for (const it of items) {
     const c = worktreeConfirms.get(it.runId);
     if (c) it.worktreeConfirm = c;
+    const cf = worktreeConflicts.get(it.runId);
+    if (cf) it.worktreeConflict = cf;
   }
   // Oldest waiting runs first (spec AC) — across all projects.
   items.sort((a, b) => (a.waitingSince < b.waitingSince ? -1 : a.waitingSince > b.waitingSince ? 1 : 0));
@@ -341,6 +359,9 @@ export const attentionQueue: {
   /** Task-435 T-2: set/clear a pending worktree-resolve confirm. */
   setWorktreeConfirm(runId: string, c: WorktreeConfirm): void;
   clearWorktreeConfirm(runId: string): void;
+  /** Task-436 T-1: set/clear a pending worktree-resolve conflict. */
+  setWorktreeConflict(runId: string, c: WorktreeConflict): void;
+  clearWorktreeConflict(runId: string): void;
   resolvedPending(runId: string, resolved: { approvalId?: string; questionId?: string }): void;
   subscribe(fn: Listener): () => void;
 } = {
@@ -384,15 +405,26 @@ export const attentionQueue: {
   },
   setWorktreeConfirm(runId, c) {
     worktreeConfirms.set(runId, c);
+    // Task-436 T-1: confirm and conflict are mutually exclusive per run.
+    worktreeConflicts.delete(runId);
     recompute();
   },
   clearWorktreeConfirm(runId) {
     if (worktreeConfirms.delete(runId)) recompute();
   },
+  setWorktreeConflict(runId, c) {
+    worktreeConflicts.set(runId, c);
+    worktreeConfirms.delete(runId);
+    recompute();
+  },
+  clearWorktreeConflict(runId) {
+    if (worktreeConflicts.delete(runId)) recompute();
+  },
   evict(runId) {
     evictedRuns.add(runId);
     actingRuns.delete(runId);
     worktreeConfirms.delete(runId);
+    worktreeConflicts.delete(runId);
     for (const key of [...syntheticItems.keys()]) {
       if (key.startsWith(`${runId}:`)) syntheticItems.delete(key);
     }

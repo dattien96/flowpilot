@@ -667,6 +667,8 @@ export interface AppState {
   submitAttentionDecision(runId: string, decision: DecisionPayload, choice: string, customText?: string, confirm?: boolean): Promise<boolean>;
   /** Task-435: cancel a pending worktree-resolve confirm (back to mode buttons). */
   dismissWorktreeConfirm(runId: string): void;
+  /** Task-436: dismiss a pending worktree-resolve conflict state. */
+  dismissWorktreeConflict(runId: string): void;
   /** CP-84 (Task-434 T-3): push a synthetic attention item for a non-focused
    *  modal-source event — the inbox replaces a would-be modal hijack. */
   ingestAttentionItem(item: AttentionItem): void;
@@ -2548,6 +2550,29 @@ export const useStore = create<AppState>((set, get) => ({
         });
         return true;
       }
+      // Task-436 T-2: an apply_patch conflict answers 409 with
+      // conflictPaths + patchArtifactRef — surface them in-card (fix the
+      // files, then Retry), not a toast. The wire body carries
+      // conflict:true rather than a code field (handleWorktreeResolve writes
+      // the evidence map bare), so detect on details first.
+      if (
+        decision.kind === "worktree_merge" &&
+        err instanceof RunnerApiError &&
+        err.status === 409 &&
+        ((err.details as { conflict?: boolean } | undefined)?.conflict === true ||
+          err.code === "worktree_merge_conflict")
+      ) {
+        const det = (err.details ?? {}) as { conflictPaths?: string[]; patchArtifactRef?: string; reason?: string };
+        attentionQueue.setWorktreeConflict(runId, {
+          mode: choice,
+          conflictPaths: det.conflictPaths ?? [],
+          patchRef: det.patchArtifactRef ?? "",
+          // On the wire the body has no error.message — err.message is just
+          // "Conflict" (statusText); the real reason lives in details.reason.
+          message: det.reason || err.message || "merge conflict",
+        });
+        return true;
+      }
       return fail(err);
     } finally {
       attentionQueue.clearActing(runId);
@@ -2556,6 +2581,10 @@ export const useStore = create<AppState>((set, get) => ({
 
   dismissWorktreeConfirm(runId) {
     attentionQueue.clearWorktreeConfirm(runId);
+  },
+
+  dismissWorktreeConflict(runId) {
+    attentionQueue.clearWorktreeConflict(runId);
   },
 
   async chooseDecisionOption(itemId, optionId) {

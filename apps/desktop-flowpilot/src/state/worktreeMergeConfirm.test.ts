@@ -127,19 +127,124 @@ test("dismissWorktreeConfirm restores mode buttons", () => {
   resetQueue();
 });
 
-test("worktree non-confirm 409 still fails", async () => {
+test("worktree non-confirm non-conflict 409 still fails", async () => {
   resetQueue();
   const d = worktreeDecision("rX");
   const client = new MockRunnerClient();
   client.resolveWorktreeMergeError = () =>
-    new RunnerApiError(409, "worktree_merge_conflict", "conflicting paths", undefined, {
-      conflict: true,
-      conflictPaths: ["a.ts"],
-    });
+    new RunnerApiError(409, "worktree_lost", "worktree is missing", undefined, {});
   useStore.setState({ client });
 
   const ok = await useStore.getState().submitAttentionDecision("rX", d, "apply_patch");
-  assert.equal(ok, false, "a merge conflict is an error, not a confirm request");
+  assert.equal(ok, false, "an unrelated 409 is an error, not a confirm/conflict request");
   assert.equal(attentionQueue.items.find((i) => i.runId === "rX")?.worktreeConfirm, undefined);
+  resetQueue();
+});
+
+// ---- Task-436: conflict card ----------------------------------------------
+
+test("worktree conflict 409 flips card to conflict state", async () => {
+  resetQueue();
+  const d = worktreeDecision("rK");
+  attentionQueue.applyRunUpdate({ kind: "upsert", run: lane("rK", [d]) });
+
+  const client = new MockRunnerClient();
+  client.resolveWorktreeMergeError = () =>
+    new RunnerApiError(409, "worktree_merge_conflict", "patch does not apply cleanly", undefined, {
+      conflict: true,
+      conflictPaths: ["CONFLICT.txt", "b.ts"],
+      patchArtifactRef: "C:/ws/.flowpilot/worktrees/cht_x.patch",
+    });
+  useStore.setState({ client });
+
+  const ok = await useStore.getState().submitAttentionDecision("rK", d, "apply_patch");
+  assert.equal(ok, true, "conflict parks the card for fix+retry, not a failure");
+  const it = attentionQueue.items.find((i) => i.runId === "rK");
+  assert.deepEqual(it?.worktreeConflict, {
+    mode: "apply_patch",
+    conflictPaths: ["CONFLICT.txt", "b.ts"],
+    patchRef: "C:/ws/.flowpilot/worktrees/cht_x.patch",
+    message: "patch does not apply cleanly",
+  });
+  const model = it && decisionControlModel(it);
+  assert.equal(model?.type, "worktree_conflict");
+  if (model?.type === "worktree_conflict") {
+    assert.equal(model.modeLabel, "Apply patch");
+    assert.deepEqual(model.conflictPaths, ["CONFLICT.txt", "b.ts"]);
+  }
+  resetQueue();
+});
+
+test("worktree conflict retry resends same mode", async () => {
+  resetQueue();
+  const d = worktreeDecision("rR");
+  attentionQueue.applyRunUpdate({ kind: "upsert", run: lane("rR", [d]) });
+
+  const client = new MockRunnerClient();
+  useStore.setState({ client });
+  attentionQueue.setWorktreeConflict("rR", {
+    mode: "apply_patch", conflictPaths: ["a.ts"], patchRef: "p.patch", message: "m",
+  });
+  // Retry = the identical call (no confirm flag); success evicts the item.
+  const ok = await useStore.getState().submitAttentionDecision("rR", d, "apply_patch");
+  assert.equal(ok, true);
+  assert.deepEqual(client.resolvedWorktrees, [{ runId: "rR", mode: "apply_patch", confirm: false }]);
+  resetQueue();
+});
+
+test("dismissWorktreeConflict restores mode buttons", () => {
+  resetQueue();
+  const d = worktreeDecision("rZ");
+  attentionQueue.applyRunUpdate({ kind: "upsert", run: lane("rZ", [d]) });
+  attentionQueue.setWorktreeConflict("rZ", {
+    mode: "apply_patch", conflictPaths: ["a.ts"], patchRef: "", message: "m",
+  });
+  assert.equal(decisionControlModel(attentionQueue.items.find((i) => i.runId === "rZ")!)?.type, "worktree_conflict");
+
+  useStore.getState().dismissWorktreeConflict("rZ");
+  const it = attentionQueue.items.find((i) => i.runId === "rZ");
+  assert.equal(it?.worktreeConflict, undefined);
+  assert.equal(decisionControlModel(it!)?.type, "worktree");
+  resetQueue();
+});
+
+test("worktree conflict detected on wire shape (no code field)", async () => {
+  resetQueue();
+  const d = worktreeDecision("rW");
+  attentionQueue.applyRunUpdate({ kind: "upsert", run: lane("rW", [d]) });
+
+  const client = new MockRunnerClient();
+  // handleWorktreeResolve writes the evidence map bare — no error{} wrapper,
+  // no code. Detection must key off details.conflict.
+  client.resolveWorktreeMergeError = () =>
+    new RunnerApiError(409, "", "", undefined, {
+      conflict: true,
+      conflictPaths: ["CONFLICT.txt"],
+      patchArtifactRef: "C:/wt/x.patch",
+      reason: "patch does not apply cleanly",
+    });
+  useStore.setState({ client });
+
+  const ok = await useStore.getState().submitAttentionDecision("rW", d, "apply_patch");
+  assert.equal(ok, true);
+  const it = attentionQueue.items.find((i) => i.runId === "rW");
+  assert.equal(it?.worktreeConflict?.conflictPaths?.[0], "CONFLICT.txt");
+  assert.equal(it?.worktreeConflict?.message, "patch does not apply cleanly");
+  resetQueue();
+});
+
+test("confirm and conflict states are mutually exclusive", () => {
+  resetQueue();
+  const d = worktreeDecision("rM");
+  attentionQueue.applyRunUpdate({ kind: "upsert", run: lane("rM", [d]) });
+  attentionQueue.setWorktreeConfirm("rM", { mode: "keep_branch", files: ["x"], message: "m" });
+  attentionQueue.setWorktreeConflict("rM", { mode: "apply_patch", conflictPaths: ["y"], patchRef: "", message: "m" });
+  const it = attentionQueue.items.find((i) => i.runId === "rM");
+  assert.equal(it?.worktreeConfirm, undefined, "conflict supersedes confirm");
+  assert.equal(decisionControlModel(it!)?.type, "worktree_conflict");
+  attentionQueue.setWorktreeConfirm("rM", { mode: "discard", files: ["x"], message: "m" });
+  const it2 = attentionQueue.items.find((i) => i.runId === "rM");
+  assert.equal(it2?.worktreeConflict, undefined, "confirm supersedes conflict");
+  assert.equal(decisionControlModel(it2!)?.type, "worktree_confirm");
   resetQueue();
 });
