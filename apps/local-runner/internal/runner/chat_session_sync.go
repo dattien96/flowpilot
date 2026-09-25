@@ -304,6 +304,11 @@ func chatSessionProviderLogicalPath(machineID, runID string, providerKey Provide
 
 func mergeChatSessionDriveIndex(existing []byte, replacement chatSessionDriveIndexRecord) []byte {
 	merged := make(map[string]chatSessionDriveIndexRecord)
+	// BUG-483: the merge must be lossless. Lines we cannot interpret —
+	// malformed JSON, or valid JSON rows without source identity — are
+	// preserved verbatim at the tail of the file instead of being silently
+	// dropped (dropping them destroys remote rows other devices wrote).
+	var preserved []string
 	scanner := bufio.NewScanner(strings.NewReader(string(existing)))
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -312,9 +317,11 @@ func mergeChatSessionDriveIndex(existing []byte, replacement chatSessionDriveInd
 		}
 		var record chatSessionDriveIndexRecord
 		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			preserved = append(preserved, line)
 			continue
 		}
 		if strings.TrimSpace(record.SourceMachineID) == "" || strings.TrimSpace(record.SourceRunID) == "" {
+			preserved = append(preserved, line)
 			continue
 		}
 		merged[record.SourceMachineID+"::"+record.SourceRunID] = record
@@ -327,7 +334,7 @@ func mergeChatSessionDriveIndex(existing []byte, replacement chatSessionDriveInd
 	}
 	sort.Strings(keys)
 
-	lines := make([]string, 0, len(keys))
+	lines := make([]string, 0, len(keys)+len(preserved))
 	for _, key := range keys {
 		line, err := json.Marshal(merged[key])
 		if err != nil {
@@ -335,6 +342,7 @@ func mergeChatSessionDriveIndex(existing []byte, replacement chatSessionDriveInd
 		}
 		lines = append(lines, string(line))
 	}
+	lines = append(lines, preserved...)
 	if len(lines) == 0 {
 		return nil
 	}
@@ -681,9 +689,21 @@ func (s *InteractiveService) mergeAndUpsertChatSessionDriveIndexLocked(
 	if err != nil {
 		return nil, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
 	}
+	// BUG-483: fail closed on any authority-read failure. Only a confirmed
+	// "file absent" outcome may use an empty baseline — a lookup error or a
+	// download error must abort BEFORE the upsert, or a transient read
+	// failure overwrites the remote index with just our rows.
+	indexFile, findErr := findGoogleDriveFile(accessToken, indexFolderID, "sessions.ndjson")
+	if findErr != nil {
+		return nil, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", findErr.Error())
+	}
 	var existingIndex []byte
-	if existing, findErr := findGoogleDriveFile(accessToken, indexFolderID, "sessions.ndjson"); findErr == nil && strings.TrimSpace(existing.ID) != "" {
-		existingIndex, _ = downloadGoogleDriveFileByID(ctx, accessToken, existing.ID)
+	if strings.TrimSpace(indexFile.ID) != "" {
+		body, dlErr := downloadGoogleDriveFileByID(ctx, accessToken, indexFile.ID)
+		if dlErr != nil {
+			return nil, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", dlErr.Error())
+		}
+		existingIndex = body
 	}
 	merged := existingIndex
 	for i := range records {
@@ -691,6 +711,29 @@ func (s *InteractiveService) mergeAndUpsertChatSessionDriveIndexLocked(
 	}
 	if bytes.Equal(merged, existingIndex) {
 		return merged, nil
+	}
+	// BUG-483 optimistic concurrency: a second device may have written the
+	// index between our read and this upsert. Re-read once right before
+	// overwriting; if the baseline changed, merge our rows onto the FRESH
+	// content instead of last-write-wins clobbering. A failed re-read also
+	// aborts — overwriting on an unreadable authority is exactly the bug.
+	latestFile, reFindErr := findGoogleDriveFile(accessToken, indexFolderID, "sessions.ndjson")
+	if reFindErr != nil {
+		return nil, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", reFindErr.Error())
+	}
+	var latestIndex []byte
+	if strings.TrimSpace(latestFile.ID) != "" {
+		body, dlErr := downloadGoogleDriveFileByID(ctx, accessToken, latestFile.ID)
+		if dlErr != nil {
+			return nil, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", dlErr.Error())
+		}
+		latestIndex = body
+	}
+	if !bytes.Equal(latestIndex, existingIndex) {
+		merged = latestIndex
+		for i := range records {
+			merged = mergeChatSessionDriveIndex(merged, records[i])
+		}
 	}
 	if _, err := upsertGoogleDriveFile(accessToken, indexFolderID, "sessions.ndjson", merged, "application/x-ndjson", nil); err != nil {
 		return nil, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())

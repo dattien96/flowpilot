@@ -50,14 +50,14 @@ func driveFileByName(api *fakeChatDriveAPI, name string) (fakeChatDriveFile, boo
 // already holds — without it a restore can never rebuild one logical chat.
 func TestBUG476_ManifestCarriesChatLegIdentity(t *testing.T) {
 	svc, _, store, _, workspace, accountHome := newChatSyncService(t)
-	seedLocalChatLeg(t, store, accountHome, workspace, "run-leg1", "chat-476", 1, "", []byte(`{"msg":"l1"}`))
-	seedLocalChatLeg(t, store, accountHome, workspace, "run-leg2", "chat-476", 2, "run-leg1", []byte(`{"msg":"l2"}`))
+	seedLocalChatLeg(t, store, accountHome, workspace, "run-leg1", "chat-476-manifest", 1, "", []byte(`{"msg":"l1"}`))
+	seedLocalChatLeg(t, store, accountHome, workspace, "run-leg2", "chat-476-manifest", 2, "run-leg1", []byte(`{"msg":"l2"}`))
 
 	manifest, _, apiErr := svc.BuildChatSessionSyncManifest(context.Background(), "run-leg2")
 	if apiErr != nil {
 		t.Fatalf("BuildChatSessionSyncManifest: %v", apiErr)
 	}
-	if manifest.ChatID != "chat-476" || manifest.LegSeq != 2 || manifest.SwitchFromRunID != "run-leg1" {
+	if manifest.ChatID != "chat-476-manifest" || manifest.LegSeq != 2 || manifest.SwitchFromRunID != "run-leg1" {
 		t.Fatalf("manifest dropped chat-leg identity: %+v", manifest)
 	}
 }
@@ -67,9 +67,9 @@ func TestBUG476_ManifestCarriesChatLegIdentity(t *testing.T) {
 // complete restorable chat).
 func TestBUG476_SyncUploadsAllChatLegsAndChatManifest(t *testing.T) {
 	svc, _, store, api, workspace, accountHome := newChatSyncService(t)
-	seedLocalChatLeg(t, store, accountHome, workspace, "run-leg1", "chat-476", 1, "", []byte(`{"msg":"l1"}`))
-	seedLocalChatLeg(t, store, accountHome, workspace, "run-leg2", "chat-476", 2, "run-leg1", []byte(`{"msg":"l2"}`))
-	seedLocalChatLeg(t, store, accountHome, workspace, "run-leg3", "chat-476", 3, "run-leg2", []byte(`{"msg":"l3"}`))
+	seedLocalChatLeg(t, store, accountHome, workspace, "run-leg1", "chat-476-sync", 1, "", []byte(`{"msg":"l1"}`))
+	seedLocalChatLeg(t, store, accountHome, workspace, "run-leg2", "chat-476-sync", 2, "run-leg1", []byte(`{"msg":"l2"}`))
+	seedLocalChatLeg(t, store, accountHome, workspace, "run-leg3", "chat-476-sync", 3, "run-leg2", []byte(`{"msg":"l3"}`))
 
 	res, apiErr := svc.syncChatRunToDrive(context.Background(), "run-leg2", ChatSessionSyncRequest{})
 	if apiErr != nil {
@@ -95,7 +95,7 @@ func TestBUG476_SyncUploadsAllChatLegsAndChatManifest(t *testing.T) {
 	if err := json.Unmarshal(chatFile.Content, &chatDoc); err != nil {
 		t.Fatalf("chat.json not valid JSON: %v", err)
 	}
-	if chatDoc.ChatID != "chat-476" || len(chatDoc.Legs) != 3 {
+	if chatDoc.ChatID != "chat-476-sync" || len(chatDoc.Legs) != 3 {
 		t.Fatalf("chat.json legs = %+v", chatDoc)
 	}
 	for i, leg := range chatDoc.Legs {
@@ -121,7 +121,7 @@ func TestBUG476_SyncUploadsAllChatLegsAndChatManifest(t *testing.T) {
 		t.Fatalf("index records for machine = %d, want 3 leg rows", len(records))
 	}
 	for _, r := range records {
-		if r.ChatID != "chat-476" || r.LegSeq == 0 {
+		if r.ChatID != "chat-476-sync" || r.LegSeq == 0 {
 			t.Fatalf("index record missing chat identity: %+v", r)
 		}
 	}
@@ -131,9 +131,9 @@ func TestBUG476_SyncUploadsAllChatLegsAndChatManifest(t *testing.T) {
 // represents the chat (status/updatedAt/provider).
 func TestBUG476_RemoteListGroupsLegsAsOneChat(t *testing.T) {
 	svc, _, store, _, workspace, accountHome := newChatSyncService(t)
-	seedLocalChatLeg(t, store, accountHome, workspace, "run-leg1", "chat-476", 1, "", []byte(`{"msg":"l1"}`))
-	seedLocalChatLeg(t, store, accountHome, workspace, "run-leg2", "chat-476", 2, "run-leg1", []byte(`{"msg":"l2"}`))
-	seedLocalChatLeg(t, store, accountHome, workspace, "run-leg3", "chat-476", 3, "run-leg2", []byte(`{"msg":"l3"}`))
+	seedLocalChatLeg(t, store, accountHome, workspace, "run-leg1", "chat-476-list", 1, "", []byte(`{"msg":"l1"}`))
+	seedLocalChatLeg(t, store, accountHome, workspace, "run-leg2", "chat-476-list", 2, "run-leg1", []byte(`{"msg":"l2"}`))
+	seedLocalChatLeg(t, store, accountHome, workspace, "run-leg3", "chat-476-list", 3, "run-leg2", []byte(`{"msg":"l3"}`))
 	if _, apiErr := svc.syncChatRunToDrive(context.Background(), "run-leg2", ChatSessionSyncRequest{}); apiErr != nil {
 		t.Fatalf("syncChatRunToDrive: %v", apiErr)
 	}
@@ -145,7 +145,7 @@ func TestBUG476_RemoteListGroupsLegsAsOneChat(t *testing.T) {
 	// Scoped to this chatID — see the harness-leak note in the restore test.
 	var chatRows []RemoteChatSessionSummary
 	for _, row := range list {
-		if row.ChatID == "chat-476" {
+		if row.ChatID == "chat-476-list" {
 			chatRows = append(chatRows, row)
 		}
 	}
@@ -162,9 +162,9 @@ func TestBUG476_RemoteListGroupsLegsAsOneChat(t *testing.T) {
 // predecessor's LOCAL run id.
 func TestBUG476_RestoreRecreatesWholeChatWithRemap(t *testing.T) {
 	svcA, _, storeA, api, workspaceA, accountHomeA := newChatSyncService(t)
-	seedLocalChatLeg(t, storeA, accountHomeA, workspaceA, "run-leg1", "chat-476", 1, "", []byte(`{"msg":"l1"}`))
-	seedLocalChatLeg(t, storeA, accountHomeA, workspaceA, "run-leg2", "chat-476", 2, "run-leg1", []byte(`{"msg":"l2"}`))
-	seedLocalChatLeg(t, storeA, accountHomeA, workspaceA, "run-leg3", "chat-476", 3, "run-leg2", []byte(`{"msg":"l3"}`))
+	seedLocalChatLeg(t, storeA, accountHomeA, workspaceA, "run-leg1", "chat-476-restore", 1, "", []byte(`{"msg":"l1"}`))
+	seedLocalChatLeg(t, storeA, accountHomeA, workspaceA, "run-leg2", "chat-476-restore", 2, "run-leg1", []byte(`{"msg":"l2"}`))
+	seedLocalChatLeg(t, storeA, accountHomeA, workspaceA, "run-leg3", "chat-476-restore", 3, "run-leg2", []byte(`{"msg":"l3"}`))
 	resA, apiErr := svcA.syncChatRunToDrive(context.Background(), "run-leg3", ChatSessionSyncRequest{})
 	if apiErr != nil {
 		t.Fatalf("syncChatRunToDrive: %v", apiErr)
@@ -188,7 +188,7 @@ func TestBUG476_RestoreRecreatesWholeChatWithRemap(t *testing.T) {
 		t.Fatalf("restoreStatus=%q", result.RestoreStatus)
 	}
 
-	legs, err := storeB.ListProviderSessionsByChat(context.Background(), "chat-476")
+	legs, err := storeB.ListProviderSessionsByChat(context.Background(), "chat-476-restore")
 	if err != nil {
 		t.Fatalf("ListProviderSessionsByChat: %v", err)
 	}
@@ -205,7 +205,7 @@ func TestBUG476_RestoreRecreatesWholeChatWithRemap(t *testing.T) {
 		if !ok {
 			t.Fatalf("leg %s missing after restore", wantSource)
 		}
-		if leg.ChatID != "chat-476" || leg.LegSeq != i+1 {
+		if leg.ChatID != "chat-476-restore" || leg.LegSeq != i+1 {
 			t.Fatalf("leg %s identity wrong: %+v", wantSource, leg)
 		}
 	}
@@ -236,7 +236,7 @@ func TestBUG476_RestoreRecreatesWholeChatWithRemap(t *testing.T) {
 	}
 	var chatRows []RemoteChatSessionSummary
 	for _, row := range list {
-		if row.ChatID == "chat-476" {
+		if row.ChatID == "chat-476-restore" {
 			chatRows = append(chatRows, row)
 		}
 	}
