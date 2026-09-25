@@ -232,6 +232,44 @@ func TestTask443_RotateLegKeepsSameBinding(t *testing.T) {
 	}
 }
 
+// A context-triggered leg reset must NOT record legClosedReason
+// provider_switch — nothing was rerouted; the ledger would mislabel the close
+// as routing. Live verification on Devin showed run-7 closed with
+// provider_switch after a rotate_leg answer.
+func TestTask443_ContextReset_CloseReasonIsContextReset(t *testing.T) {
+	t.Setenv(contextPressureEnvFlag, "1")
+	svc, _ := newSwitchTestService(t)
+	svc.questionTTL = time.Hour
+	h, err := svc.createRun(StartRunInput{
+		ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex,
+		WorkingMode: workingmode.Vibe, Client: "tui",
+	})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	svc.mu.Lock()
+	rs := svc.runs[h.RunID]
+	rs.modelName = "gpt-5.3-codex"
+	svc.emitLocked(rs, task443UsageEvent(200000, 185000, 185000))
+	svc.mu.Unlock()
+	rec := task443PendingPressureQuestion(svc, rs.id)
+	if rec == nil {
+		t.Fatal("no pressure card")
+	}
+	if e := svc.AnswerQuestion(rec.id, []string{"rotate_leg"}); e != nil {
+		t.Fatalf("AnswerQuestion rotate_leg: %v", e)
+	}
+	if svc.consumePendingContextReset(context.Background(), rs.id) == "" {
+		t.Fatal("rotate_leg consumed nothing")
+	}
+	svc.mu.Lock()
+	reason := rs.legClosedReason
+	svc.mu.Unlock()
+	if reason != "context_reset" {
+		t.Fatalf("legClosedReason = %q, want context_reset", reason)
+	}
+}
+
 // A provider-compacted leg is context-degraded: the NEXT admission boundary
 // treats it like the ask tier and offers rotate_leg (spec: degraded → treat
 // as ≥90%). The offer is once per leg — a user who chose continue is not

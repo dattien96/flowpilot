@@ -109,7 +109,7 @@ func (s *InteractiveService) healChatLegsLocked(chatID string) {
 			newLeg = rs
 		case rs.legState == LegStateActive && rs.switchFromRunID == rs.id:
 			oldLeg = rs
-		case rs.legState == LegStateClosed && rs.legClosedReason == LegClosedReasonProviderSwitch:
+		case rs.legState == LegStateClosed && (rs.legClosedReason == LegClosedReasonProviderSwitch || rs.legClosedReason == LegClosedReasonContextReset):
 			closedSrc = rs
 		}
 	}
@@ -331,7 +331,12 @@ func (s *InteractiveService) switchChatLeg(ctx context.Context, chatID string, r
 		newLeg = rs
 	}
 	src.legState = LegStateClosed
+	// Same-binding close = context reset (Task-443), not a routing decision —
+	// keep the ledger honest about why the leg ended.
 	src.legClosedReason = LegClosedReasonProviderSwitch
+	if allowSameProvider {
+		src.legClosedReason = LegClosedReasonContextReset
+	}
 	_ = s.persistProviderSession(sessionStateOf(src))
 	if newLeg != nil {
 		s.appendChatSwitchRecord(chatID, src, newLeg, env.Stats)
