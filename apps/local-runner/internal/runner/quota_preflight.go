@@ -37,6 +37,14 @@ type ExecutionDemand struct {
 	// FlowNode); zero for hub demands — the router consumes it when sizing
 	// whether a candidate can afford the workload, never as a quota proxy.
 	MaxUsageTokens int64 `json:"maxUsageTokens,omitempty"`
+	// RequiredCaps are the provider capabilities the demand cannot run
+	// without (Task-448): hub chat needs streaming; provider-backed flow
+	// nodes additionally need the approval + MCP tool bridge.
+	RequiredCaps ProviderCapabilities `json:"requiredCaps,omitempty"`
+	// MinContextTokens is the smallest acceptable candidate context window;
+	// zero disables the filter. Callers size it from the leg's current
+	// context pressure, not from quota.
+	MinContextTokens int64 `json:"minContextTokens,omitempty"`
 }
 
 // AccountCandidate is one connected account of the demand's provider, ranked
@@ -90,6 +98,7 @@ func (s *InteractiveService) ResolveExecutionDemand(ctx context.Context, runID s
 			RequestedProvider:  rs.providerKey,
 			RequestedModel:     rs.modelName,
 			RequestedAccountID: rs.providerAccountID,
+			RequiredCaps:       ProviderCapabilities{Streaming: true},
 		}, nil
 	}
 	model := strings.TrimSpace(s.resolveFlowNodeModel(ctx, runID, *node))
@@ -114,6 +123,9 @@ func (s *InteractiveService) ResolveExecutionDemand(ctx context.Context, runID s
 		RequestedModel:     model,
 		RequestedAccountID: accountID,
 		WorkloadClass:      node.WorkloadClass,
+		// Provider-backed nodes run the agentic tool bridge — a cross-provider
+		// candidate must carry streaming + approvals + MCP to serve one.
+		RequiredCaps: ProviderCapabilities{Streaming: true, ApprovalEvents: true, Mcp: true},
 	}
 	// The node's real-usage cap lives on its named context profile (Task-341
 	// schema); resolve through the parent's flow definition — the same path

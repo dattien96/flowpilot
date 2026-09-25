@@ -3,7 +3,7 @@
 - Document ID: `Task-448`
 - Title: `Dynamically evaluate other providers using workload class, capability, context-window, quota, and configured priority`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `dat.nguyen`
 - Reviewers: ``
 - Created: `2026-09-25`
@@ -127,15 +127,42 @@ func RankRouteCandidates(candidates []RouteCandidate, priority []ProviderKey) []
 
 ## 10. Definition of Done
 
-- [ ] §6 signatures landed or deviation documented
-- [ ] §7 additive tests green
-- [ ] Resolver pure/deterministic/provider-neutral
-- [ ] Candidate rejection reasons complete
-- [ ] CA ledger + feature key entries complete
-- [ ] GitNexus detect_changes reviewed before commit
+- [x] §6 signatures landed or deviation documented (`WorkloadClass` typed as
+      `agentpack.WorkloadClass` matching Task-446/447; `CandidateSet` gains a
+      `ManualOnly` bucket per spec; `RouteCandidate` adds `DisplayName`/
+      `SlotIndex` for UI + deterministic tie-breaks)
+- [x] §7 additive tests green (8/8 `TestTask448_*`)
+- [x] Resolver pure/deterministic/provider-neutral — no claims, legs, store
+      writes; provider list read from `s.registry`, models from settings
+      bindings only
+- [x] Candidate rejection reasons complete (`provider_unavailable`,
+      `missing_capability:<flag>`, `context_window_too_small`,
+      `context_window_unknown`, `no_connected_account`, `billing_required`,
+      `exhausted_quota`, `missing_model_binding`, `account_claimed`,
+      `already_tried`, `low_headroom`, `unknown_quota`, `stale_telemetry`)
+- [x] CA ledger + feature key entries complete (CA-980)
+- [x] GitNexus detect_changes reviewed before commit — CLI has no
+      `detect_changes` command (MCP-only, not configured); equivalent
+      staged-diff scope review recorded in CA-980
 
 ## 11. Completion Notes
 
-- result:
-- follow-ups:
-- upstream docs updated:
+- result: `runner/quota_candidates.go` — `CrossProviderCandidates` enumerates
+  every registered provider except the current one, filters on availability →
+  required capabilities → context window → connected account → headroom
+  evidence, and partitions into `Eligible` (auto-safe: exact class binding +
+  healthy/exact/fresh headroom), `ManualOnly` (unknown/stale/low quota,
+  missing binding, claimed, already-tried), `Rejected` (unavailable, missing
+  capability, too-small window, no account, exhausted/billing). Ranking is
+  deterministic: configured `ProviderPriority` dominates headroom, then
+  freshness/slot/id tie-breaks via `RankRouteCandidates`. `ExecutionDemand`
+  gains `RequiredCaps` (hub=streaming; nodes=streaming+approvals+MCP) and
+  `MinContextTokens`. Acceptance check proven: a `gemini` registration +
+  settings binding alone yields an eligible candidate with zero router code.
+- follow-ups: Task-449 consumes `CandidateSet` at the Flow/Vibe quota gate
+  (auto path acts only on `AutoEligible`, mints a new leg — never mutates the
+  global active account); Task-450 renders the set verbatim for the manual
+  candidate table.
+- upstream docs updated: CA-980; `task447_quota_preflight_test.go` fixture
+  corrected (claude auth body + gemini path) and `$HOME` isolation added so
+  host credential dirs can't leak into candidate buckets.

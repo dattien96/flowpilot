@@ -53,7 +53,9 @@ func writeTask447AuthFile(t *testing.T, providerKey, home string) {
 	case "codex":
 		rel, body = "auth.json", `{"tokens":{"id_token":"x"}}`
 	case "claude":
-		rel, body = filepath.Join(".claude", ".credentials.json"), `{"access_token":"x","refresh_token":"y"}`
+		rel, body = filepath.Join(".claude", ".credentials.json"), `{"accessToken":"x","refreshToken":"y"}`
+	case "gemini":
+		rel, body = filepath.Join(".gemini", "oauth_creds.json"), `{"access_token":"x","refresh_token":"y"}`
 	case "grok":
 		rel, body = "auth.json", `{"issuer::uid":{"refresh_token":"x","email":"a@b.c"}}`
 	case "devin":
