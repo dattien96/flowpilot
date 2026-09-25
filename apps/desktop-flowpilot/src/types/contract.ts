@@ -620,6 +620,88 @@ export interface QuotaRoutingSettings {
   sameProviderCooldownSeconds: number;
 }
 
+// ---- Quota route decision surface (CP-87 / Task-450) -----------------------
+
+/** Normalized per-account quota evidence — mirrors the runner's
+ *  AccountHeadroom. Missing data renders "unknown", never a fake zero. */
+export interface QuotaHeadroomDTO {
+  state: string; // healthy | low | exhausted | unknown | stale
+  remainingPercent?: number;
+  resetAt?: string;
+  source?: string;
+  freshnessSeconds: number;
+  confidence: string; // exact | none
+}
+
+/** One row of the quota gate table — runner-ordered, runner-scored. The
+ *  client renders it verbatim and never re-ranks or re-parses errors. */
+export interface QuotaRouteCandidateDTO {
+  providerKey: string;
+  model?: string;
+  workloadClass?: string;
+  accountId: string;
+  displayName?: string;
+  slotIndex?: number;
+  headroom: QuotaHeadroomDTO;
+  autoEligible: boolean;
+  rejectionReasons?: string[];
+  /** Same-provider switch window (server timestamps — the cooldown bar
+   *  counts down to `until`, never re-based on remount). */
+  cooldownStartedAt?: string;
+  cooldownUntil?: string;
+  cooldownReason?: string;
+}
+
+/** The structured payload on a quota_route_required card — persisted on the
+ *  durable question record so restart/replay serves identical rows. */
+export interface QuotaRouteDecisionDTO {
+  runId: string;
+  trigger: string;
+  reason?: string;
+  providerKey: ProviderKey;
+  model?: string;
+  accountId?: string;
+  policyVersion: number;
+  candidates?: QuotaRouteCandidateDTO[];
+}
+
+/** quota_route_committed / _stopped / _blocked payload — the requested →
+ *  resolved route plus audit evidence (policy, headroom, cooldown). */
+export interface QuotaRouteDTO {
+  fromProvider?: ProviderKey;
+  fromAccount?: string;
+  toProvider?: ProviderKey;
+  toAccount?: string;
+  toModel?: string;
+  scope?: string; // "once" | "run"
+  reason?: string;
+  policyVersion?: number;
+  headroom?: QuotaHeadroomDTO;
+  cooldownStartedAt?: string;
+  cooldownUntil?: string;
+  cooldownReason?: string;
+}
+
+/** GET /client/workflow-runs/{id}/quota-audit — forensic record correlating
+ *  a route decision with estimated prompt + actual usage (CP-86 figures). */
+export interface QuotaRoutingAuditRecord {
+  runId: string;
+  committedAt?: string;
+  outcome: string; // "committed" | "stopped" | "blocked" | "none"
+  fromProvider?: ProviderKey;
+  fromAccount?: string;
+  toProvider?: ProviderKey;
+  toAccount?: string;
+  toModel?: string;
+  scope?: string;
+  reason?: string;
+  policyVersion: number;
+  headroom?: QuotaHeadroomDTO;
+  estPromptTokens?: number;
+  maxUsageTokens?: number;
+  actualUsage?: TokenUsageBreakdown;
+}
+
 /** Posture labels/descriptions for the composer tabs + setup modal. */
 export const CHAT_POSTURES: { key: ChatPosture; label: string; hint: string }[] = [
   { key: "scan", label: "Scan", hint: "Read-only exploration — reads auto-approve, writes auto-deny." },
@@ -736,6 +818,9 @@ export type ProviderEventDTO =
       prompt: string;
       options: QuestionOption[];
       multiSelect?: boolean;
+      /** Task-450: structured candidate table when the card is a
+       *  quota_route_required gate. */
+      quotaDecision?: QuotaRouteDecisionDTO;
       /** Populated only when replaying an already-resolved question on
        *  reconnect (BUG-StaleQuestion) — render read-only/answered instead of
        *  a fresh interactive form. */
@@ -758,6 +843,14 @@ export type ProviderEventDTO =
       type: "provider_limit_reached";
       providerLimit: ProviderLimitDTO;
     })
+  | (ProviderEventBaseDTO & {
+      /** Task-449/450: a quota rotation committed — requested → resolved
+       *  route notice (informational; the audit endpoint carries the record). */
+      type: "quota_route_committed";
+      quotaRoute: QuotaRouteDTO;
+    })
+  | (ProviderEventBaseDTO & { type: "quota_route_stopped"; quotaRoute: QuotaRouteDTO })
+  | (ProviderEventBaseDTO & { type: "quota_route_blocked"; quotaRoute: QuotaRouteDTO })
   | (ProviderEventBaseDTO & { type: "turn_failed"; error: string; recoverable: boolean })
   | (ProviderEventBaseDTO & { type: "turn_completed"; finalMessage: string })
   | (ProviderEventBaseDTO & { type: "agent_graph_updated"; agentGraphSnapshot: AgentGraphSnapshot })
@@ -1161,6 +1254,9 @@ export interface RunnerClient {
   getQuotaRoutingSettings?(): Promise<QuotaRoutingSettings>;
   /** PUT /client/quota-routing-settings — persists mode/priority/bindings. */
   setQuotaRoutingSettings?(settings: QuotaRoutingSettings): Promise<QuotaRoutingSettings>;
+  /** Task-450: GET /client/workflow-runs/{id}/quota-audit — the forensic
+   *  requested→resolved + usage record for a run's routing decision. */
+  getQuotaRoutingAudit?(runId: string): Promise<QuotaRoutingAuditRecord>;
   openProviderAccountTerminal(accountId: string): Promise<void>;
   /** System control — mirrors admin-web's runner gateway (`POST /system/restart`). CP-81: fenced + lease-scoped inside Electron when the lifecycle bridge is present. */
   restartStack(): Promise<void>;

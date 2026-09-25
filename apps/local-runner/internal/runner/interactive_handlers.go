@@ -68,6 +68,8 @@ func (s *InteractiveService) RegisterInteractiveRoutes(mux *http.ServeMux) {
 	// CA-689c: on-demand per-model reasoning variants (live ACP probe; cached).
 	mux.HandleFunc("GET /client/providers/opencode-variants", s.handleGetOpencodeModelVariants)
 	mux.HandleFunc("GET /client/workflow-runs/{runId}", s.handleGetRun)
+	// CP-87 P-6 (Task-450): requested→resolved routing audit record.
+	mux.HandleFunc("GET /client/workflow-runs/{runId}/quota-audit", s.handleGetQuotaAudit)
 	mux.HandleFunc("GET /client/workflow-runs/{runId}/steps-runtime", s.handleGetWorkflowStepsRuntime)
 	// BUG-355 F2: run-scoped transcript for chat-less workflow runs.
 	mux.HandleFunc("GET /client/workflow-runs/{runId}/timeline", s.handleGetRunTimeline)
@@ -359,6 +361,21 @@ func (s *InteractiveService) handleGetRun(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeInteractiveJSON(w, http.StatusOK, view)
+}
+
+// handleGetQuotaAudit serves the Task-450 audit record: requested → resolved
+// route, reason/policy, headroom evidence, and correlated usage figures.
+func (s *InteractiveService) handleGetQuotaAudit(w http.ResponseWriter, r *http.Request) {
+	rec, err := s.quotaAuditForRun(r.Context(), r.PathValue("runId"))
+	if err != nil {
+		if ae, ok := err.(*apiErr); ok {
+			writeInteractiveError(w, ae)
+			return
+		}
+		writeInteractiveError(w, &apiErr{status: 500, code: "internal", msg: err.Error()})
+		return
+	}
+	writeInteractiveJSON(w, http.StatusOK, rec)
 }
 
 func (s *InteractiveService) handleResumeRun(w http.ResponseWriter, r *http.Request) {
@@ -1335,6 +1352,9 @@ type pendingQuestionView struct {
 	Prompt      string           `json:"prompt"`
 	Options     []QuestionOption `json:"options"`
 	MultiSelect bool             `json:"multiSelect"`
+	// QuotaDecision is the structured candidate table on quota_route_required
+	// cards (Task-450) — nil on ordinary questions.
+	QuotaDecision *QuotaRouteDecision `json:"quotaDecision,omitempty"`
 }
 
 type pendingGateView struct {
@@ -1653,7 +1673,7 @@ func (s *InteractiveService) runSnapshot(runID string) (runSnapshotView, *apiErr
 	}
 	if rs.pendingQuestionID != "" {
 		if rec := s.questions[rs.pendingQuestionID]; rec != nil {
-			view.PendingQuestion = &pendingQuestionView{QuestionID: rec.id, Prompt: rec.prompt, Options: rec.options, MultiSelect: rec.multiSelect}
+			view.PendingQuestion = &pendingQuestionView{QuestionID: rec.id, Prompt: rec.prompt, Options: rec.options, MultiSelect: rec.multiSelect, QuotaDecision: quotaDecisionForRecord(rec)}
 		}
 	}
 	return view, nil

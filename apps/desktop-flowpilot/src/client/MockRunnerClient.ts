@@ -21,6 +21,7 @@ import type {
   ProviderEventBaseDTO,
   ProviderEventDTO,
   ProviderSkill,
+  QuotaRoutingAuditRecord,
   QuotaRoutingSettings,
   RemoteChatSessionSummary,
   ReviewOutcomeInput,
@@ -846,6 +847,11 @@ export class MockRunnerClient implements RunnerClient {
     await delay(30);
     this.quotaRouting = { ...settings };
     return this.getQuotaRoutingSettings();
+  }
+
+  async getQuotaRoutingAudit(runId: string): Promise<QuotaRoutingAuditRecord> {
+    await delay(30);
+    return { runId, outcome: "none", policyVersion: 1 };
   }
 
   async openProviderAccountTerminal(_accountId: string): Promise<void> {

@@ -935,6 +935,10 @@ type questionRecord struct {
 	// usage_budget_exceeded card) from model-asked AskQuestion cards — the
 	// resolved choice routes to a semantic handler, not a turn reprompt.
 	kind string
+	// quotaDecision carries the structured candidate table on
+	// quota_route_required cards (Task-450) — persisted via
+	// ProviderQuestionState so restart/replay serve the identical rows.
+	quotaDecision *QuotaRouteDecision
 }
 
 // questionResolveResult is the typed payload sent on questionRecord.resolve
@@ -990,6 +994,7 @@ func questionStateFromRecord(rec *questionRecord, providerTurnID, expiresAt stri
 		Status:         persistedGateStatus(rec.status),
 		Choice:         rec.choice,
 		ExpiresAt:      expiresAt,
+		QuotaDecision:  rec.quotaDecision,
 		Revision:       rec.revision,
 		CreatedAt:      rec.createdAt,
 	}
@@ -5259,6 +5264,9 @@ func (s *InteractiveService) rehydratePendingGatesLocked(runID string) {
 					expiresAt:   st.ExpiresAt,
 					revision:    st.Revision,
 					createdAt:   st.CreatedAt,
+					// Task-450: restore the structured quota decision so the
+					// rehydrated card serves the identical candidate table.
+					quotaDecision: st.QuotaDecision,
 				}
 				if rs.pendingQuestionID == "" {
 					rs.pendingQuestionID = st.QuestionID

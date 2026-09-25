@@ -57,10 +57,10 @@ const (
 	EventTurnCompleted        ProviderEventType = "turn_completed"
 	// CP-86 P-4 (Task-443): flag-gated context-pressure awareness/ask events
 	// and provider self-compaction detection — FLOWPILOT_CONTEXT_PRESSURE.
-	EventContextPressure    ProviderEventType = "context_pressure"
-	EventProviderCompacted  ProviderEventType = "provider_compacted"
-	EventAgentGraphUpdated    ProviderEventType = "agent_graph_updated"
-	EventAgentBusMessage      ProviderEventType = "agent_bus_message"
+	EventContextPressure   ProviderEventType = "context_pressure"
+	EventProviderCompacted ProviderEventType = "provider_compacted"
+	EventAgentGraphUpdated ProviderEventType = "agent_graph_updated"
+	EventAgentBusMessage   ProviderEventType = "agent_bus_message"
 	// Emitted on the parent run when a user triggers a spawn from the UI (BUG-121).
 	// Persisted to the parent event log so the annotation survives server restarts.
 	EventAgentSpawnedByUser  ProviderEventType = "agent_spawned_by_user"
@@ -93,10 +93,10 @@ const (
 type ProviderLimitKind string
 
 const (
-	ProviderLimitQuotaExhausted    ProviderLimitKind = "quota_exhausted"
-	ProviderLimitRateLimited       ProviderLimitKind = "rate_limited"
-	ProviderLimitCreditsExhausted  ProviderLimitKind = "credits_exhausted"
-	ProviderLimitBillingRequired   ProviderLimitKind = "billing_required"
+	ProviderLimitQuotaExhausted   ProviderLimitKind = "quota_exhausted"
+	ProviderLimitRateLimited      ProviderLimitKind = "rate_limited"
+	ProviderLimitCreditsExhausted ProviderLimitKind = "credits_exhausted"
+	ProviderLimitBillingRequired  ProviderLimitKind = "billing_required"
 )
 
 // ProviderLimit detection sources (Task-445 T-2): structured payload fields and
@@ -179,8 +179,8 @@ type TokenUsageSnapshot struct {
 // ContextPressurePayload rides context_pressure / provider_compacted events
 // (Task-443, flag-gated FLOWPILOT_CONTEXT_PRESSURE).
 type ContextPressurePayload struct {
-	Tier         string  `json:"tier"`    // "aware" | "ask"
-	Ratio        float64 `json:"ratio"`   // usage/window
+	Tier         string  `json:"tier"`  // "aware" | "ask"
+	Ratio        float64 `json:"ratio"` // usage/window
 	UsedTokens   int64   `json:"usedTokens"`
 	WindowTokens int64   `json:"windowTokens"`
 	// PrevTokens carries the pre-drop TotalTokens on provider_compacted.
@@ -229,10 +229,13 @@ type ProviderEvent struct {
 	// appears to be waiting on. The approval-side twin of Answer above.
 	Decision string `json:"decision,omitempty"`
 	// user_question_required
-	QuestionID  string           `json:"questionId,omitempty"`
-	Prompt      string           `json:"prompt,omitempty"`
-	Options     []QuestionOption `json:"options,omitempty"`
-	MultiSelect bool             `json:"multiSelect,omitempty"`
+	QuestionID string           `json:"questionId,omitempty"`
+	Prompt     string           `json:"prompt,omitempty"`
+	Options    []QuestionOption `json:"options,omitempty"`
+	// QuotaDecision rides user_question_required when the card is a
+	// quota_route_required gate (Task-450): the structured candidate table.
+	QuotaDecision *QuotaRouteDecision `json:"quotaDecision,omitempty"`
+	MultiSelect   bool                `json:"multiSelect,omitempty"`
 	// context_pressure / provider_compacted (Task-443)
 	ContextPressure *ContextPressurePayload `json:"contextPressure,omitempty"`
 	// Answer is populated only when replaying an already-resolved question on

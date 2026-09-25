@@ -20,6 +20,7 @@ import type {
   ProviderAccountSummary,
   ProviderEventDTO,
   ProviderSkill,
+  QuotaRoutingAuditRecord,
   QuotaRoutingSettings,
   RemoteChatSessionSummary,
   RunHandle,
@@ -428,6 +429,10 @@ export class HttpWsRunnerClient implements RunnerClient {
 
   setQuotaRoutingSettings(settings: QuotaRoutingSettings): Promise<QuotaRoutingSettings> {
     return this.putJSON<QuotaRoutingSettings>("/client/quota-routing-settings", settings);
+  }
+
+  getQuotaRoutingAudit(runId: string): Promise<QuotaRoutingAuditRecord> {
+    return this.getJSON<QuotaRoutingAuditRecord>(`/client/workflow-runs/${encodeURIComponent(runId)}/quota-audit`);
   }
   openProviderAccountTerminal(accountId: string): Promise<void> {
     return this.postJSON<void>("/provider-accounts/test", { accountId });

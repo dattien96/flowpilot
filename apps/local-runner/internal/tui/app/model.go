@@ -94,6 +94,9 @@ type QuestionState struct {
 	// question; submitted as a string array only on explicit submit.
 	Selected []string
 	RunID    string
+	// Quota carries the structured candidate table on quota_route_required
+	// cards (Task-450) — rendered above the option chips verbatim.
+	Quota *client.QuotaRouteDecision
 }
 
 // AuthPhase is the interactive Supabase login wizard state (Desktop LoginScreen parity).
@@ -211,6 +214,19 @@ type ProvidersCatalogMsg struct {
 // ProvidersWarmRetryMsg triggers a background GET /providers after OpenCode
 // model warm has had time to finish (undersized catalog retry).
 type ProvidersWarmRetryMsg struct{}
+
+// QuotaSettingsMsg carries the machine-global rotation policy fetched for the
+// /quota command (Task-450 — TUI parity view of Desktop's settings surface).
+type QuotaSettingsMsg struct {
+	Settings client.QuotaRoutingSettings
+	Err      string
+}
+
+// QuotaAuditMsg carries the forensic route record for /quota audit.
+type QuotaAuditMsg struct {
+	Record client.QuotaRoutingAuditRecord
+	Err    string
+}
 
 // SessionDefaultsMsg carries active provider/model discovered after connect.
 type SessionDefaultsMsg struct {
@@ -659,12 +675,12 @@ type AppModel struct {
 	// ctxStatusLegID pins the marks to one provider session; a leg change
 	// (rotate_leg / provider switch) resets them so stale marks never bleed
 	// onto the fresh leg.
-	ctxStatus      contextStatus
-	ctxStatusLegID string
-	agentRuns        []client.AgentRunSummary
-	focusedAgentIdx  int
-	stepID           string // synthetic chat step from StartRun / Resume
-	pendingPrompt    string // first prompt waiting for StartRun to finish
+	ctxStatus       contextStatus
+	ctxStatusLegID  string
+	agentRuns       []client.AgentRunSummary
+	focusedAgentIdx int
+	stepID          string // synthetic chat step from StartRun / Resume
+	pendingPrompt   string // first prompt waiting for StartRun to finish
 
 	// Chat switch surface (CP-59 Task-315): one in-flight switch at a time;
 	// a posture picked mid-switch queues for the new leg.
@@ -725,7 +741,7 @@ type AppModel struct {
 	// terminal result, and scaffoldPollErrs bounds retries if the runner died.
 	scaffoldPostLost bool
 	scaffoldPollErrs int
-	scaffoldPhase            string
+	scaffoldPhase    string
 
 	// thinkingFrame drives the animated "Thinking" placeholder (spinner /
 	// shimmer / elapsed). Advanced by thinkingTickMsg while a thinking row is

@@ -609,6 +609,7 @@ function QuestionGroup({ items }: { items: QuestionItem[] }): React.ReactElement
               options={item.options}
               multiSelect={item.multiSelect}
               answer={item.answer}
+              quotaDecision={item.quotaDecision}
             />
           ))}
         </div>
@@ -695,6 +696,7 @@ function Item({ it }: { it: TimelineGroup }): React.ReactElement | null {
           options={it.options}
           multiSelect={it.multiSelect}
           answer={it.answer}
+          quotaDecision={it.quotaDecision}
         />
       );
     case "decision_card":

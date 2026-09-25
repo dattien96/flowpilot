@@ -89,6 +89,9 @@ type DecisionApprovalPayload struct {
 type DecisionQuestionPayload struct {
 	Options     []QuestionOption `json:"options,omitempty"`
 	MultiSelect bool             `json:"multiSelect,omitempty"`
+	// Quota is the structured candidate table when the question is a
+	// quota_route_required gate (Task-450) — nil on ordinary questions.
+	Quota *QuotaRouteDecision `json:"quota,omitempty"`
 }
 
 type DecisionGatePayload struct {
@@ -226,7 +229,7 @@ func questionDecisionPayload(rs *interactiveRun, rec *questionRecord) DecisionPa
 		ProviderKey: rs.providerKey,
 		TurnID:      rs.currentTurnID,
 		Prompt:      boundDecisionText(rec.prompt, decisionPromptMaxLen),
-		Question:    &DecisionQuestionPayload{Options: opts, MultiSelect: rec.multiSelect},
+		Question:    &DecisionQuestionPayload{Options: opts, MultiSelect: rec.multiSelect, Quota: quotaDecisionForRecord(rec)},
 	}
 }
 

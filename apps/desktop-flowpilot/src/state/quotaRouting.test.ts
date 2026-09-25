@@ -6,6 +6,13 @@ import { useStore } from "./store";
 // through the runner-owned document — Desktop never writes provider-local
 // files itself.
 
+// Task-450 T-1: the machine-global document defaults to manual — auto
+// rotation is opt-in, never ambient.
+test("quota routing setting defaults Manual", async () => {
+  await useStore.getState().loadQuotaRoutingSettings();
+  assert.equal(useStore.getState().quotaRoutingSettings.mode, "manual");
+});
+
 test("settings edits mode priority and class model bindings", async () => {
   const store = useStore.getState();
   await store.loadQuotaRoutingSettings();

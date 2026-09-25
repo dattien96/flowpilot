@@ -3,6 +3,7 @@ import type { Project, ProjectWorkspaceBinding } from "@flowpilot/client-core";
 import { getAdminUseCases } from "@/clientCore";
 import { LIBRETRANSLATE_URL } from "@/config";
 import { formatTimestamp, toErrorMessage } from "@/components/settings/settingsHelpers";
+import { QuotaRoutingSettings } from "@/components/settings/QuotaRoutingSettings";
 import {
   dispatchScaffold,
   engineTone,
@@ -659,6 +660,10 @@ export function EngineSettings(): React.ReactElement {
           </div>
         )}
       </div>
+
+      {/* CP-87 P-6 (Task-450): provider/account rotation policy — manual
+          default, bounded auto, priority order, class model bindings. */}
+      <QuotaRoutingSettings />
     </section>
   );
 }

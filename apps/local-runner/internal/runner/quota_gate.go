@@ -50,6 +50,14 @@ type QuotaRoutePayload struct {
 	ToModel      string      `json:"toModel,omitempty"`
 	Scope        string      `json:"scope,omitempty"` // once | run
 	Reason       string      `json:"reason,omitempty"`
+	// Task-450 audit fields: the policy that produced the route, the headroom
+	// evidence on the selected candidate, and the same-provider cooldown
+	// window when the claim minted one.
+	PolicyVersion     int              `json:"policyVersion,omitempty"`
+	Headroom          *AccountHeadroom `json:"headroom,omitempty"`
+	CooldownStartedAt string           `json:"cooldownStartedAt,omitempty"`
+	CooldownUntil     string           `json:"cooldownUntil,omitempty"`
+	CooldownReason    string           `json:"cooldownReason,omitempty"`
 }
 
 // QuotaResolution is the durable decision produced by ResolveQuotaPreflight
@@ -235,14 +243,19 @@ func (s *InteractiveService) commitQuotaRotation(ctx context.Context, res QuotaR
 	sel := res.Selected
 	d := res.Demand
 	if sel.ProviderKey == d.RequestedProvider {
-		// Same-provider account switch — durable claim repins this leg.
-		s.emitQuotaRouteCommitted(res)
-		_, err := s.claimAccountForLeg(ctx, d, AccountCandidate{
+		// Same-provider account switch — durable claim repins this leg. The
+		// committed notice emits after a successful claim so it carries the
+		// minted cooldown window; a failed claim leaves no committed record.
+		binding, err := s.claimAccountForLeg(ctx, d, AccountCandidate{
 			AccountID:   sel.AccountID,
 			ProviderKey: sel.ProviderKey,
 			Headroom:    sel.Headroom,
 		}, res.Reason != "user_choice")
-		return err
+		if err != nil {
+			return err
+		}
+		s.emitQuotaRouteCommitted(res, &binding)
+		return nil
 	}
 	s.mu.Lock()
 	rs := s.runs[d.RunID]
@@ -254,7 +267,7 @@ func (s *InteractiveService) commitQuotaRotation(ctx context.Context, res QuotaR
 		// Hub/chat leg (incl. vibe): the leg machinery owns provider switches —
 		// new leg + compact handoff, old leg closed durable. Notice lands on the
 		// source leg's durable stream before the switch closes it.
-		s.emitQuotaRouteCommitted(res)
+		s.emitQuotaRouteCommitted(res, nil)
 		_, aerr := s.switchChatLeg(ctx, rs.chatID, chatSwitchRequest{
 			TargetProviderKey: sel.ProviderKey,
 			Model:             sel.Model,
@@ -268,32 +281,44 @@ func (s *InteractiveService) commitQuotaRotation(ctx context.Context, res QuotaR
 	if rs.parentRunID != "" {
 		// Flow child: the leg is the child run — close it and respawn the same
 		// node binding on the new provider/account.
-		s.emitQuotaRouteCommitted(res)
+		s.emitQuotaRouteCommitted(res, nil)
 		return s.respawnChildOnRoute(ctx, rs, sel)
 	}
 	return fmt.Errorf("quota_gate: run %q has no leg rotation path", d.RunID)
 }
 
 // emitQuotaRouteCommitted publishes the T-3 requested→resolved notice on the
-// routed run's durable stream.
-func (s *InteractiveService) emitQuotaRouteCommitted(res QuotaResolution) {
+// routed run's durable stream — with policy version, the selected headroom
+// evidence, and the minted cooldown window when the claim produced one.
+func (s *InteractiveService) emitQuotaRouteCommitted(res QuotaResolution, binding *LegBinding) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rs := s.runs[res.Demand.RunID]
 	if rs == nil || res.Selected == nil {
 		return
 	}
+	payload := &QuotaRoutePayload{
+		FromProvider: res.Demand.RequestedProvider,
+		FromAccount:  res.Demand.RequestedAccountID,
+		ToProvider:   res.Selected.ProviderKey,
+		ToAccount:    res.Selected.AccountID,
+		ToModel:      res.Selected.Model,
+		Scope:        res.Scope,
+		Reason:       res.Reason,
+	}
+	payload.PolicyVersion = res.PolicyVersion
+	if res.Selected.Headroom.State != "" {
+		h := res.Selected.Headroom
+		payload.Headroom = &h
+	}
+	if binding != nil {
+		payload.CooldownStartedAt = binding.CooldownStartedAt
+		payload.CooldownUntil = binding.CooldownUntil
+		payload.CooldownReason = binding.CooldownReason
+	}
 	s.emitLocked(rs, ProviderEvent{
-		Type: EventQuotaRouteCommitted,
-		QuotaRoute: &QuotaRoutePayload{
-			FromProvider: res.Demand.RequestedProvider,
-			FromAccount:  res.Demand.RequestedAccountID,
-			ToProvider:   res.Selected.ProviderKey,
-			ToAccount:    res.Selected.AccountID,
-			ToModel:      res.Selected.Model,
-			Scope:        res.Scope,
-			Reason:       res.Reason,
-		},
+		Type:       EventQuotaRouteCommitted,
+		QuotaRoute: payload,
 	})
 }
 
@@ -429,17 +454,19 @@ func (s *InteractiveService) emitQuotaRouteCard(rs *interactiveRun, res QuotaRes
 	options = append(options, QuestionOption{Label: "stop", Description: "stop — emit quota_route_stopped"})
 
 	expiresAt := time.Now().UTC().Add(s.questionTTL).Format(time.RFC3339Nano)
+	decision := buildQuotaRouteDecision(res)
 	rec := &questionRecord{
-		id:        s.nextID("q"),
-		runID:     rs.id,
-		prompt:    quotaRouteQuestionKind + ": binding " + string(res.Demand.RequestedProvider) + "/" + res.Demand.RequestedAccountID + " unusable (" + res.Reason + ")",
-		options:   options,
-		status:    "pending",
-		resolve:   make(chan questionResolveResult, 1),
-		expiresAt: expiresAt,
-		revision:  1,
-		createdAt: time.Now().UTC().Format(time.RFC3339Nano),
-		kind:      quotaRouteQuestionKind,
+		id:            s.nextID("q"),
+		runID:         rs.id,
+		prompt:        quotaRouteQuestionKind + ": binding " + string(res.Demand.RequestedProvider) + "/" + res.Demand.RequestedAccountID + " unusable (" + res.Reason + ")",
+		options:       options,
+		status:        "pending",
+		resolve:       make(chan questionResolveResult, 1),
+		expiresAt:     expiresAt,
+		revision:      1,
+		createdAt:     time.Now().UTC().Format(time.RFC3339Nano),
+		kind:          quotaRouteQuestionKind,
+		quotaDecision: decision,
 	}
 	s.questions[rec.id] = rec
 	rs.pendingQuestionID = rec.id
@@ -461,18 +488,20 @@ func (s *InteractiveService) emitQuotaRouteCard(rs *interactiveRun, res QuotaRes
 	s.mu.Lock()
 	if cur := s.runs[rs.id]; cur != nil {
 		s.emitLocked(cur, ProviderEvent{
-			Type:       EventUserQuestionRequired,
-			QuestionID: questionID,
-			Prompt:     rec.prompt,
-			Options:    options,
+			Type:          EventUserQuestionRequired,
+			QuestionID:    questionID,
+			Prompt:        rec.prompt,
+			Options:       options,
+			QuotaDecision: decision,
 		})
 		if rootID := s.flowRootIDLocked(cur); rootID != "" && rootID != cur.id {
 			if root := s.runs[rootID]; root != nil {
 				s.emitLocked(root, ProviderEvent{
-					Type:       EventUserQuestionRequired,
-					QuestionID: questionID,
-					Prompt:     rec.prompt,
-					Options:    options,
+					Type:          EventUserQuestionRequired,
+					QuestionID:    questionID,
+					Prompt:        rec.prompt,
+					Options:       options,
+					QuotaDecision: decision,
 				})
 			}
 		}

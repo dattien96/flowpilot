@@ -385,6 +385,9 @@ type ProviderQuestionState struct {
 	Choice          []string
 	ExpiresAt       string
 	ResolvedChoices []string
+	// QuotaDecision is the structured candidate table on quota_route_required
+	// cards (Task-450) — durable so restart/replay serve identical rows.
+	QuotaDecision *QuotaRouteDecision `json:"quotaDecision,omitempty"`
 	// Revision/CreatedAt mirror ProviderApprovalState's CP-84 identity
 	// (Task-430). Additive — zero values on legacy rows.
 	Revision  int64

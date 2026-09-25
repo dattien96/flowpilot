@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import type { QuestionOption } from "@/types/contract";
+import type { QuestionOption, QuotaRouteDecisionDTO } from "@/types/contract";
 import { getRunnerBaseUrl } from "@/client/createRunnerClient";
 import { useStore } from "@/state/store";
 import { resolveQuestionManualSubmit } from "./questionAnswer";
+import { QuotaCandidateTable } from "./quota/QuotaCandidateTable";
 
 interface Props {
   questionId: string;
@@ -10,6 +11,9 @@ interface Props {
   options: QuestionOption[];
   multiSelect?: boolean;
   answer?: string | string[];
+  /** Task-450: structured candidate table on quota_route_required cards —
+   *  renders the candidate table instead of the flat option list. */
+  quotaDecision?: QuotaRouteDecisionDTO;
 }
 
 const valueOf = (o: QuestionOption): string => o.value ?? o.label;
@@ -18,7 +22,7 @@ const GOOGLE_DRIVE_PICKER_OPTION = "__google_drive_picker__";
 // The "popup with options" UX (the AskUserQuestion-style card). Backed in Part B
 // by the user-interaction bridge (04-04) — both the model-driven `ask_user` MCP
 // tool path and the deterministic workflow-driven path render THIS same card.
-export function QuestionCard({ questionId, prompt, options, multiSelect, answer }: Props): React.ReactElement {
+export function QuestionCard({ questionId, prompt, options, multiSelect, answer, quotaDecision }: Props): React.ReactElement {
   const submit = useStore((s) => s.answer);
   const resolved = answer !== undefined;
   const [selected, setSelected] = useState<string[]>([]);
@@ -89,6 +93,8 @@ export function QuestionCard({ questionId, prompt, options, multiSelect, answer 
 
       {resolved ? (
         <div className="meta">answer: {Array.isArray(answer) ? answer.join(", ") : answer}</div>
+      ) : quotaDecision ? (
+        <QuotaCandidateTable decision={quotaDecision} onSelect={(optionId) => void submit(questionId, optionId)} />
       ) : (
         <>
           <div className="option-list">
