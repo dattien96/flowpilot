@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync/atomic"
 
 	"flowpilot-runner/internal/agentpack"
 )
@@ -32,6 +33,11 @@ func looksLikeUUID(s string) bool {
 type SupabaseWorkflowFlowStore struct {
 	restURL string
 	apiKey  string
+	// definitionJSONUnsupported flips when PostgREST reports the remote
+	// workflows table has no definition_json column (project not migrated).
+	// The store then skips snapshot selects/writes instead of paying a
+	// 42703 round-trip on every read of a legacy clone row.
+	definitionJSONUnsupported atomic.Bool
 }
 
 // NewSupabaseWorkflowFlowStore builds the store from the workspace config +
@@ -479,7 +485,118 @@ func (s *SupabaseWorkflowFlowStore) fetchOne(ctx context.Context, query string) 
 	if len(rows) == 0 {
 		return FlowDefinitionRecord{}, false, nil
 	}
-	return recordFromWorkflowRow(rows[0]), true, nil
+	rec := recordFromWorkflowRow(rows[0])
+	s.healCloneDefinitionSnapshot(ctx, rows[0], &rec)
+	return rec, true, nil
+}
+
+// healCloneDefinitionSnapshot repairs a Desktop-path clone row: the client's
+// cloneWorkflow inserts workflows via PostgREST directly (never through
+// Upsert), so the row lands with cloned_from set but definition_json NULL and
+// every schema-less field dropped — the live BUG-474 gap. The heal resolves
+// the clone's provenance: the source row's own definition_json (clone-of-
+// user-flow) or its embedded pack flow (clone-of-builtin-mirror). Fill-only
+// precedence — real columns still win — then the snapshot is backfilled onto
+// the row once via PATCH so subsequent reads take the cheap branch. All
+// failures are soft: the row falls back to the deterministic legacy
+// derive-run reconstruction.
+func (s *SupabaseWorkflowFlowStore) healCloneDefinitionSnapshot(ctx context.Context, row dbWorkflowRow, rec *FlowDefinitionRecord) {
+	if row.IsBuiltin || len(row.DefinitionJSON) > 0 || row.ClonedFrom == nil || strings.TrimSpace(*row.ClonedFrom) == "" {
+		return
+	}
+	cols := "id,is_builtin,pack_id,pack_flow_id,definition_json"
+	if s.definitionJSONUnsupported.Load() {
+		cols = "id,is_builtin,pack_id,pack_flow_id"
+	}
+	endpoint := fmt.Sprintf(
+		"%s/workflows?id=eq.%s&select=%s&limit=1",
+		s.restURL, url.QueryEscape(*row.ClonedFrom), url.QueryEscape(cols),
+	)
+	status, body, err := httpRequestFn(ctx, http.MethodGet, endpoint, s.headers(""), nil)
+	if isUndefinedDefinitionJSONColumn(status, body) {
+		// Remote project has not run the definition_json migration. The
+		// builtin-source heal needs no snapshot column — retry without it.
+		s.definitionJSONUnsupported.Store(true)
+		endpoint = fmt.Sprintf(
+			"%s/workflows?id=eq.%s&select=%s&limit=1",
+			s.restURL, url.QueryEscape(*row.ClonedFrom),
+			url.QueryEscape("id,is_builtin,pack_id,pack_flow_id"),
+		)
+		status, body, err = httpRequestFn(ctx, http.MethodGet, endpoint, s.headers(""), nil)
+	}
+	if err != nil || status < 200 || status >= 300 {
+		return
+	}
+	var srcRows []struct {
+		IsBuiltin      bool            `json:"is_builtin"`
+		PackID         *string         `json:"pack_id"`
+		PackFlowID     *string         `json:"pack_flow_id"`
+		DefinitionJSON json.RawMessage `json:"definition_json"`
+	}
+	if err := json.Unmarshal(body, &srcRows); err != nil || len(srcRows) == 0 {
+		return
+	}
+	src := srcRows[0]
+	var snap agentpack.FlowDefinition
+	switch {
+	case len(src.DefinitionJSON) > 0:
+		if err := json.Unmarshal(src.DefinitionJSON, &snap); err != nil {
+			return
+		}
+	case src.IsBuiltin && src.PackID != nil && src.PackFlowID != nil:
+		emb := embeddedFlowDefinition(*src.PackID, *src.PackFlowID)
+		if emb == nil {
+			return
+		}
+		snap = *emb
+	default:
+		return
+	}
+	// Same fill-only restore contract as the definition_json branch.
+	if len(rec.Definition.ContextProfiles) == 0 && len(snap.ContextProfiles) > 0 {
+		rec.Definition.ContextProfiles = snap.ContextProfiles
+	}
+	if len(rec.Definition.Tools) == 0 && len(snap.Tools) > 0 {
+		rec.Definition.Tools = snap.Tools
+	}
+	restoreFlowNodeExecutionFields(&rec.Definition, flowNodesByID(snap.Nodes))
+	// One-time backfill so the heal does not re-run per read. Best-effort:
+	// the current read is already healed; a failed PATCH only costs another
+	// source lookup next time. Skipped entirely once the remote is known to
+	// lack the column.
+	if s.definitionJSONUnsupported.Load() {
+		return
+	}
+	raw, err := json.Marshal(map[string]any{"definition_json": snap})
+	if err != nil {
+		return
+	}
+	patchEndpoint := fmt.Sprintf("%s/workflows?id=eq.%s", s.restURL, url.QueryEscape(row.ID))
+	patchStatus, pbody, perr := httpRequestFn(ctx, http.MethodPatch, patchEndpoint, s.headers("return=minimal"), raw)
+	if isUndefinedDefinitionJSONColumn(patchStatus, pbody) {
+		s.definitionJSONUnsupported.Store(true)
+		return
+	}
+	if perr != nil || patchStatus < 200 || patchStatus >= 300 {
+		log.Printf("[flow-store] definition_json backfill for clone %q failed: status=%d err=%v", row.ID, patchStatus, perr)
+	}
+}
+
+// isUndefinedDefinitionJSONColumn reports a PostgREST undefined-column error
+// for workflows.definition_json (SQLSTATE 42703) — the remote project has not
+// run the definition_json migration.
+func isUndefinedDefinitionJSONColumn(status int, body []byte) bool {
+	if status != http.StatusBadRequest {
+		return false
+	}
+	var e struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(body, &e); err != nil {
+		return false
+	}
+	return e.Code == "42703" && strings.Contains(e.Message, "definition_json")
 }
 
 // GetByPackFlow looks up a mirrored built-in row by pack identity.
@@ -676,7 +793,9 @@ func (s *SupabaseWorkflowFlowStore) ListAll(ctx context.Context) ([]FlowDefiniti
 	}
 	out := make([]FlowDefinitionRecord, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, recordFromWorkflowRow(row))
+		rec := recordFromWorkflowRow(row)
+		s.healCloneDefinitionSnapshot(ctx, row, &rec)
+		out = append(out, rec)
 	}
 	return out, nil
 }
@@ -735,11 +854,25 @@ func (s *SupabaseWorkflowFlowStore) Upsert(ctx context.Context, record FlowDefin
 		}
 	}
 
+	if s.definitionJSONUnsupported.Load() {
+		delete(payload, "definition_json")
+	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return FlowDefinitionRecord{}, fmt.Errorf("supabase workflow flow: encode: %w", err)
 	}
 	status, respBody, err := httpRequestFn(ctx, http.MethodPost, endpoint, s.headers("resolution=merge-duplicates,return=representation"), body)
+	if isUndefinedDefinitionJSONColumn(status, respBody) {
+		// Remote not migrated: drop the snapshot key and retry once so the
+		// write succeeds with the pre-migration field set instead of
+		// hard-failing the whole flow save.
+		s.definitionJSONUnsupported.Store(true)
+		delete(payload, "definition_json")
+		if body, err = json.Marshal(payload); err == nil {
+			log.Printf("[flow-store] remote workflows lacks definition_json — upsert retried without snapshot (run the definition_json migration to restore full persistence)")
+			status, respBody, err = httpRequestFn(ctx, http.MethodPost, endpoint, s.headers("resolution=merge-duplicates,return=representation"), body)
+		}
+	}
 	if err != nil {
 		return FlowDefinitionRecord{}, err
 	}
