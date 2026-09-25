@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	neturl "net/url"
@@ -1823,6 +1824,9 @@ func (c *Client) openStream(ctx context.Context, runID string, afterSeq int64) <
 				}
 				var ev ProviderEvent
 				if json.Unmarshal([]byte(raw), &ev) == nil {
+					if ev.Seq > afterSeq {
+						afterSeq = ev.Seq
+					}
 					select {
 					case ch <- ev:
 					case <-ctx.Done():
@@ -1830,6 +1834,15 @@ func (c *Client) openStream(ctx context.Context, runID string, afterSeq int64) <
 					}
 				}
 			}
+			if ctx.Err() != nil {
+				return
+			}
+		}
+		if scanErr := scanner.Err(); scanErr != nil && ctx.Err() == nil {
+			// BUG-498: distinguish "stream failed" from a clean end — the
+			// consumer reconnects with afterSeq so delivery self-heals, but
+			// the fault must be visible in diagnostics.
+			log.Printf("[tui-client] event stream scan ended with error run_id=%q: %v", runID, scanErr)
 		}
 	}()
 	return ch

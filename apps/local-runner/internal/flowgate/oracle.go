@@ -270,7 +270,13 @@ WaitLoop:
 		suitePassed = true
 	}
 
-	passed, failed = parseSuiteTestNames(testCmd, combinedOutput)
+	passed, failed, parseErr := parseSuiteTestNames(testCmd, combinedOutput)
+	if parseErr != nil {
+		// BUG-498: a truncated name parse must not masquerade as a complete
+		// one — the suite verdict still comes from the exit code, but the
+		// per-test diff lists are partial and must be marked as such.
+		log.Printf("[gate] suite test-name parse incomplete cmd=%q: %v", testCmd, parseErr)
+	}
 	return
 }
 
@@ -280,7 +286,7 @@ WaitLoop:
 // the parsed "name" was the literal "---", which then poisoned baselines and
 // made every real subtest failure classify as a regression. Take the text
 // after the marker wherever it appears on the line.
-func parseSuiteTestNames(testCmd, output string) (passed, failed []string) {
+func parseSuiteTestNames(testCmd, output string) (passed, failed []string, err error) {
 	scanner := bufio.NewScanner(strings.NewReader(output))
 	// Default MaxScanTokenSize is 64KiB; retained output is maxSuiteOutputBytes
 	// plus the truncation marker and can be one long line. Raise the limit so
@@ -336,6 +342,9 @@ func parseSuiteTestNames(testCmd, output string) (passed, failed []string) {
 				}
 			}
 		}
+	}
+	if scanErr := scanner.Err(); scanErr != nil {
+		err = fmt.Errorf("suite output scan truncated: %w", scanErr)
 	}
 	return
 }

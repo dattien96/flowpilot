@@ -7,7 +7,10 @@ package changecontract
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -62,31 +65,46 @@ func NewStore(workspace string) (*Store, error) {
 		byKey:       make(map[string]Contract),
 		latestByRun: make(map[string]Contract),
 	}
-	s.loadFromDisk()
+	if err := s.loadFromDisk(); err != nil {
+		return nil, err
+	}
 	return s, nil
 }
 
-func (s *Store) loadFromDisk() {
+// loadFromDisk returns an error for any read failure other than a genuinely
+// missing file (BUG-497): an unreadable or truncated store must surface,
+// never present itself as an empty-but-complete contract set.
+func (s *Store) loadFromDisk() error {
 	f, err := os.Open(s.filePath)
 	if err != nil {
-		return // missing file is not an error — first run
+		if os.IsNotExist(err) {
+			return nil // missing file is not an error — first run
+		}
+		return err
 	}
 	defer f.Close()
 
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		if len(line) == 0 {
-			continue
+	// Uncapped reader: declared_paths payloads can exceed any fixed scanner
+	// cap, and a mid-file read fault must not silently truncate the load.
+	br := bufio.NewReaderSize(f, 64*1024)
+	for {
+		line, err := br.ReadBytes('\n')
+		trimmed := bytes.TrimSpace(line)
+		if len(trimmed) > 0 {
+			var c Contract
+			if err := json.Unmarshal(trimmed, &c); err == nil {
+				s.byKey[c.key()] = c // last-wins by (run,step)
+				if rid := strings.TrimSpace(c.RunID); rid != "" {
+					s.latestByRun[rid] = c // append-order last-wins per run
+				}
+			}
+			// tolerate a corrupt/partial line, never fail the load
 		}
-		var c Contract
-		if err := json.Unmarshal(line, &c); err != nil {
-			continue // tolerate a corrupt/partial line, never fail the load
-		}
-		s.byKey[c.key()] = c // last-wins by (run,step)
-		if rid := strings.TrimSpace(c.RunID); rid != "" {
-			s.latestByRun[rid] = c // append-order last-wins per run
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return err
 		}
 	}
 }
@@ -144,7 +162,9 @@ func OpenStoreReadOnly(workspace string) (*Store, error) {
 		}
 		return nil, err
 	}
-	s.loadFromDisk()
+	if err := s.loadFromDisk(); err != nil {
+		return nil, err
+	}
 	return s, nil
 }
 

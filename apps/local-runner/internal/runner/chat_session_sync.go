@@ -1,7 +1,6 @@
 package runner
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -309,23 +308,27 @@ func mergeChatSessionDriveIndex(existing []byte, replacement chatSessionDriveInd
 	// preserved verbatim at the tail of the file instead of being silently
 	// dropped (dropping them destroys remote rows other devices wrote).
 	var preserved []string
-	scanner := bufio.NewScanner(strings.NewReader(string(existing)))
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
+	// BUG-496: scan with the uncapped reader — bufio.Scanner's default 64KiB
+	// cap silently dropped the oversized line AND every row after it, losing
+	// remote rows the preservation contract exists to keep. The input is
+	// in-memory so readNDJSONLines can only fail on a malformed reader, which
+	// strings.Reader never is — the error cannot fire but is checked anyway.
+	_ = readNDJSONLines(strings.NewReader(string(existing)), func(raw []byte) {
+		line := strings.TrimSpace(string(raw))
 		if line == "" {
-			continue
+			return
 		}
 		var record chatSessionDriveIndexRecord
 		if err := json.Unmarshal([]byte(line), &record); err != nil {
 			preserved = append(preserved, line)
-			continue
+			return
 		}
 		if strings.TrimSpace(record.SourceMachineID) == "" || strings.TrimSpace(record.SourceRunID) == "" {
 			preserved = append(preserved, line)
-			continue
+			return
 		}
 		merged[record.SourceMachineID+"::"+record.SourceRunID] = record
-	}
+	})
 	merged[replacement.SourceMachineID+"::"+replacement.SourceRunID] = replacement
 
 	keys := make([]string, 0, len(merged))
@@ -351,21 +354,23 @@ func mergeChatSessionDriveIndex(existing []byte, replacement chatSessionDriveInd
 
 func parseChatSessionDriveIndex(raw []byte) []chatSessionDriveIndexRecord {
 	records := make([]chatSessionDriveIndexRecord, 0)
-	scanner := bufio.NewScanner(strings.NewReader(string(raw)))
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
+	// BUG-496: uncapped scan — the 64KiB scanner cap silently dropped every
+	// record after an oversized line, so a record that exists remotely
+	// appeared absent. strings.Reader cannot produce a real read error.
+	_ = readNDJSONLines(strings.NewReader(string(raw)), func(rawLine []byte) {
+		line := strings.TrimSpace(string(rawLine))
 		if line == "" {
-			continue
+			return
 		}
 		var record chatSessionDriveIndexRecord
 		if err := json.Unmarshal([]byte(line), &record); err != nil {
-			continue
+			return
 		}
 		if strings.TrimSpace(record.SourceMachineID) == "" || strings.TrimSpace(record.SourceRunID) == "" {
-			continue
+			return
 		}
 		records = append(records, record)
-	}
+	})
 	return records
 }
 

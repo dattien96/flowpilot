@@ -435,10 +435,6 @@ func (s *localFileSessionStore) ListProviderSessionsByChat(ctx context.Context, 
 // UpsertProviderSession updates the in-memory map and appends a NDJSON line to
 // the file so the state survives the next restart.
 func (s *localFileSessionStore) UpsertProviderSession(_ context.Context, session ProviderSessionState) error {
-	s.fakeWorkflowStore.mu.Lock()
-	s.fakeWorkflowStore.sessions[session.RunID] = session
-	s.fakeWorkflowStore.mu.Unlock()
-
 	rec := sessionRecordFrom(session)
 	line, err := json.Marshal(rec)
 	if err != nil {
@@ -451,19 +447,27 @@ func (s *localFileSessionStore) UpsertProviderSession(_ context.Context, session
 	if err != nil {
 		return err
 	}
-	defer fh.Close()
-	_, err = fh.Write(append(line, '\n'))
-	return err
+	// BUG-499: durable append BEFORE the in-memory commit — a failed write
+	// must leave the map unchanged so callers never hold a session the disk
+	// does not (restart would silently lose a "persisted" run).
+	if _, err := fh.Write(append(line, '\n')); err != nil {
+		fh.Close()
+		return err
+	}
+	if err := fh.Close(); err != nil {
+		return err
+	}
+
+	s.fakeWorkflowStore.mu.Lock()
+	s.fakeWorkflowStore.sessions[session.RunID] = session
+	s.fakeWorkflowStore.mu.Unlock()
+	return nil
 }
 
 // DeleteProviderSession removes a run from the in-memory map and rewrites the
 // NDJSON file without that run_id. The rewrite is atomic (write to a temp file
 // then rename) so a crash mid-write does not corrupt the store.
 func (s *localFileSessionStore) DeleteProviderSession(_ context.Context, runID string) error {
-	s.fakeWorkflowStore.mu.Lock()
-	delete(s.fakeWorkflowStore.sessions, runID)
-	s.fakeWorkflowStore.mu.Unlock()
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -471,7 +475,10 @@ func (s *localFileSessionStore) DeleteProviderSession(_ context.Context, runID s
 	f, err := os.Open(s.filePath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil // nothing to rewrite
+			// Nothing on disk to resurrect — dropping the in-memory entry is
+			// the whole delete.
+			s.deleteFromMemory(runID)
+			return nil
 		}
 		return err
 	}
@@ -508,7 +515,20 @@ func (s *localFileSessionStore) DeleteProviderSession(_ context.Context, runID s
 		_ = os.Remove(tmpPath)
 		return err
 	}
-	return os.Rename(tmpPath, s.filePath)
+	if err := os.Rename(tmpPath, s.filePath); err != nil {
+		return err
+	}
+	// BUG-499: memory commit only after the durable rewrite lands — a failed
+	// rewrite must leave the entry visible, not resurrect it on next restart
+	// while the live process already forgot it.
+	s.deleteFromMemory(runID)
+	return nil
+}
+
+func (s *localFileSessionStore) deleteFromMemory(runID string) {
+	s.fakeWorkflowStore.mu.Lock()
+	delete(s.fakeWorkflowStore.sessions, runID)
+	s.fakeWorkflowStore.mu.Unlock()
 }
 
 // ListProviderSessionsByProject returns sessions for the given project from the
@@ -745,9 +765,6 @@ func (s *localFileSessionStore) questionsFilePath() string {
 // (BUG-StaleQuestion-Restart) — without this, reconstructRun has no way to
 // know whether a restored user_question_required event was already answered.
 func (s *localFileSessionStore) UpsertQuestion(ctx context.Context, question ProviderQuestionState) error {
-	if err := s.fakeWorkflowStore.UpsertQuestion(ctx, question); err != nil {
-		return err
-	}
 	line, err := json.Marshal(question)
 	if err != nil {
 		return err
@@ -758,9 +775,16 @@ func (s *localFileSessionStore) UpsertQuestion(ctx context.Context, question Pro
 	if err != nil {
 		return err
 	}
-	defer fh.Close()
-	_, err = fh.Write(append(line, '\n'))
-	return err
+	// BUG-499: durable append before the in-memory commit — a failed write
+	// must not leave a question state the restart cannot see.
+	if _, err := fh.Write(append(line, '\n')); err != nil {
+		fh.Close()
+		return err
+	}
+	if err := fh.Close(); err != nil {
+		return err
+	}
+	return s.fakeWorkflowStore.UpsertQuestion(ctx, question)
 }
 
 // ListQuestionsByRun returns every persisted question state for a run
@@ -787,9 +811,6 @@ func (s *localFileSessionStore) approvalsFilePath() string {
 // know whether a restored permission_required event was already resolved.
 // Mirrors UpsertQuestion exactly.
 func (s *localFileSessionStore) UpsertApproval(ctx context.Context, approval ProviderApprovalState) error {
-	if err := s.fakeWorkflowStore.UpsertApproval(ctx, approval); err != nil {
-		return err
-	}
 	line, err := json.Marshal(approval)
 	if err != nil {
 		return err
@@ -800,9 +821,16 @@ func (s *localFileSessionStore) UpsertApproval(ctx context.Context, approval Pro
 	if err != nil {
 		return err
 	}
-	defer fh.Close()
-	_, err = fh.Write(append(line, '\n'))
-	return err
+	// BUG-499: durable append before the in-memory commit — a failed write
+	// must not leave an approval decision the restart cannot see.
+	if _, err := fh.Write(append(line, '\n')); err != nil {
+		fh.Close()
+		return err
+	}
+	if err := fh.Close(); err != nil {
+		return err
+	}
+	return s.fakeWorkflowStore.UpsertApproval(ctx, approval)
 }
 
 // ListApprovalsByRun returns every persisted approval state for a run
@@ -857,11 +885,8 @@ func isFlowSidecarEventType(t ProviderEventType) bool {
 // and, for CP-41 event types, also appends to the per-run flow-events sidecar
 // NDJSON so the events survive a process restart.
 func (s *localFileSessionStore) AppendEvent(ctx context.Context, event ProviderEvent) error {
-	if err := s.fakeWorkflowStore.AppendEvent(ctx, event); err != nil {
-		return err
-	}
 	if !isFlowSidecarEventType(event.Type) || event.WorkflowRunID == "" {
-		return nil
+		return s.fakeWorkflowStore.AppendEvent(ctx, event)
 	}
 	data, err := json.Marshal(event)
 	if err != nil {
@@ -875,9 +900,17 @@ func (s *localFileSessionStore) AppendEvent(ctx context.Context, event ProviderE
 	if err != nil {
 		return err
 	}
-	defer fh.Close()
-	_, err = fh.Write(append(data, '\n'))
-	return err
+	// BUG-499: durable sidecar append before the in-memory event commit — a
+	// failed write must not leave an event visible to subscribers that the
+	// restart cannot replay.
+	if _, err := fh.Write(append(data, '\n')); err != nil {
+		fh.Close()
+		return err
+	}
+	if err := fh.Close(); err != nil {
+		return err
+	}
+	return s.fakeWorkflowStore.AppendEvent(ctx, event)
 }
 
 // LoadFlowEvents reads all CP-41 events from the per-run flow-events sidecar.

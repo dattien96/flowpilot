@@ -35,6 +35,11 @@ type memoryDispatchStore struct {
 	onIntentClear IntentClearCallback
 	// afterCommit is optional hook (local store uses it to fsync a log line).
 	afterCommit func(line dispatchLogLine) error
+	// persistErr latches the first durable-write failure. Mutations apply to
+	// memory before commitLine persists — once persist fails, memory and disk
+	// diverge permanently, so every later mutation must refuse rather than
+	// grow a ledger the restart will silently lose (BUG-499).
+	persistErr error
 }
 
 type intentLiveEntry struct {
@@ -248,8 +253,14 @@ func (s *memoryDispatchStore) setLiveIntentLocked(owner, key string, gen int64, 
 }
 
 func (s *memoryDispatchStore) commitLine(line dispatchLogLine) error {
+	if s.persistErr != nil {
+		return fmt.Errorf("dispatch store degraded: %w", s.persistErr)
+	}
 	if s.afterCommit != nil {
-		return s.afterCommit(line)
+		if err := s.afterCommit(line); err != nil {
+			s.persistErr = err
+			return fmt.Errorf("dispatch store degraded: persist failed: %w", err)
+		}
 	}
 	return nil
 }
@@ -265,6 +276,12 @@ func (s *memoryDispatchStore) CreatePrepared(ctx context.Context, rec DispatchRe
 	}
 	k := recKey(rec.RunID, rec.TurnID)
 	if _, exists := s.records[k]; exists {
+		// A latched persist failure means this in-memory record may have
+		// never reached disk — reporting success (or AlreadyExists) would
+		// fabricate durability. Fail closed (BUG-499).
+		if s.persistErr != nil {
+			return fmt.Errorf("dispatch store degraded: %w", s.persistErr)
+		}
 		// create-if-absent: equal envelope hash is no-op success
 		if s.envelopes[k] != nil && s.envelopes[k].EnvelopeHash == env.EnvelopeHash {
 			return nil

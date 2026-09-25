@@ -540,6 +540,30 @@ func flowHubHadJoinedReviewNote(st ProviderSessionState) bool {
 	return false
 }
 
+// pendingGateStates reads the per-run approval and question sidecar stores.
+// BUG-495: a read error is not an empty gate history — propagating keeps
+// resume from promoting a durably waiting gate on an unreadable store.
+// Stores without the reader interfaces legitimately have no gate history.
+func (s *InteractiveService) pendingGateStates(runID string) ([]ProviderApprovalState, []ProviderQuestionState, error) {
+	var approvals []ProviderApprovalState
+	var questions []ProviderQuestionState
+	if ahr, ok := s.workflowStore.(ApprovalHistoryReader); ok {
+		states, err := ahr.ListApprovalsByRun(context.Background(), runID)
+		if err != nil {
+			return nil, nil, fmt.Errorf("pendingGateStates: approvals unreadable for run %s: %w", runID, err)
+		}
+		approvals = states
+	}
+	if qhr, ok := s.workflowStore.(QuestionHistoryReader); ok {
+		states, err := qhr.ListQuestionsByRun(context.Background(), runID)
+		if err != nil {
+			return nil, nil, fmt.Errorf("pendingGateStates: questions unreadable for run %s: %w", runID, err)
+		}
+		questions = states
+	}
+	return approvals, questions, nil
+}
+
 // childPendingGateNodeIDs returns parent flow node ids whose matching child
 // sessions still have a pending approval or question on disk (BUG-288 #22).
 // Approvals/questions are keyed by the child's RunID, so parent-scoped list
@@ -583,12 +607,23 @@ func (s *InteractiveService) childPendingGateNodeIDs(rs *interactiveRun) ([]stri
 		}
 		pending := false
 		if hasAHR {
-			if states, err := ahr.ListApprovalsByRun(context.Background(), session.RunID); err == nil && hasPendingGate(states, nil) {
+			states, err := ahr.ListApprovalsByRun(context.Background(), session.RunID)
+			if err != nil {
+				// BUG-495: same contract as the session index — an
+				// unreadable child gate store must not read as
+				// "no pending gate".
+				return nil, fmt.Errorf("childPendingGateNodeIDs: approvals unreadable for run %s: %w", session.RunID, err)
+			}
+			if hasPendingGate(states, nil) {
 				pending = true
 			}
 		}
 		if !pending && hasQHR {
-			if states, err := qhr.ListQuestionsByRun(context.Background(), session.RunID); err == nil && hasPendingGate(nil, states) {
+			states, err := qhr.ListQuestionsByRun(context.Background(), session.RunID)
+			if err != nil {
+				return nil, fmt.Errorf("childPendingGateNodeIDs: questions unreadable for run %s: %w", session.RunID, err)
+			}
+			if hasPendingGate(nil, states) {
 				pending = true
 			}
 		}
@@ -1270,17 +1305,12 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 		if rowsErr != nil {
 			return nil, newAPIErr(http.StatusBadGateway, "session_index_unavailable", rowsErr.Error())
 		}
-		var pendingApprovals []ProviderApprovalState
-		var pendingQuestions []ProviderQuestionState
-		if ahr, ok := s.workflowStore.(ApprovalHistoryReader); ok {
-			if states, err := ahr.ListApprovalsByRun(context.Background(), st.RunID); err == nil {
-				pendingApprovals = states
-			}
-		}
-		if qhr, ok := s.workflowStore.(QuestionHistoryReader); ok {
-			if states, err := qhr.ListQuestionsByRun(context.Background(), st.RunID); err == nil {
-				pendingQuestions = states
-			}
+		// BUG-495: pending approval/question reads feed keepWaitingNodeIDsForResume —
+		// a store fault converted to an empty list would promote a durably waiting
+		// gate to not-waiting on resume. Fail closed like the session index above.
+		pendingApprovals, pendingQuestions, gateErr := s.pendingGateStates(st.RunID)
+		if gateErr != nil {
+			return nil, newAPIErr(http.StatusBadGateway, "gate_state_unavailable", gateErr.Error())
 		}
 		// BUG-288 #22 / V9-08: child gates under child RunID.
 		childWaiting, childErr := s.childPendingGateNodeIDs(rs)
