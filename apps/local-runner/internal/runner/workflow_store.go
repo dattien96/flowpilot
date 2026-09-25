@@ -205,6 +205,14 @@ type ProviderSessionState struct {
 	WorktreeSlug       string `json:"worktreeSlug,omitempty"`
 	WorktreeState      string `json:"worktreeState,omitempty"`
 	WorktreeEnabled    bool   `json:"worktreeEnabled,omitempty"`
+	// BUG-481: durable resolution intent for a destructive merge decision.
+	// Written BEFORE external effects run and advanced monotonically
+	// (resolution_requested → repository_effect_committed →
+	// cleanup_committed → cleared on finalize) so a kill/restart resumes only
+	// the missing idempotent effects instead of reporting false success.
+	WorktreeResolutionID    string `json:"worktreeResolutionId,omitempty"`
+	WorktreeResolutionMode  string `json:"worktreeResolutionMode,omitempty"`
+	WorktreeResolutionPhase string `json:"worktreeResolutionPhase,omitempty"`
 	// StepID / LastTurnStepID persist the execution-step context needed to
 	// restart a rehydrated approval/question turn after restart (V10R P1).
 	StepID         string

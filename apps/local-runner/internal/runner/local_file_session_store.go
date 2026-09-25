@@ -157,6 +157,9 @@ type ndjsonSessionRecord struct {
 	WorktreeSlug                    string   `json:"worktree_slug,omitempty"`
 	WorktreeState                   string   `json:"worktree_state,omitempty"`
 	WorktreeEnabled                 bool     `json:"worktree_enabled,omitempty"`
+	WorktreeResolutionID            string   `json:"worktree_resolution_id,omitempty"`
+	WorktreeResolutionMode          string   `json:"worktree_resolution_mode,omitempty"`
+	WorktreeResolutionPhase         string   `json:"worktree_resolution_phase,omitempty"`
 	PendingResumePrompt             string   `json:"pending_resume_prompt,omitempty"`
 	PendingResumeStepID             string   `json:"pending_resume_step_id,omitempty"`
 	PendingResumeGen                int64    `json:"pending_resume_gen,omitempty"`
@@ -456,6 +459,9 @@ func sessionStateFromRecord(r ndjsonSessionRecord) ProviderSessionState {
 		WorktreeSlug:                       r.WorktreeSlug,
 		WorktreeState:                      r.WorktreeState,
 		WorktreeEnabled:                    r.WorktreeEnabled,
+		WorktreeResolutionID:               r.WorktreeResolutionID,
+		WorktreeResolutionMode:             r.WorktreeResolutionMode,
+		WorktreeResolutionPhase:            r.WorktreeResolutionPhase,
 		SyncUpdatedAt:                      r.SyncUpdatedAt,
 		ParentRunID:                        r.ParentRunID,
 		AgentName:                          r.AgentName,
@@ -943,6 +949,9 @@ func sessionRecordFrom(s ProviderSessionState) ndjsonSessionRecord {
 		WorktreeSlug:                       s.WorktreeSlug,
 		WorktreeState:                      s.WorktreeState,
 		WorktreeEnabled:                    s.WorktreeEnabled,
+		WorktreeResolutionID:               s.WorktreeResolutionID,
+		WorktreeResolutionMode:             s.WorktreeResolutionMode,
+		WorktreeResolutionPhase:            s.WorktreeResolutionPhase,
 		ParentRunID:                        s.ParentRunID,
 		AgentName:                          s.AgentName,
 		Label:                              s.Label,
