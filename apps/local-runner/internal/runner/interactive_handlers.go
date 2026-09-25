@@ -61,6 +61,10 @@ func (s *InteractiveService) RegisterInteractiveRoutes(mux *http.ServeMux) {
 	// the runner; TUI and Desktop read/write through these endpoints (SSOT).
 	mux.HandleFunc("GET /client/chat-posture", s.handleGetChatPosture)
 	mux.HandleFunc("PUT /client/chat-posture", s.handleSetChatPosture)
+	// CP-87 P-5 (Task-446): machine-global quota routing policy — same runner-
+	// owned document pattern as chat-posture (Desktop/TUI never write files).
+	mux.HandleFunc("GET /client/quota-routing-settings", s.handleGetQuotaRoutingSettings)
+	mux.HandleFunc("PUT /client/quota-routing-settings", s.handleSetQuotaRoutingSettings)
 	// CA-689c: on-demand per-model reasoning variants (live ACP probe; cached).
 	mux.HandleFunc("GET /client/providers/opencode-variants", s.handleGetOpencodeModelVariants)
 	mux.HandleFunc("GET /client/workflow-runs/{runId}", s.handleGetRun)
@@ -1079,6 +1083,11 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 	// since it may read the provider-accounts store.
 	stampAccount := s.activeAccountForProvider(providerKey)
 
+	// CP-87 P-5 (Task-446 T-3): freeze the machine-global routing policy into
+	// the run — a settings edit mid-run must never retarget its decisions.
+	// Loaded before the lock (file I/O), mirroring stampAccount.
+	quotaSnapshot := snapshotQuotaRouting(mustLoadQuotaRoutingSettings())
+
 	// CP-59 chat SSOT (SD-26 §5.1): resolve chat identity before the lock —
 	// adoption reads resident runs (same resolve-before-lock pattern as
 	// stampAccount above). Always ON for chat runs on dev branch.
@@ -1128,6 +1137,7 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 		updatedAt:         now,
 		subs:              map[int64]chan ProviderEvent{},
 		idempotency:       map[string]string{},
+		quotaRouting:      quotaSnapshot,
 	}
 	if ref := strings.TrimSpace(in.FlowRef); ref != "" {
 		rs.chatFlowRef = ref
@@ -1180,6 +1190,7 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 		Yolo:              resolvedYolo,
 		WorkingMode:       in.WorkingMode,
 		ChatFlowRef:       rs.chatFlowRef,
+		QuotaRouting:      quotaSnapshot,
 	}
 	worktreeFieldsToSession(&st, rs.worktree)
 	if err := s.persistProviderSession(st); err != nil {

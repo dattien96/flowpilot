@@ -196,6 +196,12 @@ type ProviderSessionState struct {
 	TurnStartGitHead        string
 	TurnStartWorktree       map[string]string
 	PendingGateChangedFiles []string
+	// QuotaRouting is the CP-87 P-5 (Task-446 T-3) frozen routing-policy
+	// snapshot taken at run creation — mode/priority/bindings/thresholds plus
+	// the policy schema version. Persisted so restart/replay resolves the same
+	// routing decisions the run was created under; a mid-run settings edit
+	// never rewrites it.
+	QuotaRouting *QuotaRoutingSnapshot `json:"quotaRouting,omitempty"`
 	// CP-71 run worktree binding (local-only, sessions.ndjson — no Supabase
 	// columns). Empty on toggle-off runs.
 	WorktreeOwnerID    string `json:"worktreeOwnerId,omitempty"`

@@ -43,6 +43,7 @@ nodes:
     run: delegate
     lifecycle: once
     behavior: agent.delegate
+    workloadClass: high_reasoning
     agent: agents/contract-planner.md
     promptTemplate: prompts/plan-safe-fix-contract.md
   - id: context
@@ -53,6 +54,7 @@ nodes:
     run: delegate
     lifecycle: reinvoke
     behavior: agent.delegate
+    workloadClass: high_reasoning
     agent: agents/doc-writer.md
     promptTemplate: prompts/plan-cp.md
     artifactBindings:
@@ -68,6 +70,7 @@ nodes:
     run: delegate
     lifecycle: spawn
     behavior: agent.delegate
+    workloadClass: high_reasoning
     agent: agents/reviewer.md
     promptTemplate: prompts/review-cp.md
     dependsOn:
@@ -93,6 +96,7 @@ nodes:
     run: delegate
     lifecycle: once
     behavior: agent.delegate
+    workloadClass: high_reasoning
     agent: agents/doc-writer.md
     promptTemplate: prompts/task-splitter.md
     artifactBindings:
@@ -121,12 +125,14 @@ nodes:
     run: delegate
     lifecycle: once
     behavior: agent.code
+    workloadClass: coding
     agent: agents/tester.md
     promptTemplate: prompts/test-signatures.md
   - id: implement
     run: delegate
     lifecycle: reinvoke
     behavior: agent.code
+    workloadClass: coding
     agent: agents/coder.md
     promptTemplate: prompts/implement-complete-tests.md
   - id: validate
@@ -137,6 +143,7 @@ nodes:
     run: delegate
     lifecycle: spawn
     behavior: agent.delegate
+    workloadClass: high_reasoning
     agent: agents/reviewer.md
     promptTemplate: prompts/review-safe-fix-contract.md
     dependsOn:

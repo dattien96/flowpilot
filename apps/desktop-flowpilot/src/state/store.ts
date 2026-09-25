@@ -17,6 +17,7 @@ import type {
   ProviderKey,
   ProviderSkill,
   PromptAttachment,
+  QuotaRoutingSettings,
   RemoteChatSessionSummary,
   RunHistoryItem,
   RunRealtimeProjection,
@@ -512,6 +513,9 @@ export interface AppState {
   chatPostureConfig: ChatPostureConfig;
   /** True while the posture setup modal is open. */
   chatPostureSetupOpen: boolean;
+  /** Runner-owned quota routing policy (CP-87/Task-446 SSOT), cached for the
+   *  settings surface. Defaults to manual; the runner normalizes. */
+  quotaRoutingSettings: QuotaRoutingSettings;
   /**
    * Selected built-in orchestration flowRef for the current chat start
    * (CP-42/Task-177), e.g. "flowpilot-core-flow-pack/review-loop". Only
@@ -680,6 +684,10 @@ export interface AppState {
   loadChatPostureConfig(): Promise<void>;
   /** Persist an edited posture document back to the runner. */
   saveChatPostureConfig(config: ChatPostureConfig): Promise<void>;
+  /** Fetch the runner-owned quota routing policy (Task-446). */
+  loadQuotaRoutingSettings(): Promise<void>;
+  /** Persist an edited quota routing policy back to the runner. */
+  saveQuotaRoutingSettings(settings: QuotaRoutingSettings): Promise<void>;
   openChatPostureSetup(): void;
   closeChatPostureSetup(): void;
   selectWorkflow(workflowId: string): Promise<void>;
@@ -862,6 +870,14 @@ export const useStore = create<AppState>((set, get) => ({
     profiles: { scan: {}, plan: {}, code: {}, non: {} },
   },
   chatPostureSetupOpen: false,
+  // Task-446: safe default until the runner-owned document loads — manual is
+  // the fail-closed mode.
+  quotaRoutingSettings: {
+    mode: "manual",
+    headroomLowPercent: 20,
+    telemetryTtlSeconds: 120,
+    sameProviderCooldownSeconds: 20,
+  },
   flowRef: undefined,
   builtinOrchestrationOptions: [],
   workspaceMainView: "chat",
@@ -2050,6 +2066,31 @@ export const useStore = create<AppState>((set, get) => ({
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error("[FlowPilot] saveChatPostureConfig failed:", err);
+      throw err;
+    }
+  },
+
+  async loadQuotaRoutingSettings() {
+    const { client } = get();
+    if (!client.getQuotaRoutingSettings) return;
+    try {
+      const settings = await client.getQuotaRoutingSettings();
+      set({ quotaRoutingSettings: settings });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[FlowPilot] loadQuotaRoutingSettings failed:", err);
+    }
+  },
+
+  async saveQuotaRoutingSettings(settings) {
+    const client = get().client;
+    if (!client.setQuotaRoutingSettings) return;
+    try {
+      const saved = await client.setQuotaRoutingSettings(settings);
+      set({ quotaRoutingSettings: saved });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[FlowPilot] saveQuotaRoutingSettings failed:", err);
       throw err;
     }
   },

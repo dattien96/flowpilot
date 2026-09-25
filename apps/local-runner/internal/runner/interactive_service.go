@@ -231,7 +231,7 @@ type interactiveRun struct {
 	// BUG-468: CP document id (e.g. "CP-02") this run's task set belongs to.
 	// Scopes collectVibeTaskPlan so foreign/stale Task files never join the
 	// sprint plan. Empty = legacy unscoped (pre-fix runs, fixtures).
-	vibeCpDocID             string
+	vibeCpDocID string
 	// BUG-471: the completed node whose advance parked on blocked/requirement
 	// ("resume:coder" marks maybeResumeVibeCoderAfterTdd parks). Continue
 	// re-invokes the same advance so the parked condition is re-evaluated —
@@ -312,6 +312,9 @@ type interactiveRun struct {
 	// ownership so a deferred clear cannot release a newer start's flag.
 	vibeSprintStartInFlight bool
 	vibeSprintStartGen      int64
+	// quotaRouting is the CP-87 P-5 frozen routing-policy snapshot taken at
+	// createRun — a mid-run settings edit never retargets an active run.
+	quotaRouting *QuotaRoutingSnapshot
 	// reasoningEffort is the desktop-selected effort level passed per-turn (T-4).
 	reasoningEffort string
 	// chatPosture is the per-turn posture (scan/plan/code, "" = code). Persisted
@@ -694,15 +697,15 @@ type interactiveRun struct {
 	// contextDegradedLegs marks legs whose provider self-compacted;
 	// contextResetPending is the durable rotate_leg intent consumed at the
 	// next admission; contextResetCount bounds resets per run.
-	pressureTierFired    map[string]bool
-	contextDegradedLegs  map[string]bool
+	pressureTierFired   map[string]bool
+	contextDegradedLegs map[string]bool
 	// contextResetOfferedLegs dedupes the degraded-leg rotate offer: once per
 	// leg, so answering continue does not re-nag at every admission.
 	contextResetOfferedLegs map[string]bool
-	contextResetPending  bool
-	contextResetCount    int
-	lastUsageSessionID   string
-	lastUsageTotalTokens int64
+	contextResetPending     bool
+	contextResetCount       int
+	lastUsageSessionID      string
+	lastUsageTotalTokens    int64
 	// legContextWindows remembers the last context window reported on each
 	// provider session (leg). The window is a leg property, not per-event —
 	// providers like Devin report `size` on mid-turn usage_update events but
@@ -4722,10 +4725,11 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 		ChatSubMode:                rs.chatSubMode,
 		ChatFlowRef:                rs.chatFlowRef,
 		WorkingMode:                rs.workingMode,
+		QuotaRouting:               rs.quotaRouting,
 		VibeAwaitingLock:           rs.vibeAwaitingLock,
 		VibeTaskPlan:               append([]string(nil), rs.vibeTaskPlan...),
 		VibeCpDocID:                rs.vibeCpDocID,
-		VibeRequirementFromNode:   rs.vibeRequirementFromNode,
+		VibeRequirementFromNode:    rs.vibeRequirementFromNode,
 		VibeSprintIndex:            rs.vibeSprintIndex,
 		VibeSprintBudget:           rs.vibeSprintBudget,
 		VibeSprintBoundaryDeclined: rs.vibeSprintBoundaryDeclined,

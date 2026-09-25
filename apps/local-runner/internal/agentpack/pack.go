@@ -179,6 +179,70 @@ type FlowNode struct {
 	// max_attempts/serial here. Nil for every pre-CP-65 flow — additive only,
 	// absent key parses to nil and changes nothing downstream.
 	Config map[string]any
+	// WorkloadClass is the CP-87 P-2 (Task-446) routing class declared on
+	// provider-backed nodes (agent.delegate/code/reproduce/scaffold — the
+	// BehaviorScopeDelegate family): scan | high_reasoning | coding. It lets
+	// the quota router pick a same-class replacement model/account without
+	// pairwise model equivalence. Required on builtin pack provider nodes
+	// (LoadBuiltinPack enforces via ValidateFlowWorkloadClasses); optional on
+	// stored/user-authored definitions so pre-CP-87 flows keep validating —
+	// a missing class simply means the routing gate cannot auto-rotate that
+	// node. Declaring it on a non-provider node fails ValidateFlowDefinition:
+	// nothing would consume it.
+	WorkloadClass WorkloadClass
+}
+
+// WorkloadClass is the CP-87 quota-routing class of a provider-backed flow
+// node. The class — not the model name — is what cross-provider rotation
+// matches on.
+type WorkloadClass string
+
+const (
+	WorkloadScan          WorkloadClass = "scan"
+	WorkloadHighReasoning WorkloadClass = "high_reasoning"
+	WorkloadCoding        WorkloadClass = "coding"
+)
+
+// ValidWorkloadClass reports whether c is one of the three declared classes.
+func ValidWorkloadClass(c WorkloadClass) bool {
+	switch c {
+	case WorkloadScan, WorkloadHighReasoning, WorkloadCoding:
+		return true
+	default:
+		return false
+	}
+}
+
+// ProviderBackedBehavior reports whether a canonical behavior id dispatches a
+// provider turn — the BehaviorScopeDelegate family (agent.delegate, agent.code,
+// agent.reproduce, agent.scaffold). Kept in sync with
+// runner/behavior_registry.go's scope-delegate registrations; agentpack cannot
+// import runner, so this table mirrors the canonical ids only.
+func ProviderBackedBehavior(canonical string) bool {
+	switch canonical {
+	case "agent.delegate", "agent.code", "agent.reproduce", "agent.scaffold":
+		return true
+	default:
+		return false
+	}
+}
+
+// ValidateFlowWorkloadClasses enforces the pack-author contract that every
+// provider-backed node declares a workload class. Deliberately stricter than
+// ValidateFlowDefinition (which also validates stored/user-authored flows and
+// must stay additive): LoadBuiltinPack calls this so a builtin flow shipping
+// an unclassified provider node fails at load, not at routing time.
+func ValidateFlowWorkloadClasses(def FlowDefinition) error {
+	for _, node := range def.Nodes {
+		canonical, ok := NormalizeBehaviorID(node.Behavior)
+		if !ok || !ProviderBackedBehavior(canonical) {
+			continue
+		}
+		if !ValidWorkloadClass(node.WorkloadClass) {
+			return fmt.Errorf("flow %q provider node %q declares no valid workloadClass (want scan|high_reasoning|coding)", def.ID, node.ID)
+		}
+	}
+	return nil
 }
 
 // FlowArtifactBinding is one resolved typed-artifact binding for a
@@ -364,7 +428,19 @@ func ModelProviderKey(model string) (string, bool) {
 
 // LoadBuiltinPack returns the embedded FlowPilot reference pack.
 func LoadBuiltinPack() (Pack, error) {
-	return LoadPackFS(embeddedPackFS, defaultPackRoot)
+	pack, err := LoadPackFS(embeddedPackFS, defaultPackRoot)
+	if err != nil {
+		return Pack{}, err
+	}
+	// CP-87 P-2 (Task-446): builtin flows ship the strict contract — every
+	// provider-backed node declares a workload class. (LoadPackFS stays lenient
+	// so fixture/test packs without classes keep loading.)
+	for _, def := range pack.Flows {
+		if err := ValidateFlowWorkloadClasses(def); err != nil {
+			return Pack{}, err
+		}
+	}
+	return pack, nil
 }
 
 // LoadBuiltinAgents returns the embedded built-in agent specs.
@@ -864,6 +940,7 @@ func flowNodeFromMap(m map[string]any) (FlowNode, error) {
 		ContextProfile: strings.TrimSpace(stringField(m, "contextProfile")),
 		DependsOn:      stringSliceField(m, "dependsOn"),
 		ContextSources: stringSliceField(m, "contextSources"),
+		WorkloadClass:  WorkloadClass(strings.TrimSpace(stringField(m, "workloadClass"))),
 	}
 	// CP-65 P-3 (Task-370): free-form node config for tournament nodes.
 	// Absent key leaves Config nil (every pre-CP-65 flow unaffected).
@@ -1068,6 +1145,23 @@ func ValidateFlowDefinition(def FlowDefinition) error {
 			}
 			if _, ok := ModelProviderKey(node.Model); !ok {
 				return fmt.Errorf("flow %q node %q declares unknown model %q (no provider prefix match)", def.ID, node.ID, node.Model)
+			}
+		}
+		// CP-87 P-2 (Task-446): workloadClass is meaningful only on
+		// provider-backed nodes — the quota router consumes it to select a
+		// same-class replacement. An unknown value, or a class on an
+		// inline/control node, would be silently ignored forever; fail closed
+		// instead. (Presence on provider nodes is NOT required here — this
+		// validator also serves stored/user-authored definitions that predate
+		// CP-87. The builtin pack's stricter contract lives in
+		// ValidateFlowWorkloadClasses, called from LoadBuiltinPack.)
+		if node.WorkloadClass != "" {
+			if !ValidWorkloadClass(node.WorkloadClass) {
+				return fmt.Errorf("flow %q node %q declares invalid workloadClass %q (want scan|high_reasoning|coding)", def.ID, node.ID, node.WorkloadClass)
+			}
+			canonical, ok := NormalizeBehaviorID(node.Behavior)
+			if !ok || !ProviderBackedBehavior(canonical) {
+				return fmt.Errorf("flow %q node %q declares workloadClass %q but behavior %q is not provider-backed", def.ID, node.ID, node.WorkloadClass, node.Behavior)
 			}
 		}
 	}

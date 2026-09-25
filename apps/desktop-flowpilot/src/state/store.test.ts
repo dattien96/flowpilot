@@ -7,7 +7,7 @@ import { shouldShowAgentTimelineHeader } from "@/components/Timeline";
 import { parseMentionRouting } from "@/components/ChatInput";
 import { MockRunnerClient } from "../client/MockRunnerClient";
 import { RunnerApiError } from "../client/HttpWsRunnerClient";
-import type { AgentGraphSnapshot, AgentRunSummary, ChatSessionSyncResult, ProviderAccountSummary, ProviderEventDTO, RemoteChatSessionSummary, RunHandle, RunHistoryItem, RunnerClient, TurnInput } from "../types/contract";
+import type { AgentGraphSnapshot, AgentRunSummary, ChatSessionSyncResult, ProviderAccountSummary, ProviderEventDTO, ProviderKey, RemoteChatSessionSummary, RunHandle, RunHistoryItem, RunnerClient, TurnInput } from "../types/contract";
 
 async function* emptyStream(): AsyncIterable<ProviderEventDTO> {}
 
@@ -170,6 +170,26 @@ const BASE_EVENT = {
 
 async function* turnFailedStream(error: string, recoverable: boolean, workflowRunId = "run-1"): AsyncIterable<ProviderEventDTO> {
   yield { ...BASE_EVENT, workflowRunId, type: "turn_failed", error, recoverable };
+}
+
+// Task-445 contract: the runner emits the typed provider_limit_reached event
+// before turn_failed; the desktop surfaces the quota decision from the typed
+// event, never the message text.
+async function* providerLimitStream(error: string, recoverable: boolean, workflowRunId = "run-1", providerKey: ProviderKey = "codex"): AsyncIterable<ProviderEventDTO> {
+  yield {
+    ...BASE_EVENT,
+    workflowRunId,
+    providerKey,
+    type: "provider_limit_reached",
+    providerLimit: {
+      kind: "quota_exhausted",
+      providerKey,
+      sanitizedMessage: error,
+      detectionSource: "stderr_fallback",
+      confidence: "heuristic",
+    },
+  };
+  yield { ...BASE_EVENT, workflowRunId, providerKey, type: "turn_failed", error, recoverable };
 }
 
 async function* childFocusStream(): AsyncIterable<ProviderEventDTO> {
@@ -2196,7 +2216,7 @@ test("usage-limit turn_failed with valid Codex candidate sets pendingAccountSwit
   seedStore(
     makeClient({
       startRun: async () => ({ runId: "run-1", providerSessionId: "s1", providerKey: "codex", status: "running", stepId: "chat-run-1" }),
-      sendTurn: () => turnFailedStream("usage limit reached", false),
+      sendTurn: () => providerLimitStream("usage limit reached", false),
       listRunHistory: async () => [],
     }),
     [],
@@ -2219,7 +2239,7 @@ test("candidate ranking: higher remaining5hPercent wins over higher remaining7dP
   seedStore(
     makeClient({
       startRun: async () => ({ runId: "run-1", providerSessionId: "s1", providerKey: "codex", status: "running", stepId: "chat-run-1" }),
-      sendTurn: () => turnFailedStream("usage limit reached", false),
+      sendTurn: () => providerLimitStream("usage limit reached", false),
       listRunHistory: async () => [],
     }),
     [],
@@ -2237,7 +2257,7 @@ test("account with remaining5hPercent=0 is excluded from ranked path; no switch 
   seedStore(
     makeClient({
       startRun: async () => ({ runId: "run-1", providerSessionId: "s1", providerKey: "codex", status: "running", stepId: "chat-run-1" }),
-      sendTurn: () => turnFailedStream("usage limit reached", false),
+      sendTurn: () => providerLimitStream("usage limit reached", false),
       listRunHistory: async () => [],
     }),
     [],
@@ -2358,7 +2378,7 @@ test("already-tried account is not offered as switch candidate again", async () 
   seedStore(
     makeClient({
       startRun: async () => ({ runId: "run-1", providerSessionId: "s1", providerKey: "codex", status: "running", stepId: "chat-run-1" }),
-      sendTurn: () => turnFailedStream("usage limit reached", false),
+      sendTurn: () => providerLimitStream("usage limit reached", false),
       listRunHistory: async () => [],
     }),
     [],
@@ -2445,7 +2465,7 @@ test("Claude usage-limit failure with null quota offers fallback switch candidat
   seedStore(
     makeClient({
       startRun: async () => ({ runId: "run-c", providerSessionId: "sc", providerKey: "claude", status: "running", stepId: "chat-run-c" }),
-      sendTurn: () => turnFailedStream("usage limit reached", false, "run-c"),
+      sendTurn: () => providerLimitStream("usage limit reached", false, "run-c", "claude"),
       listRunHistory: async () => [],
     }),
     [],

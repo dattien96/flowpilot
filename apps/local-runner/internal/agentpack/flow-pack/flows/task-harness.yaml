@@ -83,6 +83,7 @@ nodes:
     run: delegate
     lifecycle: once
     behavior: agent.delegate
+    workloadClass: high_reasoning
     agent: agents/contract-planner.md
     promptTemplate: prompts/plan-safe-fix-contract.md
     # CP-62 P-4 (Task-340): the scout only reads and plans — structurally
@@ -100,6 +101,7 @@ nodes:
     run: delegate
     lifecycle: reinvoke
     behavior: agent.delegate
+    workloadClass: high_reasoning
     agent: agents/doc-writer.md
     promptTemplate: prompts/plan-task.md
     # CP-62 P-5 (Task-341): plan writer needs excerpts to plan from.
@@ -121,6 +123,7 @@ nodes:
     run: delegate
     lifecycle: spawn
     behavior: agent.delegate
+    workloadClass: high_reasoning
     agent: agents/reviewer.md
     promptTemplate: prompts/review-plan.md
     # CP-62 P-4 (Task-340): reviewers are read-only + verdict face — the
@@ -160,6 +163,7 @@ nodes:
     # negotiation loop can re-enter this node for stub+test revision.
     lifecycle: reinvoke
     behavior: agent.scaffold
+    workloadClass: coding
     agent: agents/scaffold-architect.md
     promptTemplate: prompts/scaffold-contract-tdd.md
     # CP-67 P-3 (B-5): the contract architect is a High-Reasoning tier node.
@@ -168,6 +172,7 @@ nodes:
     run: delegate
     lifecycle: reinvoke
     behavior: agent.code
+    workloadClass: coding
     agent: agents/coder.md
     # CP-67 P-5 (Task-381): fill-body-only contract with Accumulate & Batch.
     promptTemplate: prompts/implement-scaffold-body.md
@@ -181,6 +186,7 @@ nodes:
     run: delegate
     lifecycle: spawn
     behavior: agent.delegate
+    workloadClass: high_reasoning
     agent: agents/reviewer.md
     promptTemplate: prompts/review-safe-fix-contract.md
     # CP-62 P-4 (Task-340): read-only reviewer — no write path to weaken a

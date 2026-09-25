@@ -593,6 +593,33 @@ export interface ChatPostureConfig {
   profiles: Partial<Record<ChatPosture, ChatPostureProfile>>;
 }
 
+// ---- Quota routing (CP-87 / Task-446) ---------------------------------------
+
+/** Rotation policy mode — "manual" (default, always gates) or "auto"
+ *  (bounded, high-confidence candidates only). */
+export type QuotaRotationMode = "manual" | "auto";
+
+/** Workload class declared on provider-backed flow nodes (agentpack). */
+export type WorkloadClass = "scan" | "high_reasoning" | "coding";
+
+export interface ModelClassBinding {
+  providerKey: string;
+  workloadClass: WorkloadClass;
+  model: string;
+}
+
+/** Machine-global runner-owned routing policy (GET/PUT
+ *  /client/quota-routing-settings). Quota percentages are telemetry — this
+ *  shape deliberately carries no token-budget field. */
+export interface QuotaRoutingSettings {
+  mode: QuotaRotationMode;
+  providerPriority?: string[];
+  modelBindings?: ModelClassBinding[];
+  headroomLowPercent: number;
+  telemetryTtlSeconds: number;
+  sameProviderCooldownSeconds: number;
+}
+
 /** Posture labels/descriptions for the composer tabs + setup modal. */
 export const CHAT_POSTURES: { key: ChatPosture; label: string; hint: string }[] = [
   { key: "scan", label: "Scan", hint: "Read-only exploration — reads auto-approve, writes auto-deny." },
@@ -1129,6 +1156,11 @@ export interface RunnerClient {
   getOpencodeModelVariants?(modelId: string): Promise<{ supportedEfforts: string[]; defaultReasoningEffort: string }>;
   /** PUT /client/chat-posture — persists the active posture + profile pins. */
   setChatPosture?(config: ChatPostureConfig): Promise<ChatPostureConfig>;
+  /** CP-87/Task-446: GET /client/quota-routing-settings — runner-owned
+   *  machine-global routing policy. Optional so mock/older clients degrade. */
+  getQuotaRoutingSettings?(): Promise<QuotaRoutingSettings>;
+  /** PUT /client/quota-routing-settings — persists mode/priority/bindings. */
+  setQuotaRoutingSettings?(settings: QuotaRoutingSettings): Promise<QuotaRoutingSettings>;
   openProviderAccountTerminal(accountId: string): Promise<void>;
   /** System control — mirrors admin-web's runner gateway (`POST /system/restart`). CP-81: fenced + lease-scoped inside Electron when the lifecycle bridge is present. */
   restartStack(): Promise<void>;

@@ -20,6 +20,7 @@ import type {
   ProviderAccountSummary,
   ProviderEventDTO,
   ProviderSkill,
+  QuotaRoutingSettings,
   RemoteChatSessionSummary,
   RunHandle,
   RunHistoryItem,
@@ -419,6 +420,14 @@ export class HttpWsRunnerClient implements RunnerClient {
   }
   setChatPosture(config: ChatPostureConfig): Promise<ChatPostureConfig> {
     return this.putJSON<ChatPostureConfig>("/client/chat-posture", config);
+  }
+
+  getQuotaRoutingSettings(): Promise<QuotaRoutingSettings> {
+    return this.getJSON<QuotaRoutingSettings>("/client/quota-routing-settings");
+  }
+
+  setQuotaRoutingSettings(settings: QuotaRoutingSettings): Promise<QuotaRoutingSettings> {
+    return this.putJSON<QuotaRoutingSettings>("/client/quota-routing-settings", settings);
   }
   openProviderAccountTerminal(accountId: string): Promise<void> {
     return this.postJSON<void>("/provider-accounts/test", { accountId });

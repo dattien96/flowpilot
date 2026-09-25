@@ -21,6 +21,7 @@ import type {
   ProviderEventBaseDTO,
   ProviderEventDTO,
   ProviderSkill,
+  QuotaRoutingSettings,
   RemoteChatSessionSummary,
   ReviewOutcomeInput,
   SpawnAgentInput,
@@ -826,6 +827,25 @@ export class MockRunnerClient implements RunnerClient {
       non: { ...config.profiles.non },
     };
     return this.getChatPosture();
+  }
+
+  // Task-446: in-memory mirror of the machine-global routing document.
+  private quotaRouting: QuotaRoutingSettings = {
+    mode: "manual",
+    headroomLowPercent: 20,
+    telemetryTtlSeconds: 120,
+    sameProviderCooldownSeconds: 20,
+  };
+
+  async getQuotaRoutingSettings(): Promise<QuotaRoutingSettings> {
+    await delay(30);
+    return { ...this.quotaRouting };
+  }
+
+  async setQuotaRoutingSettings(settings: QuotaRoutingSettings): Promise<QuotaRoutingSettings> {
+    await delay(30);
+    this.quotaRouting = { ...settings };
+    return this.getQuotaRoutingSettings();
   }
 
   async openProviderAccountTerminal(_accountId: string): Promise<void> {

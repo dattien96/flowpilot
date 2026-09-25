@@ -928,7 +928,10 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 		changeType:      st.ChangeType,
 		sourceDocID:     st.SourceDocID,
 		turnCount:       st.TurnCount,
-		subs:            map[int64]chan ProviderEvent{},
+		// Task-446 T-3: restore the frozen routing-policy snapshot — the run
+		// keeps resolving under the policy it was created with.
+		quotaRouting: st.QuotaRouting,
+		subs:         map[int64]chan ProviderEvent{},
 		// BUG-288 R16-P0: restore durable idempotency keys (not empty map).
 		idempotency:                     copyStringMap(st.IdempotencyKeys),
 		resumedFromDisk:                 true,
@@ -982,7 +985,7 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 		vibeAwaitingLock:                st.VibeAwaitingLock,
 		vibeTaskPlan:                    append([]string(nil), st.VibeTaskPlan...),
 		vibeCpDocID:                     st.VibeCpDocID,
-		vibeRequirementFromNode:        st.VibeRequirementFromNode,
+		vibeRequirementFromNode:         st.VibeRequirementFromNode,
 		vibeSprintIndex:                 st.VibeSprintIndex,
 		vibeSprintBudget:                st.VibeSprintBudget,
 		vibeSprintBoundaryDeclined:      st.VibeSprintBoundaryDeclined,

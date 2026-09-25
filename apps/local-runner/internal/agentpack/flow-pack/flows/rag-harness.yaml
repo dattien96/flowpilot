@@ -48,6 +48,7 @@ nodes:
     run: delegate
     lifecycle: once
     behavior: agent.delegate
+    workloadClass: high_reasoning
     agent: agents/contract-planner.md
     promptTemplate: prompts/plan-safe-fix-contract.md
     # CP-62 P-4 (Task-340): scout is read-only — kept identical to the
@@ -65,12 +66,14 @@ nodes:
     run: delegate
     lifecycle: once
     behavior: agent.code
+    workloadClass: coding
     agent: agents/tester.md
     promptTemplate: prompts/test-signatures.md
   - id: implement
     run: delegate
     lifecycle: reinvoke
     behavior: agent.code
+    workloadClass: coding
     agent: agents/coder.md
     promptTemplate: prompts/implement-complete-tests.md
   - id: validate
@@ -81,6 +84,7 @@ nodes:
     run: delegate
     lifecycle: spawn
     behavior: agent.delegate
+    workloadClass: high_reasoning
     agent: agents/reviewer.md
     promptTemplate: prompts/review-safe-fix-contract.md
     # CP-62 P-4 (Task-340): read-only reviewer — identical to bug-harness.
