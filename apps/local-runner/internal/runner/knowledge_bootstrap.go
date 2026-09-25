@@ -121,8 +121,27 @@ func (s *InteractiveService) ensureKnowledgeBaseForWorkspace(workspace string) {
 		if err != nil {
 			return err
 		}
-		return knowledge.WriteFull(workspace, kb)
+		if err := knowledge.WriteFull(workspace, kb); err != nil {
+			return err
+		}
+		// A successful full distill already covers every previously pending
+		// incremental path — the ledger is clean, not silently stale (BUG-477).
+		clearKnowledgePending(workspace)
+		return nil
 	})
+	// Boot reconciliation (BUG-477): a kill can strand durable update intents
+	// whose worker never finished. On bind, replay whatever is still pending —
+	// cheap no-op when the ledger is empty, and a missing index stays owned by
+	// the bootstrap path above.
+	redistill := func(ctx context.Context) (*knowledge.KnowledgeBase, error) {
+		return knowledge.Distill(ctx, workspace, &gitnexusProcessLister{repoDir: workspace}, nil)
+	}
+	if pending, err := loadKnowledgePending(workspace); err == nil && len(pending.Intents) > 0 {
+		go replayKnowledgeUpdates(workspace, redistill)
+	} else if err != nil {
+		// Corrupt ledger — fail closed to a rebuild through the same worker.
+		go replayKnowledgeUpdates(workspace, redistill)
+	}
 }
 
 // updateKnowledgeForAudit fires the P-3 incremental update after an audit
@@ -132,9 +151,26 @@ func (s *InteractiveService) updateKnowledgeForAudit(workspace string, changedPa
 	if workspace == "" {
 		return
 	}
-	go UpdateAsync(workspace, changedPaths, func(ctx context.Context) (*knowledge.KnowledgeBase, error) {
+	redistill := func(ctx context.Context) (*knowledge.KnowledgeBase, error) {
 		return knowledge.Distill(ctx, workspace, &gitnexusProcessLister{repoDir: workspace}, nil)
-	})
+	}
+	paths := filterKnowledgePaths(changedPaths)
+	if len(paths) == 0 || knowledge.Missing(workspace) {
+		// No bootstrapped base: the hook must stay a no-op — it never creates
+		// knowledge state mid-flow (TestAuditHookSkipsUnbootstrappedWorkspace).
+		// The bootstrap's full distill covers these paths anyway.
+		return
+	}
+	// BUG-477: persist the dirty set BEFORE acknowledging the hook — a kill
+	// between here and the worker's write used to lose the update forever.
+	// An append failure still fires the best-effort update (never blocks the
+	// flow), and the next append rewrites the ledger wholesale anyway.
+	if err := appendKnowledgeUpdateIntent(workspace, paths); err != nil {
+		log.Printf("[knowledge] persist update intent failed workspace=%q: %v — firing best-effort update", workspace, err)
+		go UpdateAsync(workspace, changedPaths, redistill)
+		return
+	}
+	go replayKnowledgeUpdates(workspace, redistill)
 }
 
 // onAuditNodeCompleted is the single choke point every audit completion path
