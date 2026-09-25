@@ -3,7 +3,7 @@
 - Document ID: `CP-87`
 - Title: `Typed provider-limit handling, quota preflight, workload-class model routing, and user-controlled rotation`
 - Phase: `coding_plan`
-- Status: `draft`
+- Status: `done`
 - Owner: `dat.nguyen`
 - Reviewers: ``
 - Created: `2026-09-25`
@@ -267,19 +267,43 @@ auto-rotate when explicitly enabled.
 
 ## 10. Definition of Done
 
-- [ ] One typed provider-limit schema covers known Claude/Codex/Grok/OpenCode/
-      Devin shapes; Desktop contains no quota-string classifier.
-- [ ] All provider-backed Flow/Vibe nodes declare one workload class; model
+- [x] One typed provider-limit schema covers known Claude/Codex/Grok/OpenCode/
+      Devin shapes; Desktop contains no quota-string classifier. (Task-445,
+      CA-977 — `provider_limit_reached` + `ProviderLimitKind`; Desktop consumes
+      the typed event.)
+- [x] All provider-backed Flow/Vibe nodes declare one workload class; model
       bindings/provider priority are data-driven and validated fail-closed.
-- [ ] Manual mode (default) gates both Flow and Vibe with a candidate table;
+      (Task-446, CA-978 — 52 provider-backed nodes annotated; bindings +
+      priority live in machine-global `QuotaRoutingSettings`.)
+- [x] Manual mode (default) gates both Flow and Vibe with a candidate table;
       auto mode rotates only high-confidence candidates and otherwise gates.
-- [ ] Same-provider selection respects the 20s cooldown + max-two automatic
+      (Task-449, CA-981 — shared `quota_route_required` gate; auto restricted
+      to exact/fresh/healthy candidates.)
+- [x] Same-provider selection respects the 20s cooldown + max-two automatic
       switches/run; Desktop/TUI show a server-timestamp-driven countdown bar
-      and safety reason; no global `SetActiveAccount` in routing.
-- [ ] Cross-provider resolver enumerates registry providers dynamically and
+      and safety reason; no global `SetActiveAccount` in routing. (Task-447,
+      CA-979 — durable claim ledger + `same_provider_ip_safety`; Task-450,
+      CA-982 — determinate server-deadline bars.)
+- [x] Cross-provider resolver enumerates registry providers dynamically and
       enforces workload class, capability, context-window, account headroom.
-- [ ] Rotation creates a durable new leg; no live session mutation and no
-      silent Supabase step-model update.
-- [ ] Requested/resolved routing + quota evidence + CP-86 usage is audited.
-- [ ] Additive tests green; live/fixture evidence levels explicitly reported;
-      GitNexus `detect_changes` clean before every commit.
+      (Task-448, CA-980 — pure candidate engine, sixth-provider acceptance.)
+- [x] Rotation creates a durable new leg; no live session mutation and no
+      silent Supabase step-model update. (Task-449 — `switchChatLeg` /
+      `claimAccountForLeg` / respawn paths only.)
+- [x] Requested/resolved routing + quota evidence + CP-86 usage is audited.
+      (Task-450 — `GET /client/workflow-runs/{id}/quota-audit` +
+      `quota_route_committed` policy/headroom fields.)
+- [x] Additive tests green; live/fixture evidence levels explicitly reported;
+      GitNexus `detect_changes` clean before every commit (CLI lacks the tool;
+      equivalent staged-diff scope reviews documented per CA).
+
+## 11. Completion Notes
+
+- Landed across Task-445..450 on branch `cp_86_87` (commits `b63600ee`,
+  `6c03a09f`, `303eb490`, `c006c3db`, `1fee296a`, `d629a24e`; audits
+  CA-977..CA-982).
+- Evidence levels: Claude/Codex limit shapes are fixture-contract only (no
+  live accounts on this machine); Grok/Devin success-path + quota metadata
+  fixtures; OpenCode free-path + fake-ACP limit fixtures.
+- Deferred: `Save as step default` (open question — hidden, not shipped);
+  live-account smoke of the quota gate UI.

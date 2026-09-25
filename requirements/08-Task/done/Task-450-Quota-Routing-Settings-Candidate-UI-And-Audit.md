@@ -3,7 +3,7 @@
 - Document ID: `Task-450`
 - Title: `Desktop/TUI manual-or-auto settings, candidate table, rotation notices, and requested→resolved audit correlation`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `dat.nguyen`
 - Reviewers: ``
 - Created: `2026-09-25`
@@ -154,16 +154,30 @@ func renderQuotaCandidateTable(decision QuotaRouteDecision, width int) []string
 
 ## 10. Definition of Done
 
-- [ ] §6 signatures landed or deviation documented
-- [ ] §7 additive tests green
-- [ ] Desktop + TUI manual/auto/candidate/audit UX verified
-- [ ] Missing data labels honest; accessibility pass
-- [ ] Save-default explicit or cleanly omitted
-- [ ] CA ledger + feature key entries complete
-- [ ] GitNexus detect_changes reviewed before commit
+- [x] §6 signatures landed or deviation documented
+- [x] §7 additive tests green
+- [x] Desktop + TUI manual/auto/candidate/audit UX verified
+- [x] Missing data labels honest; accessibility pass
+- [x] Save-default explicit or cleanly omitted
+- [x] CA ledger + feature key entries complete
+- [x] GitNexus detect_changes reviewed before commit (CLI exposes no
+  detect_changes — equivalent staged-diff scope review documented in CA-982)
 
 ## 11. Completion Notes
 
-- result:
-- follow-ups:
-- upstream docs updated:
+- result: Desktop renders `QuotaCandidateTable` inside `QuestionCard` for
+  `quota_route_required` cards (provider/model/workload/account/headroom/
+  reset/confidence/reason columns, runner order verbatim, Once/For-run/Stop
+  actions, rejected+cooling rows disabled with reasons), `QuotaRoutingSettings`
+  inside Engine settings, `QuotaRoutingAudit` forensic record, and
+  `SameProviderCooldownBar` counting down from server `cooldownStartedAt`/
+  `cooldownUntil`. TUI renders the same candidate table + cooldown bar inline
+  on the quota card, `/quota` shows the runner-owned settings (edit in
+  Desktop), `/quota audit` shows the forensic record. Runner carries
+  `QuotaRouteDecision` on the durable question record → snapshot → decision
+  projection → rehydrated card, and `GET /client/workflow-runs/{id}/quota-audit`
+  correlates requested→resolved route with policy/headroom/est/max/actual usage.
+- follow-ups: save-as-step-default deferred per open question (hidden, not a
+  shipped no-op); auto-rotation notices render via the informational
+  `quota_route_committed/_stopped/_blocked` timeline system lines.
+- upstream docs updated: this file; CA-982.

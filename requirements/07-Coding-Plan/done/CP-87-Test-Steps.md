@@ -3,7 +3,7 @@
 - Document ID: `CP-87-Test-Steps`
 - Title: `CP-87 Test Steps`
 - Phase: `coding-plan`
-- Status: `draft`
+- Status: `done`
 - Owner: `dat.nguyen`
 - Reviewers: ``
 - Created: `2026-09-25`
