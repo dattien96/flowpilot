@@ -547,6 +547,28 @@ escaped originally).
 - Any `grok` leg while account is 402-quota'd
 - Desktop UI rows (A-62-5/6, BUG-367/369/371 chips) — need Desktop app session
 
+## G. Post-audit BUG live legs (BUG-472..484, implemented 2026-09-25)
+
+The 13 audit BUGs landed with unit/E2E coverage; this section is their
+**live-runner verification matrix**. Same rule as §D: a green unit suite
+does not prove the live path.
+
+| Bug | Fix | Live drill | Status |
+|-----|-----|-----------|--------|
+| BUG-474 | heal Desktop-clone rows from cloned_from + `definition_json` passthrough + unmigrated-remote degrade (CA-983) | Desktop-shape PostgREST clone of `cp-harness-smoke` (e4891212) → runner `GetByRef` | ☑ LIVE 2026-09-25: clone `00ba0ee5` (13 steps, no `definition_json`, no copied `step_artifact_bindings`) resolved through prod store code → `cp_plan_writer`/`task_splitter`/`cp_reviewer` artifactBindings + `pathTemplate` restored from embedded pack, flow `tools=1` restored, `run=` derived. Remote lacks the column entirely (42703) — column-free retry + backfill-skip degrade exercised for real. Clone visible in `/client/workflows` (23 rows). Remote artifacts cleaned. |
+| BUG-472 | dirty-scan fail-open → 503 (CA-970) | worktree run → break git inspection → resolve destructive | ☐ |
+| BUG-473 | boot GC skips on persistence read failure (CA-971) | corrupt session record → restart → worktree preserved | ☐ |
+| BUG-481 | durable resolve phases + replay (CA-972) | kill mid-resolve → restart → converge | ☐ |
+| BUG-475 | attention read error → resync not empty (CA-973) | attention store fault during SSE | ☐ |
+| BUG-484 | recovery retry coordinator (CA-974) | transient boot failure → observe retry | ☐ |
+| BUG-476 | logical-chat Drive manifest v2 (CA-975) | multi-leg chat → Drive sync → manifest | ☐ |
+| BUG-483 | Drive index download failure preservation (CA-976) | Drive read fault → index untouched | ☐ |
+| BUG-477 | durable knowledge-update ledger (CA-978) | audit update → kill -9 → restart → replay | ☐ |
+| BUG-478 | merge card alternates + discard (CA-979) | tournament empty winner → card + discard | ☐ |
+| BUG-479 | mux unseen-lane → history insert (CA-980) | SSE consumer observes upsert for unseen run | ☐ |
+| BUG-480 | vibeResumeConfirm via gate-decision (CA-981) | vibe park → generic Continue → gate consumed | ☐ |
+| BUG-482 | malformed SSE frame → resync (CA-982) | corrupted frame on live mux stream | ☐ |
+
 ## F. Execution order (single session)
 
 1. §0 automated gate → green/baseline.
