@@ -1,8 +1,8 @@
 package runner
 
 import (
-	"bufio"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -249,7 +249,11 @@ func (s *InteractiveService) loadScaffoldProgressTail(projectID string) []Scaffo
 	}
 	// Read more than the in-memory ring so the merge path can recover a trimmed
 	// transcript head; NDJSON lines are small so a few thousand is cheap.
-	return readScaffoldProgressTail(filepath.Join(dir, ".flowpilot", scaffoldProgressFileName), scaffoldProgressKeep*8)
+	events, scanErr := readScaffoldProgressTail(filepath.Join(dir, ".flowpilot", scaffoldProgressFileName), scaffoldProgressKeep*8)
+	if scanErr != nil {
+		fmt.Printf("[scaffold-progress] progress log read incomplete project=%s: %v\n", projectID, scanErr)
+	}
+	return events
 }
 
 // scaffoldStreamJoiner re-inserts line boundaries into the provider's stdout
@@ -358,30 +362,26 @@ func appendScaffoldProgressLine(workspace string, ev ScaffoldProgressEvent) {
 }
 
 // readScaffoldProgressTail returns the last `limit` events from the log.
-func readScaffoldProgressTail(path string, limit int) []ScaffoldProgressEvent {
+// BUG-487: uncapped line reader; a mid-file read error is returned so the
+// caller can distinguish a truncated log from a short one.
+func readScaffoldProgressTail(path string, limit int) ([]ScaffoldProgressEvent, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 	defer f.Close()
 	var events []ScaffoldProgressEvent
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
+	scanErr := readNDJSONLines(f, func(line []byte) {
 		var ev ScaffoldProgressEvent
-		if err := json.Unmarshal([]byte(line), &ev); err != nil {
-			continue
+		if err := json.Unmarshal(line, &ev); err != nil {
+			return
 		}
 		events = append(events, ev)
 		if len(events) > limit {
 			events = events[len(events)-limit:]
 		}
-	}
-	return events
+	})
+	return events, scanErr
 }
 
 // handleScaffoldProgress serves GET /client/projects/{projectId}/scaffold/progress.

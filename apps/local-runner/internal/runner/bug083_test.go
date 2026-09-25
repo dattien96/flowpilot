@@ -31,7 +31,7 @@ func TestCodexLoaderFiltersInjectedContextFrame(t *testing.T) {
 		`{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hello there"}]}}`,
 		`{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Hi!"}]}}`,
 	}
-	events := loadCodexTranscriptEvents(writeLines083(t, lines))
+	events, _ := loadCodexTranscriptEvents(writeLines083(t, lines))
 
 	var prompts []string
 	for _, e := range events {
@@ -53,7 +53,7 @@ func TestCodexLoaderFiltersInstructionsTag(t *testing.T) {
 		`{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"real prompt"}]}}`,
 		`{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}}`,
 	}
-	events := loadCodexTranscriptEvents(writeLines083(t, lines))
+	events, _ := loadCodexTranscriptEvents(writeLines083(t, lines))
 	for _, e := range events {
 		if e.Type == EventTurnStarted && e.Prompt != "" && e.Prompt != "real prompt" {
 			t.Fatalf("<INSTRUCTIONS> frame must not be emitted as a prompt bubble; got %q", e.Prompt)
@@ -69,7 +69,7 @@ func TestCodexLoaderDoesNotFilterNormalMentionOfAgentsMd(t *testing.T) {
 		`{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"` + text + `"}]}}`,
 		`{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"sure"}]}}`,
 	}
-	events := loadCodexTranscriptEvents(writeLines083(t, lines))
+	events, _ := loadCodexTranscriptEvents(writeLines083(t, lines))
 	found := false
 	for _, e := range events {
 		if e.Type == EventTurnStarted && e.Prompt == text {

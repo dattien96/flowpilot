@@ -302,21 +302,28 @@ func (s *memoryDispatchStore) CreatePrepared(ctx context.Context, rec DispatchRe
 	}
 	rec.UpdatedAt = now
 	rec.Revision = 1
-	// Atomic V2 activation + RunStopState.
-	s.ensureActivationLocked(rec.RunID)
+	// disk-before-RAM (BUG-499): the durable line carries the full create
+	// (record + envelope + activation + run-stop) and memory is populated only
+	// after it lands, so a failed fsync leaves CreatePrepared retryable.
 	cp := rec
 	envCp := env
+	seqBefore, auditLen := s.seq, len(s.audits)
+	s.appendAuditLocked(rec.RunID, rec.TurnID, "create_prepared", "state=prepared", "system")
+	s.ensureActivationLocked(rec.RunID)
+	if err := s.commitLine(dispatchLogLine{
+		Kind: "record", Seq: s.seq, At: now, Record: &cp, Envelope: &envCp,
+		Activation: &dispatchActivation{RunID: rec.RunID, ProtocolVersion: DispatchProtocolV2},
+		RunStop:    s.runStop[rec.RunID],
+	}); err != nil {
+		s.uncommitAudit(seqBefore, auditLen)
+		return err
+	}
 	s.records[k] = &cp
 	s.envelopes[k] = &envCp
 	if rec.OuterIntentKey != "" {
 		s.setLiveIntentLocked(rec.IntentOwnerRunID, rec.OuterIntentKey, rec.OuterIntentGen, rec.EnvelopeHash)
 	}
-	s.appendAuditLocked(rec.RunID, rec.TurnID, "create_prepared", "state=prepared", "system")
-	return s.commitLine(dispatchLogLine{
-		Kind: "record", Seq: s.seq, At: now, Record: &cp, Envelope: &envCp,
-		Activation: &dispatchActivation{RunID: rec.RunID, ProtocolVersion: DispatchProtocolV2},
-		RunStop:    s.runStop[rec.RunID],
-	})
+	return nil
 }
 
 func (s *memoryDispatchStore) CASAdvance(ctx context.Context, runID, turnID string, expectedRev int64,
@@ -356,24 +363,29 @@ func (s *memoryDispatchStore) casAdvance(ctx context.Context, runID, turnID stri
 			return r.Revision, err
 		}
 	}
+	// BUG-499: disk-before-RAM — build the post-state on a clone and commit
+	// before mutating r, so a failed fsync leaves the advance fully retryable.
+	cp := s.cloneRec(r)
 	// Leaving sent states revokes attach epoch.
-	if r.State.IsSent() && next != r.State {
-		s.revokeAttachLocked(r)
+	if cp.State.IsSent() && next != cp.State {
+		s.revokeAttachLocked(&cp)
 	}
 	if next.IsTerminal() {
-		s.revokeAttachLocked(r)
+		s.revokeAttachLocked(&cp)
 	}
 	if mutate != nil {
-		mutate(r)
+		mutate(&cp)
 	}
-	r.State = next
-	r.Revision++
-	r.UpdatedAt = s.clockStr()
+	cp.State = next
+	cp.Revision++
+	cp.UpdatedAt = s.clockStr()
+	seqBefore, auditLen := s.seq, len(s.audits)
 	s.appendAuditLocked(runID, turnID, "cas_advance", fmt.Sprintf("%s->%s", expected, next), "system")
-	cp := s.cloneRec(r)
-	if err := s.commitLine(dispatchLogLine{Kind: "record", Seq: s.seq, At: r.UpdatedAt, Record: &cp}); err != nil {
+	if err := s.commitLine(dispatchLogLine{Kind: "record", Seq: s.seq, At: cp.UpdatedAt, Record: &cp}); err != nil {
+		s.uncommitAudit(seqBefore, auditLen)
 		return r.Revision, err
 	}
+	*r = cp
 	return r.Revision, nil
 }
 
@@ -392,14 +404,18 @@ func (s *memoryDispatchStore) CASAdvanceSettle(ctx context.Context, runID, turnI
 	if err := canAdvanceSettle(expected, next); err != nil {
 		return r.Revision, err
 	}
-	r.SettlePhase = next
-	r.Revision++
-	r.UpdatedAt = s.clockStr()
-	s.appendAuditLocked(runID, turnID, "cas_settle", fmt.Sprintf("%s->%s", expected, next), "system")
+	// disk-before-RAM (BUG-499): commit the clone first, apply on success.
 	cp := s.cloneRec(r)
-	if err := s.commitLine(dispatchLogLine{Kind: "record", Seq: s.seq, At: r.UpdatedAt, Record: &cp}); err != nil {
+	cp.SettlePhase = next
+	cp.Revision++
+	cp.UpdatedAt = s.clockStr()
+	seqBefore, auditLen := s.seq, len(s.audits)
+	s.appendAuditLocked(runID, turnID, "cas_settle", fmt.Sprintf("%s->%s", expected, next), "system")
+	if err := s.commitLine(dispatchLogLine{Kind: "record", Seq: s.seq, At: cp.UpdatedAt, Record: &cp}); err != nil {
+		s.uncommitAudit(seqBefore, auditLen)
 		return r.Revision, err
 	}
+	*r = cp
 	return r.Revision, nil
 }
 
@@ -419,15 +435,19 @@ func (s *memoryDispatchStore) ClaimRecovery(ctx context.Context, runID, turnID s
 		return r.Revision, ErrStaleDispatch
 	}
 	exp := s.clock().Add(ttl)
-	r.ClaimOwner = owner
-	r.ClaimExpiresAt = exp.Format(time.RFC3339Nano)
-	r.Revision++
-	r.UpdatedAt = s.clockStr()
-	s.appendAuditLocked(runID, turnID, "claim_recovery", "owner="+owner, owner)
+	// disk-before-RAM (BUG-499).
 	cp := s.cloneRec(r)
-	if err := s.commitLine(dispatchLogLine{Kind: "record", Seq: s.seq, At: r.UpdatedAt, Record: &cp}); err != nil {
+	cp.ClaimOwner = owner
+	cp.ClaimExpiresAt = exp.Format(time.RFC3339Nano)
+	cp.Revision++
+	cp.UpdatedAt = s.clockStr()
+	seqBefore, auditLen := s.seq, len(s.audits)
+	s.appendAuditLocked(runID, turnID, "claim_recovery", "owner="+owner, owner)
+	if err := s.commitLine(dispatchLogLine{Kind: "record", Seq: s.seq, At: cp.UpdatedAt, Record: &cp}); err != nil {
+		s.uncommitAudit(seqBefore, auditLen)
 		return r.Revision, err
 	}
+	*r = cp
 	return r.Revision, nil
 }
 
@@ -445,17 +465,21 @@ func (s *memoryDispatchStore) SetCancelRequested(ctx context.Context, runID, tur
 	if r.State.IsTerminal() {
 		return r.Revision, nil // frozen
 	}
-	r.CancelRequested = true
-	if stopGen > r.StopGeneration {
-		r.StopGeneration = stopGen
-	}
-	r.Revision++
-	r.UpdatedAt = s.clockStr()
-	s.appendAuditLocked(runID, turnID, "set_cancel", fmt.Sprintf("stop_gen=%d", stopGen), "system")
+	// disk-before-RAM (BUG-499).
 	cp := s.cloneRec(r)
-	if err := s.commitLine(dispatchLogLine{Kind: "record", Seq: s.seq, At: r.UpdatedAt, Record: &cp}); err != nil {
+	cp.CancelRequested = true
+	if stopGen > cp.StopGeneration {
+		cp.StopGeneration = stopGen
+	}
+	cp.Revision++
+	cp.UpdatedAt = s.clockStr()
+	seqBefore, auditLen := s.seq, len(s.audits)
+	s.appendAuditLocked(runID, turnID, "set_cancel", fmt.Sprintf("stop_gen=%d", stopGen), "system")
+	if err := s.commitLine(dispatchLogLine{Kind: "record", Seq: s.seq, At: cp.UpdatedAt, Record: &cp}); err != nil {
+		s.uncommitAudit(seqBefore, auditLen)
 		return r.Revision, err
 	}
+	*r = cp
 	return r.Revision, nil
 }
 
@@ -482,14 +506,18 @@ func (s *memoryDispatchStore) RequestRunStop(ctx context.Context, runID string, 
 	if st.Revision != expectedRunStopRev {
 		return *st, ErrStaleDispatch
 	}
-	st.Stopped = true
-	st.Generation++
-	st.Revision++
-	s.appendAuditLocked(runID, "", "request_run_stop", string(reason), "system")
+	// disk-before-RAM (BUG-499): failed commit leaves the fence retryable.
 	cp := *st
+	cp.Stopped = true
+	cp.Generation++
+	cp.Revision++
+	seqBefore, auditLen := s.seq, len(s.audits)
+	s.appendAuditLocked(runID, "", "request_run_stop", string(reason), "system")
 	if err := s.commitLine(dispatchLogLine{Kind: "run_stop", Seq: s.seq, At: s.clockStr(), RunStop: &cp}); err != nil {
-		return cp, err
+		s.uncommitAudit(seqBefore, auditLen)
+		return *st, err
 	}
+	*st = cp
 	return cp, nil
 }
 
@@ -511,13 +539,17 @@ func (s *memoryDispatchStore) ReleaseRunStopFence(ctx context.Context, runID str
 	if !st.Stopped {
 		return *st, nil
 	}
-	st.Stopped = false
-	st.Revision++
-	s.appendAuditLocked(runID, "", "release_run_stop_fence", "stopped=false", "system")
+	// disk-before-RAM (BUG-499).
 	cp := *st
+	cp.Stopped = false
+	cp.Revision++
+	seqBefore, auditLen := s.seq, len(s.audits)
+	s.appendAuditLocked(runID, "", "release_run_stop_fence", "stopped=false", "system")
 	if err := s.commitLine(dispatchLogLine{Kind: "run_stop", Seq: s.seq, At: s.clockStr(), RunStop: &cp}); err != nil {
-		return cp, err
+		s.uncommitAudit(seqBefore, auditLen)
+		return *st, err
 	}
+	*st = cp
 	return cp, nil
 }
 
@@ -725,15 +757,19 @@ func (s *memoryDispatchStore) CommitRecoveryUnknownOrRequireCancel(ctx context.C
 	if err := r.canTransition(DispatchUncertain); err != nil {
 		return "", r.Revision, err
 	}
-	r.State = DispatchUncertain
-	s.revokeAttachLocked(r)
-	r.Revision++
-	r.UpdatedAt = s.clockStr()
-	s.appendAuditLocked(runID, turnID, "recovery_uncertain", "", leaseOwner)
+	// disk-before-RAM (BUG-499).
 	cp := s.cloneRec(r)
-	if err := s.commitLine(dispatchLogLine{Kind: "record", Seq: s.seq, At: r.UpdatedAt, Record: &cp}); err != nil {
+	cp.State = DispatchUncertain
+	s.revokeAttachLocked(&cp)
+	cp.Revision++
+	cp.UpdatedAt = s.clockStr()
+	seqBefore, auditLen := s.seq, len(s.audits)
+	s.appendAuditLocked(runID, turnID, "recovery_uncertain", "", leaseOwner)
+	if err := s.commitLine(dispatchLogLine{Kind: "record", Seq: s.seq, At: cp.UpdatedAt, Record: &cp}); err != nil {
+		s.uncommitAudit(seqBefore, auditLen)
 		return "", r.Revision, err
 	}
+	*r = cp
 	return RecoveryClassifiedUncertain, r.Revision, nil
 }
 
@@ -763,18 +799,22 @@ func (s *memoryDispatchStore) ClaimRecoveryAttach(ctx context.Context, runID, tu
 	if !r.State.IsSent() {
 		return RecoveryAttachToken{}, s.cloneRec(r), ErrIllegalTransition
 	}
-	r.RecoveryAttachEpoch++
-	r.RecoveryAttachOwner = leaseOwner
-	exp := s.clock().Add(ttl)
-	r.RecoveryAttachExpiresAt = exp.Format(time.RFC3339Nano)
-	r.Revision++
-	r.UpdatedAt = s.clockStr()
-	tok := RecoveryAttachToken{Epoch: r.RecoveryAttachEpoch, Owner: leaseOwner, ExpiresAt: exp}
-	s.appendAuditLocked(runID, turnID, "claim_attach", fmt.Sprintf("epoch=%d", tok.Epoch), leaseOwner)
+	// disk-before-RAM (BUG-499).
 	cp := s.cloneRec(r)
-	if err := s.commitLine(dispatchLogLine{Kind: "record", Seq: s.seq, At: r.UpdatedAt, Record: &cp}); err != nil {
-		return RecoveryAttachToken{}, cp, err
+	cp.RecoveryAttachEpoch++
+	cp.RecoveryAttachOwner = leaseOwner
+	exp := s.clock().Add(ttl)
+	cp.RecoveryAttachExpiresAt = exp.Format(time.RFC3339Nano)
+	cp.Revision++
+	cp.UpdatedAt = s.clockStr()
+	tok := RecoveryAttachToken{Epoch: cp.RecoveryAttachEpoch, Owner: leaseOwner, ExpiresAt: exp}
+	seqBefore, auditLen := s.seq, len(s.audits)
+	s.appendAuditLocked(runID, turnID, "claim_attach", fmt.Sprintf("epoch=%d", tok.Epoch), leaseOwner)
+	if err := s.commitLine(dispatchLogLine{Kind: "record", Seq: s.seq, At: cp.UpdatedAt, Record: &cp}); err != nil {
+		s.uncommitAudit(seqBefore, auditLen)
+		return RecoveryAttachToken{}, s.cloneRec(r), err
 	}
+	*r = cp
 	return tok, cp, nil
 }
 
@@ -795,15 +835,22 @@ func (s *memoryDispatchStore) EnterRecoveryAttach(ctx context.Context, runID, tu
 	// Persist attach entry effect before provider attach.
 	kind := attachedEffectKind(token.Epoch, "enter")
 	ek := effectKey(runID, turnID, kind)
-	if _, ok := s.effects[ek]; !ok {
+	e := s.effects[ek]
+	if e == nil {
 		payload := []byte(`{"kind":"enter"}`)
-		s.effects[ek] = &EffectDone{
+		e = &EffectDone{
 			RunID: runID, TurnID: turnID, EffectKind: kind,
 			Payload: payload, PayloadHash: HashBytes(payload), Revision: 1, CreatedAt: s.clockStr(),
 		}
 	}
+	seqBefore, auditLen := s.seq, len(s.audits)
 	s.appendAuditLocked(runID, turnID, "enter_attach", fmt.Sprintf("epoch=%d", token.Epoch), token.Owner)
-	return s.commitLine(dispatchLogLine{Kind: "effect", Seq: s.seq, At: s.clockStr(), Effect: s.effects[ek]})
+	if err := s.commitLine(dispatchLogLine{Kind: "effect", Seq: s.seq, At: s.clockStr(), Effect: e}); err != nil {
+		s.uncommitAudit(seqBefore, auditLen)
+		return err
+	}
+	s.effects[ek] = e // disk-before-RAM (BUG-499)
+	return nil
 }
 
 func (s *memoryDispatchStore) RecordRecoveryAttachedEffect(ctx context.Context, runID, turnID string, token RecoveryAttachToken, eventID string, payload AttachedEffectPayload) (bool, error) {
@@ -825,14 +872,17 @@ func (s *memoryDispatchStore) RecordRecoveryAttachedEffect(ctx context.Context, 
 		}
 		return false, nil // equal duplicate
 	}
-	s.effects[ek] = &EffectDone{
+	e := &EffectDone{
 		RunID: runID, TurnID: turnID, EffectKind: kind,
 		Payload: payload.CanonicalJSON, PayloadHash: payload.SHA256, Revision: 1, CreatedAt: s.clockStr(),
 	}
+	seqBefore, auditLen := s.seq, len(s.audits)
 	s.appendAuditLocked(runID, turnID, "attached_effect", kind, token.Owner)
-	if err := s.commitLine(dispatchLogLine{Kind: "effect", Seq: s.seq, At: s.clockStr(), Effect: s.effects[ek]}); err != nil {
+	if err := s.commitLine(dispatchLogLine{Kind: "effect", Seq: s.seq, At: s.clockStr(), Effect: e}); err != nil {
+		s.uncommitAudit(seqBefore, auditLen)
 		return false, err
 	}
+	s.effects[ek] = e // disk-before-RAM (BUG-499)
 	return true, nil
 }
 
@@ -867,25 +917,30 @@ func (s *memoryDispatchStore) commitPreSend(ctx context.Context, runID, turnID s
 	if err := r.canTransition(DispatchTerminalCancelled); err != nil {
 		return r.Revision, err
 	}
-	r.State = DispatchTerminalCancelled
-	r.Outcome = "cancelled"
-	r.StopOutcome = StopOutcomeStoppedBeforeSend
-	if stopGen > r.StopGeneration {
-		r.StopGeneration = stopGen
-	}
-	r.CancelRequested = true
-	r.SettlePhase = SettleNone
-	r.SettleOwed = false // pre-send cancel never settles
-	s.revokeAttachLocked(r)
-	r.Revision++
-	r.UpdatedAt = s.clockStr()
-	s.clearIntentLocked(intentOwnerRunID, intentKey, intentGen)
-	s.appendAuditLocked(runID, turnID, "pre_send_cancel", string(source), "system")
+	// disk-before-RAM (BUG-499): intent clear + RAM mutation apply only after
+	// the durable line lands, so a failed fsync leaves the cancel retryable.
 	cp := s.cloneRec(r)
+	cp.State = DispatchTerminalCancelled
+	cp.Outcome = "cancelled"
+	cp.StopOutcome = StopOutcomeStoppedBeforeSend
+	if stopGen > cp.StopGeneration {
+		cp.StopGeneration = stopGen
+	}
+	cp.CancelRequested = true
+	cp.SettlePhase = SettleNone
+	cp.SettleOwed = false // pre-send cancel never settles
+	s.revokeAttachLocked(&cp)
+	cp.Revision++
+	cp.UpdatedAt = s.clockStr()
+	seqBefore, auditLen := s.seq, len(s.audits)
+	s.appendAuditLocked(runID, turnID, "pre_send_cancel", string(source), "system")
 	clear := &intentClearPayload{OwnerRunID: intentOwnerRunID, Key: intentKey, Gen: intentGen}
-	if err := s.commitLine(dispatchLogLine{Kind: "record", Seq: s.seq, At: r.UpdatedAt, Record: &cp, IntentClear: clear}); err != nil {
+	if err := s.commitLine(dispatchLogLine{Kind: "record", Seq: s.seq, At: cp.UpdatedAt, Record: &cp, IntentClear: clear}); err != nil {
+		s.uncommitAudit(seqBefore, auditLen)
 		return r.Revision, err
 	}
+	*r = cp
+	s.clearIntentLocked(intentOwnerRunID, intentKey, intentGen)
 	return r.Revision, nil
 }
 
@@ -929,34 +984,39 @@ func (s *memoryDispatchStore) ResolveUncertain(ctx context.Context, runID, turnI
 	if err := r.canTransition(next); err != nil {
 		return r.Revision, err
 	}
-	r.State = next
-	r.Outcome = outcome
-	if forceNoSettle {
-		r.SettleOwed = false
-		r.SettlePhase = SettleNone
-	} else if r.SettleOwed {
-		r.SettlePhase = SettlePending
-	} else {
-		r.SettlePhase = SettleNone
-	}
-	s.revokeAttachLocked(r)
-	r.Revision++
-	r.UpdatedAt = s.clockStr()
-	owner := r.IntentOwnerRunID
-	if owner == "" {
-		owner = r.RunID
-	}
-	s.clearIntentLocked(owner, r.OuterIntentKey, r.OuterIntentGen)
-	s.appendAuditLocked(runID, turnID, "resolve_uncertain", string(action)+":"+evidence.Detail, evidence.Actor)
+	// disk-before-RAM (BUG-499): intent clear + resolution insert + RAM
+	// mutation all apply only after the durable line lands.
 	cp := s.cloneRec(r)
+	cp.State = next
+	cp.Outcome = outcome
+	if forceNoSettle {
+		cp.SettleOwed = false
+		cp.SettlePhase = SettleNone
+	} else if cp.SettleOwed {
+		cp.SettlePhase = SettlePending
+	} else {
+		cp.SettlePhase = SettleNone
+	}
+	s.revokeAttachLocked(&cp)
+	cp.Revision++
+	cp.UpdatedAt = s.clockStr()
+	owner := cp.IntentOwnerRunID
+	if owner == "" {
+		owner = cp.RunID
+	}
+	seqBefore, auditLen := s.seq, len(s.audits)
+	s.appendAuditLocked(runID, turnID, "resolve_uncertain", string(action)+":"+evidence.Detail, evidence.Actor)
+	if err := s.commitLine(dispatchLogLine{Kind: "record", Seq: s.seq, At: cp.UpdatedAt, Record: &cp}); err != nil {
+		s.uncommitAudit(seqBefore, auditLen)
+		return r.Revision, err
+	}
+	*r = cp
+	s.clearIntentLocked(owner, cp.OuterIntentKey, cp.OuterIntentGen)
 	if resolutionID != "" {
 		s.resolutions[resolutionID] = &ResolutionResult{
 			ResolutionID: resolutionID, RunID: runID, TurnID: turnID,
 			Action: string(action), Revision: r.Revision, Record: cp,
 		}
-	}
-	if err := s.commitLine(dispatchLogLine{Kind: "record", Seq: s.seq, At: r.UpdatedAt, Record: &cp}); err != nil {
-		return r.Revision, err
 	}
 	return r.Revision, nil
 }
@@ -1002,14 +1062,17 @@ func (s *memoryDispatchStore) RetryAsNew(ctx context.Context, runID, oldTurnID s
 	if err := s.checkParentFenceLocked(r); err != nil {
 		return r.Revision, err
 	}
-	// Terminalize old as superseded.
-	r.State = DispatchTerminalCancelled
-	r.Outcome = "superseded,resolved_by=operator"
-	r.SettleOwed = false
-	r.SettlePhase = SettleNone
-	s.revokeAttachLocked(r)
-	r.Revision++
-	r.UpdatedAt = s.clockStr()
+	// disk-before-RAM (BUG-499): build both post-states, commit, then apply —
+	// a failed fsync leaves the retry fully retryable (old stays uncertain,
+	// no phantom successor in memory).
+	cp := s.cloneRec(r)
+	cp.State = DispatchTerminalCancelled
+	cp.Outcome = "superseded,resolved_by=operator"
+	cp.SettleOwed = false
+	cp.SettlePhase = SettleNone
+	s.revokeAttachLocked(&cp)
+	cp.Revision++
+	cp.UpdatedAt = s.clockStr()
 
 	// Create successor prepared with same envelope.
 	env := s.envelopes[recKey(runID, oldTurnID)]
@@ -1025,12 +1088,12 @@ func (s *memoryDispatchStore) RetryAsNew(ctx context.Context, runID, oldTurnID s
 		IntentOwnerRunID:  owner,
 		State:             DispatchPrepared,
 		Revision:          1,
-		OuterIntentKey:    r.OuterIntentKey,
+		OuterIntentKey:    cp.OuterIntentKey,
 		OuterIntentGen:    expectedIntentGen,
 		EnvelopeHash:      succEnv.EnvelopeHash,
 		SettleOwed:        false, // successor settles only if prepare recomputes; inherit from env context later
 		PredecessorTurnID: oldTurnID,
-		ParentStopFence:   r.ParentStopFence,
+		ParentStopFence:   cp.ParentStopFence,
 		CreatedAt:         s.clockStr(),
 		UpdatedAt:         s.clockStr(),
 	}
@@ -1039,31 +1102,30 @@ func (s *memoryDispatchStore) RetryAsNew(ctx context.Context, runID, oldTurnID s
 	// use envelope scenario: if original had settle_pending path, successor settles when terminal.
 	// Per SD-24: successor is sole settler; CreatePrepared would set SettleOwed. Use original's envelope flow flag.
 	if orig := s.records[recKey(runID, oldTurnID)]; orig != nil {
-		// r already mutated; use envelope FlowContext as weak signal — keep SettleOwed from a field we saved:
-		// We forced r.SettleOwed=false above. Capture before force would be better; re-read from envelope:
 		succ.SettleOwed = requiresGateSettlement("flow", succEnv.StepID)
 	}
 	sk := recKey(runID, newTurnID)
 	if _, exists := s.records[sk]; exists {
 		return r.Revision, ErrAlreadyExists
 	}
+	seqBefore, auditLen := s.seq, len(s.audits)
+	s.appendAuditLocked(runID, oldTurnID, "retry_as_new", "new="+newTurnID, "operator")
+	if err := s.commitLine(dispatchLogLine{
+		Kind: "retry_as_new", Seq: s.seq, At: cp.UpdatedAt,
+		Record: &cp, Successor: &succ, Envelope: &succEnv,
+	}); err != nil {
+		s.uncommitAudit(seqBefore, auditLen)
+		return r.Revision, err
+	}
+	*r = cp
 	s.records[sk] = &succ
 	s.envelopes[sk] = &succEnv
-	s.setLiveIntentLocked(owner, r.OuterIntentKey, expectedIntentGen, succEnv.EnvelopeHash)
-	s.appendAuditLocked(runID, oldTurnID, "retry_as_new", "new="+newTurnID, "operator")
+	s.setLiveIntentLocked(owner, cp.OuterIntentKey, expectedIntentGen, succEnv.EnvelopeHash)
 	if resolutionID != "" {
 		s.resolutions[resolutionID] = &ResolutionResult{
 			ResolutionID: resolutionID, RunID: runID, TurnID: oldTurnID,
-			Action: "retry_as_new", Revision: r.Revision, NewTurnID: newTurnID, Record: s.cloneRec(r),
+			Action: "retry_as_new", Revision: r.Revision, NewTurnID: newTurnID, Record: cp,
 		}
-	}
-	cpOld := s.cloneRec(r)
-	cpNew := succ
-	if err := s.commitLine(dispatchLogLine{
-		Kind: "retry_as_new", Seq: s.seq, At: r.UpdatedAt,
-		Record: &cpOld, Successor: &cpNew, Envelope: &succEnv,
-	}); err != nil {
-		return r.Revision, err
 	}
 	return r.Revision, nil
 }
@@ -1083,11 +1145,13 @@ func (s *memoryDispatchStore) RecordEffectDone(ctx context.Context, runID, turnI
 		RunID: runID, TurnID: turnID, EffectKind: effectKind,
 		Payload: payload, PayloadHash: payloadHash, Revision: 1, CreatedAt: s.clockStr(),
 	}
-	s.effects[ek] = e
+	seqBefore, auditLen := s.seq, len(s.audits)
 	s.appendAuditLocked(runID, turnID, "effect_done", effectKind, "system")
 	if err := s.commitLine(dispatchLogLine{Kind: "effect", Seq: s.seq, At: s.clockStr(), Effect: e}); err != nil {
+		s.uncommitAudit(seqBefore, auditLen)
 		return 0, err
 	}
+	s.effects[ek] = e // disk-before-RAM (BUG-499)
 	return e.Revision, nil
 }
 
@@ -1115,16 +1179,19 @@ func (s *memoryDispatchStore) CreateReleaseManifestItem(ctx context.Context, run
 		Intent: intent, State: ReleasePending, Revision: 1,
 		CreatedAt: s.clockStr(), UpdatedAt: s.clockStr(),
 	}
+	seqBefore, auditLen := s.seq, len(s.audits)
+	s.appendAuditLocked(runID, turnID, "release_create", dependentRunID, "system")
+	if err := s.commitLine(dispatchLogLine{Kind: "release", Seq: s.seq, At: s.clockStr(), Release: item}); err != nil {
+		s.uncommitAudit(seqBefore, auditLen)
+		return *item, err
+	}
+	// disk-before-RAM (BUG-499): publish to memory only after the line lands.
 	s.releases[ek] = item
 	// Also mirror as effect for list.
 	payload, _ := jsonMarshal(item)
 	s.effects[ek] = &EffectDone{
 		RunID: runID, TurnID: turnID, EffectKind: kind,
 		Payload: payload, PayloadHash: intent.IntentHash, Revision: 1, CreatedAt: s.clockStr(),
-	}
-	s.appendAuditLocked(runID, turnID, "release_create", dependentRunID, "system")
-	if err := s.commitLine(dispatchLogLine{Kind: "release", Seq: s.seq, At: s.clockStr(), Release: item}); err != nil {
-		return *item, err
 	}
 	return *item, nil
 }
@@ -1179,21 +1246,41 @@ func (s *memoryDispatchStore) CommitReleaseManifestItem(ctx context.Context, run
 	child.CreatedAt = s.clockStr()
 	child.UpdatedAt = s.clockStr()
 	ck := recKey(child.RunID, child.TurnID)
-	if _, exists := s.records[ck]; !exists {
-		s.ensureActivationLocked(child.RunID)
+	// disk-before-RAM (BUG-499): stage child + item post-state, commit, apply.
+	_, childExists := s.records[ck]
+	var childRec *DispatchRecord
+	var childEnv *DispatchEnvelope
+	if !childExists {
 		cp := child
 		envCp := env
-		s.records[ck] = &cp
-		s.envelopes[ck] = &envCp
+		childRec = &cp
+		childEnv = &envCp
 	}
-	item.State = ReleaseCreated
-	item.Revision++
-	item.UpdatedAt = s.clockStr()
+	itemCp := *item
+	itemCp.State = ReleaseCreated
+	itemCp.Revision++
+	itemCp.UpdatedAt = s.clockStr()
+	seqBefore, auditLen := s.seq, len(s.audits)
 	s.appendAuditLocked(runID, turnID, "release_commit", dependentRunID, "system")
-	if err := s.commitLine(dispatchLogLine{Kind: "release", Seq: s.seq, At: s.clockStr(), Release: item, Record: s.records[ck], Envelope: s.envelopes[ck]}); err != nil {
+	line := dispatchLogLine{Kind: "release", Seq: s.seq, At: s.clockStr(), Release: &itemCp}
+	if childExists {
+		line.Record = s.records[ck]
+		line.Envelope = s.envelopes[ck]
+	} else {
+		line.Record = childRec
+		line.Envelope = childEnv
+	}
+	if err := s.commitLine(line); err != nil {
+		s.uncommitAudit(seqBefore, auditLen)
 		return item.Revision, err
 	}
-	return item.Revision, nil
+	if !childExists {
+		s.ensureActivationLocked(child.RunID)
+		s.records[ck] = childRec
+		s.envelopes[ck] = childEnv
+	}
+	*item = itemCp
+	return itemCp.Revision, nil
 }
 
 func (s *memoryDispatchStore) SuppressReleaseManifestItem(ctx context.Context, runID, turnID, dependentRunID string, expectedEffectRev, stopGen int64) (int64, error) {
@@ -1215,15 +1302,20 @@ func (s *memoryDispatchStore) SuppressReleaseManifestItem(ctx context.Context, r
 	if item.State != ReleasePending {
 		return item.Revision, fmt.Errorf("%w: cannot suppress %s", ErrIllegalTransition, item.State)
 	}
-	item.State = ReleaseSuppressed
-	item.StopGeneration = stopGen
-	item.Revision++
-	item.UpdatedAt = s.clockStr()
+	// disk-before-RAM (BUG-499).
+	itemCp := *item
+	itemCp.State = ReleaseSuppressed
+	itemCp.StopGeneration = stopGen
+	itemCp.Revision++
+	itemCp.UpdatedAt = s.clockStr()
+	seqBefore, auditLen := s.seq, len(s.audits)
 	s.appendAuditLocked(runID, turnID, "release_suppress", dependentRunID, "system")
-	if err := s.commitLine(dispatchLogLine{Kind: "release", Seq: s.seq, At: s.clockStr(), Release: item}); err != nil {
+	if err := s.commitLine(dispatchLogLine{Kind: "release", Seq: s.seq, At: s.clockStr(), Release: &itemCp}); err != nil {
+		s.uncommitAudit(seqBefore, auditLen)
 		return item.Revision, err
 	}
-	return item.Revision, nil
+	*item = itemCp
+	return itemCp.Revision, nil
 }
 
 func (s *memoryDispatchStore) OpenRepair(ctx context.Context, runID, reason string, rawBlob []byte, rawHash string) (int64, error) {
@@ -1249,11 +1341,13 @@ func (s *memoryDispatchStore) OpenRepair(ctx context.Context, runID, reason stri
 		QuarantineBlob: append([]byte(nil), rawBlob...), QuarantineHash: rawHash,
 		State: "open", CreatedAt: s.clockStr(),
 	}
-	s.repairs[runID] = rec
+	seqBefore, auditLen := s.seq, len(s.audits)
 	s.appendAuditLocked(runID, "", "open_repair", reason, "system")
 	if err := s.commitLine(dispatchLogLine{Kind: "repair", Seq: s.seq, At: s.clockStr(), Repair: rec}); err != nil {
+		s.uncommitAudit(seqBefore, auditLen)
 		return 0, err
 	}
+	s.repairs[runID] = rec // disk-before-RAM (BUG-499)
 	return rec.RepairRevision, nil
 }
 
@@ -1297,16 +1391,21 @@ func (s *memoryDispatchStore) BeginRepairResolution(ctx context.Context, runID s
 			return r.RepairRevision, nil, ErrStaleDispatch
 		}
 	}
-	r.AttemptClaim = string(action)
-	r.ResolutionID = resolutionID
-	r.AttemptExpiresAt = s.clock().Add(30 * time.Second).Format(time.RFC3339Nano)
-	r.RepairRevision++
+	// disk-before-RAM (BUG-499): claim lands on the durable line before RAM.
+	rp := *r
+	rp.AttemptClaim = string(action)
+	rp.ResolutionID = resolutionID
+	rp.AttemptExpiresAt = s.clock().Add(30 * time.Second).Format(time.RFC3339Nano)
+	rp.RepairRevision++
+	seqBefore, auditLen := s.seq, len(s.audits)
 	s.appendAuditLocked(runID, "", "begin_repair", string(action), "operator")
 	raw := append([]byte(nil), r.QuarantineBlob...)
-	if err := s.commitLine(dispatchLogLine{Kind: "repair", Seq: s.seq, At: s.clockStr(), Repair: r}); err != nil {
+	if err := s.commitLine(dispatchLogLine{Kind: "repair", Seq: s.seq, At: s.clockStr(), Repair: &rp}); err != nil {
+		s.uncommitAudit(seqBefore, auditLen)
 		return r.RepairRevision, nil, err
 	}
-	return r.RepairRevision, raw, nil
+	*r = rp
+	return rp.RepairRevision, raw, nil
 }
 
 func (s *memoryDispatchStore) CommitRepairResolution(ctx context.Context, runID string, attemptRev int64,

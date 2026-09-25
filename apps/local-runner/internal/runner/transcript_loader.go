@@ -1,7 +1,6 @@
 package runner
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -12,21 +11,24 @@ import (
 // For user frames that carry a typed prompt (not tool_result), a turn_started{prompt}
 // event is prepended so the desktop renders the prompt bubble on resume.
 // Correlation fields (RunID, Seq, etc.) are stamped by the caller.
-func loadClaudeTranscriptEvents(filePath string) []ProviderEvent {
+//
+// BUG-487: the line reader is the uncapped readNDJSONLines and a mid-file
+// read failure is returned alongside the parsed prefix — a truncated file is
+// never indistinguishable from a short one. A missing/unopenable file stays
+// (nil, nil): absence is not corruption.
+func loadClaudeTranscriptEvents(filePath string) ([]ProviderEvent, error) {
 	f, err := os.Open(filePath)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 	defer f.Close()
 
 	var out []ProviderEvent
 	var promptN int
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 4*1024*1024), 4*1024*1024)
-	for scanner.Scan() {
+	scanErr := readNDJSONLines(f, func(line []byte) {
 		var raw map[string]any
-		if err := json.Unmarshal(scanner.Bytes(), &raw); err != nil {
-			continue
+		if err := json.Unmarshal(line, &raw); err != nil {
+			return
 		}
 		t, _ := raw["type"].(string)
 		if t == "user" {
@@ -46,8 +48,8 @@ func loadClaudeTranscriptEvents(filePath string) []ProviderEvent {
 			mapped[i].OccurredAt = transcriptOccurredAt(raw)
 		}
 		out = append(out, mapped...)
-	}
-	return out
+	})
+	return out, scanErr
 }
 
 // loadCodexTranscriptEvents reads a Codex rollout JSONL session file and converts
@@ -55,27 +57,25 @@ func loadClaudeTranscriptEvents(filePath string) []ProviderEvent {
 // mapCodexRolloutLine is stateless and cannot assign sequence numbers, so unique
 // ProviderTurnIDs are stamped here on replayed user-prompt turn_started events.
 // Correlation fields (RunID, Seq, etc.) are stamped by the caller.
-func loadCodexTranscriptEvents(filePath string) []ProviderEvent {
+func loadCodexTranscriptEvents(filePath string) ([]ProviderEvent, error) {
 	f, err := os.Open(filePath)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 	defer f.Close()
 
 	var out []ProviderEvent
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 4*1024*1024), 4*1024*1024)
-	for scanner.Scan() {
+	scanErr := readNDJSONLines(f, func(line []byte) {
 		var raw map[string]any
-		if err := json.Unmarshal(scanner.Bytes(), &raw); err != nil {
-			continue
+		if err := json.Unmarshal(line, &raw); err != nil {
+			return
 		}
 		mapped := mapCodexRolloutLine(raw)
 		for i := range mapped {
 			mapped[i].OccurredAt = transcriptOccurredAt(raw)
 		}
 		out = append(out, mapped...)
-	}
+	})
 	// Stamp unique ProviderTurnIDs on replayed prompt turn_started events so the
 	// desktop derives distinct bubble ids ("prompt-${e.providerTurnId}") per turn.
 	var promptN int
@@ -85,5 +85,5 @@ func loadCodexTranscriptEvents(filePath string) []ProviderEvent {
 			out[i].ProviderTurnID = fmt.Sprintf("replay-prompt-%d", promptN)
 		}
 	}
-	return out
+	return out, scanErr
 }

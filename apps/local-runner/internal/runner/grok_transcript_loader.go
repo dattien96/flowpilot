@@ -1,7 +1,6 @@
 package runner
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -41,20 +40,21 @@ import (
 // ProviderEvents. Correlation fields (RunID, Seq, etc.) are stamped by the
 // caller. Unique replay ProviderTurnIDs are stamped by the caller across the
 // concatenated set so bubble ids stay distinct across per-turn session files.
-func loadGrokTranscriptEvents(filePath string) []ProviderEvent {
+// BUG-487: uncapped readNDJSONLines + error return — a truncated file is
+// never indistinguishable from a short one; the parsed prefix is still
+// returned so callers can replay what survived.
+func loadGrokTranscriptEvents(filePath string) ([]ProviderEvent, error) {
 	f, err := os.Open(filePath)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 	defer f.Close()
 
 	var out []ProviderEvent
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 4*1024*1024), 4*1024*1024)
-	for scanner.Scan() {
+	scanErr := readNDJSONLines(f, func(line []byte) {
 		var raw map[string]any
-		if err := json.Unmarshal(scanner.Bytes(), &raw); err != nil {
-			continue
+		if err := json.Unmarshal(line, &raw); err != nil {
+			return
 		}
 		switch raw["type"] {
 		case "user":
@@ -73,8 +73,8 @@ func loadGrokTranscriptEvents(filePath string) []ProviderEvent {
 			content := grokToolResultContent(raw)
 			out = append(out, ProviderEvent{Type: EventToolCompleted, ToolName: name, Output: content, Status: "success", OccurredAt: transcriptOccurredAt(raw)})
 		}
-	}
-	return out
+	})
+	return out, scanErr
 }
 
 func transcriptOccurredAt(raw map[string]any) string {

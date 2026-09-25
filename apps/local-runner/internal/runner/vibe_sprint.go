@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -308,17 +309,21 @@ func (s *InteractiveService) vibeTddStepDone(parentRunID string) bool {
 	return false
 }
 
-func (s *InteractiveService) persistedLiveCoderExists(parentRunID string) bool {
+// persistedLiveCoderExists reports whether a durable live coder child exists.
+// BUG-491: the enumeration error used to collapse to `false` — "no live
+// coder" — letting the caller spawn a duplicate coder for work already in
+// flight. The error now propagates; the caller parks instead of spawning.
+func (s *InteractiveService) persistedLiveCoderExists(parentRunID string) (bool, error) {
 	if s == nil || s.workflowStore == nil || strings.TrimSpace(parentRunID) == "" {
-		return false
+		return false, nil
 	}
 	indexReader, ok := s.workflowStore.(SessionIndexReader)
 	if !ok {
-		return false
+		return false, nil
 	}
 	sessions, err := indexReader.ListAllProviderSessions(context.Background())
 	if err != nil {
-		return false
+		return false, fmt.Errorf("persistedLiveCoderExists: %w", err)
 	}
 	for _, session := range sessions {
 		if session.ParentRunID != parentRunID || strings.TrimSpace(session.Label) != "coder" {
@@ -326,10 +331,10 @@ func (s *InteractiveService) persistedLiveCoderExists(parentRunID string) bool {
 		}
 		switch session.Status {
 		case RunStatusRunning, RunStatusWaitingApproval, RunStatusWaitingQuestion:
-			return true
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }
 
 // persistedCompletedChildExists reports a durable Completed child with the
@@ -346,6 +351,9 @@ func (s *InteractiveService) persistedCompletedChildExists(parentRunID, label st
 	}
 	sessions, err := indexReader.ListAllProviderSessions(context.Background())
 	if err != nil {
+		// "Not completed" is the safe direction (blocks advancement/parks),
+		// so this degrades fail-closed — but log so the blind read is visible.
+		log.Printf("persistedCompletedChildExists: session index unreadable for parent %s: %v", parentRunID, err)
 		return false
 	}
 	for _, session := range sessions {
@@ -642,7 +650,15 @@ func (s *InteractiveService) maybeResumeVibeCoderAfterTdd(parentRunID string) {
 		}
 		return
 	}
-	if coderKids > 0 || s.persistedLiveCoderExists(parentRunID) {
+	liveCoder, coderProbeErr := s.persistedLiveCoderExists(parentRunID)
+	if coderProbeErr != nil {
+		// BUG-491: cannot prove no live coder exists — do not spawn a
+		// duplicate. Park as a requirement so the operator sees a typed
+		// blocker instead of a silent double-spawn.
+		s.parkVibeRequirementFrom(parentRunID, "session index unreadable; cannot verify coder state", vibeRequirementResumeCoder)
+		return
+	}
+	if coderKids > 0 || liveCoder {
 		return
 	}
 	switch s.lookupFlowStepStatus(parentRunID, "coder") {

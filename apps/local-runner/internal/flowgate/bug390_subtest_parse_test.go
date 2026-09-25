@@ -13,7 +13,7 @@ func TestBug390_IndentedSubtestFailParsesToRealName(t *testing.T) {
 		"    --- FAIL: TestBuggy/sub_one (0.00s)\n" +
 		"--- FAIL: TestBuggy (0.00s)\n" +
 		"FAIL\n"
-	passed, failed := parseSuiteTestNames("go test ./...", out)
+	passed, failed, _ := parseSuiteTestNames("go test ./...", out)
 	for _, n := range failed {
 		if n == "---" {
 			t.Fatalf("indented subtest line parsed to junk name %q: failed=%v", n, failed)
@@ -38,7 +38,7 @@ func TestBug390_IndentedSubtestFailParsesToRealName(t *testing.T) {
 // recorded as "---" in green_tests at baseline capture.
 func TestBug390_IndentedSubtestPassParsesToRealName(t *testing.T) {
 	out := "=== RUN   TestX\n    --- PASS: TestX/sub (0.00s)\n--- PASS: TestX (0.00s)\nPASS\n"
-	passed, _ := parseSuiteTestNames("go test ./...", out)
+	passed, _, _ := parseSuiteTestNames("go test ./...", out)
 	for _, n := range passed {
 		if n == "---" {
 			t.Fatalf("indented PASS subtest parsed to junk name: passed=%v", passed)

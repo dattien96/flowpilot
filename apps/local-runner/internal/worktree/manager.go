@@ -126,6 +126,25 @@ func gitOut(dir string, args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
+// requireWorktreeScope pins a scan to the worktree's own git toplevel.
+// BUG-501 (live-found): when a managed worktree's .git file is missing or
+// corrupt, `git -C <worktree>` silently walks up to the PARENT repository —
+// and the worktrees root (.flowpilot/worktrees/) is itself gitignored, so
+// parent-scope `ls-files --others`/`status` return an empty, error-free
+// answer. The discard/keep_branch evidence gates then see "clean" and proceed
+// to delete uncommitted work. A healthy worktree's toplevel equals its own
+// path; anything else means the git linkage is broken → fail closed.
+func requireWorktreeScope(path string) error {
+	top, err := gitOut(path, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return fmt.Errorf("worktree: scope check failed for %q: %w", path, err)
+	}
+	if normalizePath(top) != normalizePath(path) {
+		return fmt.Errorf("worktree: %q git scope resolves to %q, not itself — .git linkage broken", path, top)
+	}
+	return nil
+}
+
 // Slugify converts a title into a branch-safe slug (Devin-style:
 // lowercased, non-alnum collapsed to dashes, bounded length).
 func Slugify(title string) string {
@@ -250,6 +269,9 @@ func (Manager) Diff(_ context.Context, repoDir, ownerID, prefix string) ([]byte,
 	if fi, err := os.Stat(path); err != nil || !fi.IsDir() {
 		return nil, fmt.Errorf("worktree: no worktree for owner %q", ownerID)
 	}
+	if err := requireWorktreeScope(path); err != nil {
+		return nil, err
+	}
 	// The runner's own .flowpilot metadata dir (gate baselines, nested
 	// candidate worktrees, logs) is runtime state, never candidate output —
 	// exclude it from both the intent-to-add sweep and the diff or it lands
@@ -285,6 +307,9 @@ func (Manager) Untracked(_ context.Context, repoDir, ownerID, prefix string) ([]
 		return nil, err
 	}
 	path := Path(repoDir, ownerID, prefix)
+	if err := requireWorktreeScope(path); err != nil {
+		return nil, err
+	}
 	out, err := gitOut(path, "ls-files", "--others", "--exclude-standard")
 	if err != nil {
 		return nil, err
@@ -304,6 +329,9 @@ func (Manager) Uncommitted(_ context.Context, repoDir, ownerID, prefix string) (
 		return nil, err
 	}
 	path := Path(repoDir, ownerID, prefix)
+	if err := requireWorktreeScope(path); err != nil {
+		return nil, err
+	}
 	out, err := gitOut(path, "status", "--porcelain")
 	if err != nil {
 		return nil, err
@@ -463,8 +491,10 @@ func (Manager) Cleanup(_ context.Context, repoDir, ownerID, prefix string, keepB
 	path := Path(repoDir, ownerID, prefix)
 	branch := ""
 	if _, err := os.Stat(path); err == nil {
-		if b, bErr := gitOut(path, "rev-parse", "--abbrev-ref", "HEAD"); bErr == nil && b != "HEAD" {
-			branch = b
+		if scopeErr := requireWorktreeScope(path); scopeErr == nil {
+			if b, bErr := gitOut(path, "rev-parse", "--abbrev-ref", "HEAD"); bErr == nil && b != "HEAD" {
+				branch = b
+			}
 		}
 		if _, err := gitOut(repoDir, "worktree", "remove", "--force", path); err != nil {
 			_ = os.RemoveAll(path) // fallback: never strand a dir
@@ -488,6 +518,12 @@ func (Manager) Validate(_ context.Context, repoDir, ownerID, prefix string) erro
 	path := Path(repoDir, ownerID, prefix)
 	if fi, err := os.Stat(path); err != nil || !fi.IsDir() {
 		return fmt.Errorf("worktree: directory missing for owner %q", ownerID)
+	}
+	// BUG-501: a dir can exist and stay registered while its .git link is
+	// broken — git inside it silently resolves to the parent repo. That is a
+	// lost binding, not a resumable one.
+	if err := requireWorktreeScope(path); err != nil {
+		return err
 	}
 	if _, err := os.Stat(BaseSidecar(repoDir, ownerID, prefix)); err != nil {
 		return fmt.Errorf("worktree: base sidecar missing for owner %q", ownerID)

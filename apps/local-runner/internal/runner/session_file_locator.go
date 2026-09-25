@@ -571,12 +571,17 @@ func readCodexRolloutMeta(path string) (codexRolloutMeta, bool) {
 	}
 	defer f.Close()
 
-	scanner := bufio.NewScanner(f)
-	if !scanner.Scan() {
+	// BUG-487: session_meta first lines can exceed bufio.Scanner's default
+	// 64KiB cap on sessions with large payloads — read the single line with an
+	// uncapped reader. A read failure or unparseable line both return ok=false
+	// (the file cannot be validated either way), but no size limit can abort
+	// the read silently.
+	line, readErr := bufio.NewReader(f).ReadBytes('\n')
+	if readErr != nil && len(line) == 0 {
 		return codexRolloutMeta{}, false
 	}
 	var raw map[string]any
-	if err := json.Unmarshal(scanner.Bytes(), &raw); err != nil {
+	if err := json.Unmarshal(bytes.TrimSpace(line), &raw); err != nil {
 		return codexRolloutMeta{}, false
 	}
 	payload, _ := raw["payload"].(map[string]any)

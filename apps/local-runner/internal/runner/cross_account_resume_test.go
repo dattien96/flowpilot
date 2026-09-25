@@ -385,7 +385,7 @@ func TestDeleteChatSessionCascadesToStoredChildAgentRuns(t *testing.T) {
 			t.Fatalf("expected %q removed, stat err=%v", path, err)
 		}
 	}
-	if history := svc.projectRunHistory("project-1"); len(history) != 0 {
+	if history, _ := svc.projectRunHistory("project-1"); len(history) != 0 {
 		t.Fatalf("expected empty history after cascade delete, got %+v", history)
 	}
 }
@@ -1001,7 +1001,7 @@ func TestPrepareCrossAccountResumeRelocationFailureKeepsHistoryVisible(t *testin
 	if _, apiErr := svc.resumeRun("run-1"); apiErr == nil || apiErr.code != "session_unavailable" {
 		t.Fatalf("resumeRun error = %#v, want session_unavailable", apiErr)
 	}
-	history := svc.projectRunHistory("project-1")
+	history, _ := svc.projectRunHistory("project-1")
 	if len(history) != 1 || history[0].RunID != "run-1" {
 		t.Fatalf("history = %+v, want run-1 visible", history)
 	}

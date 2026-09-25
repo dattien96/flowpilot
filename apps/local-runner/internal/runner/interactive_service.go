@@ -1146,6 +1146,9 @@ func (s *InteractiveService) seedIDCounter() {
 	}
 	sessions, err := indexReader.ListAllProviderSessions(context.Background())
 	if err != nil {
+		// BUG-491: a blind seed risks runID collisions with unread sessions —
+		// fail loud so the boot log shows the degraded read.
+		log.Printf("seedIDCounter: session index unreadable, id seeding degraded: %v", err)
 		return
 	}
 	var max int64
@@ -4701,7 +4704,14 @@ func (s *InteractiveService) persistProviderSession(session ProviderSessionState
 	if store == nil {
 		return nil
 	}
-	return store.UpsertProviderSession(context.Background(), session)
+	if err := store.UpsertProviderSession(context.Background(), session); err != nil {
+		// BUG-499: ~22 callers discard this error — log here once so a
+		// silently-lost durable write is at least visible in diagnostics,
+		// regardless of which caller dropped it.
+		log.Printf("persistProviderSession: durable write failed run_id=%q status=%q: %v", session.RunID, session.Status, err)
+		return err
+	}
+	return nil
 }
 
 // snapshotWithLoop returns a ProviderSessionState for rs that also includes the
@@ -7865,7 +7875,10 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 // listAgentRunSummaries returns the child run summaries for a given parent run.
 // It includes live children (in-memory runs) and historical children persisted
 // from a previous sync/restore round-trip (CP-19 / Task-082).
-func (s *InteractiveService) listAgentRunSummaries(parentRunID string) []AgentRunSummary {
+// BUG-491/493: the disk-fallback enumeration used to swallow
+// ListAllProviderSessions errors — post-restart children silently vanished
+// from the Agents panel and from sync manifests. The error propagates.
+func (s *InteractiveService) listAgentRunSummaries(parentRunID string) ([]AgentRunSummary, error) {
 	childIDs := s.agentOrchestrator.listChildren(parentRunID)
 	s.mu.Lock()
 	liveIDs := make(map[string]struct{}, len(childIDs))
@@ -7905,7 +7918,10 @@ func (s *InteractiveService) listAgentRunSummaries(parentRunID string) []AgentRu
 	}
 	if indexReader, ok := s.workflowStore.(SessionIndexReader); ok {
 		sessions, err := indexReader.ListAllProviderSessions(context.Background())
-		if err == nil {
+		if err != nil {
+			return nil, fmt.Errorf("listAgentRunSummaries: session index unreadable for parent %s: %w", parentRunID, err)
+		}
+		{
 			for _, session := range sessions {
 				if session.ParentRunID != parentRunID {
 					continue
@@ -7945,7 +7961,7 @@ func (s *InteractiveService) listAgentRunSummaries(parentRunID string) []AgentRu
 			}
 		}
 	}
-	return out
+	return out, nil
 }
 
 // approvalExpiryElapsed reports whether a durable ExpiresAt (RFC3339Nano) has
@@ -10576,7 +10592,12 @@ func (s *InteractiveService) isForeignProviderSessionID(rs *interactiveRun, sess
 	if sessionID == strings.TrimSpace(rs.lastCodexTurnSessionID) || sessionID == strings.TrimSpace(rs.lastGrokTurnSessionID) || sessionID == strings.TrimSpace(rs.lastOpencodeTurnSessionID) {
 		return false
 	}
-	foreign := s.foreignProviderSessionIDs(rs)
+	// BUG-491: an unreadable session index makes "not foreign" unprovable —
+	// fail closed: refuse the id rather than accept a possible theft.
+	foreign, fErr := s.foreignProviderSessionIDs(rs)
+	if fErr != nil {
+		return true
+	}
 	_, ok := foreign[sessionID]
 	return ok
 }
@@ -10584,10 +10605,10 @@ func (s *InteractiveService) isForeignProviderSessionID(rs *interactiveRun, sess
 // foreignProviderSessionIDs returns provider session ids owned by other related
 // runs (parent, siblings under the same parent, or other sessions sharing
 // project+cwd). Includes live in-memory related runs even when the store is empty.
-func (s *InteractiveService) foreignProviderSessionIDs(rs *interactiveRun) map[string]struct{} {
+func (s *InteractiveService) foreignProviderSessionIDs(rs *interactiveRun) (map[string]struct{}, error) {
 	out := map[string]struct{}{}
 	if s == nil || rs == nil {
-		return out
+		return out, nil
 	}
 	ownParent := strings.TrimSpace(rs.parentRunID)
 	ownProject := strings.TrimSpace(rs.projectID)
@@ -10595,9 +10616,13 @@ func (s *InteractiveService) foreignProviderSessionIDs(rs *interactiveRun) map[s
 	var sessions []ProviderSessionState
 	if s.workflowStore != nil {
 		if indexReader, ok := s.workflowStore.(SessionIndexReader); ok {
-			if listed, err := indexReader.ListAllProviderSessions(context.Background()); err == nil {
-				sessions = listed
+			// BUG-491: the enumeration must read clean for its answer to be
+			// authoritative; a fault propagates so callers can fail closed.
+			listed, err := indexReader.ListAllProviderSessions(context.Background())
+			if err != nil {
+				return out, fmt.Errorf("foreignProviderSessionIDs: session index unreadable: %w", err)
 			}
+			sessions = listed
 		}
 	}
 	for _, st := range sessions {
@@ -10699,7 +10724,7 @@ func (s *InteractiveService) foreignProviderSessionIDs(rs *interactiveRun) map[s
 			}
 		}
 	}
-	return out
+	return out, nil
 }
 
 // filterOwnedProviderSessionIDs drops session ids known to belong to related
@@ -10709,7 +10734,30 @@ func (s *InteractiveService) filterOwnedProviderSessionIDs(rs *interactiveRun, i
 	if len(ids) == 0 {
 		return nil
 	}
-	foreign := s.foreignProviderSessionIDs(rs)
+	foreign, fErr := s.foreignProviderSessionIDs(rs)
+	if fErr != nil {
+		// BUG-491: on an unreadable index keep only ids verifiably owned by
+		// this run — an unverifiable id may belong to a foreign run.
+		own := map[string]struct{}{}
+		for _, sid := range []string{rs.realProviderSessionID, rs.providerSessionID, rs.lastGrokTurnSessionID, rs.lastCodexTurnSessionID, rs.lastOpencodeTurnSessionID} {
+			if sid = strings.TrimSpace(sid); sid != "" {
+				own[sid] = struct{}{}
+			}
+		}
+		out := make([]string, 0, len(ids))
+		seen := map[string]bool{}
+		for _, id := range ids {
+			id = strings.TrimSpace(id)
+			if id == "" || seen[id] {
+				continue
+			}
+			seen[id] = true
+			if _, isOwn := own[id]; isOwn {
+				out = append(out, id)
+			}
+		}
+		return out
+	}
 	if len(foreign) == 0 {
 		return ids
 	}

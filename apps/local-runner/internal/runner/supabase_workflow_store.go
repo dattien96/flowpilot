@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	neturl "net/url"
 	"strings"
 
 	"flowpilot-runner/internal/agentpack"
@@ -768,6 +769,141 @@ func (s *SupabaseWorkflowStore) ListAllProviderSessions(ctx context.Context) ([]
 	return out, nil
 }
 
+// dbApprovalRow mirrors the migration schema of workflow_provider_approvals
+// (20260615120000_add_workflow_provider_tables.sql). Fields the local model
+// carries but the table has no column for (command/cwd/reason/policy/
+// resolved_choices) live inside request_payload_json — decode tolerates both.
+type dbApprovalRow struct {
+	ID               string          `json:"id"`
+	WorkflowRunID    string          `json:"workflow_run_id"`
+	ProviderKey      string          `json:"provider_key"`
+	ProviderTurnID   *string         `json:"provider_turn_id"`
+	RequestPayload   json.RawMessage `json:"request_payload_json"`
+	Status           string          `json:"status"`
+	SelectedDecision *string         `json:"selected_decision"`
+	RequestedAt      *string         `json:"requested_at"`
+	ExpiresAt        *string         `json:"expires_at"`
+	// Legacy/drifted deployments may expose flat columns — decode them too.
+	Command  *string `json:"command"`
+	Cwd      *string `json:"cwd"`
+	Reason   *string `json:"reason"`
+	Decision *string `json:"decision"`
+	Policy   *string `json:"policy"`
+}
+
+// ListApprovalsByRun implements ApprovalHistoryReader (BUG-500). Without it
+// the ok-guard silently returned no pending states, so resume on this backend
+// promoted durably-waiting approval gates — structurally, on every restart.
+func (s *SupabaseWorkflowStore) ListApprovalsByRun(ctx context.Context, runID string) ([]ProviderApprovalState, error) {
+	endpoint := fmt.Sprintf(
+		"%s/workflow_provider_approvals?select=*&workflow_run_id=eq.%s",
+		s.restURL, neturl.QueryEscape(strings.TrimSpace(runID)),
+	)
+	code, body, err := httpRequestFn(ctx, http.MethodGet, endpoint, s.headers(""), nil)
+	if err != nil {
+		return nil, err
+	}
+	if code < 200 || code >= 300 {
+		return nil, fmt.Errorf("supabase list approvals failed: status %d: %s", code, string(body))
+	}
+	var rows []dbApprovalRow
+	if err := json.Unmarshal(body, &rows); err != nil {
+		return nil, fmt.Errorf("supabase list approvals decode: %w", err)
+	}
+	out := make([]ProviderApprovalState, 0, len(rows))
+	for _, r := range rows {
+		var payload struct {
+			Command         string   `json:"command"`
+			Cwd             string   `json:"cwd"`
+			Reason          string   `json:"reason"`
+			Policy          string   `json:"policy"`
+			ResolvedChoices []string `json:"resolved_choices"`
+		}
+		if len(r.RequestPayload) > 0 {
+			_ = json.Unmarshal(r.RequestPayload, &payload)
+		}
+		out = append(out, ProviderApprovalState{
+			ApprovalID:      r.ID,
+			RunID:           r.WorkflowRunID,
+			ProviderKey:     ProviderKey(r.ProviderKey),
+			ProviderTurnID:  derefString(r.ProviderTurnID),
+			Command:         firstNonEmpty(derefString(r.Command), payload.Command),
+			Cwd:             firstNonEmpty(derefString(r.Cwd), payload.Cwd),
+			Reason:          firstNonEmpty(derefString(r.Reason), payload.Reason),
+			Status:          r.Status,
+			Decision:        firstNonEmpty(derefString(r.Decision), derefString(r.SelectedDecision)),
+			Policy:          firstNonEmpty(derefString(r.Policy), payload.Policy),
+			ExpiresAt:       derefString(r.ExpiresAt),
+			ResolvedChoices: payload.ResolvedChoices,
+			CreatedAt:       derefString(r.RequestedAt),
+		})
+	}
+	return out, nil
+}
+
+// dbQuestionRow mirrors the migration schema of workflow_provider_questions;
+// flat `options`/`choice` columns are decoded too for drifted deployments.
+type dbQuestionRow struct {
+	ID             string           `json:"id"`
+	WorkflowRunID  string           `json:"workflow_run_id"`
+	ProviderTurnID *string          `json:"provider_turn_id"`
+	Prompt         string           `json:"prompt"`
+	OptionsJSON    []QuestionOption `json:"options_json"`
+	Options        []QuestionOption `json:"options"`
+	MultiSelect    bool             `json:"multi_select"`
+	Status         string           `json:"status"`
+	SelectedChoice []string         `json:"selected_choice_json"`
+	Choice         []string         `json:"choice"`
+	RequestedAt    *string          `json:"requested_at"`
+	ExpiresAt      *string          `json:"expires_at"`
+}
+
+// ListQuestionsByRun implements QuestionHistoryReader (BUG-500) — same
+// structural gap as ListApprovalsByRun: resume promoted waiting question
+// gates because the read could never return rows on this backend.
+func (s *SupabaseWorkflowStore) ListQuestionsByRun(ctx context.Context, runID string) ([]ProviderQuestionState, error) {
+	endpoint := fmt.Sprintf(
+		"%s/workflow_provider_questions?select=*&workflow_run_id=eq.%s",
+		s.restURL, neturl.QueryEscape(strings.TrimSpace(runID)),
+	)
+	code, body, err := httpRequestFn(ctx, http.MethodGet, endpoint, s.headers(""), nil)
+	if err != nil {
+		return nil, err
+	}
+	if code < 200 || code >= 300 {
+		return nil, fmt.Errorf("supabase list questions failed: status %d: %s", code, string(body))
+	}
+	var rows []dbQuestionRow
+	if err := json.Unmarshal(body, &rows); err != nil {
+		return nil, fmt.Errorf("supabase list questions decode: %w", err)
+	}
+	out := make([]ProviderQuestionState, 0, len(rows))
+	for _, r := range rows {
+		options := r.OptionsJSON
+		if len(options) == 0 {
+			options = r.Options
+		}
+		choice := r.SelectedChoice
+		if len(choice) == 0 {
+			choice = r.Choice
+		}
+		out = append(out, ProviderQuestionState{
+			QuestionID:      r.ID,
+			RunID:           r.WorkflowRunID,
+			ProviderTurnID:  derefString(r.ProviderTurnID),
+			Prompt:          r.Prompt,
+			Options:         options,
+			MultiSelect:     r.MultiSelect,
+			Status:          r.Status,
+			Choice:          choice,
+			ExpiresAt:       derefString(r.ExpiresAt),
+			ResolvedChoices: choice,
+			CreatedAt:       derefString(r.RequestedAt),
+		})
+	}
+	return out, nil
+}
+
 func providerSessionFromDBRow(r dbProviderSessionRow) ProviderSessionState {
 	sess := ProviderSessionState{
 		RunID:            r.WorkflowRunID,
@@ -865,3 +1001,14 @@ func (s *SupabaseWorkflowStore) UpsertQuestion(ctx context.Context, question Pro
 	}
 	return nil
 }
+
+// BUG-500: a backend missing an optional reader silently degrades resume to
+// "no rows" — pin the full reader surface so a dropped method breaks the
+// build instead of reopening the structural fail-open.
+var (
+	_ SessionIndexReader    = (*SupabaseWorkflowStore)(nil)
+	_ SessionHistoryReader  = (*SupabaseWorkflowStore)(nil)
+	_ ApprovalHistoryReader = (*SupabaseWorkflowStore)(nil)
+	_ QuestionHistoryReader = (*SupabaseWorkflowStore)(nil)
+	_ ChatSessionReader     = (*SupabaseWorkflowStore)(nil)
+)

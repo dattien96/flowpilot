@@ -49,41 +49,41 @@ func TestResolveChatIdentityMintAdoptExplicit(t *testing.T) {
 	svc := &InteractiveService{runs: map[string]*interactiveRun{}}
 
 	// 1. No chat hints → fresh mint with legSeq 0.
-	chatID, legSeq, switchFrom := svc.resolveChatIdentity(StartRunInput{ChatMode: "normal_chat"})
+	chatID, legSeq, switchFrom, _ := svc.resolveChatIdentity(StartRunInput{ChatMode: "normal_chat"})
 	if chatID == "" || legSeq != 0 || switchFrom != "" {
 		t.Fatalf("mint path = (%q, %d, %q)", chatID, legSeq, switchFrom)
 	}
 
 	// 2. Explicit ChatID + LegSeq → trusted as-is (Task-314 phase-A contract).
-	gotID, gotSeq, gotSwitch := svc.resolveChatIdentity(StartRunInput{ChatID: "cht_a1", LegSeq: 3, SwitchFromRunID: "run-9"})
+	gotID, gotSeq, gotSwitch, _ := svc.resolveChatIdentity(StartRunInput{ChatID: "cht_a1", LegSeq: 3, SwitchFromRunID: "run-9"})
 	if gotID != "cht_a1" || gotSeq != 3 || gotSwitch != "run-9" {
 		t.Fatalf("explicit path = (%q, %d, %q)", gotID, gotSeq, gotSwitch)
 	}
 
 	// 3. Resident source leg via SwitchFromRunID → adopt chatId at legSeq+1.
 	svc.runs["run-1"] = &interactiveRun{id: "run-1", runKind: "chat", chatID: "cht_b2", legSeq: 2, legState: LegStateActive}
-	gotID, gotSeq, gotSwitch = svc.resolveChatIdentity(StartRunInput{SwitchFromRunID: "run-1"})
+	gotID, gotSeq, gotSwitch, _ = svc.resolveChatIdentity(StartRunInput{SwitchFromRunID: "run-1"})
 	if gotID != "cht_b2" || gotSeq != 3 || gotSwitch != "run-1" {
 		t.Fatalf("adopt path = (%q, %d, %q)", gotID, gotSeq, gotSwitch)
 	}
 
 	// 4. Legacy resident source (untagged) → self-tagged then adopted.
 	svc.runs["run-2"] = &interactiveRun{id: "run-2", runKind: "chat"}
-	gotID, gotSeq, _ = svc.resolveChatIdentity(StartRunInput{SwitchFromRunID: "run-2"})
+	gotID, gotSeq, _, _ = svc.resolveChatIdentity(StartRunInput{SwitchFromRunID: "run-2"})
 	if gotID != "run-2" || gotSeq != 1 {
 		t.Fatalf("legacy adopt = (%q, %d)", gotID, gotSeq)
 	}
 
 	// 5. Explicit ChatID without LegSeq → next after resident max.
 	svc.runs["run-3"] = &interactiveRun{id: "run-3", runKind: "chat", chatID: "cht_b2", legSeq: 5}
-	gotID, gotSeq, _ = svc.resolveChatIdentity(StartRunInput{ChatID: "cht_b2"})
+	gotID, gotSeq, _, _ = svc.resolveChatIdentity(StartRunInput{ChatID: "cht_b2"})
 	if gotID != "cht_b2" || gotSeq != 6 {
 		t.Fatalf("explicit-no-seq = (%q, %d)", gotID, gotSeq)
 	}
 
 	// 6. Unknown SwitchFromRunID → fresh mint (caller decides; Task-317 passes
 	// explicit LegSeq so this path is defensive only).
-	gotID, gotSeq, _ = svc.resolveChatIdentity(StartRunInput{SwitchFromRunID: "run-missing"})
+	gotID, gotSeq, _, _ = svc.resolveChatIdentity(StartRunInput{SwitchFromRunID: "run-missing"})
 	if gotID == "" || gotSeq != 0 {
 		t.Fatalf("missing-source = (%q, %d)", gotID, gotSeq)
 	}
@@ -153,7 +153,7 @@ func TestResolveChatIdentityUsesPersistedLegSeq(t *testing.T) {
 	ctx := context.Background()
 	_ = fws.UpsertProviderSession(ctx, ProviderSessionState{RunID: "run-1", RunKind: "chat", ChatID: "cht_x", LegSeq: 0})
 	_ = fws.UpsertProviderSession(ctx, ProviderSessionState{RunID: "run-2", RunKind: "chat", ChatID: "cht_x", LegSeq: 2})
-	chatID, legSeq, switchFrom := svc.resolveChatIdentity(StartRunInput{ChatID: "cht_x", SwitchFromRunID: "run-2"})
+	chatID, legSeq, switchFrom, _ := svc.resolveChatIdentity(StartRunInput{ChatID: "cht_x", SwitchFromRunID: "run-2"})
 	if chatID != "cht_x" || legSeq != 3 || switchFrom != "run-2" {
 		t.Fatalf("persisted max = (%q %d %q), want (cht_x 3 run-2)", chatID, legSeq, switchFrom)
 	}

@@ -321,7 +321,12 @@ func (s *InteractiveService) handleListArtifacts(w http.ResponseWriter, r *http.
 }
 
 func (s *InteractiveService) handleListProjectRunHistory(w http.ResponseWriter, r *http.Request) {
-	writeInteractiveJSON(w, http.StatusOK, s.projectRunHistory(r.PathValue("projectId")))
+	items, err := s.projectRunHistory(r.PathValue("projectId"))
+	if err != nil {
+		writeInteractiveError(w, newAPIErr(http.StatusBadGateway, "run_history_unavailable", err.Error()))
+		return
+	}
+	writeInteractiveJSON(w, http.StatusOK, items)
 }
 
 func (s *InteractiveService) handleListRemoteChatSessions(w http.ResponseWriter, r *http.Request) {
@@ -1124,7 +1129,11 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 	// stampAccount above). Always ON for chat runs on dev branch.
 	chatID, legSeq, switchFrom := "", 0, ""
 	if runKind == "chat" {
-		chatID, legSeq, switchFrom = s.resolveChatIdentity(in)
+		var idErr error
+		chatID, legSeq, switchFrom, idErr = s.resolveChatIdentity(in)
+		if idErr != nil {
+			return RunHandle{}, newAPIErr(http.StatusBadGateway, "chat_identity_unprovable", idErr.Error())
+		}
 		s.ensureChatTranscriptWriter()
 	}
 
@@ -1192,7 +1201,11 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 	// unset flag so legs never silently escape isolation).
 	var inheritedWt *worktreeBinding
 	if runKind == "chat" && chatID != "" {
-		inheritedWt = s.findChatWorktreeBindingLocked(chatID)
+		var wtErr error
+		inheritedWt, wtErr = s.findChatWorktreeBindingLocked(chatID)
+		if wtErr != nil {
+			return RunHandle{}, newAPIErr(http.StatusBadGateway, "worktree_binding_unprovable", wtErr.Error())
+		}
 	}
 	if in.Worktree || inheritedWt != nil {
 		ownerID := worktreeOwnerIDFor(chatID, runID, runKind)
@@ -1422,7 +1435,11 @@ type runHistoryItem struct {
 	WorktreePath string `json:"worktreePath,omitempty"`
 }
 
-func (s *InteractiveService) projectRunHistory(projectID string) []runHistoryItem {
+// BUG-493: ListProviderSessionsByProject failures used to degrade history
+// into a silently-partial view (missing non-resident runs + empty
+// syncStatus). The error propagates — a 200 wrong-answer is unrecoverable,
+// a typed error is retryable.
+func (s *InteractiveService) projectRunHistory(projectID string) ([]runHistoryItem, error) {
 	// BUG-309: Drive-sync fields (SyncStatus/SourceMachineID/SourceRunID) are
 	// written straight to the persisted store by updateLocalSessionSyncStatus,
 	// asynchronously, well after a run's own lifecycle ends -- interactiveRun
@@ -1433,10 +1450,12 @@ func (s *InteractiveService) projectRunHistory(projectID string) []runHistoryIte
 	// "Sync all" button perpetually re-target already-synced chats.
 	persistedSyncByRunID := map[string]ProviderSessionState{}
 	if reader, ok := s.workflowStore.(SessionHistoryReader); ok {
-		if sessions, err := reader.ListProviderSessionsByProject(context.Background(), projectID); err == nil {
-			for _, sess := range sessions {
-				persistedSyncByRunID[sess.RunID] = sess
-			}
+		sessions, err := reader.ListProviderSessionsByProject(context.Background(), projectID)
+		if err != nil {
+			return nil, fmt.Errorf("projectRunHistory: session history unreadable for %s: %w", projectID, err)
+		}
+		for _, sess := range sessions {
+			persistedSyncByRunID[sess.RunID] = sess
 		}
 	}
 
@@ -1491,7 +1510,10 @@ func (s *InteractiveService) projectRunHistory(projectID string) []runHistoryIte
 	// s.runs is a write-through cache that is empty on a new service instance.
 	if reader, ok := s.workflowStore.(SessionHistoryReader); ok {
 		sessions, err := reader.ListProviderSessionsByProject(context.Background(), projectID)
-		if err == nil {
+		if err != nil {
+			return nil, fmt.Errorf("projectRunHistory: session history unreadable for %s: %w", projectID, err)
+		}
+		{
 			for _, sess := range sessions {
 				if seen[sess.RunID] || isAgentHistoryRun(sess.ParentRunID, sess.AgentName, sess.Role, sess.AgentStatus, sess.LastPrompt) {
 					continue
@@ -1540,7 +1562,7 @@ func (s *InteractiveService) projectRunHistory(projectID string) []runHistoryIte
 	sort.Slice(out, func(i, j int) bool {
 		return out[i].UpdatedAt > out[j].UpdatedAt
 	})
-	return out
+	return out, nil
 }
 
 // stampMissingChatIdentity fills empty ChatID/LegSeq for chat runs whose
@@ -1802,7 +1824,11 @@ func (s *InteractiveService) handleSpawnAgent(w http.ResponseWriter, r *http.Req
 // handleListAgentRuns returns the agent run summaries that are children of the given run.
 func (s *InteractiveService) handleListAgentRuns(w http.ResponseWriter, r *http.Request) {
 	parentRunID := r.PathValue("runId")
-	summaries := s.listAgentRunSummaries(parentRunID)
+	summaries, serr := s.listAgentRunSummaries(parentRunID)
+	if serr != nil {
+		writeInteractiveError(w, newAPIErr(http.StatusBadGateway, "session_index_unavailable", serr.Error()))
+		return
+	}
 	if cohortDiagEnabled() {
 		runs := make([]string, len(summaries))
 		for i, sum := range summaries {

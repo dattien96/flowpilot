@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -39,6 +40,46 @@ type localFileSessionStore struct {
 	sessionsLoadErr  atomic.Value
 	questionsLoadErr atomic.Value
 	approvalsLoadErr atomic.Value
+	// BUG-502: each shared durable file's stat as last observed by THIS store.
+	// Every write re-stats first; a changed file means an out-of-band writer —
+	// a second runner process sharing the chats dir, or an external tool (the
+	// live incident was `git reset --hard` rewinding git-tracked .flowpilot
+	// files) — so the in-memory view is resynced to the on-disk truth and the
+	// divergence logged instead of silently appended over.
+	sessionsGuard  durableFileGuard
+	questionsGuard durableFileGuard
+	approvalsGuard durableFileGuard
+	// externalResyncs counts out-of-band resyncs — test-observable marker.
+	externalResyncs int
+}
+
+// durableFileGuard records the size+mtime this store last observed for one
+// shared durable NDJSON file.
+type durableFileGuard struct {
+	size  int64
+	mtime time.Time
+	known bool
+}
+
+func (g *durableFileGuard) note(path string) {
+	if info, err := os.Stat(path); err == nil {
+		g.size, g.mtime, g.known = info.Size(), info.ModTime(), true
+	} else {
+		g.known = false
+	}
+}
+
+// changed reports whether the file differs from the last observation: grown,
+// shrunk, replaced, deleted — or newly appeared when we never loaded it.
+func (g *durableFileGuard) changed(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return g.known // vanished out-of-band counts as changed only if we knew it
+	}
+	if !g.known {
+		return true // appeared since last observation — foreign rows to load
+	}
+	return info.Size() != g.size || !info.ModTime().Equal(g.mtime)
 }
 
 // NewLocalFileSessionStore creates a localFileSessionStore rooted at dataDir.
@@ -57,7 +98,50 @@ func NewLocalFileSessionStore(dataDir string) (*localFileSessionStore, error) {
 		dataDir:           dataDir,
 	}
 	s.loadFromDisk()
+	protectDurableFilesFromGit(dataDir)
 	return s, nil
+}
+
+// protectDurableFilesFromGit keeps .flowpilot durable state out of git scope
+// (BUG-502): the live incident rewound sessions/approvals.ndjson because they
+// were tracked in the project repo — any out-of-band `git reset --hard`,
+// checkout, or stash silently rewinds durable state while the runner keeps
+// appending onto the stale view. Best-effort: ensure .flowpilot/ is in
+// .git/info/exclude (repo-local; does not touch the tracked .gitignore) so new
+// state files are never picked up by `git add -A`, and warn loudly when
+// durable files are ALREADY tracked — exclude cannot untrack them; the
+// remediation is an explicit `git rm --cached`.
+func protectDurableFilesFromGit(dataDir string) {
+	fpDir := filepath.Dir(dataDir)
+	if filepath.Base(fpDir) != ".flowpilot" {
+		return
+	}
+	repoRoot := filepath.Dir(fpDir)
+	excludePath := filepath.Join(repoRoot, ".git", "info", "exclude")
+	raw, err := os.ReadFile(excludePath)
+	if err != nil {
+		return // not a git worktree (or a linked worktree's .git file)
+	}
+	const pattern = ".flowpilot/"
+	present := false
+	for _, line := range strings.Split(string(raw), "\n") {
+		if strings.TrimSpace(line) == pattern {
+			present = true
+			break
+		}
+	}
+	if !present {
+		if f, ferr := os.OpenFile(excludePath, os.O_APPEND|os.O_WRONLY, 0o644); ferr == nil {
+			if len(raw) > 0 && !strings.HasSuffix(string(raw), "\n") {
+				_, _ = f.WriteString("\n")
+			}
+			_, _ = f.WriteString(pattern + "\n")
+			_ = f.Close()
+		}
+	}
+	if out, gerr := exec.Command("git", "-C", repoRoot, "ls-files", "--", ".flowpilot/").Output(); gerr == nil && len(strings.TrimSpace(string(out))) > 0 {
+		log.Printf("[session-store] WARNING: durable files under %s are git-tracked — out-of-band git ops (reset --hard / checkout / stash) silently rewind them (BUG-502); untrack via 'git -C %s rm -r --cached .flowpilot'", fpDir, repoRoot)
+	}
 }
 
 // readNDJSONLines streams NDJSON lines through fn with no token cap —
@@ -206,38 +290,38 @@ type ndjsonSessionRecord struct {
 	PendingGateCodePaths       []string `json:"pending_gate_code_paths,omitempty"`
 	RepromptAttempts           int      `json:"reprompt_attempts,omitempty"`
 	// CP-71 run worktree binding (see ProviderSessionState).
-	WorktreeOwnerID                 string   `json:"worktree_owner_id,omitempty"`
-	WorktreePath                    string   `json:"worktree_path,omitempty"`
-	WorktreeBranch                  string   `json:"worktree_branch,omitempty"`
-	WorktreeBaseCommit              string   `json:"worktree_base_commit,omitempty"`
-	WorktreeSlug                    string   `json:"worktree_slug,omitempty"`
-	WorktreeState                   string   `json:"worktree_state,omitempty"`
-	WorktreeEnabled                 bool     `json:"worktree_enabled,omitempty"`
-	WorktreeResolutionID            string   `json:"worktree_resolution_id,omitempty"`
-	WorktreeResolutionMode          string   `json:"worktree_resolution_mode,omitempty"`
-	WorktreeResolutionPhase         string   `json:"worktree_resolution_phase,omitempty"`
+	WorktreeOwnerID         string `json:"worktree_owner_id,omitempty"`
+	WorktreePath            string `json:"worktree_path,omitempty"`
+	WorktreeBranch          string `json:"worktree_branch,omitempty"`
+	WorktreeBaseCommit      string `json:"worktree_base_commit,omitempty"`
+	WorktreeSlug            string `json:"worktree_slug,omitempty"`
+	WorktreeState           string `json:"worktree_state,omitempty"`
+	WorktreeEnabled         bool   `json:"worktree_enabled,omitempty"`
+	WorktreeResolutionID    string `json:"worktree_resolution_id,omitempty"`
+	WorktreeResolutionMode  string `json:"worktree_resolution_mode,omitempty"`
+	WorktreeResolutionPhase string `json:"worktree_resolution_phase,omitempty"`
 	// BUG-478: parked tournament merge state must survive restart — see
 	// ProviderSessionState.
-	TournamentWinner   string            `json:"tournament_winner,omitempty"`
-	TournamentPatches  map[string]string `json:"tournament_patches,omitempty"`
-	TournamentAttempt  int               `json:"tournament_attempt,omitempty"`
-	DecisionCard       *UserDecisionCard `json:"decision_card,omitempty"`
-	DecisionCardChosen string            `json:"decision_card_chosen,omitempty"`
-	PendingResumePrompt             string   `json:"pending_resume_prompt,omitempty"`
-	PendingResumeStepID             string   `json:"pending_resume_step_id,omitempty"`
-	PendingResumeGen                int64    `json:"pending_resume_gen,omitempty"`
-	PendingGateRepromptGen          int64    `json:"pending_gate_reprompt_gen,omitempty"`
-	PendingResumeDeliveredGen       int64    `json:"pending_resume_delivered_gen,omitempty"`
-	PendingGateRepromptDeliveredGen int64    `json:"pending_gate_reprompt_delivered_gen,omitempty"`
-	PendingResumeAcceptedTurn       string   `json:"pending_resume_accepted_turn,omitempty"`
-	PendingGateRepromptAcceptedTurn string   `json:"pending_gate_reprompt_accepted_turn,omitempty"`
-	PendingResumeFailCount          int      `json:"pending_resume_fail_count,omitempty"`
-	PendingResumeFailGen            int64    `json:"pending_resume_fail_gen,omitempty"`
-	PendingGateRepromptFailCount    int      `json:"pending_gate_reprompt_fail_count,omitempty"`
-	PendingGateRepromptFailGen      int64    `json:"pending_gate_reprompt_fail_gen,omitempty"`
-	PendingResumeApprovalID         string   `json:"pending_resume_approval_id,omitempty"`
-	PendingResumeDecision           string   `json:"pending_resume_decision,omitempty"`
-	PendingResumeQuestionChoices    []string `json:"pending_resume_question_choices,omitempty"`
+	TournamentWinner                string            `json:"tournament_winner,omitempty"`
+	TournamentPatches               map[string]string `json:"tournament_patches,omitempty"`
+	TournamentAttempt               int               `json:"tournament_attempt,omitempty"`
+	DecisionCard                    *UserDecisionCard `json:"decision_card,omitempty"`
+	DecisionCardChosen              string            `json:"decision_card_chosen,omitempty"`
+	PendingResumePrompt             string            `json:"pending_resume_prompt,omitempty"`
+	PendingResumeStepID             string            `json:"pending_resume_step_id,omitempty"`
+	PendingResumeGen                int64             `json:"pending_resume_gen,omitempty"`
+	PendingGateRepromptGen          int64             `json:"pending_gate_reprompt_gen,omitempty"`
+	PendingResumeDeliveredGen       int64             `json:"pending_resume_delivered_gen,omitempty"`
+	PendingGateRepromptDeliveredGen int64             `json:"pending_gate_reprompt_delivered_gen,omitempty"`
+	PendingResumeAcceptedTurn       string            `json:"pending_resume_accepted_turn,omitempty"`
+	PendingGateRepromptAcceptedTurn string            `json:"pending_gate_reprompt_accepted_turn,omitempty"`
+	PendingResumeFailCount          int               `json:"pending_resume_fail_count,omitempty"`
+	PendingResumeFailGen            int64             `json:"pending_resume_fail_gen,omitempty"`
+	PendingGateRepromptFailCount    int               `json:"pending_gate_reprompt_fail_count,omitempty"`
+	PendingGateRepromptFailGen      int64             `json:"pending_gate_reprompt_fail_gen,omitempty"`
+	PendingResumeApprovalID         string            `json:"pending_resume_approval_id,omitempty"`
+	PendingResumeDecision           string            `json:"pending_resume_decision,omitempty"`
+	PendingResumeQuestionChoices    []string          `json:"pending_resume_question_choices,omitempty"`
 	// BUG-288 R13-01: stall-Retry restart intent must survive LocalFileSessionStore
 	// (ProviderSessionState already had these; NDJSON record was missing them).
 	PendingRestartRunID  string `json:"pending_restart_run_id,omitempty"`
@@ -294,10 +378,32 @@ func (s *localFileSessionStore) loadFromDisk() {
 	}
 	defer f.Close()
 
+	seen, readErr := scanSessionsNDJSON(f)
+	s.sessionsGuard.note(s.filePath)
+	if readErr != nil {
+		// A partially-read file must never masquerade as a complete store:
+		// the readers below surface this so consumers (e.g. the worktree GC)
+		// fail closed instead of acting on a truncated view.
+		// Wrap to a single concrete type: atomic.Value panics if a future
+		// reload ever stores a different concrete error type.
+		s.sessionsLoadErr.Store(fmt.Errorf("sessions.ndjson: %w", readErr))
+		log.Printf("[session-store] sessions.ndjson load incomplete: %v", readErr)
+	}
+
+	s.fakeWorkflowStore.mu.Lock()
+	for _, rec := range seen {
+		s.fakeWorkflowStore.sessions[rec.RunID] = sessionStateFromRecord(rec)
+	}
+	s.fakeWorkflowStore.mu.Unlock()
+}
+
+// scanSessionsNDJSON parses a sessions.ndjson stream into last-wins records
+// keyed by run_id — the exact loadFromDisk semantics (age cutoff, torn-tail
+// detection) shared with the out-of-band resync path (BUG-502).
+func scanSessionsNDJSON(f *os.File) (map[string]ndjsonSessionRecord, error) {
 	cutoff := time.Now().UTC().Add(-sessionStoreMaxAge)
 	seen := map[string]ndjsonSessionRecord{}
 	tailMalformed := false
-
 	readErr := readNDJSONLines(f, func(line []byte) {
 		var rec ndjsonSessionRecord
 		if err := json.Unmarshal(line, &rec); err != nil {
@@ -321,21 +427,76 @@ func (s *localFileSessionStore) loadFromDisk() {
 	if readErr == nil && tailMalformed && !fileEndsWithNewline(f) {
 		readErr = errTornTailRecord
 	}
-	if readErr != nil {
-		// A partially-read file must never masquerade as a complete store:
-		// the readers below surface this so consumers (e.g. the worktree GC)
-		// fail closed instead of acting on a truncated view.
-		// Wrap to a single concrete type: atomic.Value panics if a future
-		// reload ever stores a different concrete error type.
-		s.sessionsLoadErr.Store(fmt.Errorf("sessions.ndjson: %w", readErr))
-		log.Printf("[session-store] sessions.ndjson load incomplete: %v", readErr)
-	}
+	return seen, readErr
+}
 
-	s.fakeWorkflowStore.mu.Lock()
-	for _, rec := range seen {
-		s.fakeWorkflowStore.sessions[rec.RunID] = sessionStateFromRecord(rec)
+// resyncSessionsLocked replaces the in-memory session view with the on-disk
+// truth after the shared file changed out-of-band (BUG-502). Disk is the
+// authority (local-runner §2): rows a sibling process appended are merged in,
+// rows missing from disk — whether legitimately deleted by a sibling or lost
+// to an external rewind — are dropped from memory and logged so the loss is
+// an explicit event, not silent divergence. Caller must hold s.mu.
+func (s *localFileSessionStore) resyncSessionsLocked() {
+	f, err := os.Open(s.filePath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			s.sessionsGuard.note(s.filePath)
+			s.fakeWorkflowStore.mu.Lock()
+			dropped := len(s.fakeWorkflowStore.sessions)
+			s.fakeWorkflowStore.sessions = map[string]ProviderSessionState{}
+			s.fakeWorkflowStore.mu.Unlock()
+			if dropped > 0 {
+				s.externalResyncs++
+				log.Printf("[session-store] sessions.ndjson deleted out-of-band — dropped %d in-memory rows to match disk", dropped)
+			}
+		}
+		return
 	}
+	defer f.Close()
+	seen, readErr := scanSessionsNDJSON(f)
+	s.sessionsGuard.note(s.filePath)
+	if readErr != nil {
+		s.sessionsLoadErr.Store(fmt.Errorf("sessions.ndjson: %w", readErr))
+		log.Printf("[session-store] sessions.ndjson resync incomplete: %v", readErr)
+		return
+	}
+	s.fakeWorkflowStore.mu.Lock()
+	old := s.fakeWorkflowStore.sessions
+	fresh := make(map[string]ProviderSessionState, len(seen))
+	for id, rec := range seen {
+		fresh[id] = sessionStateFromRecord(rec)
+	}
+	s.fakeWorkflowStore.sessions = fresh
 	s.fakeWorkflowStore.mu.Unlock()
+	var dropped []string
+	for id := range old {
+		if _, ok := fresh[id]; !ok {
+			dropped = append(dropped, id)
+		}
+	}
+	s.externalResyncs++
+	if len(dropped) > 0 {
+		log.Printf("[session-store] sessions.ndjson modified out-of-band — resynced to disk: %d durable rows no longer on disk (run_ids: %s)", len(dropped), strings.Join(dropped, ","))
+	}
+}
+
+// withDurableFileLock serializes a write to a shared durable file across
+// runner processes via a sibling <name>.lock — the dispatch.lock precedent
+// (dispatch_store_local.go) applied per-operation, because the shared chats
+// dir legitimately hosts more than one runner. Without it an append landing
+// between DeleteProviderSession's read and rename is silently discarded
+// (BUG-502). Caller must already hold s.mu.
+func (s *localFileSessionStore) withDurableFileLock(path string, fn func() error) error {
+	lf, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return err
+	}
+	defer lf.Close()
+	if err := flockBlock(lf); err != nil {
+		return fmt.Errorf("durable file lock %s: %w", path+".lock", err)
+	}
+	defer funlock(lf)
+	return fn()
 }
 
 // loadQuestionsFromDisk populates fakeWorkflowStore.questions from
@@ -349,6 +510,23 @@ func (s *localFileSessionStore) loadQuestionsFromDisk() {
 	}
 	defer f.Close()
 
+	seen, readErr := scanQuestionsNDJSON(f)
+	s.questionsGuard.note(s.questionsFilePath())
+	if readErr != nil {
+		s.questionsLoadErr.Store(fmt.Errorf("questions.ndjson: %w", readErr))
+		log.Printf("[session-store] questions.ndjson load incomplete: %v", readErr)
+	}
+
+	s.fakeWorkflowStore.mu.Lock()
+	for id, rec := range seen {
+		s.fakeWorkflowStore.questions[id] = rec
+	}
+	s.fakeWorkflowStore.mu.Unlock()
+}
+
+// scanQuestionsNDJSON is the loadQuestionsFromDisk parse loop shared with the
+// out-of-band resync path (BUG-502) — last-wins keyed by QuestionID.
+func scanQuestionsNDJSON(f *os.File) (map[string]ProviderQuestionState, error) {
 	seen := map[string]ProviderQuestionState{}
 	tailMalformed := false
 	readErr := readNDJSONLines(f, func(line []byte) {
@@ -366,16 +544,54 @@ func (s *localFileSessionStore) loadQuestionsFromDisk() {
 	if readErr == nil && tailMalformed && !fileEndsWithNewline(f) {
 		readErr = errTornTailRecord
 	}
+	return seen, readErr
+}
+
+// resyncQuestionsLocked is the questions.ndjson twin of resyncSessionsLocked
+// (BUG-502). Caller must hold s.mu.
+func (s *localFileSessionStore) resyncQuestionsLocked() {
+	path := s.questionsFilePath()
+	f, err := os.Open(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			s.questionsGuard.note(path)
+			s.fakeWorkflowStore.mu.Lock()
+			dropped := len(s.fakeWorkflowStore.questions)
+			s.fakeWorkflowStore.questions = map[string]ProviderQuestionState{}
+			s.fakeWorkflowStore.mu.Unlock()
+			if dropped > 0 {
+				s.externalResyncs++
+				log.Printf("[session-store] questions.ndjson deleted out-of-band — dropped %d in-memory rows to match disk", dropped)
+			}
+		}
+		return
+	}
+	defer f.Close()
+	seen, readErr := scanQuestionsNDJSON(f)
+	s.questionsGuard.note(path)
 	if readErr != nil {
 		s.questionsLoadErr.Store(fmt.Errorf("questions.ndjson: %w", readErr))
-		log.Printf("[session-store] questions.ndjson load incomplete: %v", readErr)
+		log.Printf("[session-store] questions.ndjson resync incomplete: %v", readErr)
+		return
 	}
-
 	s.fakeWorkflowStore.mu.Lock()
+	old := s.fakeWorkflowStore.questions
+	fresh := make(map[string]ProviderQuestionState, len(seen))
 	for id, rec := range seen {
-		s.fakeWorkflowStore.questions[id] = rec
+		fresh[id] = rec
 	}
+	s.fakeWorkflowStore.questions = fresh
 	s.fakeWorkflowStore.mu.Unlock()
+	var dropped []string
+	for id := range old {
+		if _, ok := fresh[id]; !ok {
+			dropped = append(dropped, id)
+		}
+	}
+	s.externalResyncs++
+	if len(dropped) > 0 {
+		log.Printf("[session-store] questions.ndjson modified out-of-band — resynced to disk: %d durable rows no longer on disk (question_ids: %s)", len(dropped), strings.Join(dropped, ","))
+	}
 }
 
 // loadApprovalsFromDisk populates fakeWorkflowStore.approvals from
@@ -389,6 +605,23 @@ func (s *localFileSessionStore) loadApprovalsFromDisk() {
 	}
 	defer f.Close()
 
+	seen, readErr := scanApprovalsNDJSON(f)
+	s.approvalsGuard.note(s.approvalsFilePath())
+	if readErr != nil {
+		s.approvalsLoadErr.Store(fmt.Errorf("approvals.ndjson: %w", readErr))
+		log.Printf("[session-store] approvals.ndjson load incomplete: %v", readErr)
+	}
+
+	s.fakeWorkflowStore.mu.Lock()
+	for id, rec := range seen {
+		s.fakeWorkflowStore.approvals[id] = rec
+	}
+	s.fakeWorkflowStore.mu.Unlock()
+}
+
+// scanApprovalsNDJSON is the loadApprovalsFromDisk parse loop shared with the
+// out-of-band resync path (BUG-502) — last-wins keyed by ApprovalID.
+func scanApprovalsNDJSON(f *os.File) (map[string]ProviderApprovalState, error) {
 	seen := map[string]ProviderApprovalState{}
 	tailMalformed := false
 	readErr := readNDJSONLines(f, func(line []byte) {
@@ -406,16 +639,54 @@ func (s *localFileSessionStore) loadApprovalsFromDisk() {
 	if readErr == nil && tailMalformed && !fileEndsWithNewline(f) {
 		readErr = errTornTailRecord
 	}
+	return seen, readErr
+}
+
+// resyncApprovalsLocked is the approvals.ndjson twin of resyncSessionsLocked
+// (BUG-502). Caller must hold s.mu.
+func (s *localFileSessionStore) resyncApprovalsLocked() {
+	path := s.approvalsFilePath()
+	f, err := os.Open(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			s.approvalsGuard.note(path)
+			s.fakeWorkflowStore.mu.Lock()
+			dropped := len(s.fakeWorkflowStore.approvals)
+			s.fakeWorkflowStore.approvals = map[string]ProviderApprovalState{}
+			s.fakeWorkflowStore.mu.Unlock()
+			if dropped > 0 {
+				s.externalResyncs++
+				log.Printf("[session-store] approvals.ndjson deleted out-of-band — dropped %d in-memory rows to match disk", dropped)
+			}
+		}
+		return
+	}
+	defer f.Close()
+	seen, readErr := scanApprovalsNDJSON(f)
+	s.approvalsGuard.note(path)
 	if readErr != nil {
 		s.approvalsLoadErr.Store(fmt.Errorf("approvals.ndjson: %w", readErr))
-		log.Printf("[session-store] approvals.ndjson load incomplete: %v", readErr)
+		log.Printf("[session-store] approvals.ndjson resync incomplete: %v", readErr)
+		return
 	}
-
 	s.fakeWorkflowStore.mu.Lock()
+	old := s.fakeWorkflowStore.approvals
+	fresh := make(map[string]ProviderApprovalState, len(seen))
 	for id, rec := range seen {
-		s.fakeWorkflowStore.approvals[id] = rec
+		fresh[id] = rec
 	}
+	s.fakeWorkflowStore.approvals = fresh
 	s.fakeWorkflowStore.mu.Unlock()
+	var dropped []string
+	for id := range old {
+		if _, ok := fresh[id]; !ok {
+			dropped = append(dropped, id)
+		}
+	}
+	s.externalResyncs++
+	if len(dropped) > 0 {
+		log.Printf("[session-store] approvals.ndjson modified out-of-band — resynced to disk: %d durable rows no longer on disk (approval_ids: %s)", len(dropped), strings.Join(dropped, ","))
+	}
 }
 
 // Read-path load-error surfacing (BUG-485): when a durable file could not be
@@ -435,10 +706,6 @@ func (s *localFileSessionStore) ListProviderSessionsByChat(ctx context.Context, 
 // UpsertProviderSession updates the in-memory map and appends a NDJSON line to
 // the file so the state survives the next restart.
 func (s *localFileSessionStore) UpsertProviderSession(_ context.Context, session ProviderSessionState) error {
-	s.fakeWorkflowStore.mu.Lock()
-	s.fakeWorkflowStore.sessions[session.RunID] = session
-	s.fakeWorkflowStore.mu.Unlock()
-
 	rec := sessionRecordFrom(session)
 	line, err := json.Marshal(rec)
 	if err != nil {
@@ -447,68 +714,110 @@ func (s *localFileSessionStore) UpsertProviderSession(_ context.Context, session
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	fh, err := os.OpenFile(s.filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return err
-	}
-	defer fh.Close()
-	_, err = fh.Write(append(line, '\n'))
-	return err
+	return s.withDurableFileLock(s.filePath, func() error {
+		// BUG-502: if the shared file changed out-of-band (sibling runner
+		// process, or an external op rewinding git-tracked state), resync
+		// memory to disk first — never append onto a silently rewound view.
+		if s.sessionsGuard.changed(s.filePath) {
+			s.resyncSessionsLocked()
+		}
+		fh, err := os.OpenFile(s.filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+		if err != nil {
+			return err
+		}
+		// BUG-499: durable append BEFORE the in-memory commit — a failed write
+		// must leave the map unchanged so callers never hold a session the disk
+		// does not (restart would silently lose a "persisted" run).
+		if _, err := fh.Write(append(line, '\n')); err != nil {
+			fh.Close()
+			return err
+		}
+		if err := fh.Close(); err != nil {
+			return err
+		}
+		s.sessionsGuard.note(s.filePath)
+
+		s.fakeWorkflowStore.mu.Lock()
+		s.fakeWorkflowStore.sessions[session.RunID] = session
+		s.fakeWorkflowStore.mu.Unlock()
+		return nil
+	})
 }
 
 // DeleteProviderSession removes a run from the in-memory map and rewrites the
 // NDJSON file without that run_id. The rewrite is atomic (write to a temp file
 // then rename) so a crash mid-write does not corrupt the store.
 func (s *localFileSessionStore) DeleteProviderSession(_ context.Context, runID string) error {
-	s.fakeWorkflowStore.mu.Lock()
-	delete(s.fakeWorkflowStore.sessions, runID)
-	s.fakeWorkflowStore.mu.Unlock()
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Read existing file, keep every line whose run_id differs from runID.
-	f, err := os.Open(s.filePath)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil // nothing to rewrite
+	return s.withDurableFileLock(s.filePath, func() error {
+		// BUG-502: resync memory if the file changed out-of-band; the read
+		// below then runs under the shared lock so no sibling append can land
+		// between read and rename and be silently discarded.
+		if s.sessionsGuard.changed(s.filePath) {
+			s.resyncSessionsLocked()
 		}
-		return err
-	}
-	var kept [][]byte
-	// BUG-485: the rewrite must see the whole file — the old bufio.Scanner
-	// aborted at the first >64KB line, so `kept` silently lost every record
-	// after it and the atomic rename destroyed them permanently.
-	readErr := readNDJSONLines(f, func(line []byte) {
-		var rec ndjsonSessionRecord
-		if jsonErr := json.Unmarshal(line, &rec); jsonErr != nil || rec.RunID == runID {
-			return // drop malformed lines and the target run
+		// Read existing file, keep every line whose run_id differs from runID.
+		f, err := os.Open(s.filePath)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				// Nothing on disk to resurrect — dropping the in-memory entry is
+				// the whole delete.
+				s.deleteFromMemory(runID)
+				return nil
+			}
+			return err
 		}
-		kept = append(kept, append([]byte(nil), line...))
-	})
-	f.Close()
-	if readErr != nil {
-		return fmt.Errorf("delete provider session: incomplete read of %s: %w", s.filePath, readErr)
-	}
+		var kept [][]byte
+		// BUG-485: the rewrite must see the whole file — the old bufio.Scanner
+		// aborted at the first >64KB line, so `kept` silently lost every record
+		// after it and the atomic rename destroyed them permanently.
+		readErr := readNDJSONLines(f, func(line []byte) {
+			var rec ndjsonSessionRecord
+			if jsonErr := json.Unmarshal(line, &rec); jsonErr != nil || rec.RunID == runID {
+				return // drop malformed lines and the target run
+			}
+			kept = append(kept, append([]byte(nil), line...))
+		})
+		f.Close()
+		if readErr != nil {
+			return fmt.Errorf("delete provider session: incomplete read of %s: %w", s.filePath, readErr)
+		}
 
-	// Write to a sibling temp file then rename for atomicity.
-	tmpPath := s.filePath + ".tmp"
-	tmp, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
-	if err != nil {
-		return err
-	}
-	for _, line := range kept {
-		if _, err := tmp.Write(append(line, '\n')); err != nil {
-			tmp.Close()
+		// Write to a sibling temp file then rename for atomicity.
+		tmpPath := s.filePath + ".tmp"
+		tmp, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+		if err != nil {
+			return err
+		}
+		for _, line := range kept {
+			if _, err := tmp.Write(append(line, '\n')); err != nil {
+				tmp.Close()
+				_ = os.Remove(tmpPath)
+				return err
+			}
+		}
+		if err := tmp.Close(); err != nil {
 			_ = os.Remove(tmpPath)
 			return err
 		}
-	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpPath)
-		return err
-	}
-	return os.Rename(tmpPath, s.filePath)
+		if err := os.Rename(tmpPath, s.filePath); err != nil {
+			return err
+		}
+		s.sessionsGuard.note(s.filePath)
+		// BUG-499: memory commit only after the durable rewrite lands — a failed
+		// rewrite must leave the entry visible, not resurrect it on next restart
+		// while the live process already forgot it.
+		s.deleteFromMemory(runID)
+		return nil
+	})
+}
+
+func (s *localFileSessionStore) deleteFromMemory(runID string) {
+	s.fakeWorkflowStore.mu.Lock()
+	delete(s.fakeWorkflowStore.sessions, runID)
+	s.fakeWorkflowStore.mu.Unlock()
 }
 
 // ListProviderSessionsByProject returns sessions for the given project from the
@@ -592,7 +901,7 @@ func sessionStateFromRecord(r ndjsonSessionRecord) ProviderSessionState {
 		VibeAwaitingLock:                   r.VibeAwaitingLock,
 		VibeTaskPlan:                       append([]string(nil), r.VibeTaskPlan...),
 		VibeCpDocID:                        r.VibeCpDocID,
-		VibeRequirementFromNode:           r.VibeRequirementFromNode,
+		VibeRequirementFromNode:            r.VibeRequirementFromNode,
 		VibeSprintIndex:                    r.VibeSprintIndex,
 		VibeSprintBudget:                   r.VibeSprintBudget,
 		VibeSprintBoundaryDeclined:         r.VibeSprintBoundaryDeclined,
@@ -745,22 +1054,33 @@ func (s *localFileSessionStore) questionsFilePath() string {
 // (BUG-StaleQuestion-Restart) — without this, reconstructRun has no way to
 // know whether a restored user_question_required event was already answered.
 func (s *localFileSessionStore) UpsertQuestion(ctx context.Context, question ProviderQuestionState) error {
-	if err := s.fakeWorkflowStore.UpsertQuestion(ctx, question); err != nil {
-		return err
-	}
 	line, err := json.Marshal(question)
 	if err != nil {
 		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	fh, err := os.OpenFile(s.questionsFilePath(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return err
-	}
-	defer fh.Close()
-	_, err = fh.Write(append(line, '\n'))
-	return err
+	path := s.questionsFilePath()
+	return s.withDurableFileLock(path, func() error {
+		if s.questionsGuard.changed(path) {
+			s.resyncQuestionsLocked()
+		}
+		fh, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+		if err != nil {
+			return err
+		}
+		// BUG-499: durable append before the in-memory commit — a failed write
+		// must not leave a question state the restart cannot see.
+		if _, err := fh.Write(append(line, '\n')); err != nil {
+			fh.Close()
+			return err
+		}
+		if err := fh.Close(); err != nil {
+			return err
+		}
+		s.questionsGuard.note(path)
+		return s.fakeWorkflowStore.UpsertQuestion(ctx, question)
+	})
 }
 
 // ListQuestionsByRun returns every persisted question state for a run
@@ -787,22 +1107,33 @@ func (s *localFileSessionStore) approvalsFilePath() string {
 // know whether a restored permission_required event was already resolved.
 // Mirrors UpsertQuestion exactly.
 func (s *localFileSessionStore) UpsertApproval(ctx context.Context, approval ProviderApprovalState) error {
-	if err := s.fakeWorkflowStore.UpsertApproval(ctx, approval); err != nil {
-		return err
-	}
 	line, err := json.Marshal(approval)
 	if err != nil {
 		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	fh, err := os.OpenFile(s.approvalsFilePath(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return err
-	}
-	defer fh.Close()
-	_, err = fh.Write(append(line, '\n'))
-	return err
+	path := s.approvalsFilePath()
+	return s.withDurableFileLock(path, func() error {
+		if s.approvalsGuard.changed(path) {
+			s.resyncApprovalsLocked()
+		}
+		fh, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+		if err != nil {
+			return err
+		}
+		// BUG-499: durable append before the in-memory commit — a failed write
+		// must not leave an approval decision the restart cannot see.
+		if _, err := fh.Write(append(line, '\n')); err != nil {
+			fh.Close()
+			return err
+		}
+		if err := fh.Close(); err != nil {
+			return err
+		}
+		s.approvalsGuard.note(path)
+		return s.fakeWorkflowStore.UpsertApproval(ctx, approval)
+	})
 }
 
 // ListApprovalsByRun returns every persisted approval state for a run
@@ -857,11 +1188,8 @@ func isFlowSidecarEventType(t ProviderEventType) bool {
 // and, for CP-41 event types, also appends to the per-run flow-events sidecar
 // NDJSON so the events survive a process restart.
 func (s *localFileSessionStore) AppendEvent(ctx context.Context, event ProviderEvent) error {
-	if err := s.fakeWorkflowStore.AppendEvent(ctx, event); err != nil {
-		return err
-	}
 	if !isFlowSidecarEventType(event.Type) || event.WorkflowRunID == "" {
-		return nil
+		return s.fakeWorkflowStore.AppendEvent(ctx, event)
 	}
 	data, err := json.Marshal(event)
 	if err != nil {
@@ -875,9 +1203,17 @@ func (s *localFileSessionStore) AppendEvent(ctx context.Context, event ProviderE
 	if err != nil {
 		return err
 	}
-	defer fh.Close()
-	_, err = fh.Write(append(data, '\n'))
-	return err
+	// BUG-499: durable sidecar append before the in-memory event commit — a
+	// failed write must not leave an event visible to subscribers that the
+	// restart cannot replay.
+	if _, err := fh.Write(append(data, '\n')); err != nil {
+		fh.Close()
+		return err
+	}
+	if err := fh.Close(); err != nil {
+		return err
+	}
+	return s.fakeWorkflowStore.AppendEvent(ctx, event)
 }
 
 // LoadFlowEvents reads all CP-41 events from the per-run flow-events sidecar.
@@ -1091,7 +1427,7 @@ func sessionRecordFrom(s ProviderSessionState) ndjsonSessionRecord {
 		VibeAwaitingLock:                   s.VibeAwaitingLock,
 		VibeTaskPlan:                       append([]string(nil), s.VibeTaskPlan...),
 		VibeCpDocID:                        s.VibeCpDocID,
-		VibeRequirementFromNode:           s.VibeRequirementFromNode,
+		VibeRequirementFromNode:            s.VibeRequirementFromNode,
 		VibeSprintIndex:                    s.VibeSprintIndex,
 		VibeSprintBudget:                   s.VibeSprintBudget,
 		VibeSprintBoundaryDeclined:         s.VibeSprintBoundaryDeclined,
@@ -1206,3 +1542,13 @@ func copyBatchSignatureMap(m map[string][]CoderBatchSignatureRequest) map[string
 	}
 	return out
 }
+
+// BUG-500: same pin for the default backend — a dropped reader method must
+// fail the build, not degrade resume silently.
+var (
+	_ SessionIndexReader    = (*localFileSessionStore)(nil)
+	_ SessionHistoryReader  = (*localFileSessionStore)(nil)
+	_ ApprovalHistoryReader = (*localFileSessionStore)(nil)
+	_ QuestionHistoryReader = (*localFileSessionStore)(nil)
+	_ ChatSessionReader     = (*localFileSessionStore)(nil)
+)

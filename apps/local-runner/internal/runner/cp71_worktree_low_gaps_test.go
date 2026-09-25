@@ -128,7 +128,7 @@ func TestMarkChatWorktreeState_PropagatesToLegsAndSessions(t *testing.T) {
 		}
 	}
 
-	svc.markChatWorktreeState(chatID, "merge_pending")
+	_ = svc.markChatWorktreeState(chatID, "merge_pending")
 
 	svc.mu.Lock()
 	for _, id := range []string{runID, runID2} {

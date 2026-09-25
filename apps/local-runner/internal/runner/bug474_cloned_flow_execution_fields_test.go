@@ -24,7 +24,7 @@ func bug474SnapshotDef() agentpack.FlowDefinition {
 		Description: "cloned harness",
 		Tools:       []string{"flowpilot_submit_review_outcome"},
 		ContextProfiles: map[string]agentpack.ContextProfile{
-			"scout": {Name: "scout", CandidateSources: []string{"artifact_context"}, MaxTokens: 512},
+			"scout": {Name: "scout", CandidateSources: []string{"artifact_context"}, MaxEstPromptTokens: 512},
 		},
 		Nodes: []agentpack.FlowNode{
 			{
