@@ -194,6 +194,17 @@ interface TimelineScrollAnchor {
   offsetPx: number;
 }
 
+/** Task-444: inline awareness notice derived from context_pressure /
+ *  provider_compacted events — banner data only, no card. */
+export interface ContextNotice {
+  kind: "pressure_aware" | "provider_compacted";
+  ratio?: number;
+  prev?: number;
+  cur?: number;
+  /** Pinned to one provider session — a leg change auto-clears it. */
+  providerSessionId?: string;
+}
+
 export interface RunSnapshot {
   timeline: TimelineItem[];
   artifacts: Artifact[];
@@ -201,6 +212,9 @@ export interface RunSnapshot {
   pendingApprovals: PendingApproval[];
   pendingQuestions: PendingQuestion[];
   latestTokenUsage?: TokenUsageSnapshot;
+  /** Task-444: CP-86 inline notice for this run's current leg — rides the
+   *  snapshot so focusing a child and coming back keeps the banner. */
+  contextNotice?: ContextNotice;
   lastTurnInput?: TurnInput;
   recoverable: boolean;
   _streamingAssistantId?: string;
@@ -575,6 +589,10 @@ export interface AppState {
   _gateBlockedRunIds: Record<string, boolean>;
   lastTurnInput?: TurnInput;
   latestTokenUsage?: TokenUsageSnapshot;
+  /** Task-444 (CP-86 P-5): inline awareness notice for the focused run —
+   *  context_pressure(aware) banner or provider_compacted pin. Decision-tier
+   *  items still route through pendingQuestions/user_question_required. */
+  contextNotice?: ContextNotice;
   recoverable: boolean;
   scenario: ScenarioName;
   pendingAccountSwitch?: {
@@ -813,7 +831,7 @@ export const useStore = create<AppState>((set, get) => ({
   historyLoading: false,
   remoteHistoryLoading: false,
   attentionItems: [],
-  latestTokenUsage: undefined,
+  latestTokenUsage: undefined, contextNotice: undefined,
   recoverable: false,
   scenario: "normal",
   accountSwitchLoading: false,
@@ -1536,7 +1554,7 @@ export const useStore = create<AppState>((set, get) => ({
           pendingApprovals: [],
           pendingQuestions: [],
           gateBlock: undefined,
-          latestTokenUsage: undefined,
+          latestTokenUsage: undefined, contextNotice: undefined,
           lastTurnInput: undefined,
           recoverable: false,
           pendingAccountSwitch: undefined,
@@ -1597,7 +1615,7 @@ export const useStore = create<AppState>((set, get) => ({
         pendingApprovals: [],
         pendingQuestions: [],
         gateBlock: undefined,
-        latestTokenUsage: undefined,
+        latestTokenUsage: undefined, contextNotice: undefined,
         lastTurnInput: undefined,
         recoverable: false,
         pendingAccountSwitch: undefined,
@@ -2119,7 +2137,7 @@ export const useStore = create<AppState>((set, get) => ({
     // bubble with a visible error instead of failing silently.
     set((s) => ({
       recoverable: false,
-      latestTokenUsage: undefined,
+      latestTokenUsage: undefined, contextNotice: undefined,
       status: "running",
       _streamingAssistantId: undefined,
       timeline: [
@@ -3264,7 +3282,7 @@ export const useStore = create<AppState>((set, get) => ({
       pendingApprovals: [],
       pendingQuestions: [],
       gateBlock: undefined,
-      latestTokenUsage: undefined,
+      latestTokenUsage: undefined, contextNotice: undefined,
       lastTurnInput: undefined,
       recoverable: false,
       pendingAccountSwitch: undefined,
@@ -3379,7 +3397,7 @@ export const useStore = create<AppState>((set, get) => ({
       agentSpawnGuideAgentName: undefined,
       pendingApprovals: [],
       pendingQuestions: [],
-      latestTokenUsage: undefined,
+      latestTokenUsage: undefined, contextNotice: undefined,
       lastTurnInput: undefined,
       recoverable: false,
       pendingAccountSwitch: undefined,
@@ -3648,7 +3666,7 @@ async function retryWithTurnInput(
   set((s) => ({
     status: "running",
     recoverable: false,
-    latestTokenUsage: undefined,
+    latestTokenUsage: undefined, contextNotice: undefined,
     _streamingAssistantId: undefined,
     timeline: [
       ...s.timeline,
@@ -4266,7 +4284,7 @@ export function mergeAgentRunsById(existing: AgentRunSummary[], incoming: AgentR
 }
 
 
-function applyEvent(s: AppState, e: ProviderEventDTO): Partial<AppState> {
+export function applyEvent(s: AppState, e: ProviderEventDTO): Partial<AppState> {
   const next = applyTimelineEvent(s, e);
   const nextReplaySeq = {
     ...s._runReplaySeq,
@@ -4332,6 +4350,9 @@ function applyEvent(s: AppState, e: ProviderEventDTO): Partial<AppState> {
     const { [e.workflowRunId]: _cleared, ...remainingGateBlockedRunIds } = s._gateBlockedRunIds;
     return {
       ...next,
+      // Task-444: contextNotice intentionally NOT cleared here — pressure on
+      // the same leg persists across turns; a leg change auto-clears via the
+      // providerSessionId pin in the token_usage_updated branch.
       latestTokenUsage: undefined,
       gateBlock: undefined,
       _gateBlockedRunIds: remainingGateBlockedRunIds,
@@ -4339,7 +4360,31 @@ function applyEvent(s: AppState, e: ProviderEventDTO): Partial<AppState> {
     };
   }
   if (e.type === "token_usage_updated") {
-    return { ...next, latestTokenUsage: e.tokenUsage, _runReplaySeq: nextReplaySeq };
+    // Task-444 T-2: the aware banner clears when a later usage event drops
+    // below the tier OR the leg rotated (marks belong to the session that
+    // produced them); provider_compacted is a fact — pinned for its leg.
+    let notice = s.contextNotice;
+    if (notice?.providerSessionId && e.providerSessionId && notice.providerSessionId !== e.providerSessionId) {
+      notice = undefined;
+    } else if (
+      notice?.kind === "pressure_aware" &&
+      e.tokenUsage.modelContextWindow &&
+      e.tokenUsage.total &&
+      e.tokenUsage.total.totalTokens / e.tokenUsage.modelContextWindow < 0.8
+    ) {
+      notice = undefined;
+    }
+    return { ...next, latestTokenUsage: e.tokenUsage, contextNotice: notice, _runReplaySeq: nextReplaySeq };
+  }
+  if (e.type === "context_pressure" || e.type === "provider_compacted") {
+    // Task-444 T-2/T-3: awareness facts become an inline notice pinned to the
+    // leg. Ask-tier decision cards still arrive via user_question_required.
+    const p = e.contextPressure;
+    const notice: ContextNotice =
+      e.type === "provider_compacted"
+        ? { kind: "provider_compacted", ratio: p.ratio, prev: p.prevTokens, cur: p.usedTokens, providerSessionId: e.providerSessionId }
+        : { kind: "pressure_aware", ratio: p.ratio, providerSessionId: e.providerSessionId };
+    return { ...next, contextNotice: notice, _runReplaySeq: nextReplaySeq };
   }
   return { ...next, _runReplaySeq: nextReplaySeq };
 }
@@ -4479,6 +4524,7 @@ function snapshotRunState(state: AppState): RunSnapshot {
     pendingApprovals: [...pending.pendingApprovals],
     pendingQuestions: [...pending.pendingQuestions],
     latestTokenUsage: state.latestTokenUsage,
+    contextNotice: state.contextNotice,
     lastTurnInput: state.lastTurnInput,
     recoverable: state.recoverable,
     _streamingAssistantId: state._streamingAssistantId,
@@ -4505,6 +4551,7 @@ function restoreRunSnapshot(snapshot: RunSnapshot): Partial<AppState> {
     pendingApprovals: [...pending.pendingApprovals],
     pendingQuestions: [...pending.pendingQuestions],
     latestTokenUsage: snapshot.latestTokenUsage,
+    contextNotice: snapshot.contextNotice,
     lastTurnInput: snapshot.lastTurnInput,
     recoverable: snapshot.recoverable,
     _streamingAssistantId: snapshot._streamingAssistantId,
@@ -4571,7 +4618,7 @@ function emptyRunSnapshot(status: RunStatus): Partial<AppState> {
     pendingApprovals: [],
     pendingQuestions: [],
     gateBlock: undefined,
-    latestTokenUsage: undefined,
+    latestTokenUsage: undefined, contextNotice: undefined,
     lastTurnInput: undefined,
     recoverable: false,
     _streamingAssistantId: undefined,

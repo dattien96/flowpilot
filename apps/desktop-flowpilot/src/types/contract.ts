@@ -627,6 +627,25 @@ export interface TokenUsageSnapshot {
   last?: TokenUsageBreakdown;
   total?: TokenUsageBreakdown;
   modelContextWindow?: number | null;
+  /** Runner's heuristic prompt-size estimate (len(prompt)/4) — rendered
+   * "prompt ~Nk est" (Task-444 T-1), explicitly distinct from usage figures.
+   * Absent when no prompt is bound — render "—", never a fake zero. */
+  estPromptTokens?: number | null;
+}
+
+/** Mirrors the runner's ContextPressurePayload (Task-443) — rides
+ *  context_pressure (awareness/decision) and provider_compacted (fact)
+ *  events, flag-gated by FLOWPILOT_CONTEXT_PRESSURE. */
+export interface ContextPressurePayload {
+  /** "aware" = inline banner only; "ask" = decision card via
+   *  user_question_required (the pressure event itself stays a banner). */
+  tier: "aware" | "ask";
+  ratio: number;
+  usedTokens: number;
+  windowTokens: number;
+  /** Pre-drop TotalTokens on provider_compacted. */
+  prevTokens?: number;
+  legId?: string;
 }
 
 export type ProviderEventDTO =
@@ -634,6 +653,18 @@ export type ProviderEventDTO =
   | (ProviderEventBaseDTO & { type: "message_delta"; text: string })
   | (ProviderEventBaseDTO & { type: "message_completed"; text: string })
   | (ProviderEventBaseDTO & { type: "token_usage_updated"; tokenUsage: TokenUsageSnapshot })
+  | (ProviderEventBaseDTO & {
+      /** Task-443/444: context-window pressure observation. tier "aware" is an
+       *  inline banner; tier "ask" pairs with a user_question_required card. */
+      type: "context_pressure";
+      contextPressure: ContextPressurePayload;
+    })
+  | (ProviderEventBaseDTO & {
+      /** Task-443/444: the provider self-compacted the leg mid-turn — a
+       *  pinned inline notice (prevTokens → usedTokens), never a card. */
+      type: "provider_compacted";
+      contextPressure: ContextPressurePayload;
+    })
   | (ProviderEventBaseDTO & { type: "tool_started"; toolName: string; input?: unknown })
   | (ProviderEventBaseDTO & {
       type: "tool_completed";

@@ -15,6 +15,7 @@ import {
   type PendingAttachment,
 } from "@/lib/normalizeImage";
 import { supportsVisionFor } from "./visionProviders";
+import { ContextNotice, UsageFigures } from "./ContextUsageNotice";
 import { draftKeyFor } from "@/state/drafts";
 import { BotIcon, CaretIcon, CheckIcon, CloseIcon, MenuIcon, PaperclipIcon, SendIcon } from "@/components/icons";
 
@@ -335,6 +336,7 @@ export function ChatInput(): React.ReactElement {
   const pendingApprovals = useStore((s) => s.pendingApprovals);
   const pendingQuestions = useStore((s) => s.pendingQuestions);
   const latestTokenUsage = useStore((s) => s.latestTokenUsage);
+  const contextNotice = useStore((s) => s.contextNotice);
   const stop = useStore((s) => s.stop);
   const timeline = useStore((s) => s.timeline);
   const providerAccounts = useStore((s) => s.providerAccounts);
@@ -1488,6 +1490,19 @@ export function ChatInput(): React.ReactElement {
       {isChatMode && usageLine && (
         <div className="chat-usage-line" aria-live="polite">
           {usageLine}
+        </div>
+      )}
+      {/* Task-444 (CP-86 P-5): the two labeled figures + inline awareness
+          notice. Decision-tier items still ride pendingQuestions below. */}
+      {isChatMode && (displayedTokenUsage || contextNotice) && (
+        <div className="chat-context-usage" aria-live="polite">
+          {contextNotice ? (
+            <ContextNotice kind={contextNotice.kind} ratio={contextNotice.ratio} prev={contextNotice.prev} cur={contextNotice.cur} />
+          ) : null}
+          <UsageFigures
+            estPromptTokens={displayedTokenUsage?.estPromptTokens ?? null}
+            usageTokens={displayedTokenUsage?.total?.totalTokens ?? displayedTokenUsage?.last?.totalTokens ?? null}
+          />
         </div>
       )}
 
