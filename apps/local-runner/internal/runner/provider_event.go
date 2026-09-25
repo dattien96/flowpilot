@@ -55,6 +55,10 @@ const (
 	EventUserQuestionRequired ProviderEventType = "user_question_required"
 	EventTurnFailed           ProviderEventType = "turn_failed"
 	EventTurnCompleted        ProviderEventType = "turn_completed"
+	// CP-86 P-4 (Task-443): flag-gated context-pressure awareness/ask events
+	// and provider self-compaction detection — FLOWPILOT_CONTEXT_PRESSURE.
+	EventContextPressure    ProviderEventType = "context_pressure"
+	EventProviderCompacted  ProviderEventType = "provider_compacted"
 	EventAgentGraphUpdated    ProviderEventType = "agent_graph_updated"
 	EventAgentBusMessage      ProviderEventType = "agent_bus_message"
 	// Emitted on the parent run when a user triggers a spawn from the UI (BUG-121).
@@ -116,6 +120,25 @@ type TokenUsageSnapshot struct {
 	Last               *TokenUsageBreakdown `json:"last,omitempty"`
 	Total              *TokenUsageBreakdown `json:"total,omitempty"`
 	ModelContextWindow *int64               `json:"modelContextWindow,omitempty"`
+	// EstPromptTokens is the runner's own heuristic estimate of the current
+	// turn's prompt size (len(prompt)/4 — the same figure the post-turn audit
+	// line records, Task-444 T-1). The UI renders it as "prompt ~Nk est",
+	// explicitly distinct from the provider-reported usage figures. Absent
+	// when no prompt is bound (rendered "—", never a fake zero).
+	EstPromptTokens *int64 `json:"estPromptTokens,omitempty"`
+}
+
+// ContextPressurePayload rides context_pressure / provider_compacted events
+// (Task-443, flag-gated FLOWPILOT_CONTEXT_PRESSURE).
+type ContextPressurePayload struct {
+	Tier         string  `json:"tier"`    // "aware" | "ask"
+	Ratio        float64 `json:"ratio"`   // usage/window
+	UsedTokens   int64   `json:"usedTokens"`
+	WindowTokens int64   `json:"windowTokens"`
+	// PrevTokens carries the pre-drop TotalTokens on provider_compacted.
+	PrevTokens int64 `json:"prevTokens,omitempty"`
+	// LegID is the provider session id the observation belongs to.
+	LegID string `json:"legId,omitempty"`
 }
 
 // ProviderEvent is the normalized, serialized event — a single Go struct keyed by
@@ -162,6 +185,8 @@ type ProviderEvent struct {
 	Prompt      string           `json:"prompt,omitempty"`
 	Options     []QuestionOption `json:"options,omitempty"`
 	MultiSelect bool             `json:"multiSelect,omitempty"`
+	// context_pressure / provider_compacted (Task-443)
+	ContextPressure *ContextPressurePayload `json:"contextPressure,omitempty"`
 	// Answer is populated only when replaying an already-resolved question on
 	// reconnect (BUG-StaleQuestion) — it carries the recorded choice so the
 	// client renders the QuestionCard read-only instead of re-showing an

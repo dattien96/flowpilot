@@ -679,6 +679,26 @@ type interactiveRun struct {
 	// RAM-only by design: after a restart no live broadcast happened in this
 	// process, so resumePendingFlowGate must emit the materialized terminal.
 	terminalBroadcastTurns map[string]bool
+	// Task-443 (CP-86 P-4): flag-gated context-pressure state.
+	// pressureTierFired dedupes a tier once per leg ("<session>|<tier>");
+	// contextDegradedLegs marks legs whose provider self-compacted;
+	// contextResetPending is the durable rotate_leg intent consumed at the
+	// next admission; contextResetCount bounds resets per run.
+	pressureTierFired    map[string]bool
+	contextDegradedLegs  map[string]bool
+	// contextResetOfferedLegs dedupes the degraded-leg rotate offer: once per
+	// leg, so answering continue does not re-nag at every admission.
+	contextResetOfferedLegs map[string]bool
+	contextResetPending  bool
+	contextResetCount    int
+	lastUsageSessionID   string
+	lastUsageTotalTokens int64
+	// legContextWindows remembers the last context window reported on each
+	// provider session (leg). The window is a leg property, not per-event —
+	// providers like Devin report `size` on mid-turn usage_update events but
+	// omit it on the turn-terminal event, which would otherwise land nil and
+	// silently skip the pressure ladder on the deciding event.
+	legContextWindows map[string]int64
 	// Durable fail budgets keyed by generation (V10R4 P1).
 	pendingResumeFailCount       int
 	pendingResumeFailGen         int64
@@ -6069,6 +6089,40 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 			// Root hub/coder turn: same defer so crash mid-gate cannot restore Completed.
 			deferGateCompleted = true
 		}
+	}
+	// CP-86 P-1 (Task-440): fill ModelContextWindow from the provider catalog
+	// when the adapter did not self-report (Claude never sends one), so every
+	// consumer reads one uniform field. Pure in-memory lookup — no I/O under
+	// s.mu. Self-reported values are never overridden; unknown stays nil.
+	// Fallback order: adapter-reported → static catalog → last window seen on
+	// THIS leg (the window is a leg property; e.g. Devin reports `size` on
+	// mid-turn usage_update but omits it on the turn-terminal event, which
+	// would otherwise land nil and skip the pressure ladder on the deciding
+	// event). A new leg never inherits the previous leg's window.
+	if ev.Type == EventTokenUsageUpdated && ev.TokenUsage != nil {
+		if ev.TokenUsage.ModelContextWindow == nil {
+			if window := modelContextWindowFor(rs.providerKey, rs.modelName); window != nil {
+				ev.TokenUsage.ModelContextWindow = window
+			} else if rs.legContextWindows != nil {
+				if w := rs.legContextWindows[ev.ProviderSessionID]; w > 0 {
+					carried := w
+					ev.TokenUsage.ModelContextWindow = &carried
+				}
+			}
+		}
+		if ev.TokenUsage.ModelContextWindow != nil && *ev.TokenUsage.ModelContextWindow > 0 && ev.ProviderSessionID != "" {
+			if rs.legContextWindows == nil {
+				rs.legContextWindows = map[string]int64{}
+			}
+			rs.legContextWindows[ev.ProviderSessionID] = *ev.TokenUsage.ModelContextWindow
+		}
+	}
+	// Task-444 T-1 (CP-86 P-5): stamp the heuristic prompt-size estimate on
+	// every usage event so the UI can show "prompt ~Nk est" next to the real
+	// "usage Nk" figure without conflating the two. Pure in-memory, no I/O.
+	if ev.Type == EventTokenUsageUpdated && ev.TokenUsage != nil && ev.TokenUsage.EstPromptTokens == nil && rs.lastPrompt != "" {
+		est := int64(len(rs.lastPrompt)) / 4
+		ev.TokenUsage.EstPromptTokens = &est
 	}
 	rs.events = append(rs.events, ev)
 	rs.lastEventType = ev.Type
