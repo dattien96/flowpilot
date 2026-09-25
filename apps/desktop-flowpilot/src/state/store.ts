@@ -3548,36 +3548,72 @@ export const useStore = create<AppState>((set, get) => ({
 
 // ── Account-switch helpers ─────────────────────────────────────────────────
 
-// BUG-375: token set mirrors the runner's isProviderUsageLimitError
-// (interactive_service.go) — the two classifiers gate the same quota flow
-// (runner → run status; desktop → account-switch surface), so they must
-// agree on every billing/quota signature or one side silently drops it.
-export function isUsageLimitMessage(msg: string): boolean {
-  const lower = msg.toLowerCase();
-  return (
-    lower.includes("usage limit reached") ||
-    lower.includes("extra usage unavailable") ||
-    lower.includes("out of credits") ||
-    lower.includes("out_of_credits") ||
-    lower.includes("quota reset") ||
-    lower.includes("rate limit") ||
-    lower.includes("rate_limit") ||
-    lower.includes("rate-limit") ||
-    lower.includes("rate_limited") ||
-    lower.includes("quota exceeded") ||
-    lower.includes("quota_exceeded") ||
-    lower.includes("insufficient credit") ||
-    lower.includes("insufficient_credit") ||
-    lower.includes("usage_limit") ||
-    lower.includes("usage-limit") ||
-    lower.includes("payment required") ||
-    lower.includes("payment_required") ||
-    lower.includes("no payment method") ||
-    lower.includes("add a payment method") ||
-    lower.includes("personal-team-blocked") ||
-    lower.includes("spending-limit") ||
-    lower.includes("spending_limit")
-  );
+// Task-445 (CP-87 P-1): the quota surface keys on the typed
+// provider_limit_reached event — the runner's classifier is the only string
+// parser; the desktop never pattern-matches provider error text again.
+// (Replaces the BUG-375 isUsageLimitMessage token list, which had to mirror
+// isProviderUsageLimitError by hand and kept drifting behind it.)
+export function surfaceProviderLimitForRun(
+  e: ProviderEventDTO,
+  get: () => AppState,
+  set: (fn: (s: AppState) => Partial<AppState>) => void,
+): void {
+  if (e.type !== "provider_limit_reached") return;
+  const runId = e.workflowRunId;
+  const providerKey = e.providerLimit.providerKey;
+  const s = get();
+  if (s.chatMode !== "normal_chat" || !providerKey || s.pendingAccountSwitch || s.accountSwitchLoading) {
+    return;
+  }
+  const failedAccount = s.providerAccounts.find((a) => a.providerKey === providerKey && a.isActive);
+  if (!failedAccount) return;
+  const tried = [...s._accountSwitchTriedIds, failedAccount.id];
+  const candidate = findBestCandidate(s.providerAccounts, providerKey, tried);
+  if (!candidate) return;
+  const failedId = failedAccount.id;
+  const failedLbl = accountLabel(failedAccount);
+  // CP-84 (Task-434 T-2): quota prompt routes by source runId —
+  // focused → the existing AccountSwitchModal; non-focused → a
+  // synthetic inbox item carrying the quota decision (same
+  // account-switch confirm path, different surface).
+  if (isFocusedRun(s, runId)) {
+    set((_) => ({
+      pendingAccountSwitch: {
+        providerKey,
+        failedAccountId: failedId,
+        failedAccountLabel: failedLbl,
+        candidateAccount: candidate,
+        reason: "usage_limit" as const,
+      },
+      _accountSwitchTriedIds: tried,
+    }));
+    return;
+  }
+  const laneItem = attentionQueue.items.find((i) => i.runId === runId);
+  get().ingestAttentionItem({
+    runId,
+    chatId: laneItem?.chatId ?? runId,
+    projectId: laneItem?.projectId ?? get().selectedProjectId ?? "",
+    runTitle: laneItem?.runTitle ?? runId,
+    kind: "quota",
+    waitingSince: new Date().toISOString(),
+    providerKey,
+    decision: {
+      version: 1,
+      id: `quota:${runId}`,
+      runId,
+      kind: "quota",
+      revision: `quota:${runId}`,
+      status: "pending",
+      actionable: true,
+      providerKey,
+      prompt: `Usage limit reached on ${failedLbl}`,
+      quota: {
+        candidateAccountId: candidate.id,
+        candidateLabel: accountLabel(candidate),
+      },
+    },
+  });
 }
 
 export function accountLabel(account: ProviderAccountSummary): string {
@@ -3718,62 +3754,8 @@ async function consumeStream(
     // to keep the timeline live during the initial coder phase. (Self-guarded.)
     if (e.type === "agent_graph_updated") void get().refreshWorkflowStepRuntime();
     if (e.type === "agent_graph_updated") void get().refreshAgentRuns();
-    if (e.type === "turn_failed" && !e.recoverable && isUsageLimitMessage(e.error)) {
-      const s = get();
-      if (s.chatMode === "normal_chat" && s.selectedProvider && !s.pendingAccountSwitch && !s.accountSwitchLoading) {
-        const failedAccount = s.providerAccounts.find((a) => a.providerKey === s.selectedProvider && a.isActive);
-        if (failedAccount) {
-          const tried = [...s._accountSwitchTriedIds, failedAccount.id];
-          const candidate = findBestCandidate(s.providerAccounts, s.selectedProvider, tried);
-          if (candidate) {
-            const providerKey = s.selectedProvider;
-            const failedId = failedAccount.id;
-            const failedLbl = accountLabel(failedAccount);
-            // CP-84 (Task-434 T-2): quota prompt routes by source runId —
-            // focused → the existing AccountSwitchModal; non-focused → a
-            // synthetic inbox item carrying the quota decision (same
-            // account-switch confirm path, different surface).
-            if (isFocusedRun(get(), runId)) {
-              set((_) => ({
-                pendingAccountSwitch: {
-                  providerKey,
-                  failedAccountId: failedId,
-                  failedAccountLabel: failedLbl,
-                  candidateAccount: candidate,
-                  reason: "usage_limit" as const,
-                },
-                _accountSwitchTriedIds: tried,
-              }));
-            } else {
-              const laneItem = attentionQueue.items.find((i) => i.runId === runId);
-              get().ingestAttentionItem({
-                runId,
-                chatId: laneItem?.chatId ?? runId,
-                projectId: laneItem?.projectId ?? get().selectedProjectId ?? "",
-                runTitle: laneItem?.runTitle ?? runId,
-                kind: "quota",
-                waitingSince: new Date().toISOString(),
-                providerKey,
-                decision: {
-                  version: 1,
-                  id: `quota:${runId}`,
-                  runId,
-                  kind: "quota",
-                  revision: `quota:${runId}`,
-                  status: "pending",
-                  actionable: true,
-                  providerKey,
-                  prompt: `Usage limit reached on ${failedLbl}`,
-                  quota: {
-                    candidateAccountId: candidate.id,
-                    candidateLabel: accountLabel(candidate),
-                  },
-                },
-              });
-            }
-          }
-        }
-      }
+    if (e.type === "provider_limit_reached") {
+      surfaceProviderLimitForRun(e, get, set);
     }
   }
   if (isStale()) {

@@ -395,7 +395,7 @@ func (a *grokAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Turn
 
 		case outcome := <-done:
 			if outcome.err != nil {
-				return outcome.err
+				return providerLimitAwareError(ProviderKeyGrok, outcome.err)
 			}
 			// session/prompt's RPC response can become ready while agent_message_chunk
 			// frames are still queued on notif (same wire order, separate waiter vs

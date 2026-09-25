@@ -80,7 +80,55 @@ const (
 	// event carries Status ("connecting"|"ready"|"failed") + Text so the
 	// desktop renders progress instead of a frozen-looking wait.
 	EventProviderStatus ProviderEventType = "provider_status"
+	// Emitted immediately before the terminal turn_failed when a provider
+	// limit failure is classified (Task-445 / CP-87 P-1). Carries the typed
+	// ProviderLimit payload so clients never re-parse error text; the turn's
+	// terminal turn_failed event still follows for generic failure handling.
+	EventProviderLimitReached ProviderEventType = "provider_limit_reached"
 )
+
+// ProviderLimitKind is the normalized provider-limit taxonomy (Task-445 T-1).
+// Transient rate limiting stays distinct from exhausted quota/credits/billing
+// so routing treats a retryable 429 differently from a dead account.
+type ProviderLimitKind string
+
+const (
+	ProviderLimitQuotaExhausted    ProviderLimitKind = "quota_exhausted"
+	ProviderLimitRateLimited       ProviderLimitKind = "rate_limited"
+	ProviderLimitCreditsExhausted  ProviderLimitKind = "credits_exhausted"
+	ProviderLimitBillingRequired   ProviderLimitKind = "billing_required"
+)
+
+// ProviderLimit detection sources (Task-445 T-2): structured payload fields and
+// stop reasons classify exact; the centralized string fallback runs only on
+// unstructured CLI/RPC text and reports heuristic confidence.
+const (
+	ProviderLimitDetectionStructuredPayload = "structured_payload"
+	ProviderLimitDetectionStopReason        = "stop_reason"
+	ProviderLimitDetectionStderrFallback    = "stderr_fallback"
+
+	ProviderLimitConfidenceExact     = "exact"
+	ProviderLimitConfidenceHeuristic = "heuristic"
+)
+
+// ProviderLimit is the normalized, sanitized description of a provider-side
+// limit failure (Task-445). Detection provenance is always recorded so quota
+// routing (CP-87) can trust high-confidence signals and audit the rest.
+type ProviderLimit struct {
+	Kind              ProviderLimitKind `json:"kind"`
+	ProviderKey       ProviderKey       `json:"providerKey"`
+	AccountID         string            `json:"accountId,omitempty"`
+	RetryAfterSeconds int64             `json:"retryAfterSeconds,omitempty"`
+	ResetAt           string            `json:"resetAt,omitempty"`
+	RawCode           string            `json:"rawCode,omitempty"`
+	// SanitizedMessage is whitespace-collapsed and rune-capped; never a secret
+	// or absolute home path.
+	SanitizedMessage string `json:"sanitizedMessage"`
+	// DetectionSource: structured_payload | stop_reason | stderr_fallback.
+	DetectionSource string `json:"detectionSource"`
+	// Confidence: exact | heuristic.
+	Confidence string `json:"confidence"`
+}
 
 // ApprovalDecisionOption is one decision the runtime offers for an approval.
 type ApprovalDecisionOption struct {
@@ -195,6 +243,9 @@ type ProviderEvent struct {
 	// turn_failed
 	Error       string `json:"error,omitempty"`
 	Recoverable bool   `json:"recoverable,omitempty"`
+	// provider_limit_reached (Task-445): typed classification evidence emitted
+	// immediately before the terminal turn_failed on a limit-shaped failure.
+	ProviderLimit *ProviderLimit `json:"providerLimit,omitempty"`
 	// flow_gate_violation (r-reg decision card — Task-155)
 	GateOptions        []string `json:"gateOptions,omitempty"`
 	GateRegressedTests []string `json:"gateRegressedTests,omitempty"`

@@ -633,6 +633,21 @@ export interface TokenUsageSnapshot {
   estPromptTokens?: number | null;
 }
 
+/** Mirrors the runner's ProviderLimit (Task-445) — rides the typed
+ *  provider_limit_reached event so the UI reacts to the classification
+ *  without ever re-parsing provider error text. */
+export interface ProviderLimitDTO {
+  kind: "quota_exhausted" | "rate_limited" | "credits_exhausted" | "billing_required";
+  providerKey: ProviderKey;
+  accountId?: string;
+  retryAfterSeconds?: number;
+  resetAt?: string;
+  rawCode?: string;
+  sanitizedMessage: string;
+  detectionSource: "structured_payload" | "stop_reason" | "stderr_fallback";
+  confidence: "exact" | "heuristic";
+}
+
 /** Mirrors the runner's ContextPressurePayload (Task-443) — rides
  *  context_pressure (awareness/decision) and provider_compacted (fact)
  *  events, flag-gated by FLOWPILOT_CONTEXT_PRESSURE. */
@@ -707,6 +722,14 @@ export type ProviderEventDTO =
       type: "user_decision_card_requested";
       /** Runner ProviderEvent.Input — the UserDecisionCard payload. */
       input: DecisionCardDTO;
+    })
+  | (ProviderEventBaseDTO & {
+      /** Task-445 (CP-87 P-1): typed provider-limit classification. Emitted
+       *  immediately before the terminal turn_failed when the runner classifies
+       *  a quota/rate-limit/credits/billing failure — the desktop's quota
+       *  surface keys on this event and never parses error text. */
+      type: "provider_limit_reached";
+      providerLimit: ProviderLimitDTO;
     })
   | (ProviderEventBaseDTO & { type: "turn_failed"; error: string; recoverable: boolean })
   | (ProviderEventBaseDTO & { type: "turn_completed"; finalMessage: string })

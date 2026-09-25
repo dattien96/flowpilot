@@ -3,11 +3,11 @@
 - Document ID: `Task-445`
 - Title: `Normalize Claude/Codex/Grok/OpenCode/Devin limit failures once and remove Desktop string classification`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `dat.nguyen`
 - Reviewers: ``
 - Created: `2026-09-25`
-- Last Updated: `2026-09-25`
+- Last Updated: `2026-10-04`
 - Parent Documents: `CP-87`, `CP-86`, `SS-22`
 - Child Documents: ``
 - Related Documents: `BUG-361`, `BUG-374`, `Task-434` (quota attention routing)
@@ -149,15 +149,45 @@ func providerLimitRecoverable(limit ProviderLimit) bool
 
 ## 10. Definition of Done
 
-- [ ] §6 signatures landed or deviation documented
-- [ ] §7 additive tests green; old tests not weakened
-- [ ] Five-provider fixture parity; live evidence accurately labeled
-- [ ] Desktop quota string classifier removed
-- [ ] CA ledger + feature keys `token-usage`, `runtime-intelligence`
-- [ ] GitNexus detect_changes reviewed before commit
+- [x] §6 signatures landed or deviation documented
+- [x] §7 additive tests green; old tests not weakened
+- [x] Five-provider fixture parity; live evidence accurately labeled
+- [x] Desktop quota string classifier removed
+- [x] CA ledger + feature keys `token-usage`, `runtime-intelligence`
+- [x] GitNexus detect_changes reviewed before commit
 
 ## 11. Completion Notes
 
-- result:
-- follow-ups:
-- upstream docs updated:
+- result: `ProviderLimit`/`ProviderLimitKind`/`EventProviderLimitReached`
+  landed; `classifyProviderLimit` + `providerLimitRecoverable` in new
+  `provider_limit.go` are the single classification seam — structured payload
+  fields (rpc code/http_status/retry_after/typed code) and stopReasons
+  classify `exact`, free-text tokens classify `heuristic` under
+  `structured_payload` or `stderr_fallback`. Dispatchers return `*rpcError`
+  preserving JSON-RPC code/data (message byte-identical); adapters emit typed
+  `provider_limit_reached` before `turn_failed` (opencode/devin in-adapter for
+  non-retryable kinds; claude in `mapClaudeResult`; grok/codex/unknown via
+  `finishTurn` on `providerLimitAwareError`); `finishTurn` backfills
+  provider/account from the run. `isRecoverableSendError` prefers typed
+  limits; only `rate_limited` with bounded Retry-After (≤30s) retries, via a
+  ctx-aware test seam. Desktop `contract.ts`/`store.ts` consume the typed
+  event (`surfaceProviderLimitForRun`); `isUsageLimitMessage` + its mirror
+  test deleted. Deviations from §6: none to the signatures themselves —
+  `DetectionSource`/`Confidence` are `string` fields; `classifyStopReasonLimit`
+  and `providerLimitAwareError` added as helper seams.
+- tests: `task445_provider_limit_test.go` —
+  `TestTask445_ClassifierKindsAndSources`, `_RateLimitDistinctFromQuota`,
+  `_UnknownShapeAudited`, `_ClaudeFixtures`, `_CodexFixtures`,
+  `_GrokFixtures`, `_OpenCodeFixtures`, `_DevinFixtures` green;
+  `go test ./internal/runner/` green incl. BUG-361/374/381 + send-retry
+  regressions. Desktop `providerLimit.test.ts` 3/3: typed event opens switch
+  surface (focused), drives inbox decision (non-focused), untyped
+  `turn_failed` text no longer triggers.
+- evidence labels: Claude/Codex = fixture-contract (no live accounts);
+  Grok/OpenCode/Devin = fake ACP/app-server processes over the real
+  dispatcher path; **no live accounts exhausted** (per §9).
+- follow-ups: CP-87 Task-447+ consumes `ProviderLimit`+`accountId` for the
+  routing gate; CA-977.
+- upstream docs updated: CP-87 P-1 rollout step 1 satisfied; ledger dominant
+  key `ai-providers` per CP-87 commit convention (task DoD keys
+  `token-usage`/`runtime-intelligence` noted in CA-977 prose per SS-13).

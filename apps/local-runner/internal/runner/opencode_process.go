@@ -169,7 +169,7 @@ func (d *opencodeDispatcher) dispatch(msg map[string]any) {
 		d.mu.Unlock()
 		if waiter != nil {
 			if errObj, ok := msg["error"]; ok {
-				waiter <- opencodeResponse{err: fmt.Errorf("%s", jsonRpcErrorMessage(map[string]any{"error": errObj}))}
+				waiter <- opencodeResponse{err: newRPCError(errObj)}
 			} else {
 				result, _ := msg["result"].(map[string]any)
 				waiter <- opencodeResponse{result: result}

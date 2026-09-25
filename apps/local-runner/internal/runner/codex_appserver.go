@@ -271,7 +271,7 @@ func (d *codexDispatcher) dispatch(msg map[string]any) {
 		d.mu.Unlock()
 		if waiter != nil {
 			if errObj, ok := msg["error"]; ok {
-				waiter <- codexResponse{err: fmt.Errorf("%s", jsonRpcErrorMessage(map[string]any{"error": errObj}))}
+				waiter <- codexResponse{err: newRPCError(errObj)}
 			} else {
 				result, _ := msg["result"].(map[string]any)
 				waiter <- codexResponse{result: result}

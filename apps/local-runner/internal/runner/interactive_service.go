@@ -9143,6 +9143,13 @@ func (s *InteractiveService) sendTurnWithRetry(ctx context.Context, adapter Prov
 		if err == nil || !isRecoverableSendError(err) || attempt == attempts {
 			return err
 		}
+		// Task-445 T-3: a typed rate-limit carries the provider's Retry-After;
+		// honor it (bounded) instead of hammering back immediately.
+		if limit, ok := providerLimitFromError(err); ok && limit.RetryAfterSeconds > 0 {
+			if werr := providerLimitRetryDelayFn(ctx, time.Duration(limit.RetryAfterSeconds)*time.Second); werr != nil {
+				return werr
+			}
+		}
 		bridge.Emit(ProviderEvent{
 			Type: EventMessageDelta,
 			Text: fmt.Sprintf("\n[recovering: re-sending turn after a recoverable error (attempt %d/%d)]\n", attempt+1, attempts),
@@ -9166,54 +9173,26 @@ func isRecoverableSendError(err error) bool {
 	if errors.Is(err, errGeminiWorkspaceRequired) {
 		return false
 	}
+	// Task-445 T-3: typed provider limits own the retry decision — only a
+	// bounded Retry-After rate limit re-sends; everything else is terminal so
+	// the CP-87 router can handle it.
+	if limit, ok := providerLimitFromError(err); ok {
+		return providerLimitRecoverable(*limit)
+	}
 	if isProviderUsageLimitError(err) {
 		return false
 	}
 	return true
 }
 
+// isProviderUsageLimitError reports whether an untyped error string classifies
+// as a provider limit (BUG-361). Task-445: the token table now lives in
+// provider_limit.go's shared classifier — this wrapper preserves the name for
+// existing callers/tests while the typed path (providerLimitError) takes
+// precedence in isRecoverableSendError.
 func isProviderUsageLimitError(err error) bool {
-	if err == nil {
-		return false
-	}
-	message := strings.ToLower(err.Error())
-	return strings.Contains(message, "usage limit reached") ||
-		strings.Contains(message, "extra usage unavailable") ||
-		strings.Contains(message, "out of credits") ||
-		strings.Contains(message, "out_of_credits") ||
-		strings.Contains(message, "quota reset") ||
-		strings.Contains(message, "rate limit") ||
-		// BUG-361: OpenCode ACP quota/billing shapes. Underscore/dash
-		// variants ("rate_limited", "quota_exceeded") never matched the
-		// space-separated tokens above, so a returned quota error looked
-		// recoverable and retried instead of failing fast. All tokens are
-		// unambiguously billing/quota; healthy errors never contain them.
-		strings.Contains(message, "rate_limit") ||
-		strings.Contains(message, "rate-limit") ||
-		strings.Contains(message, "rate_limited") ||
-		strings.Contains(message, "quota exceeded") ||
-		strings.Contains(message, "quota_exceeded") ||
-		strings.Contains(message, "insufficient credit") ||
-		strings.Contains(message, "insufficient_credit") ||
-		// BUG-361 follow-up review: the ACP layer already treats usage_limit /
-		// usage-limit as quota stopReasons — the RPC-error layer must agree,
-		// or a "usage_limit exceeded" RPC error still classifies recoverable.
-		strings.Contains(message, "usage_limit") ||
-		strings.Contains(message, "usage-limit") ||
-		strings.Contains(message, "payment required") ||
-		strings.Contains(message, "payment_required") ||
-		// Live ACP probe 2026-09-07 (opencode 1.18.29, gpt-5.4-nano):
-		// session/prompt JSON-RPC -32603
-		// "Internal error: No payment method. Add a payment method here: …/billing"
-		// "payment required" does not match this copy.
-		strings.Contains(message, "no payment method") ||
-		strings.Contains(message, "add a payment method") ||
-		// Grok Build (CP-46/Task-210, GR-19): live-observed 402 signature during
-		// CP-46 authoring. Appended additively; other providers' classification
-		// above is unchanged.
-		strings.Contains(message, "personal-team-blocked") ||
-		strings.Contains(message, "spending-limit") ||
-		strings.Contains(message, "spending_limit")
+	_, ok := classifyProviderLimit("", nil, err)
+	return ok
 }
 
 // finishTurn does the locked post-turn bookkeeping: clears in-flight state, emits
@@ -9407,6 +9386,21 @@ func (s *InteractiveService) finishTurn(rs *interactiveRun, turnID string, err e
 		// Logging the terminal error here (alongside logTurnProviderParams'
 		// model/reasoning/cwd/yolo) makes the failure reason findable after the fact.
 		log.Printf("[turn-failed] run=%s turn=%s provider=%s error=%q", rs.id, turnID, rs.providerKey, err.Error())
+		// Task-445: a limit-shaped failure publishes the typed classification
+		// event before the terminal failure so clients never parse error text.
+		limit, limitOK := providerLimitFromError(err)
+		if !limitOK {
+			limit, limitOK = classifyProviderLimit(rs.providerKey, nil, err)
+		}
+		if limitOK && limit != nil {
+			if limit.ProviderKey == "" {
+				limit.ProviderKey = rs.providerKey
+			}
+			if limit.AccountID == "" {
+				limit.AccountID = rs.providerAccountID
+			}
+			s.emitLocked(rs, ProviderEvent{Type: EventProviderLimitReached, ProviderTurnID: turnID, ProviderLimit: limit})
+		}
 		s.emitLocked(rs, ProviderEvent{Type: EventTurnFailed, ProviderTurnID: turnID, Error: err.Error(), Recoverable: false})
 		dispatchOutcome = "failed"
 		dispatchErrMsg = err.Error()
