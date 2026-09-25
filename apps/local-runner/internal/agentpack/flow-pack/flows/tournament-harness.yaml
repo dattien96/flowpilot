@@ -33,6 +33,7 @@ nodes:
     run: delegate
     lifecycle: once
     behavior: agent.delegate
+    workloadClass: scan
     agent: agents/reviewer.md
     # CP-62 P-4 (Task-340): scout is read-only — it frames the problem and
     # freezes scope context, never writes.
@@ -57,6 +58,7 @@ nodes:
     run: delegate
     lifecycle: spawn
     behavior: agent.delegate
+    workloadClass: coding
     agent: agents/coder.md
     model: claude-sonnet
     promptTemplate: prompts/tournament-candidate.md
@@ -68,6 +70,7 @@ nodes:
     run: delegate
     lifecycle: spawn
     behavior: agent.delegate
+    workloadClass: coding
     agent: agents/coder.md
     model: gpt-5.4-mini
     promptTemplate: prompts/tournament-candidate.md

@@ -598,14 +598,20 @@ func TestMapClaudeLineResultLimitDoesNotReportLogin(t *testing.T) {
 		"result":     "Not logged in · Please run /login",
 		"rate_limit": map[string]any{"cachedExtraUsageDisabledReason": "out_of_credits"},
 	}})
-	if len(evs) != 1 || evs[0].Type != EventTurnFailed {
-		t.Fatalf("limit result mapping = %+v, want one turn_failed", evs)
+	// Task-445: a typed provider_limit_reached event precedes the terminal
+	// turn_failed; the login-mask assertion below pins the failure message.
+	if len(evs) != 2 || evs[0].Type != EventProviderLimitReached || evs[1].Type != EventTurnFailed {
+		t.Fatalf("limit result mapping = %+v, want provider_limit_reached + turn_failed", evs)
 	}
-	if evs[0].Error == "Not logged in · Please run /login" {
-		t.Fatalf("limit result should not report login error: %+v", evs[0])
+	if evs[0].ProviderLimit == nil || evs[0].ProviderLimit.Kind != ProviderLimitCreditsExhausted {
+		t.Fatalf("limit event payload = %+v, want credits_exhausted", evs[0].ProviderLimit)
 	}
-	if evs[0].Error != "Claude usage limit reached. Switch Claude account or wait for quota reset." {
-		t.Fatalf("limit error = %q", evs[0].Error)
+	failed := evs[1]
+	if failed.Error == "Not logged in · Please run /login" {
+		t.Fatalf("limit result should not report login error: %+v", failed)
+	}
+	if failed.Error != "Claude usage limit reached. Switch Claude account or wait for quota reset." {
+		t.Fatalf("limit error = %q", failed.Error)
 	}
 }
 

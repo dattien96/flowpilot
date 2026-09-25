@@ -178,7 +178,7 @@ func (d *grokDispatcher) dispatch(msg map[string]any) {
 		d.mu.Unlock()
 		if waiter != nil {
 			if errObj, ok := msg["error"]; ok {
-				waiter <- grokResponse{err: fmt.Errorf("%s", jsonRpcErrorMessage(map[string]any{"error": errObj}))}
+				waiter <- grokResponse{err: newRPCError(errObj)}
 			} else {
 				result, _ := msg["result"].(map[string]any)
 				waiter <- grokResponse{result: result}

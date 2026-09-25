@@ -50,6 +50,7 @@ nodes:
     run: delegate
     lifecycle: once
     behavior: agent.delegate
+    workloadClass: high_reasoning
     agent: agents/contract-planner.md
   - id: preflight_contract_freeze
     run: inline
@@ -63,12 +64,14 @@ nodes:
     run: delegate
     lifecycle: reinvoke
     behavior: agent.code
+    workloadClass: coding
     agent: agents/coder.md
     join: all
   - id: reviewer_correctness
     run: delegate
     lifecycle: spawn
     behavior: agent.delegate
+    workloadClass: high_reasoning
     agent: agents/reviewer.md
     dependsOn:
       - coder
@@ -78,6 +81,7 @@ nodes:
     run: delegate
     lifecycle: spawn
     behavior: agent.delegate
+    workloadClass: high_reasoning
     agent: agents/reviewer.md
     dependsOn:
       - coder

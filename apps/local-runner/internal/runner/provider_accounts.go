@@ -257,6 +257,25 @@ func (r *Runner) ResolveProviderAccount(providerKey string, accountID string) (P
 	return ProviderAccount{}, fmt.Errorf("no connected local account found for provider %q", providerKey)
 }
 
+// resolveAdapterAccount resolves the account an adapter factory launches
+// under (Task-447): "" or the legacy "default" sentinel resolve the active
+// connected account — byte-identical to the pre-pin behavior. A real account
+// id is a strict pin: it must still exist and be connected, else the factory
+// fails closed rather than silently binding a different account.
+func (r *Runner) resolveAdapterAccount(providerKey, accountID string) (ProviderAccount, error) {
+	if strings.TrimSpace(accountID) == "" || accountID == "default" {
+		return r.ResolveProviderAccount(providerKey, "")
+	}
+	account, err := r.ResolveProviderAccount(providerKey, accountID)
+	if err != nil {
+		return ProviderAccount{}, err
+	}
+	if account.ID != accountID {
+		return ProviderAccount{}, fmt.Errorf("pinned account %q for provider %q is not connected", accountID, providerKey)
+	}
+	return account, nil
+}
+
 func (r *Runner) TestProviderAccount(accountID string) (ProviderAccount, error) {
 	state, err := r.loadProviderAccountState()
 	if err != nil {

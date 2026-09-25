@@ -28,6 +28,7 @@ nodes:
     run: delegate
     lifecycle: spawn
     behavior: agent.delegate
+    workloadClass: high_reasoning
     agent: agents/owner.md
     # CP-62 P-4 (Task-340, Q-3): owners are verdict_only — reads + the
     # verdict face only, no Bash, no file writes (SS-14 AC-6 structural).
@@ -40,6 +41,7 @@ nodes:
     run: delegate
     lifecycle: spawn
     behavior: agent.delegate
+    workloadClass: high_reasoning
     agent: agents/owner.md
     # CP-62 P-4 (Task-340, Q-3): verdict_only (no Bash, no writes).
     posture: verdict_only

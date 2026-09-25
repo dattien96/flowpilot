@@ -26,6 +26,10 @@ type chatSwitchRequest struct {
 	Model             string      `json:"model,omitempty"`
 	ReasoningEffort   string      `json:"reasoningEffort,omitempty"`
 	YoloMode          *bool       `json:"yoloMode,omitempty"` // nil = inherit current leg
+	// ProviderAccountID pins the new leg to a specific connected account —
+	// set by the quota gate's committed rotation (Task-449); empty keeps the
+	// legacy resolve-active-account behavior for user-initiated switches.
+	ProviderAccountID string `json:"providerAccountId,omitempty"`
 }
 
 type chatSwitchHandoffStats struct {
@@ -109,7 +113,7 @@ func (s *InteractiveService) healChatLegsLocked(chatID string) {
 			newLeg = rs
 		case rs.legState == LegStateActive && rs.switchFromRunID == rs.id:
 			oldLeg = rs
-		case rs.legState == LegStateClosed && rs.legClosedReason == LegClosedReasonProviderSwitch:
+		case rs.legState == LegStateClosed && (rs.legClosedReason == LegClosedReasonProviderSwitch || rs.legClosedReason == LegClosedReasonContextReset):
 			closedSrc = rs
 		}
 	}
@@ -211,6 +215,15 @@ func (s *InteractiveService) appendChatSwitchRecord(chatID string, from, to *int
 }
 
 func (s *InteractiveService) switchChatProvider(ctx context.Context, chatID string, req chatSwitchRequest) (chatSwitchResponse, *apiErr) {
+	return s.switchChatLeg(ctx, chatID, req, false)
+}
+
+// switchChatLeg mints a new leg for the chat from the handoff machinery.
+// allowSameProvider=false keeps the provider-switch contract (same-provider
+// continuity uses the in-place model-change path); true is the Task-443
+// context reset — a fresh provider session on the SAME binding, reseeded
+// from the durable transcript (leg lifecycle, not account routing).
+func (s *InteractiveService) switchChatLeg(ctx context.Context, chatID string, req chatSwitchRequest, allowSameProvider bool) (chatSwitchResponse, *apiErr) {
 	if chatID == "" {
 		return chatSwitchResponse{}, newAPIErr(http.StatusBadRequest, "invalid_request", "chatId is required")
 	}
@@ -257,7 +270,7 @@ func (s *InteractiveService) switchChatProvider(ctx context.Context, chatID stri
 		s.mu.Unlock()
 		return chatSwitchResponse{}, newAPIErr(http.StatusConflict, "handoff_run_busy", "a provider switch is already in flight")
 	}
-	if strings.EqualFold(string(src.providerKey), string(req.TargetProviderKey)) {
+	if strings.EqualFold(string(src.providerKey), string(req.TargetProviderKey)) && !allowSameProvider {
 		s.mu.Unlock()
 		return chatSwitchResponse{}, newAPIErr(http.StatusConflict, "handoff_same_provider", "same-provider continuity uses the in-place model-change path")
 	}
@@ -289,6 +302,9 @@ func (s *InteractiveService) switchChatProvider(ctx context.Context, chatID stri
 		ChatID:          chatID,
 		SwitchFromRunID: src.id,
 		LegSeq:          src.legSeq + 1,
+		// Task-449: a quota-committed switch carries the target account pin so
+		// the new leg never re-resolves the machine-global active account.
+		ProviderAccountID: req.ProviderAccountID,
 	}
 	if req.YoloMode != nil {
 		createInput.YoloMode = *req.YoloMode
@@ -322,7 +338,12 @@ func (s *InteractiveService) switchChatProvider(ctx context.Context, chatID stri
 		newLeg = rs
 	}
 	src.legState = LegStateClosed
+	// Same-binding close = context reset (Task-443), not a routing decision —
+	// keep the ledger honest about why the leg ended.
 	src.legClosedReason = LegClosedReasonProviderSwitch
+	if allowSameProvider {
+		src.legClosedReason = LegClosedReasonContextReset
+	}
 	_ = s.persistProviderSession(sessionStateOf(src))
 	if newLeg != nil {
 		s.appendChatSwitchRecord(chatID, src, newLeg, env.Stats)

@@ -200,7 +200,7 @@ func (a *codexAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Tur
 
 	startRes, err := a.dispatcher.call(ctx, threadMethod, threadParams)
 	if err != nil {
-		return err
+		return providerLimitAwareError(ProviderKeyCodex, err)
 	}
 	threadID := codexThreadIDFromResponse(startRes)
 	if threadID == "" {
@@ -270,7 +270,7 @@ func (a *codexAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Tur
 
 		case e := <-turnErr:
 			if e != nil {
-				return e
+				return providerLimitAwareError(ProviderKeyCodex, e)
 			}
 			turnErr = nil // ack received; disable this branch and keep pumping to terminal
 

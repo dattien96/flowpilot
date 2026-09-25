@@ -617,20 +617,9 @@ func devinStopReasonToEvent(stopReason string) ProviderEventType {
 
 // devinIsQuotaStopReason reports whether a stopReason unambiguously signals
 // quota/billing exhaustion (BUG-361 parity with opencodeIsQuotaStopReason).
+// Task-445: the token table now lives in the shared classifier
+// (provider_limit.go); this wrapper keeps the historical name.
 func devinIsQuotaStopReason(stopReason string) bool {
-	s := strings.ToLower(strings.TrimSpace(stopReason))
-	if s == "" {
-		return false
-	}
-	for _, tok := range []string{
-		"rate_limit", "rate-limit", "rate_limited",
-		"quota", "billing", "payment",
-		"insufficient_credit", "insufficient credit",
-		"usage_limit", "usage-limit",
-	} {
-		if strings.Contains(s, tok) {
-			return true
-		}
-	}
-	return false
+	_, ok := classifyStopReasonLimit(ProviderKeyDevin, stopReason)
+	return ok
 }

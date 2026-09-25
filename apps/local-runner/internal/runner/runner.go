@@ -1827,9 +1827,15 @@ func providerSpecs() []providerSpec {
 			BinaryName:  "claude",
 			InstallHint: "Install the Claude Code CLI, log in, and restart the runner.",
 			Models: []ProviderModel{
-				{ID: "claude-opus", DisplayName: "claude-opus", Source: "registry"},
-				{ID: "claude-sonnet", DisplayName: "claude-sonnet", Source: "registry"},
-				{ID: "claude-haiku", DisplayName: "claude-haiku", Source: "registry"},
+				// ContextWindowTokens (Task-440 / CP-86 P-1): the Claude CLI
+				// never reports a window in its event stream — the catalog is
+				// the authoritative source so every consumer (pressure ladder,
+				// TUI, desktop) reads one uniform value. 200k is the standard
+				// window across the current family; do not claim the 1M beta
+				// variant without a provider signal.
+				{ID: "claude-opus", DisplayName: "claude-opus", Source: "registry", ContextWindowTokens: 200000},
+				{ID: "claude-sonnet", DisplayName: "claude-sonnet", Source: "registry", ContextWindowTokens: 200000},
+				{ID: "claude-haiku", DisplayName: "claude-haiku", Source: "registry", ContextWindowTokens: 200000},
 			},
 		},
 		{

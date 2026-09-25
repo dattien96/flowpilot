@@ -53,6 +53,7 @@ nodes:
     run: delegate
     lifecycle: once
     behavior: agent.delegate
+    workloadClass: high_reasoning
     agent: agents/contract-planner.md
     promptTemplate: prompts/plan-safe-fix-contract.md
     # CP-62 P-4 (Task-340): scout is read-only (BUG-344 classifier).
@@ -67,6 +68,7 @@ nodes:
     run: delegate
     lifecycle: reinvoke
     behavior: agent.delegate
+    workloadClass: high_reasoning
     agent: agents/doc-writer.md
     promptTemplate: prompts/plan-cp.md
     artifactBindings:
@@ -84,6 +86,7 @@ nodes:
     run: delegate
     lifecycle: spawn
     behavior: agent.delegate
+    workloadClass: high_reasoning
     agent: agents/reviewer.md
     promptTemplate: prompts/review-cp.md
     # CP-62 P-4 (Task-340): read-only reviewer.
@@ -112,6 +115,7 @@ nodes:
     run: delegate
     lifecycle: once
     behavior: agent.delegate
+    workloadClass: high_reasoning
     agent: agents/doc-writer.md
     promptTemplate: prompts/task-splitter.md
     artifactBindings:

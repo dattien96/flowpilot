@@ -62,9 +62,15 @@ func (s *InteractiveService) RegisterInteractiveRoutes(mux *http.ServeMux) {
 	// the runner; TUI and Desktop read/write through these endpoints (SSOT).
 	mux.HandleFunc("GET /client/chat-posture", s.handleGetChatPosture)
 	mux.HandleFunc("PUT /client/chat-posture", s.handleSetChatPosture)
+	// CP-87 P-5 (Task-446): machine-global quota routing policy — same runner-
+	// owned document pattern as chat-posture (Desktop/TUI never write files).
+	mux.HandleFunc("GET /client/quota-routing-settings", s.handleGetQuotaRoutingSettings)
+	mux.HandleFunc("PUT /client/quota-routing-settings", s.handleSetQuotaRoutingSettings)
 	// CA-689c: on-demand per-model reasoning variants (live ACP probe; cached).
 	mux.HandleFunc("GET /client/providers/opencode-variants", s.handleGetOpencodeModelVariants)
 	mux.HandleFunc("GET /client/workflow-runs/{runId}", s.handleGetRun)
+	// CP-87 P-6 (Task-450): requested→resolved routing audit record.
+	mux.HandleFunc("GET /client/workflow-runs/{runId}/quota-audit", s.handleGetQuotaAudit)
 	mux.HandleFunc("GET /client/workflow-runs/{runId}/steps-runtime", s.handleGetWorkflowStepsRuntime)
 	// BUG-355 F2: run-scoped transcript for chat-less workflow runs.
 	mux.HandleFunc("GET /client/workflow-runs/{runId}/timeline", s.handleGetRunTimeline)
@@ -356,6 +362,21 @@ func (s *InteractiveService) handleGetRun(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeInteractiveJSON(w, http.StatusOK, view)
+}
+
+// handleGetQuotaAudit serves the Task-450 audit record: requested → resolved
+// route, reason/policy, headroom evidence, and correlated usage figures.
+func (s *InteractiveService) handleGetQuotaAudit(w http.ResponseWriter, r *http.Request) {
+	rec, err := s.quotaAuditForRun(r.Context(), r.PathValue("runId"))
+	if err != nil {
+		if ae, ok := err.(*apiErr); ok {
+			writeInteractiveError(w, ae)
+			return
+		}
+		writeInteractiveError(w, &apiErr{status: 500, code: "internal", msg: err.Error()})
+		return
+	}
+	writeInteractiveJSON(w, http.StatusOK, rec)
 }
 
 func (s *InteractiveService) handleResumeRun(w http.ResponseWriter, r *http.Request) {
@@ -1086,7 +1107,17 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 	// Stamp the run with the account that is active for THIS provider, not the
 	// single global activeAccountID (Task-067 issue 1). Resolved before the lock
 	// since it may read the provider-accounts store.
+	// Task-447: an explicit pin (routing claim or switch leg) wins over ambient
+	// resolution — the pin was already validated at claim time.
 	stampAccount := s.activeAccountForProvider(providerKey)
+	if strings.TrimSpace(in.ProviderAccountID) != "" {
+		stampAccount = strings.TrimSpace(in.ProviderAccountID)
+	}
+
+	// CP-87 P-5 (Task-446 T-3): freeze the machine-global routing policy into
+	// the run — a settings edit mid-run must never retarget its decisions.
+	// Loaded before the lock (file I/O), mirroring stampAccount.
+	quotaSnapshot := snapshotQuotaRouting(mustLoadQuotaRoutingSettings())
 
 	// CP-59 chat SSOT (SD-26 §5.1): resolve chat identity before the lock —
 	// adoption reads resident runs (same resolve-before-lock pattern as
@@ -1126,6 +1157,8 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 		providerKey:       providerKey,
 		providerSessionID: sessionID,
 		providerAccountID: stampAccount,
+		accountPinned:     in.AccountPinned,
+		quotaClaimID:      in.QuotaClaimID,
 		workspaceCwd:      in.Cwd,
 		modelName:         resolvedModel,
 		yolo:              resolvedYolo,
@@ -1137,6 +1170,7 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 		updatedAt:         now,
 		subs:              map[int64]chan ProviderEvent{},
 		idempotency:       map[string]string{},
+		quotaRouting:      quotaSnapshot,
 	}
 	if ref := strings.TrimSpace(in.FlowRef); ref != "" {
 		rs.chatFlowRef = ref
@@ -1189,6 +1223,7 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 		Yolo:              resolvedYolo,
 		WorkingMode:       in.WorkingMode,
 		ChatFlowRef:       rs.chatFlowRef,
+		QuotaRouting:      quotaSnapshot,
 	}
 	worktreeFieldsToSession(&st, rs.worktree)
 	if err := s.persistProviderSession(st); err != nil {
@@ -1326,6 +1361,9 @@ type pendingQuestionView struct {
 	Prompt      string           `json:"prompt"`
 	Options     []QuestionOption `json:"options"`
 	MultiSelect bool             `json:"multiSelect"`
+	// QuotaDecision is the structured candidate table on quota_route_required
+	// cards (Task-450) — nil on ordinary questions.
+	QuotaDecision *QuotaRouteDecision `json:"quotaDecision,omitempty"`
 }
 
 type pendingGateView struct {
@@ -1644,7 +1682,7 @@ func (s *InteractiveService) runSnapshot(runID string) (runSnapshotView, *apiErr
 	}
 	if rs.pendingQuestionID != "" {
 		if rec := s.questions[rs.pendingQuestionID]; rec != nil {
-			view.PendingQuestion = &pendingQuestionView{QuestionID: rec.id, Prompt: rec.prompt, Options: rec.options, MultiSelect: rec.multiSelect}
+			view.PendingQuestion = &pendingQuestionView{QuestionID: rec.id, Prompt: rec.prompt, Options: rec.options, MultiSelect: rec.multiSelect, QuotaDecision: quotaDecisionForRecord(rec)}
 		}
 	}
 	return view, nil

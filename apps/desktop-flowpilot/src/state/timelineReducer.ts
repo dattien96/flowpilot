@@ -1,4 +1,4 @@
-import type { ApprovalDetails, DecisionCardDTO, FlowAuditDraftDTO, ProviderEventDTO, QuestionOption, RunStatus } from "../types/contract";
+import type { ApprovalDetails, DecisionCardDTO, FlowAuditDraftDTO, ProviderEventDTO, QuestionOption, QuotaRouteDecisionDTO, RunStatus } from "../types/contract";
 
 /** BUG-243 F-3: condenses a FlowAuditDraft into the inline timeline card's
  *  markdown text. Mirrors RenderAuditDraftText's section order
@@ -37,7 +37,7 @@ export type TimelineItem =
   | { kind: "tool"; id: string; toolName: string; status: "running" | "success" | "failed" | "cancelled"; input?: unknown; output?: unknown }
   | { kind: "file"; id: string; path: string; changeType?: string }
   | { kind: "approval"; id: string; approvalId: string; details: ApprovalDetails; decision?: string }
-  | { kind: "question"; id: string; questionId: string; prompt: string; options: QuestionOption[]; multiSelect?: boolean; answer?: string | string[] }
+  | { kind: "question"; id: string; questionId: string; prompt: string; options: QuestionOption[]; multiSelect?: boolean; answer?: string | string[]; quotaDecision?: QuotaRouteDecisionDTO }
   | { kind: "agent"; id: string; agentName: string; childRunId: string; finalMessage?: string }
   | { kind: "decision_card"; id: string; card: DecisionCardDTO; chosenOptionId?: string }
   | { kind: "system"; id: string; text: string; tone: "info" | "error" | "warn"; pinned?: boolean };
@@ -52,6 +52,8 @@ export interface PendingQuestion {
   prompt: string;
   options: QuestionOption[];
   multiSelect?: boolean;
+  /** Task-450: structured candidate table on quota_route_required cards. */
+  quotaDecision?: QuotaRouteDecisionDTO;
 }
 
 export interface TimelineState {
@@ -407,6 +409,7 @@ export function applyTimelineEvent(s: TimelineState, e: ProviderEventDTO): Parti
         options: e.options,
         multiSelect: e.multiSelect,
         answer: e.answer,
+        ...(e.quotaDecision ? { quotaDecision: e.quotaDecision } : {}),
       });
       // A replayed already-resolved question (BUG-StaleQuestion) must stay
       // out of pendingQuestions — it renders read-only via `answer` above,
@@ -417,9 +420,30 @@ export function applyTimelineEvent(s: TimelineState, e: ProviderEventDTO): Parti
             ? s.pendingQuestions
             : [
                 ...s.pendingQuestions,
-                { questionId: e.questionId, prompt: e.prompt, options: e.options, multiSelect: e.multiSelect },
+                // quotaDecision rides along only when present — an always-set
+                // undefined key changes the pendingQuestions shape deep-equal'd
+                // by existing question tests.
+                { questionId: e.questionId, prompt: e.prompt, options: e.options, multiSelect: e.multiSelect, ...(e.quotaDecision ? { quotaDecision: e.quotaDecision } : {}) },
               ],
       });
+
+    case "quota_route_committed": {
+      // Task-449/450: informational requested→resolved rotation notice.
+      const q = e.quotaRoute;
+      timeline.push({
+        kind: "system",
+        id: e.id,
+        text: `quota route: ${q.fromProvider ?? "?"}/${q.fromAccount ?? "?"} → ${q.toProvider ?? "?"}/${q.toAccount ?? "?"}${q.toModel ? ` ${q.toModel}` : ""}`,
+        tone: "info",
+      });
+      return finalize(timeline, {});
+    }
+    case "quota_route_stopped":
+      timeline.push({ kind: "system", id: e.id, text: `quota route stopped${e.quotaRoute?.reason ? ` (${e.quotaRoute.reason})` : ""}`, tone: "warn" });
+      return finalize(timeline, {});
+    case "quota_route_blocked":
+      timeline.push({ kind: "system", id: e.id, text: `quota route blocked: no eligible candidate${e.quotaRoute?.reason ? ` (${e.quotaRoute.reason})` : ""}`, tone: "error" });
+      return finalize(timeline, {});
 
     case "user_decision_card_requested":
       // CP-62 P-3 (Task-345/350): render the structured escalation card.

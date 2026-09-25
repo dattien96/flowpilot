@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -656,6 +657,26 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, m.cmdPrefetchChats())
 			}
 			return m, tea.Batch(cmds...)
+		}
+		return m, nil
+
+	case QuotaSettingsMsg:
+		if msg.Err != "" {
+			m.addMessage("system", "quota routing settings unavailable: "+msg.Err+"\n(needs GET /client/quota-routing-settings — edit in Desktop → Settings → Engine)", "error")
+			return m, nil
+		}
+		for _, line := range renderQuotaRoutingSettings(msg.Settings, m.width) {
+			m.addMessage("system", line, "")
+		}
+		return m, nil
+
+	case QuotaAuditMsg:
+		if msg.Err != "" {
+			m.addMessage("system", "quota audit unavailable: "+msg.Err, "error")
+			return m, nil
+		}
+		for _, line := range renderQuotaAudit(msg.Record, m.width) {
+			m.addMessage("system", line, "")
 		}
 		return m, nil
 
@@ -2093,6 +2114,19 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// trackCtxLeg pins ctxStatus marks to one provider session. A leg change
+// (rotate_leg / provider switch mints a fresh providerSessionID) resets the
+// marks so stale pressure/compaction never bleeds onto the new leg.
+func (m *AppModel) trackCtxLeg(sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	if m.ctxStatusLegID != sessionID {
+		m.ctxStatus = contextStatus{}
+		m.ctxStatusLegID = sessionID
+	}
+}
+
 func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 	switch ev.Type {
 	case "message_delta":
@@ -2265,11 +2299,17 @@ func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 				Options:     opts,
 				MultiSelect: ev.MultiSelect,
 				RunID:       ev.WorkflowRunID,
+				Quota:       ev.QuotaDecision,
 			})
 			m.connStatus = ConnWaiting
 			m.statusMsg = "question"
 			if added {
 				m.addMessage("system", formatQuestionMessage(ev.Prompt, opts, ev.MultiSelect), "question")
+				if ev.QuotaDecision != nil {
+					for _, line := range renderQuotaCandidateTable(*ev.QuotaDecision, m.width) {
+						m.addMessage("system", line, "question")
+					}
+				}
 			}
 		}
 
@@ -2316,10 +2356,68 @@ func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 
 	case "token_usage_updated":
 		if ev.TokenUsage != nil {
+			m.trackCtxLeg(ev.ProviderSessionID)
 			m.lastTokens = ev.TokenUsage
 			if ev.TokenUsage.ModelContextWindow != nil && *ev.TokenUsage.ModelContextWindow > 0 {
 				m.modelContextWin = *ev.TokenUsage.ModelContextWindow
 			}
+			// Task-444 T-2: the aware mark clears when a later usage event
+			// drops below the tier; compaction is a fact — stays pinned.
+			if m.ctxStatus.pressureTier != "" && ev.TokenUsage.ModelContextWindow != nil && *ev.TokenUsage.ModelContextWindow > 0 {
+				var used int64
+				if ev.TokenUsage.Total != nil {
+					used = ev.TokenUsage.Total.TotalTokens
+				} else if ev.TokenUsage.Last != nil {
+					used = ev.TokenUsage.Last.TotalTokens
+				}
+				if float64(used)/float64(*ev.TokenUsage.ModelContextWindow) < 0.8 {
+					m.ctxStatus.pressureTier = ""
+					m.ctxStatus.pressurePct = 0
+				}
+			}
+		}
+
+	case "context_pressure":
+		// Task-444 T-2/T-5: awareness tier → status-line marker only. The
+		// ask-tier decision card arrives via user_question_required — no new
+		// card surface here.
+		if ev.ContextPressure != nil {
+			m.trackCtxLeg(ev.ProviderSessionID)
+			m.ctxStatus.pressureTier = ev.ContextPressure.Tier
+			m.ctxStatus.pressurePct = int(math.Round(ev.ContextPressure.Ratio * 100))
+		}
+
+	case "provider_compacted":
+		// Task-444 T-3/T-5: pinned inline notice — the provider compressed the
+		// leg's context mid-turn; output may degrade.
+		if ev.ContextPressure != nil {
+			m.trackCtxLeg(ev.ProviderSessionID)
+			m.ctxStatus.compacted = true
+			m.ctxStatus.compactPrev = ev.ContextPressure.PrevTokens
+			m.ctxStatus.compactCur = ev.ContextPressure.UsedTokens
+			m.addMessage("system", fmt.Sprintf("provider compressed context (%s→%s) — leg output may degrade",
+				formatTokenCount(ev.ContextPressure.PrevTokens), formatTokenCount(ev.ContextPressure.UsedTokens)), "notice")
+		}
+
+	case "quota_route_committed":
+		// Task-449/450: non-blocking requested→resolved route notice — the
+		// audit drawer carries the full record; the timeline shows the hop.
+		if q := ev.QuotaRoute; q != nil {
+			msg := fmt.Sprintf("quota route: %s/%s → %s/%s %s", q.FromProvider, q.FromAccount, q.ToProvider, q.ToAccount, q.ToModel)
+			if q.CooldownUntil != "" {
+				msg += " — " + renderQuotaCooldownBar(q.CooldownStartedAt, q.CooldownUntil, time.Now())
+			}
+			m.addMessage("system", msg, "notice")
+		}
+
+	case "quota_route_stopped":
+		if q := ev.QuotaRoute; q != nil {
+			m.addMessage("system", fmt.Sprintf("quota route stopped (%s)", q.Reason), "notice")
+		}
+
+	case "quota_route_blocked":
+		if q := ev.QuotaRoute; q != nil {
+			m.addMessage("system", fmt.Sprintf("quota route blocked: no eligible candidate (%s)", q.Reason), "error")
 		}
 
 	case "agent_graph_updated":
@@ -4695,6 +4793,25 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			break
 		}
 		m.toggleSkillByName(name)
+
+	case "/quota":
+		if len(args) > 0 && strings.EqualFold(args[0], "audit") {
+			runID := ""
+			if m.runHandle != nil {
+				runID = m.runHandle.RunID
+			}
+			if len(args) > 1 {
+				runID = strings.TrimSpace(args[1])
+			}
+			if runID == "" {
+				m.addMessage("system", "Usage: /quota audit <runId> — or run inside a chat to audit the current run", "")
+				break
+			}
+			m.addMessage("system", "Loading quota route audit…", "")
+			return m, m.cmdQuotaAudit(runID)
+		}
+		m.addMessage("system", "Loading quota routing settings…", "")
+		return m, m.cmdQuotaSettings()
 
 	case "/image":
 		return m.dispatchImageCommand(args)
@@ -7156,6 +7273,36 @@ func (m *AppModel) cmdLoadProvidersCatalog() tea.Cmd {
 		}
 		tuiLog("cmdLoadProvidersCatalog() done dur=%v err=<nil> n=%d", time.Since(start), len(ps))
 		return ProvidersCatalogMsg{Providers: ps}
+	}
+}
+
+// cmdQuotaSettings fetches GET /client/quota-routing-settings for /quota.
+func (m *AppModel) cmdQuotaSettings() tea.Cmd {
+	runnerURL := m.runnerURL
+	return func() tea.Msg {
+		cl := client.New(runnerURL)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		s, err := cl.GetQuotaRoutingSettings(ctx)
+		if err != nil {
+			return QuotaSettingsMsg{Err: err.Error()}
+		}
+		return QuotaSettingsMsg{Settings: s}
+	}
+}
+
+// cmdQuotaAudit fetches the forensic route record for /quota audit.
+func (m *AppModel) cmdQuotaAudit(runID string) tea.Cmd {
+	runnerURL := m.runnerURL
+	return func() tea.Msg {
+		cl := client.New(runnerURL)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		rec, err := cl.GetQuotaAudit(ctx, runID)
+		if err != nil {
+			return QuotaAuditMsg{Err: err.Error()}
+		}
+		return QuotaAuditMsg{Record: rec}
 	}
 }
 

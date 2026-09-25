@@ -481,21 +481,10 @@ func opencodeStopReasonToEvent(stopReason string) ProviderEventType {
 
 // opencodeIsQuotaStopReason reports whether an ACP stopReason unambiguously
 // signals quota/billing exhaustion (BUG-361). Unknown reasons stay Completed
-// — only tokens that cannot mean anything else are listed.
+// — only tokens that cannot mean anything else are listed. Task-445: the token
+// table now lives in the shared classifier (provider_limit.go); this wrapper
+// keeps the historical name for the mapper + regression tests.
 func opencodeIsQuotaStopReason(stopReason string) bool {
-	s := strings.ToLower(strings.TrimSpace(stopReason))
-	if s == "" {
-		return false
-	}
-	for _, tok := range []string{
-		"rate_limit", "rate-limit", "rate_limited",
-		"quota", "billing", "payment",
-		"insufficient_credit", "insufficient credit",
-		"usage_limit", "usage-limit",
-	} {
-		if strings.Contains(s, tok) {
-			return true
-		}
-	}
-	return false
+	_, ok := classifyStopReasonLimit(ProviderKeyOpencode, stopReason)
+	return ok
 }

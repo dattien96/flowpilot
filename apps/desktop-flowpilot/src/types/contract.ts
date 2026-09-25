@@ -593,6 +593,115 @@ export interface ChatPostureConfig {
   profiles: Partial<Record<ChatPosture, ChatPostureProfile>>;
 }
 
+// ---- Quota routing (CP-87 / Task-446) ---------------------------------------
+
+/** Rotation policy mode — "manual" (default, always gates) or "auto"
+ *  (bounded, high-confidence candidates only). */
+export type QuotaRotationMode = "manual" | "auto";
+
+/** Workload class declared on provider-backed flow nodes (agentpack). */
+export type WorkloadClass = "scan" | "high_reasoning" | "coding";
+
+export interface ModelClassBinding {
+  providerKey: string;
+  workloadClass: WorkloadClass;
+  model: string;
+}
+
+/** Machine-global runner-owned routing policy (GET/PUT
+ *  /client/quota-routing-settings). Quota percentages are telemetry — this
+ *  shape deliberately carries no token-budget field. */
+export interface QuotaRoutingSettings {
+  mode: QuotaRotationMode;
+  providerPriority?: string[];
+  modelBindings?: ModelClassBinding[];
+  headroomLowPercent: number;
+  telemetryTtlSeconds: number;
+  sameProviderCooldownSeconds: number;
+}
+
+// ---- Quota route decision surface (CP-87 / Task-450) -----------------------
+
+/** Normalized per-account quota evidence — mirrors the runner's
+ *  AccountHeadroom. Missing data renders "unknown", never a fake zero. */
+export interface QuotaHeadroomDTO {
+  state: string; // healthy | low | exhausted | unknown | stale
+  remainingPercent?: number;
+  resetAt?: string;
+  source?: string;
+  freshnessSeconds: number;
+  confidence: string; // exact | none
+}
+
+/** One row of the quota gate table — runner-ordered, runner-scored. The
+ *  client renders it verbatim and never re-ranks or re-parses errors. */
+export interface QuotaRouteCandidateDTO {
+  providerKey: string;
+  model?: string;
+  workloadClass?: string;
+  accountId: string;
+  displayName?: string;
+  slotIndex?: number;
+  headroom: QuotaHeadroomDTO;
+  autoEligible: boolean;
+  rejectionReasons?: string[];
+  /** Same-provider switch window (server timestamps — the cooldown bar
+   *  counts down to `until`, never re-based on remount). */
+  cooldownStartedAt?: string;
+  cooldownUntil?: string;
+  cooldownReason?: string;
+}
+
+/** The structured payload on a quota_route_required card — persisted on the
+ *  durable question record so restart/replay serves identical rows. */
+export interface QuotaRouteDecisionDTO {
+  runId: string;
+  trigger: string;
+  reason?: string;
+  providerKey: ProviderKey;
+  model?: string;
+  accountId?: string;
+  policyVersion: number;
+  candidates?: QuotaRouteCandidateDTO[];
+}
+
+/** quota_route_committed / _stopped / _blocked payload — the requested →
+ *  resolved route plus audit evidence (policy, headroom, cooldown). */
+export interface QuotaRouteDTO {
+  fromProvider?: ProviderKey;
+  fromAccount?: string;
+  toProvider?: ProviderKey;
+  toAccount?: string;
+  toModel?: string;
+  scope?: string; // "once" | "run"
+  reason?: string;
+  policyVersion?: number;
+  headroom?: QuotaHeadroomDTO;
+  cooldownStartedAt?: string;
+  cooldownUntil?: string;
+  cooldownReason?: string;
+}
+
+/** GET /client/workflow-runs/{id}/quota-audit — forensic record correlating
+ *  a route decision with estimated prompt + actual usage (CP-86 figures). */
+export interface QuotaRoutingAuditRecord {
+  runId: string;
+  committedAt?: string;
+  outcome: string; // "committed" | "stopped" | "blocked" | "none"
+  fromProvider?: ProviderKey;
+  fromAccount?: string;
+  toProvider?: ProviderKey;
+  toAccount?: string;
+  toModel?: string;
+  scope?: string;
+  reason?: string;
+  policyVersion: number;
+  headroom?: QuotaHeadroomDTO;
+  estPromptTokens?: number;
+  maxUsageTokens?: number;
+  actualUsage?: TokenUsageBreakdown;
+}
+
 /** Posture labels/descriptions for the composer tabs + setup modal. */
 export const CHAT_POSTURES: { key: ChatPosture; label: string; hint: string }[] = [
   { key: "scan", label: "Scan", hint: "Read-only exploration — reads auto-approve, writes auto-deny." },
@@ -627,6 +736,40 @@ export interface TokenUsageSnapshot {
   last?: TokenUsageBreakdown;
   total?: TokenUsageBreakdown;
   modelContextWindow?: number | null;
+  /** Runner's heuristic prompt-size estimate (len(prompt)/4) — rendered
+   * "prompt ~Nk est" (Task-444 T-1), explicitly distinct from usage figures.
+   * Absent when no prompt is bound — render "—", never a fake zero. */
+  estPromptTokens?: number | null;
+}
+
+/** Mirrors the runner's ProviderLimit (Task-445) — rides the typed
+ *  provider_limit_reached event so the UI reacts to the classification
+ *  without ever re-parsing provider error text. */
+export interface ProviderLimitDTO {
+  kind: "quota_exhausted" | "rate_limited" | "credits_exhausted" | "billing_required";
+  providerKey: ProviderKey;
+  accountId?: string;
+  retryAfterSeconds?: number;
+  resetAt?: string;
+  rawCode?: string;
+  sanitizedMessage: string;
+  detectionSource: "structured_payload" | "stop_reason" | "stderr_fallback";
+  confidence: "exact" | "heuristic";
+}
+
+/** Mirrors the runner's ContextPressurePayload (Task-443) — rides
+ *  context_pressure (awareness/decision) and provider_compacted (fact)
+ *  events, flag-gated by FLOWPILOT_CONTEXT_PRESSURE. */
+export interface ContextPressurePayload {
+  /** "aware" = inline banner only; "ask" = decision card via
+   *  user_question_required (the pressure event itself stays a banner). */
+  tier: "aware" | "ask";
+  ratio: number;
+  usedTokens: number;
+  windowTokens: number;
+  /** Pre-drop TotalTokens on provider_compacted. */
+  prevTokens?: number;
+  legId?: string;
 }
 
 export type ProviderEventDTO =
@@ -634,6 +777,18 @@ export type ProviderEventDTO =
   | (ProviderEventBaseDTO & { type: "message_delta"; text: string })
   | (ProviderEventBaseDTO & { type: "message_completed"; text: string })
   | (ProviderEventBaseDTO & { type: "token_usage_updated"; tokenUsage: TokenUsageSnapshot })
+  | (ProviderEventBaseDTO & {
+      /** Task-443/444: context-window pressure observation. tier "aware" is an
+       *  inline banner; tier "ask" pairs with a user_question_required card. */
+      type: "context_pressure";
+      contextPressure: ContextPressurePayload;
+    })
+  | (ProviderEventBaseDTO & {
+      /** Task-443/444: the provider self-compacted the leg mid-turn — a
+       *  pinned inline notice (prevTokens → usedTokens), never a card. */
+      type: "provider_compacted";
+      contextPressure: ContextPressurePayload;
+    })
   | (ProviderEventBaseDTO & { type: "tool_started"; toolName: string; input?: unknown })
   | (ProviderEventBaseDTO & {
       type: "tool_completed";
@@ -663,6 +818,9 @@ export type ProviderEventDTO =
       prompt: string;
       options: QuestionOption[];
       multiSelect?: boolean;
+      /** Task-450: structured candidate table when the card is a
+       *  quota_route_required gate. */
+      quotaDecision?: QuotaRouteDecisionDTO;
       /** Populated only when replaying an already-resolved question on
        *  reconnect (BUG-StaleQuestion) — render read-only/answered instead of
        *  a fresh interactive form. */
@@ -677,6 +835,22 @@ export type ProviderEventDTO =
       /** Runner ProviderEvent.Input — the UserDecisionCard payload. */
       input: DecisionCardDTO;
     })
+  | (ProviderEventBaseDTO & {
+      /** Task-445 (CP-87 P-1): typed provider-limit classification. Emitted
+       *  immediately before the terminal turn_failed when the runner classifies
+       *  a quota/rate-limit/credits/billing failure — the desktop's quota
+       *  surface keys on this event and never parses error text. */
+      type: "provider_limit_reached";
+      providerLimit: ProviderLimitDTO;
+    })
+  | (ProviderEventBaseDTO & {
+      /** Task-449/450: a quota rotation committed — requested → resolved
+       *  route notice (informational; the audit endpoint carries the record). */
+      type: "quota_route_committed";
+      quotaRoute: QuotaRouteDTO;
+    })
+  | (ProviderEventBaseDTO & { type: "quota_route_stopped"; quotaRoute: QuotaRouteDTO })
+  | (ProviderEventBaseDTO & { type: "quota_route_blocked"; quotaRoute: QuotaRouteDTO })
   | (ProviderEventBaseDTO & { type: "turn_failed"; error: string; recoverable: boolean })
   | (ProviderEventBaseDTO & { type: "turn_completed"; finalMessage: string })
   | (ProviderEventBaseDTO & { type: "agent_graph_updated"; agentGraphSnapshot: AgentGraphSnapshot })
@@ -1075,6 +1249,14 @@ export interface RunnerClient {
   getOpencodeModelVariants?(modelId: string): Promise<{ supportedEfforts: string[]; defaultReasoningEffort: string }>;
   /** PUT /client/chat-posture — persists the active posture + profile pins. */
   setChatPosture?(config: ChatPostureConfig): Promise<ChatPostureConfig>;
+  /** CP-87/Task-446: GET /client/quota-routing-settings — runner-owned
+   *  machine-global routing policy. Optional so mock/older clients degrade. */
+  getQuotaRoutingSettings?(): Promise<QuotaRoutingSettings>;
+  /** PUT /client/quota-routing-settings — persists mode/priority/bindings. */
+  setQuotaRoutingSettings?(settings: QuotaRoutingSettings): Promise<QuotaRoutingSettings>;
+  /** Task-450: GET /client/workflow-runs/{id}/quota-audit — the forensic
+   *  requested→resolved + usage record for a run's routing decision. */
+  getQuotaRoutingAudit?(runId: string): Promise<QuotaRoutingAuditRecord>;
   openProviderAccountTerminal(accountId: string): Promise<void>;
   /** System control — mirrors admin-web's runner gateway (`POST /system/restart`). CP-81: fenced + lease-scoped inside Electron when the lifecycle bridge is present. */
   restartStack(): Promise<void>;

@@ -27,13 +27,13 @@ tools:
 contextProfiles:
   scout:
     candidateSources: [conventions, canonical.head, feature.history]
-    maxTokens: 6000
+    maxEstPromptTokens: 6000
   coder:
     candidateSources: [conventions, canonical.head, change.contract, source.dependence, source.excerpt]
-    maxTokens: 24000
+    maxEstPromptTokens: 24000
   tdd:
     candidateSources: [conventions, canonical.head, change.contract, source.excerpt]
-    maxTokens: 12000
+    maxEstPromptTokens: 12000
 acceptance_nodes:
   - validate
   - synthesis
@@ -43,6 +43,7 @@ nodes:
     run: delegate
     lifecycle: once
     behavior: agent.delegate
+    workloadClass: high_reasoning
     agent: agents/contract-planner.md
     # CP-62 P-4 (Task-340): scout is read-only (BUG-344 classifier).
     posture: read_only
@@ -61,6 +62,7 @@ nodes:
     # lifecycle stays reinvoke for negotiation re-entry.
     lifecycle: reinvoke
     behavior: agent.scaffold
+    workloadClass: coding
     agent: agents/scaffold-architect.md
     promptTemplate: prompts/scaffold-contract-tdd.md
     join: all
@@ -80,6 +82,7 @@ nodes:
     run: delegate
     lifecycle: reinvoke
     behavior: agent.code
+    workloadClass: coding
     agent: agents/coder.md
     # CP-67 P-5 (Task-381): fill-body-only contract with Accumulate & Batch.
     promptTemplate: prompts/implement-scaffold-body.md

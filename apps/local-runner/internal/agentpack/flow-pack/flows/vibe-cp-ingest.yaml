@@ -20,6 +20,7 @@ nodes:
     run: delegate
     lifecycle: once
     behavior: agent.delegate
+    workloadClass: scan
     agent: agents/vibe-intake.md
     join: all
   - id: cp_validator
@@ -38,6 +39,7 @@ nodes:
     run: delegate
     lifecycle: once
     behavior: agent.delegate
+    workloadClass: high_reasoning
     agent: agents/doc-writer.md
     promptTemplate: prompts/task-splitter.md
     join: all

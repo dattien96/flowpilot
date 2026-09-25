@@ -897,6 +897,8 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 		// turnResumeProviderSessionID.
 		lastOpencodeTurnSessionID: st.ProviderSessionID,
 		providerAccountID:         st.ProviderAccountID,
+		accountPinned:             st.AccountPinned,
+		quotaClaimID:              st.QuotaClaimID,
 		workspaceCwd:              restoredWorkspaceCwd,
 		worktree:                  worktreeBindingFromSession(st),
 		runKind:                   st.RunKind,
@@ -928,7 +930,10 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 		changeType:      st.ChangeType,
 		sourceDocID:     st.SourceDocID,
 		turnCount:       st.TurnCount,
-		subs:            map[int64]chan ProviderEvent{},
+		// Task-446 T-3: restore the frozen routing-policy snapshot — the run
+		// keeps resolving under the policy it was created with.
+		quotaRouting: st.QuotaRouting,
+		subs:         map[int64]chan ProviderEvent{},
 		// BUG-288 R16-P0: restore durable idempotency keys (not empty map).
 		idempotency:                     copyStringMap(st.IdempotencyKeys),
 		resumedFromDisk:                 true,
@@ -982,7 +987,7 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 		vibeAwaitingLock:                st.VibeAwaitingLock,
 		vibeTaskPlan:                    append([]string(nil), st.VibeTaskPlan...),
 		vibeCpDocID:                     st.VibeCpDocID,
-		vibeRequirementFromNode:        st.VibeRequirementFromNode,
+		vibeRequirementFromNode:         st.VibeRequirementFromNode,
 		vibeSprintIndex:                 st.VibeSprintIndex,
 		vibeSprintBudget:                st.VibeSprintBudget,
 		vibeSprintBoundaryDeclined:      st.VibeSprintBoundaryDeclined,
@@ -2818,10 +2823,17 @@ func (s *InteractiveService) ensureResumeReady(rs *interactiveRun) *apiErr {
 	// "The active account" must be scoped to this run's provider, not the single
 	// global activeAccountID: a Codex chat is resumed against the active Codex
 	// account regardless of which Claude/Gemini account is active (Task-067 issue 1).
-	activeAccountID := s.activeAccountForProvider(rs.providerKey)
+	// Task-447: for a claim-pinned leg the expected account is the pin itself —
+	// the session lives under the pinned account's home and must never rebind
+	// to the global active account.
+	expectedAccountID := s.activeAccountForProvider(rs.providerKey)
+	if rs.accountPinned && strings.TrimSpace(rs.providerAccountID) != "" {
+		expectedAccountID = rs.providerAccountID
+	}
+	activeAccountID := expectedAccountID
 	log.Printf(
-		"[chat-history-open] resume check run_id=%q provider=%q stored_account_id=%q active_account_id=%q provider_session_id=%q cwd=%q resumed_from_disk=%t",
-		rs.id, rs.providerKey, rs.providerAccountID, activeAccountID, s.resumeSessionID(rs), rs.workspaceCwd, rs.resumedFromDisk,
+		"[chat-history-open] resume check run_id=%q provider=%q stored_account_id=%q expected_account_id=%q account_pinned=%t provider_session_id=%q cwd=%q resumed_from_disk=%t",
+		rs.id, rs.providerKey, rs.providerAccountID, expectedAccountID, rs.accountPinned, s.resumeSessionID(rs), rs.workspaceCwd, rs.resumedFromDisk,
 	)
 	if rs.providerKey == ProviderKeyOpencode {
 		// CA-688: opencode keeps sessions in the shared

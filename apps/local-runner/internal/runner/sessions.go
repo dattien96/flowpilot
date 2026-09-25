@@ -959,7 +959,7 @@ func (r *Runner) SendMessageWithCallback(ctx context.Context, req AiSessionMessa
 			captureMu.Unlock()
 			if stderrText != "" {
 				if msg := claudeUsageLimitMessage(map[string]any{"message": stderrText}); msg != "" {
-					return PromptExecutionResult{}, fmt.Errorf("provider error: %s", msg)
+					return PromptExecutionResult{}, claudeLimitError(nil, fmt.Errorf("provider error: %s", msg))
 				}
 				return PromptExecutionResult{}, fmt.Errorf("provider error: %s", stderrText)
 			}
@@ -973,7 +973,7 @@ func (r *Runner) SendMessageWithCallback(ctx context.Context, req AiSessionMessa
 		if len(outputBytes) == 0 {
 			if stderrText != "" {
 				if msg := claudeUsageLimitMessage(map[string]any{"message": stderrText}); msg != "" {
-					return PromptExecutionResult{}, fmt.Errorf("provider error: %s", msg)
+					return PromptExecutionResult{}, claudeLimitError(nil, fmt.Errorf("provider error: %s", msg))
 				}
 				return PromptExecutionResult{}, fmt.Errorf("provider error: %s", stderrText)
 			}
@@ -993,11 +993,11 @@ func (r *Runner) SendMessageWithCallback(ctx context.Context, req AiSessionMessa
 
 		if isError, _ := resp["is_error"].(bool); isError {
 			if msg := claudeUsageLimitMessage(resp); msg != "" {
-				return PromptExecutionResult{}, fmt.Errorf("provider error: %s", msg)
+				return PromptExecutionResult{}, claudeLimitError(resp, fmt.Errorf("provider error: %s", msg))
 			}
 			if resultText, ok := resp["result"].(string); ok && strings.TrimSpace(resultText) != "" {
 				if msg := claudeUsageLimitMessage(map[string]any{"message": resultText}); msg != "" {
-					return PromptExecutionResult{}, fmt.Errorf("provider error: %s", msg)
+					return PromptExecutionResult{}, claudeLimitError(map[string]any{"result": resultText}, fmt.Errorf("provider error: %s", msg))
 				}
 				return PromptExecutionResult{}, fmt.Errorf("provider error: %s", resultText)
 			}

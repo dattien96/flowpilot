@@ -27,6 +27,10 @@ const (
 	LegClosedReasonChatEnded                = "chat_ended"
 	LegClosedReasonRestored                 = "restored"
 	LegClosedReasonProviderSwitchRolledBack = "provider_switch_rolled_back"
+	// LegClosedReasonContextReset (Task-443 / CP-86 P-4): the leg was closed by
+	// a same-binding context reset — nothing was rerouted, so provider_switch
+	// would mislabel the ledger.
+	LegClosedReasonContextReset = "context_reset"
 )
 
 // Chat transcript record types (SD-26 §6.1, SD26-E-1..E-9). The record

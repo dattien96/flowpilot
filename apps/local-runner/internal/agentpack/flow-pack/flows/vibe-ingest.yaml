@@ -20,6 +20,7 @@ nodes:
     run: delegate
     lifecycle: once
     behavior: agent.delegate
+    workloadClass: scan
     agent: agents/vibe-intake.md
     promptTemplate: prompts/vibe-ss-ingest.md
     join: all
@@ -27,6 +28,7 @@ nodes:
     run: delegate
     lifecycle: once
     behavior: agent.delegate
+    workloadClass: high_reasoning
     agent: agents/vibe-intake.md
     promptTemplate: prompts/vibe-ss-ingest.md
     join: all
@@ -46,6 +48,7 @@ nodes:
     run: delegate
     lifecycle: once
     behavior: agent.delegate
+    workloadClass: high_reasoning
     agent: agents/doc-writer.md
     promptTemplate: prompts/vibe-cp-from-ss.md
     join: all

@@ -126,6 +126,13 @@ func mapClaudeResult(raw map[string]any) []ProviderEvent {
 		out = append(out, ProviderEvent{Type: EventTokenUsageUpdated, TokenUsage: &TokenUsageSnapshot{Last: usage}})
 	}
 	if isError || (subtype != "" && subtype != "success") {
+		// Task-445: a limit-shaped result emits the typed classification event
+		// before the terminal failure so clients never parse the message text.
+		if limit, ok := classifyProviderLimit(ProviderKeyClaude, raw, nil); ok {
+			out = append(out, ProviderEvent{Type: EventProviderLimitReached, ProviderLimit: limit})
+			out = append(out, ProviderEvent{Type: EventTurnFailed, Error: claudeResultErrorMessage(raw, subtype), Recoverable: false})
+			return out
+		}
 		// error_during_execution is transient/recoverable; max_turns/budget are not.
 		recoverable := subtype == "error_during_execution"
 		out = append(out, ProviderEvent{Type: EventTurnFailed, Error: claudeResultErrorMessage(raw, subtype), Recoverable: recoverable})

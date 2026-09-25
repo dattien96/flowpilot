@@ -44,16 +44,16 @@ contexts:
 contextProfiles:
   scout:
     candidateSources: [conventions, knowledge.flow, canonical.head, feature.history]
-    maxTokens: 6000
+    maxEstPromptTokens: 6000
   plan_writer:
     candidateSources: [conventions, knowledge.flow, canonical.head, feature.history, change.contract, source.excerpt]
-    maxTokens: 16000
+    maxEstPromptTokens: 16000
   reviewer:
     candidateSources: [conventions, change.contract, source.excerpt]
-    maxTokens: 12000
+    maxEstPromptTokens: 12000
   coder:
     candidateSources: [conventions, canonical.head, change.contract, source.dependence, source.excerpt]
-    maxTokens: 24000
+    maxEstPromptTokens: 24000
 tools:
   - tools/submit-review-outcome.yaml
 acceptance_nodes:
@@ -67,6 +67,7 @@ nodes:
     run: delegate
     lifecycle: once
     behavior: agent.delegate
+    workloadClass: high_reasoning
     agent: agents/contract-planner.md
     promptTemplate: prompts/plan-safe-fix-contract.md
     # CP-62 P-4 (Task-340): scout is read-only (BUG-344 classifier).
@@ -82,6 +83,7 @@ nodes:
     run: delegate
     lifecycle: reinvoke
     behavior: agent.delegate
+    workloadClass: high_reasoning
     agent: agents/doc-writer.md
     promptTemplate: prompts/plan-bug.md
     contextProfile: plan_writer
@@ -103,6 +105,7 @@ nodes:
     run: delegate
     lifecycle: spawn
     behavior: agent.delegate
+    workloadClass: high_reasoning
     agent: agents/reviewer.md
     promptTemplate: prompts/review-bug-plan.md
     # CP-62 P-4 (Task-340): read-only reviewer (structural oracle rule).
@@ -139,12 +142,14 @@ nodes:
     run: delegate
     lifecycle: once
     behavior: agent.reproduce
+    workloadClass: coding
     agent: agents/reproducer.md
     promptTemplate: prompts/reproduce-failing-test.md
   - id: implement
     run: delegate
     lifecycle: reinvoke
     behavior: agent.code
+    workloadClass: coding
     agent: agents/coder.md
     promptTemplate: prompts/implement-complete-tests.md
     contextProfile: coder
@@ -156,6 +161,7 @@ nodes:
     run: delegate
     lifecycle: spawn
     behavior: agent.delegate
+    workloadClass: high_reasoning
     agent: agents/reviewer.md
     promptTemplate: prompts/review-safe-fix-contract.md
     # CP-62 P-4 (Task-340): read-only reviewer.

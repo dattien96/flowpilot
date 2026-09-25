@@ -133,6 +133,12 @@ type ProviderRegistration struct {
 	// MCP connection (opencode keys MCP clients by server NAME per process).
 	// Grok ignores the hint (its process keying is model-based).
 	newAdapterForTurn func(model, reasoningEffort, childScope string) ProviderRuntimeAdapter
+	// newAdapterForAccount, when set, is preferred over both legacy factories
+	// and receives the leg's account pin (CP-87 Task-447). An empty accountID
+	// resolves the machine-global active account — byte-identical to the
+	// legacy path; a non-empty pin resolves exactly that connected account
+	// (fail-closed when it went stale — never a silent fallback).
+	newAdapterForAccount func(model, reasoningEffort, childScope, accountID string) ProviderRuntimeAdapter
 }
 
 // ProviderRegistry holds provider registrations in a stable order.
@@ -179,12 +185,25 @@ func (r *ProviderRegistry) Adapter(key ProviderKey, model, reasoningEffort strin
 // child run id when the turn belongs to a spawned child so per-provider factories
 // can isolate the runtime process from concurrent parent turns.
 func (r *ProviderRegistry) AdapterWithScope(key ProviderKey, model, reasoningEffort, childScope string) (ProviderRuntimeAdapter, error) {
+	return r.AdapterForAccount(key, model, reasoningEffort, childScope, "")
+}
+
+// AdapterForAccount is AdapterWithScope plus an account pin (Task-447):
+// accountID "" resolves the active account exactly as before; a non-empty pin
+// is honored only by registrations with newAdapterForAccount — every live
+// provider factory sets it, and its strict resolution fails closed on a stale
+// pin. Registrations without the seam (test fakes, placeholders) fall through
+// to the legacy factories, which resolve the active account as before.
+func (r *ProviderRegistry) AdapterForAccount(key ProviderKey, model, reasoningEffort, childScope, accountID string) (ProviderRuntimeAdapter, error) {
 	reg, ok := r.regs[key]
 	// Only an available provider with a factory yields an adapter; disabled/
 	// placeholder providers surface the typed error here (runner-side boundary),
 	// regardless of whether a placeholder factory is registered.
-	if !ok || (reg.newAdapter == nil && reg.newAdapterForTurn == nil) || reg.Status != ProviderStatusAvailable {
+	if !ok || (reg.newAdapter == nil && reg.newAdapterForTurn == nil && reg.newAdapterForAccount == nil) || reg.Status != ProviderStatusAvailable {
 		return nil, &UnsupportedProviderRuntimeError{ProviderKey: key}
+	}
+	if reg.newAdapterForAccount != nil {
+		return reg.newAdapterForAccount(model, reasoningEffort, childScope, accountID), nil
 	}
 	if reg.newAdapterForTurn != nil {
 		return reg.newAdapterForTurn(model, reasoningEffort, childScope), nil
@@ -201,7 +220,7 @@ func (r *ProviderRegistry) Selectable(key ProviderKey) (ProviderRegistration, er
 	if !ok {
 		return ProviderRegistration{}, &UnsupportedProviderRuntimeError{ProviderKey: key}
 	}
-	if (reg.newAdapter == nil && reg.newAdapterForTurn == nil) || reg.Status != ProviderStatusAvailable {
+	if (reg.newAdapter == nil && reg.newAdapterForTurn == nil && reg.newAdapterForAccount == nil) || reg.Status != ProviderStatusAvailable {
 		return ProviderRegistration{}, &UnsupportedProviderRuntimeError{ProviderKey: key}
 	}
 	return reg, nil
@@ -286,10 +305,10 @@ func ProviderRegistryFor(r *Runner) *ProviderRegistry {
 				Streaming: true, Resume: true, ApprovalEvents: true, FileEvents: true,
 				SkillSelection: true, Mcp: true, Interrupt: true,
 			},
-			newAdapter: func() ProviderRuntimeAdapter {
+			newAdapterForAccount: func(_, _, _, accountID string) ProviderRuntimeAdapter {
 				scopeKey := "default"
 				env := map[string]string{}
-				account, err := r.ResolveProviderAccount(string(ProviderKeyCodex), "")
+				account, err := r.resolveAdapterAccount(string(ProviderKeyCodex), accountID)
 				if err == nil {
 					scopeKey = account.ID
 					for key, value := range account.ExtraEnv {
@@ -338,10 +357,10 @@ func ProviderRegistryFor(r *Runner) *ProviderRegistry {
 			Streaming: true, Resume: true, ApprovalEvents: true, FileEvents: true,
 			SkillSelection: true, Mcp: true, Interrupt: true,
 		},
-		newAdapter: func() ProviderRuntimeAdapter {
+		newAdapterForAccount: func(_, _, _, accountID string) ProviderRuntimeAdapter {
 			scopeKey := "default"
 			env := map[string]string{}
-			account, err := r.ResolveProviderAccount(string(ProviderKeyClaude), "")
+			account, err := r.resolveAdapterAccount(string(ProviderKeyClaude), accountID)
 			if err == nil {
 				scopeKey = account.ID
 				for key, value := range account.ExtraEnv {
@@ -418,10 +437,10 @@ func ProviderRegistryFor(r *Runner) *ProviderRegistry {
 		Capabilities: ProviderCapabilities{
 			SkillSelection: true, Interrupt: true,
 		},
-		newAdapter: func() ProviderRuntimeAdapter {
+		newAdapterForAccount: func(_, _, _, accountID string) ProviderRuntimeAdapter {
 			scopeKey := "default"
 			env := map[string]string{}
-			account, err := r.ResolveProviderAccount(string(ProviderKeyGemini), "")
+			account, err := r.resolveAdapterAccount(string(ProviderKeyGemini), accountID)
 			if err == nil {
 				scopeKey = account.ID
 				for key, value := range account.ExtraEnv {
@@ -480,11 +499,11 @@ func ProviderRegistryFor(r *Runner) *ProviderRegistry {
 				Streaming: true, Resume: true, ApprovalEvents: true, FileEvents: true, Interrupt: true,
 				SkillSelection: true, Mcp: true,
 			},
-			newAdapterForTurn: func(model, reasoningEffort, childScope string) ProviderRuntimeAdapter {
+			newAdapterForAccount: func(model, reasoningEffort, childScope, accountID string) ProviderRuntimeAdapter {
 				_ = childScope // Grok keys its process by model/variant; child isolation is opencode-only (BUG-334)
 				scopeKey := "default"
 				env := map[string]string{}
-				account, err := r.ResolveProviderAccount(string(ProviderKeyGrok), "")
+				account, err := r.resolveAdapterAccount(string(ProviderKeyGrok), accountID)
 				if err == nil {
 					scopeKey = account.ID
 					for key, value := range account.ExtraEnv {
@@ -581,9 +600,9 @@ func ProviderRegistryFor(r *Runner) *ProviderRegistry {
 				Streaming: true, Resume: true, ApprovalEvents: true, FileEvents: true,
 				Interrupt: true, SkillSelection: true, Mcp: true,
 			},
-			newAdapterForTurn: func(model, reasoningEffort, childScope string) ProviderRuntimeAdapter {
+			newAdapterForAccount: func(model, reasoningEffort, childScope, accountID string) ProviderRuntimeAdapter {
 				// CA-689c: env/scope resolution shared with the variants prober.
-				scopeKey, env, envErr := r.opencodeLaunchEnv()
+				scopeKey, env, envErr := r.opencodeLaunchEnvForAccount(accountID)
 				if envErr != nil {
 					return errorAdapter{key: ProviderKeyOpencode, err: envErr}
 				}
@@ -650,8 +669,8 @@ func ProviderRegistryFor(r *Runner) *ProviderRegistry {
 				Streaming: true, Resume: true, ApprovalEvents: true, FileEvents: true,
 				Interrupt: true, SkillSelection: true, Mcp: true,
 			},
-			newAdapterForTurn: func(model, reasoningEffort, childScope string) ProviderRuntimeAdapter {
-				scopeKey, env, envErr := r.devinLaunchEnv()
+			newAdapterForAccount: func(model, reasoningEffort, childScope, accountID string) ProviderRuntimeAdapter {
+				scopeKey, env, envErr := r.devinLaunchEnvForAccount(accountID)
 				if envErr != nil {
 					return errorAdapter{key: ProviderKeyDevin, err: envErr}
 				}

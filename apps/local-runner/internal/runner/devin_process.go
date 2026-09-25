@@ -195,7 +195,7 @@ func (d *devinDispatcher) dispatch(msg map[string]any) {
 		d.mu.Unlock()
 		if waiter != nil {
 			if errObj, ok := msg["error"]; ok {
-				waiter <- devinResponse{err: fmt.Errorf("%s", jsonRpcErrorMessage(map[string]any{"error": errObj}))}
+				waiter <- devinResponse{err: newRPCError(errObj)}
 			} else {
 				result, _ := msg["result"].(map[string]any)
 				waiter <- devinResponse{result: result}

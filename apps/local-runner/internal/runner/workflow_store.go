@@ -196,6 +196,18 @@ type ProviderSessionState struct {
 	TurnStartGitHead        string
 	TurnStartWorktree       map[string]string
 	PendingGateChangedFiles []string
+	// QuotaRouting is the CP-87 P-5 (Task-446 T-3) frozen routing-policy
+	// snapshot taken at run creation — mode/priority/bindings/thresholds plus
+	// the policy schema version. Persisted so restart/replay resolves the same
+	// routing decisions the run was created under; a mid-run settings edit
+	// never rewrites it.
+	QuotaRouting *QuotaRoutingSnapshot `json:"quotaRouting,omitempty"`
+	// AccountPinned/QuotaClaimID are the CP-87 Task-447 durable leg pin: when
+	// AccountPinned, ProviderAccountID came from a routing claim and the
+	// admission guard validates the pin directly instead of comparing it to
+	// the machine-global active account. Survives restart with the run.
+	AccountPinned bool   `json:"accountPinned,omitempty"`
+	QuotaClaimID  string `json:"quotaClaimId,omitempty"`
 	// CP-71 run worktree binding (local-only, sessions.ndjson — no Supabase
 	// columns). Empty on toggle-off runs.
 	WorktreeOwnerID    string `json:"worktreeOwnerId,omitempty"`
@@ -391,6 +403,9 @@ type ProviderQuestionState struct {
 	Choice          []string
 	ExpiresAt       string
 	ResolvedChoices []string
+	// QuotaDecision is the structured candidate table on quota_route_required
+	// cards (Task-450) — durable so restart/replay serve identical rows.
+	QuotaDecision *QuotaRouteDecision `json:"quotaDecision,omitempty"`
 	// Revision/CreatedAt mirror ProviderApprovalState's CP-84 identity
 	// (Task-430). Additive — zero values on legacy rows.
 	Revision  int64

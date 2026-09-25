@@ -386,7 +386,11 @@ func (a *devinAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Tur
 			return ctx.Err()
 		case outcome := <-done:
 			if outcome.err != nil {
-				if isProviderUsageLimitError(outcome.err) {
+				if limit, ok := classifyProviderLimit(ProviderKeyDevin, nil, outcome.err); ok {
+					if providerLimitRecoverable(*limit) {
+						return &providerLimitError{limit: limit, err: outcome.err}
+					}
+					bridge.Emit(ProviderEvent{Type: EventProviderLimitReached, ProviderLimit: limit})
 					msg := strings.TrimSpace(outcome.err.Error())
 					if runes := []rune(msg); len(runes) > 300 {
 						msg = string(runes[:300]) + "…"
@@ -394,7 +398,7 @@ func (a *devinAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Tur
 					bridge.Emit(ProviderEvent{Type: EventTurnFailed, Error: "Devin usage limit reached: " + msg, Recoverable: false})
 					return nil
 				}
-				return outcome.err
+				return providerLimitAwareError(ProviderKeyDevin, outcome.err)
 			}
 			lastText = a.drainDevinNotifications(sessionID, notif, bridge, lastText)
 			denied := a.permissionDeniedFor(sessionID)
@@ -1034,8 +1038,9 @@ func (a *devinAdapter) emitTerminal(ctx context.Context, req TurnRequest, bridge
 	evType := devinStopReasonToEvent(stopReason)
 	if evType == EventTurnFailed {
 		errMsg := fmt.Sprintf("devin turn ended: %s", stopReason)
-		if devinIsQuotaStopReason(stopReason) {
+		if limit, ok := classifyProviderLimit(ProviderKeyDevin, map[string]any{"stopReason": stopReason}, nil); ok {
 			errMsg = fmt.Sprintf("Devin usage limit reached (stopReason=%s)", strings.TrimSpace(stopReason))
+			bridge.Emit(ProviderEvent{Type: EventProviderLimitReached, ProviderLimit: limit})
 		}
 		bridge.Emit(ProviderEvent{Type: EventTurnFailed, Error: errMsg, Recoverable: false})
 		return nil
@@ -1347,10 +1352,15 @@ func devinAccountEnv(account ProviderAccount) map[string]string {
 // devinLaunchEnv resolves the account-scoped scopeKey + launch env for a
 // `devin acp` process (shared by the turn adapter factory and probes, mirroring
 // opencodeLaunchEnv). Devin resolves config under XDG_CONFIG_HOME and
-// credentials/sessions under XDG_DATA_HOME.
+// credentials/sessions under XDG_DATA_HOME. Task-447: the ForAccount variant
+// honors a routing pin ("" = active account, as before).
 func (r *Runner) devinLaunchEnv() (string, map[string]string, error) {
+	return r.devinLaunchEnvForAccount("")
+}
+
+func (r *Runner) devinLaunchEnvForAccount(accountID string) (string, map[string]string, error) {
 	scopeKey := "default"
-	account, err := r.ResolveProviderAccount(string(ProviderKeyDevin), "")
+	account, err := r.resolveAdapterAccount(string(ProviderKeyDevin), accountID)
 	if err == nil {
 		return account.ID, devinAccountEnv(account), nil
 	}

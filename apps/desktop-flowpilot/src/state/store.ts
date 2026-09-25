@@ -17,6 +17,7 @@ import type {
   ProviderKey,
   ProviderSkill,
   PromptAttachment,
+  QuotaRoutingSettings,
   RemoteChatSessionSummary,
   RunHistoryItem,
   RunRealtimeProjection,
@@ -194,6 +195,17 @@ interface TimelineScrollAnchor {
   offsetPx: number;
 }
 
+/** Task-444: inline awareness notice derived from context_pressure /
+ *  provider_compacted events — banner data only, no card. */
+export interface ContextNotice {
+  kind: "pressure_aware" | "provider_compacted";
+  ratio?: number;
+  prev?: number;
+  cur?: number;
+  /** Pinned to one provider session — a leg change auto-clears it. */
+  providerSessionId?: string;
+}
+
 export interface RunSnapshot {
   timeline: TimelineItem[];
   artifacts: Artifact[];
@@ -201,6 +213,9 @@ export interface RunSnapshot {
   pendingApprovals: PendingApproval[];
   pendingQuestions: PendingQuestion[];
   latestTokenUsage?: TokenUsageSnapshot;
+  /** Task-444: CP-86 inline notice for this run's current leg — rides the
+   *  snapshot so focusing a child and coming back keeps the banner. */
+  contextNotice?: ContextNotice;
   lastTurnInput?: TurnInput;
   recoverable: boolean;
   _streamingAssistantId?: string;
@@ -498,6 +513,9 @@ export interface AppState {
   chatPostureConfig: ChatPostureConfig;
   /** True while the posture setup modal is open. */
   chatPostureSetupOpen: boolean;
+  /** Runner-owned quota routing policy (CP-87/Task-446 SSOT), cached for the
+   *  settings surface. Defaults to manual; the runner normalizes. */
+  quotaRoutingSettings: QuotaRoutingSettings;
   /**
    * Selected built-in orchestration flowRef for the current chat start
    * (CP-42/Task-177), e.g. "flowpilot-core-flow-pack/review-loop". Only
@@ -575,6 +593,10 @@ export interface AppState {
   _gateBlockedRunIds: Record<string, boolean>;
   lastTurnInput?: TurnInput;
   latestTokenUsage?: TokenUsageSnapshot;
+  /** Task-444 (CP-86 P-5): inline awareness notice for the focused run —
+   *  context_pressure(aware) banner or provider_compacted pin. Decision-tier
+   *  items still route through pendingQuestions/user_question_required. */
+  contextNotice?: ContextNotice;
   recoverable: boolean;
   scenario: ScenarioName;
   pendingAccountSwitch?: {
@@ -662,6 +684,10 @@ export interface AppState {
   loadChatPostureConfig(): Promise<void>;
   /** Persist an edited posture document back to the runner. */
   saveChatPostureConfig(config: ChatPostureConfig): Promise<void>;
+  /** Fetch the runner-owned quota routing policy (Task-446). */
+  loadQuotaRoutingSettings(): Promise<void>;
+  /** Persist an edited quota routing policy back to the runner. */
+  saveQuotaRoutingSettings(settings: QuotaRoutingSettings): Promise<void>;
   openChatPostureSetup(): void;
   closeChatPostureSetup(): void;
   selectWorkflow(workflowId: string): Promise<void>;
@@ -813,7 +839,7 @@ export const useStore = create<AppState>((set, get) => ({
   historyLoading: false,
   remoteHistoryLoading: false,
   attentionItems: [],
-  latestTokenUsage: undefined,
+  latestTokenUsage: undefined, contextNotice: undefined,
   recoverable: false,
   scenario: "normal",
   accountSwitchLoading: false,
@@ -844,6 +870,14 @@ export const useStore = create<AppState>((set, get) => ({
     profiles: { scan: {}, plan: {}, code: {}, non: {} },
   },
   chatPostureSetupOpen: false,
+  // Task-446: safe default until the runner-owned document loads — manual is
+  // the fail-closed mode.
+  quotaRoutingSettings: {
+    mode: "manual",
+    headroomLowPercent: 20,
+    telemetryTtlSeconds: 120,
+    sameProviderCooldownSeconds: 20,
+  },
   flowRef: undefined,
   builtinOrchestrationOptions: [],
   workspaceMainView: "chat",
@@ -1536,7 +1570,7 @@ export const useStore = create<AppState>((set, get) => ({
           pendingApprovals: [],
           pendingQuestions: [],
           gateBlock: undefined,
-          latestTokenUsage: undefined,
+          latestTokenUsage: undefined, contextNotice: undefined,
           lastTurnInput: undefined,
           recoverable: false,
           pendingAccountSwitch: undefined,
@@ -1597,7 +1631,7 @@ export const useStore = create<AppState>((set, get) => ({
         pendingApprovals: [],
         pendingQuestions: [],
         gateBlock: undefined,
-        latestTokenUsage: undefined,
+        latestTokenUsage: undefined, contextNotice: undefined,
         lastTurnInput: undefined,
         recoverable: false,
         pendingAccountSwitch: undefined,
@@ -2036,6 +2070,31 @@ export const useStore = create<AppState>((set, get) => ({
     }
   },
 
+  async loadQuotaRoutingSettings() {
+    const { client } = get();
+    if (!client.getQuotaRoutingSettings) return;
+    try {
+      const settings = await client.getQuotaRoutingSettings();
+      set({ quotaRoutingSettings: settings });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[FlowPilot] loadQuotaRoutingSettings failed:", err);
+    }
+  },
+
+  async saveQuotaRoutingSettings(settings) {
+    const client = get().client;
+    if (!client.setQuotaRoutingSettings) return;
+    try {
+      const saved = await client.setQuotaRoutingSettings(settings);
+      set({ quotaRoutingSettings: saved });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[FlowPilot] saveQuotaRoutingSettings failed:", err);
+      throw err;
+    }
+  },
+
   openChatPostureSetup() {
     set({ chatPostureSetupOpen: true });
   },
@@ -2119,7 +2178,7 @@ export const useStore = create<AppState>((set, get) => ({
     // bubble with a visible error instead of failing silently.
     set((s) => ({
       recoverable: false,
-      latestTokenUsage: undefined,
+      latestTokenUsage: undefined, contextNotice: undefined,
       status: "running",
       _streamingAssistantId: undefined,
       timeline: [
@@ -3264,7 +3323,7 @@ export const useStore = create<AppState>((set, get) => ({
       pendingApprovals: [],
       pendingQuestions: [],
       gateBlock: undefined,
-      latestTokenUsage: undefined,
+      latestTokenUsage: undefined, contextNotice: undefined,
       lastTurnInput: undefined,
       recoverable: false,
       pendingAccountSwitch: undefined,
@@ -3379,7 +3438,7 @@ export const useStore = create<AppState>((set, get) => ({
       agentSpawnGuideAgentName: undefined,
       pendingApprovals: [],
       pendingQuestions: [],
-      latestTokenUsage: undefined,
+      latestTokenUsage: undefined, contextNotice: undefined,
       lastTurnInput: undefined,
       recoverable: false,
       pendingAccountSwitch: undefined,
@@ -3530,36 +3589,72 @@ export const useStore = create<AppState>((set, get) => ({
 
 // ── Account-switch helpers ─────────────────────────────────────────────────
 
-// BUG-375: token set mirrors the runner's isProviderUsageLimitError
-// (interactive_service.go) — the two classifiers gate the same quota flow
-// (runner → run status; desktop → account-switch surface), so they must
-// agree on every billing/quota signature or one side silently drops it.
-export function isUsageLimitMessage(msg: string): boolean {
-  const lower = msg.toLowerCase();
-  return (
-    lower.includes("usage limit reached") ||
-    lower.includes("extra usage unavailable") ||
-    lower.includes("out of credits") ||
-    lower.includes("out_of_credits") ||
-    lower.includes("quota reset") ||
-    lower.includes("rate limit") ||
-    lower.includes("rate_limit") ||
-    lower.includes("rate-limit") ||
-    lower.includes("rate_limited") ||
-    lower.includes("quota exceeded") ||
-    lower.includes("quota_exceeded") ||
-    lower.includes("insufficient credit") ||
-    lower.includes("insufficient_credit") ||
-    lower.includes("usage_limit") ||
-    lower.includes("usage-limit") ||
-    lower.includes("payment required") ||
-    lower.includes("payment_required") ||
-    lower.includes("no payment method") ||
-    lower.includes("add a payment method") ||
-    lower.includes("personal-team-blocked") ||
-    lower.includes("spending-limit") ||
-    lower.includes("spending_limit")
-  );
+// Task-445 (CP-87 P-1): the quota surface keys on the typed
+// provider_limit_reached event — the runner's classifier is the only string
+// parser; the desktop never pattern-matches provider error text again.
+// (Replaces the BUG-375 isUsageLimitMessage token list, which had to mirror
+// isProviderUsageLimitError by hand and kept drifting behind it.)
+export function surfaceProviderLimitForRun(
+  e: ProviderEventDTO,
+  get: () => AppState,
+  set: (fn: (s: AppState) => Partial<AppState>) => void,
+): void {
+  if (e.type !== "provider_limit_reached") return;
+  const runId = e.workflowRunId;
+  const providerKey = e.providerLimit.providerKey;
+  const s = get();
+  if (s.chatMode !== "normal_chat" || !providerKey || s.pendingAccountSwitch || s.accountSwitchLoading) {
+    return;
+  }
+  const failedAccount = s.providerAccounts.find((a) => a.providerKey === providerKey && a.isActive);
+  if (!failedAccount) return;
+  const tried = [...s._accountSwitchTriedIds, failedAccount.id];
+  const candidate = findBestCandidate(s.providerAccounts, providerKey, tried);
+  if (!candidate) return;
+  const failedId = failedAccount.id;
+  const failedLbl = accountLabel(failedAccount);
+  // CP-84 (Task-434 T-2): quota prompt routes by source runId —
+  // focused → the existing AccountSwitchModal; non-focused → a
+  // synthetic inbox item carrying the quota decision (same
+  // account-switch confirm path, different surface).
+  if (isFocusedRun(s, runId)) {
+    set((_) => ({
+      pendingAccountSwitch: {
+        providerKey,
+        failedAccountId: failedId,
+        failedAccountLabel: failedLbl,
+        candidateAccount: candidate,
+        reason: "usage_limit" as const,
+      },
+      _accountSwitchTriedIds: tried,
+    }));
+    return;
+  }
+  const laneItem = attentionQueue.items.find((i) => i.runId === runId);
+  get().ingestAttentionItem({
+    runId,
+    chatId: laneItem?.chatId ?? runId,
+    projectId: laneItem?.projectId ?? get().selectedProjectId ?? "",
+    runTitle: laneItem?.runTitle ?? runId,
+    kind: "quota",
+    waitingSince: new Date().toISOString(),
+    providerKey,
+    decision: {
+      version: 1,
+      id: `quota:${runId}`,
+      runId,
+      kind: "quota",
+      revision: `quota:${runId}`,
+      status: "pending",
+      actionable: true,
+      providerKey,
+      prompt: `Usage limit reached on ${failedLbl}`,
+      quota: {
+        candidateAccountId: candidate.id,
+        candidateLabel: accountLabel(candidate),
+      },
+    },
+  });
 }
 
 export function accountLabel(account: ProviderAccountSummary): string {
@@ -3648,7 +3743,7 @@ async function retryWithTurnInput(
   set((s) => ({
     status: "running",
     recoverable: false,
-    latestTokenUsage: undefined,
+    latestTokenUsage: undefined, contextNotice: undefined,
     _streamingAssistantId: undefined,
     timeline: [
       ...s.timeline,
@@ -3700,62 +3795,8 @@ async function consumeStream(
     // to keep the timeline live during the initial coder phase. (Self-guarded.)
     if (e.type === "agent_graph_updated") void get().refreshWorkflowStepRuntime();
     if (e.type === "agent_graph_updated") void get().refreshAgentRuns();
-    if (e.type === "turn_failed" && !e.recoverable && isUsageLimitMessage(e.error)) {
-      const s = get();
-      if (s.chatMode === "normal_chat" && s.selectedProvider && !s.pendingAccountSwitch && !s.accountSwitchLoading) {
-        const failedAccount = s.providerAccounts.find((a) => a.providerKey === s.selectedProvider && a.isActive);
-        if (failedAccount) {
-          const tried = [...s._accountSwitchTriedIds, failedAccount.id];
-          const candidate = findBestCandidate(s.providerAccounts, s.selectedProvider, tried);
-          if (candidate) {
-            const providerKey = s.selectedProvider;
-            const failedId = failedAccount.id;
-            const failedLbl = accountLabel(failedAccount);
-            // CP-84 (Task-434 T-2): quota prompt routes by source runId —
-            // focused → the existing AccountSwitchModal; non-focused → a
-            // synthetic inbox item carrying the quota decision (same
-            // account-switch confirm path, different surface).
-            if (isFocusedRun(get(), runId)) {
-              set((_) => ({
-                pendingAccountSwitch: {
-                  providerKey,
-                  failedAccountId: failedId,
-                  failedAccountLabel: failedLbl,
-                  candidateAccount: candidate,
-                  reason: "usage_limit" as const,
-                },
-                _accountSwitchTriedIds: tried,
-              }));
-            } else {
-              const laneItem = attentionQueue.items.find((i) => i.runId === runId);
-              get().ingestAttentionItem({
-                runId,
-                chatId: laneItem?.chatId ?? runId,
-                projectId: laneItem?.projectId ?? get().selectedProjectId ?? "",
-                runTitle: laneItem?.runTitle ?? runId,
-                kind: "quota",
-                waitingSince: new Date().toISOString(),
-                providerKey,
-                decision: {
-                  version: 1,
-                  id: `quota:${runId}`,
-                  runId,
-                  kind: "quota",
-                  revision: `quota:${runId}`,
-                  status: "pending",
-                  actionable: true,
-                  providerKey,
-                  prompt: `Usage limit reached on ${failedLbl}`,
-                  quota: {
-                    candidateAccountId: candidate.id,
-                    candidateLabel: accountLabel(candidate),
-                  },
-                },
-              });
-            }
-          }
-        }
-      }
+    if (e.type === "provider_limit_reached") {
+      surfaceProviderLimitForRun(e, get, set);
     }
   }
   if (isStale()) {
@@ -4290,7 +4331,7 @@ export function mergeAgentRunsById(existing: AgentRunSummary[], incoming: AgentR
 }
 
 
-function applyEvent(s: AppState, e: ProviderEventDTO): Partial<AppState> {
+export function applyEvent(s: AppState, e: ProviderEventDTO): Partial<AppState> {
   const next = applyTimelineEvent(s, e);
   const nextReplaySeq = {
     ...s._runReplaySeq,
@@ -4356,6 +4397,9 @@ function applyEvent(s: AppState, e: ProviderEventDTO): Partial<AppState> {
     const { [e.workflowRunId]: _cleared, ...remainingGateBlockedRunIds } = s._gateBlockedRunIds;
     return {
       ...next,
+      // Task-444: contextNotice intentionally NOT cleared here — pressure on
+      // the same leg persists across turns; a leg change auto-clears via the
+      // providerSessionId pin in the token_usage_updated branch.
       latestTokenUsage: undefined,
       gateBlock: undefined,
       _gateBlockedRunIds: remainingGateBlockedRunIds,
@@ -4363,7 +4407,31 @@ function applyEvent(s: AppState, e: ProviderEventDTO): Partial<AppState> {
     };
   }
   if (e.type === "token_usage_updated") {
-    return { ...next, latestTokenUsage: e.tokenUsage, _runReplaySeq: nextReplaySeq };
+    // Task-444 T-2: the aware banner clears when a later usage event drops
+    // below the tier OR the leg rotated (marks belong to the session that
+    // produced them); provider_compacted is a fact — pinned for its leg.
+    let notice = s.contextNotice;
+    if (notice?.providerSessionId && e.providerSessionId && notice.providerSessionId !== e.providerSessionId) {
+      notice = undefined;
+    } else if (
+      notice?.kind === "pressure_aware" &&
+      e.tokenUsage.modelContextWindow &&
+      e.tokenUsage.total &&
+      e.tokenUsage.total.totalTokens / e.tokenUsage.modelContextWindow < 0.8
+    ) {
+      notice = undefined;
+    }
+    return { ...next, latestTokenUsage: e.tokenUsage, contextNotice: notice, _runReplaySeq: nextReplaySeq };
+  }
+  if (e.type === "context_pressure" || e.type === "provider_compacted") {
+    // Task-444 T-2/T-3: awareness facts become an inline notice pinned to the
+    // leg. Ask-tier decision cards still arrive via user_question_required.
+    const p = e.contextPressure;
+    const notice: ContextNotice =
+      e.type === "provider_compacted"
+        ? { kind: "provider_compacted", ratio: p.ratio, prev: p.prevTokens, cur: p.usedTokens, providerSessionId: e.providerSessionId }
+        : { kind: "pressure_aware", ratio: p.ratio, providerSessionId: e.providerSessionId };
+    return { ...next, contextNotice: notice, _runReplaySeq: nextReplaySeq };
   }
   return { ...next, _runReplaySeq: nextReplaySeq };
 }
@@ -4503,6 +4571,7 @@ function snapshotRunState(state: AppState): RunSnapshot {
     pendingApprovals: [...pending.pendingApprovals],
     pendingQuestions: [...pending.pendingQuestions],
     latestTokenUsage: state.latestTokenUsage,
+    contextNotice: state.contextNotice,
     lastTurnInput: state.lastTurnInput,
     recoverable: state.recoverable,
     _streamingAssistantId: state._streamingAssistantId,
@@ -4529,6 +4598,7 @@ function restoreRunSnapshot(snapshot: RunSnapshot): Partial<AppState> {
     pendingApprovals: [...pending.pendingApprovals],
     pendingQuestions: [...pending.pendingQuestions],
     latestTokenUsage: snapshot.latestTokenUsage,
+    contextNotice: snapshot.contextNotice,
     lastTurnInput: snapshot.lastTurnInput,
     recoverable: snapshot.recoverable,
     _streamingAssistantId: snapshot._streamingAssistantId,
@@ -4595,7 +4665,7 @@ function emptyRunSnapshot(status: RunStatus): Partial<AppState> {
     pendingApprovals: [],
     pendingQuestions: [],
     gateBlock: undefined,
-    latestTokenUsage: undefined,
+    latestTokenUsage: undefined, contextNotice: undefined,
     lastTurnInput: undefined,
     recoverable: false,
     _streamingAssistantId: undefined,

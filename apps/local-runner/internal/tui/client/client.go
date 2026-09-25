@@ -167,6 +167,102 @@ type TokenUsageSnapshot struct {
 	Last               *TokenUsageBreakdown `json:"last,omitempty"`
 	Total              *TokenUsageBreakdown `json:"total,omitempty"`
 	ModelContextWindow *int64               `json:"modelContextWindow,omitempty"`
+	// EstPromptTokens is the runner's heuristic prompt-size estimate
+	// (Task-444 T-1) — rendered "prompt ~Nk est", distinct from usage.
+	EstPromptTokens *int64 `json:"estPromptTokens,omitempty"`
+}
+
+// AccountHeadroomInfo mirrors the runner's normalized per-account quota
+// view (Task-446): state + optional percent + confidence + reset/observed
+// stamps. Missing data renders "unknown", never a fake zero.
+type AccountHeadroomInfo struct {
+	State            string `json:"state"`
+	RemainingPercent *int   `json:"remainingPercent,omitempty"`
+	ResetAt          string `json:"resetAt,omitempty"`
+	Source           string `json:"source,omitempty"`
+	FreshnessSeconds int64  `json:"freshnessSeconds"`
+	Confidence       string `json:"confidence"`
+}
+
+// QuotaRouteCandidate is one row of the quota gate table (Task-450) —
+// provider/model/account identity, headroom evidence, eligibility, machine-
+// readable rejection reasons, and the same-provider cooldown window.
+type QuotaRouteCandidate struct {
+	ProviderKey       string              `json:"providerKey"`
+	Model             string              `json:"model,omitempty"`
+	WorkloadClass     string              `json:"workloadClass,omitempty"`
+	AccountID         string              `json:"accountId"`
+	DisplayName       string              `json:"displayName,omitempty"`
+	SlotIndex         int                 `json:"slotIndex,omitempty"`
+	Headroom          AccountHeadroomInfo `json:"headroom"`
+	AutoEligible      bool                `json:"autoEligible"`
+	RejectionReasons  []string            `json:"rejectionReasons,omitempty"`
+	CooldownStartedAt string              `json:"cooldownStartedAt,omitempty"`
+	CooldownUntil     string              `json:"cooldownUntil,omitempty"`
+	CooldownReason    string              `json:"cooldownReason,omitempty"`
+}
+
+// QuotaRouteDecision is the structured payload on a quota_route_required
+// question card (Task-450): the unusable binding, trigger, and the runner-
+// ordered candidate table. Clients render it verbatim — never re-rank.
+type QuotaRouteDecision struct {
+	RunID         string                `json:"runId"`
+	Trigger       string                `json:"trigger"`
+	Reason        string                `json:"reason,omitempty"`
+	ProviderKey   string                `json:"providerKey"`
+	Model         string                `json:"model,omitempty"`
+	AccountID     string                `json:"accountId,omitempty"`
+	PolicyVersion int                   `json:"policyVersion"`
+	Candidates    []QuotaRouteCandidate `json:"candidates,omitempty"`
+}
+
+// QuotaRoutePayload mirrors the runner's quota_route_committed /
+// quota_route_stopped / quota_route_blocked payload (Task-449/450): the
+// requested → resolved route plus audit evidence.
+type QuotaRoutePayload struct {
+	FromProvider      string               `json:"fromProvider,omitempty"`
+	FromAccount       string               `json:"fromAccount,omitempty"`
+	ToProvider        string               `json:"toProvider,omitempty"`
+	ToAccount         string               `json:"toAccount,omitempty"`
+	ToModel           string               `json:"toModel,omitempty"`
+	Scope             string               `json:"scope,omitempty"`
+	Reason            string               `json:"reason,omitempty"`
+	PolicyVersion     int                  `json:"policyVersion,omitempty"`
+	Headroom          *AccountHeadroomInfo `json:"headroom,omitempty"`
+	CooldownStartedAt string               `json:"cooldownStartedAt,omitempty"`
+	CooldownUntil     string               `json:"cooldownUntil,omitempty"`
+	CooldownReason    string               `json:"cooldownReason,omitempty"`
+}
+
+// QuotaRoutingAuditRecord mirrors GET /client/workflow-runs/{id}/quota-audit
+// (Task-450): the forensic record correlating a route decision with usage.
+type QuotaRoutingAuditRecord struct {
+	RunID           string               `json:"runId"`
+	CommittedAt     string               `json:"committedAt,omitempty"`
+	Outcome         string               `json:"outcome"`
+	FromProvider    string               `json:"fromProvider,omitempty"`
+	FromAccount     string               `json:"fromAccount,omitempty"`
+	ToProvider      string               `json:"toProvider,omitempty"`
+	ToAccount       string               `json:"toAccount,omitempty"`
+	ToModel         string               `json:"toModel,omitempty"`
+	Scope           string               `json:"scope,omitempty"`
+	Reason          string               `json:"reason,omitempty"`
+	PolicyVersion   int                  `json:"policyVersion"`
+	Headroom        *AccountHeadroomInfo `json:"headroom,omitempty"`
+	EstPromptTokens *int64               `json:"estPromptTokens,omitempty"`
+	MaxUsageTokens  *int64               `json:"maxUsageTokens,omitempty"`
+	ActualUsage     *TokenUsageBreakdown `json:"actualUsage,omitempty"`
+}
+
+// ContextPressurePayload mirrors the runner's context_pressure /
+// provider_compacted payload (Task-443/444, flag-gated FLOWPILOT_CONTEXT_PRESSURE).
+type ContextPressurePayload struct {
+	Tier         string  `json:"tier"` // "aware" | "ask"
+	Ratio        float64 `json:"ratio"`
+	UsedTokens   int64   `json:"usedTokens"`
+	WindowTokens int64   `json:"windowTokens"`
+	PrevTokens   int64   `json:"prevTokens,omitempty"`
+	LegID        string  `json:"legId,omitempty"`
 }
 
 // AgentRunSummary summarises a single agent run inside an agent graph.
@@ -450,6 +546,9 @@ type QuestionInfo struct {
 	Prompt      string              `json:"prompt"`
 	Options     []map[string]string `json:"options"`
 	MultiSelect bool                `json:"multiSelect,omitempty"`
+	// QuotaDecision carries the candidate table on quota_route_required
+	// snapshot restores (Task-450).
+	QuotaDecision *QuotaRouteDecision `json:"quotaDecision,omitempty"`
 }
 
 // StartRunInput mirrors the runner StartRunInput DTO.
@@ -503,10 +602,12 @@ type TurnInput struct {
 
 // ProviderEvent mirrors ProviderEvent from provider_event.go (camelCase JSON).
 type ProviderEvent struct {
-	ID                 string   `json:"id"`
-	Seq                int64    `json:"seq"`
-	Type               string   `json:"type"`
-	WorkflowRunID      string   `json:"workflowRunId"`
+	ID            string `json:"id"`
+	Seq           int64  `json:"seq"`
+	Type          string `json:"type"`
+	WorkflowRunID string `json:"workflowRunId"`
+	// ProviderSessionID pins pressure/compaction marks to one leg (Task-444).
+	ProviderSessionID  string   `json:"providerSessionId,omitempty"`
 	ProviderTurnID     string   `json:"providerTurnId,omitempty"`
 	ProviderKey        string   `json:"providerKey"`
 	Text               string   `json:"text,omitempty"`
@@ -526,12 +627,20 @@ type ProviderEvent struct {
 	Recoverable bool                `json:"recoverable,omitempty"`
 	Options     []map[string]string `json:"options,omitempty"`
 	MultiSelect bool                `json:"multiSelect,omitempty"`
+	// QuotaDecision is present on user_question_required when the card is a
+	// quota_route_required gate (Task-450).
+	QuotaDecision *QuotaRouteDecision `json:"quotaDecision,omitempty"`
+	// QuotaRoute is present on quota_route_committed / _stopped / _blocked.
+	QuotaRoute *QuotaRoutePayload `json:"quotaRoute,omitempty"`
 	// DecisionCard is the runner UserDecisionCard payload on
 	// user_decision_card_requested events (CP-62 P-3, Task-345).
 	DecisionCard *DecisionCardData `json:"input,omitempty"`
 	OccurredAt   string            `json:"occurredAt"`
 	// TokenUsage is present on token_usage_updated events.
 	TokenUsage *TokenUsageSnapshot `json:"tokenUsage,omitempty"`
+	// ContextPressure is present on context_pressure / provider_compacted
+	// events (Task-444 T-5) — inline awareness markers, never cards.
+	ContextPressure *ContextPressurePayload `json:"contextPressure,omitempty"`
 	// AgentGraph is present on agent_graph_updated events (legacy runner name).
 	AgentGraph *AgentGraphSnapshot `json:"agentGraph,omitempty"`
 	// AgentGraphSnapshot is the canonical desktop-aligned name ("agentGraphSnapshot").
@@ -1072,6 +1181,47 @@ func (c *Client) GetRun(ctx context.Context, runID string) (RunSnapshot, error) 
 	var s RunSnapshot
 	err := c.getJSON(ctx, "/client/workflow-runs/"+runID, &s)
 	return s, err
+}
+
+// GetQuotaAudit fetches GET /client/workflow-runs/{runId}/quota-audit — the
+// Task-450 routing forensic record (requested→resolved + usage evidence).
+func (c *Client) GetQuotaAudit(ctx context.Context, runID string) (QuotaRoutingAuditRecord, error) {
+	var rec QuotaRoutingAuditRecord
+	err := c.getJSON(ctx, "/client/workflow-runs/"+neturl.PathEscape(runID)+"/quota-audit", &rec)
+	return rec, err
+}
+
+// ModelClassBinding mirrors the runner's provider+workload-class model pin.
+type ModelClassBinding struct {
+	ProviderKey   string `json:"providerKey"`
+	WorkloadClass string `json:"workloadClass"`
+	Model         string `json:"model"`
+}
+
+// QuotaRoutingSettings mirrors GET/PUT /client/quota-routing-settings —
+// machine-global rotation policy (Task-446/450).
+type QuotaRoutingSettings struct {
+	Mode                        string              `json:"mode"` // manual | auto
+	ProviderPriority            []string            `json:"providerPriority,omitempty"`
+	ModelBindings               []ModelClassBinding `json:"modelBindings,omitempty"`
+	HeadroomLowPercent          int                 `json:"headroomLowPercent"`
+	TelemetryTTLSeconds         int                 `json:"telemetryTtlSeconds"`
+	SameProviderCooldownSeconds int                 `json:"sameProviderCooldownSeconds"`
+	PolicyVersion               int                 `json:"policyVersion"`
+}
+
+// GetQuotaRoutingSettings fetches GET /client/quota-routing-settings.
+func (c *Client) GetQuotaRoutingSettings(ctx context.Context) (QuotaRoutingSettings, error) {
+	var s QuotaRoutingSettings
+	err := c.getJSON(ctx, "/client/quota-routing-settings", &s)
+	return s, err
+}
+
+// SetQuotaRoutingSettings sends PUT /client/quota-routing-settings.
+func (c *Client) SetQuotaRoutingSettings(ctx context.Context, s QuotaRoutingSettings) (QuotaRoutingSettings, error) {
+	var out QuotaRoutingSettings
+	err := c.putJSON(ctx, "/client/quota-routing-settings", s, &out)
+	return out, err
 }
 
 // ListRunHistory fetches GET /client/projects/{projectId}/workflow-runs.

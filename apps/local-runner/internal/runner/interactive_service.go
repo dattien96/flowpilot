@@ -149,6 +149,24 @@ type InteractiveService struct {
 	approvalTTL time.Duration
 	questionTTL time.Duration
 
+	// usageRouter is the CP-87 seam: the quota-aware routing gate plugs in to
+	// handle `rotate` answers on usage_budget_exceeded cards (Task-442).
+	// nil until CP-87 lands — cards then offer extend/stop only.
+	usageRouter usageBudgetRouter
+
+	// contextResetHeadroomOK is the CP-87 headroom seam for same-binding leg
+	// resets (Task-443): reseed costs tokens, so the pinned account must
+	// afford the handoff. nil = no quota feed yet → assume OK (degrade-soft).
+	contextResetHeadroomOK func(rs *interactiveRun) bool
+
+	// CP-87 P-3/P-4 (Task-447) quota-routing seams. quotaMu serializes the
+	// durable claims/cooldown ledger (quota-routing-state.json); it is always
+	// the innermost lock — code holding quotaMu never acquires s.mu.
+	quotaMu          sync.Mutex
+	quotaRuntimePath string
+	quotaNowFn       func() time.Time
+	quotaTelemetryFn func(ctx context.Context, account ProviderAccount) ProviderAccountSummary
+
 	// maxTurnAttempts bounds send-with-retry: a turn whose adapter call fails with a
 	// recoverable error (e.g. the shared app-server stream died mid-turn) is re-sent
 	// up to this many times before failing the turn (04-05 send-with-retry). A user
@@ -215,7 +233,14 @@ type interactiveRun struct {
 	// observed this turn so model-switch resume re-loads the real session.
 	lastDevinTurnSessionID string
 	providerAccountID      string
-	workspaceCwd           string
+	// accountPinned marks providerAccountID as a routing-claimed pin
+	// (CP-87 Task-447): the admission guard validates the pin itself instead
+	// of comparing against the machine-global active account, and a
+	// same-provider child inherits the pin at spawn. quotaClaimID records
+	// the minting claim for the audit trail.
+	accountPinned bool
+	quotaClaimID  string
+	workspaceCwd  string
 	// worktree is the CP-71 binding when the run opted into worktree
 	// isolation; nil for normal runs.
 	worktree  *worktreeBinding
@@ -230,7 +255,7 @@ type interactiveRun struct {
 	// BUG-468: CP document id (e.g. "CP-02") this run's task set belongs to.
 	// Scopes collectVibeTaskPlan so foreign/stale Task files never join the
 	// sprint plan. Empty = legacy unscoped (pre-fix runs, fixtures).
-	vibeCpDocID             string
+	vibeCpDocID string
 	// BUG-471: the completed node whose advance parked on blocked/requirement
 	// ("resume:coder" marks maybeResumeVibeCoderAfterTdd parks). Continue
 	// re-invokes the same advance so the parked condition is re-evaluated —
@@ -311,6 +336,9 @@ type interactiveRun struct {
 	// ownership so a deferred clear cannot release a newer start's flag.
 	vibeSprintStartInFlight bool
 	vibeSprintStartGen      int64
+	// quotaRouting is the CP-87 P-5 frozen routing-policy snapshot taken at
+	// createRun — a mid-run settings edit never retargets an active run.
+	quotaRouting *QuotaRoutingSnapshot
 	// reasoningEffort is the desktop-selected effort level passed per-turn (T-4).
 	reasoningEffort string
 	// chatPosture is the per-turn posture (scan/plan/code, "" = code). Persisted
@@ -688,6 +716,26 @@ type interactiveRun struct {
 	// RAM-only by design: after a restart no live broadcast happened in this
 	// process, so resumePendingFlowGate must emit the materialized terminal.
 	terminalBroadcastTurns map[string]bool
+	// Task-443 (CP-86 P-4): flag-gated context-pressure state.
+	// pressureTierFired dedupes a tier once per leg ("<session>|<tier>");
+	// contextDegradedLegs marks legs whose provider self-compacted;
+	// contextResetPending is the durable rotate_leg intent consumed at the
+	// next admission; contextResetCount bounds resets per run.
+	pressureTierFired   map[string]bool
+	contextDegradedLegs map[string]bool
+	// contextResetOfferedLegs dedupes the degraded-leg rotate offer: once per
+	// leg, so answering continue does not re-nag at every admission.
+	contextResetOfferedLegs map[string]bool
+	contextResetPending     bool
+	contextResetCount       int
+	lastUsageSessionID      string
+	lastUsageTotalTokens    int64
+	// legContextWindows remembers the last context window reported on each
+	// provider session (leg). The window is a leg property, not per-event —
+	// providers like Devin report `size` on mid-turn usage_update events but
+	// omit it on the turn-terminal event, which would otherwise land nil and
+	// silently skip the pressure ladder on the deciding event.
+	legContextWindows map[string]int64
 	// Durable fail budgets keyed by generation (V10R4 P1).
 	pendingResumeFailCount       int
 	pendingResumeFailGen         int64
@@ -892,6 +940,14 @@ type questionRecord struct {
 	// (Task-430); they round-trip through ProviderQuestionState.
 	revision  int64
 	createdAt string
+	// kind distinguishes engine-emitted decision questions (Task-442's
+	// usage_budget_exceeded card) from model-asked AskQuestion cards — the
+	// resolved choice routes to a semantic handler, not a turn reprompt.
+	kind string
+	// quotaDecision carries the structured candidate table on
+	// quota_route_required cards (Task-450) — persisted via
+	// ProviderQuestionState so restart/replay serve the identical rows.
+	quotaDecision *QuotaRouteDecision
 }
 
 // questionResolveResult is the typed payload sent on questionRecord.resolve
@@ -947,6 +1003,7 @@ func questionStateFromRecord(rec *questionRecord, providerTurnID, expiresAt stri
 		Status:         persistedGateStatus(rec.status),
 		Choice:         rec.choice,
 		ExpiresAt:      expiresAt,
+		QuotaDecision:  rec.quotaDecision,
 		Revision:       rec.revision,
 		CreatedAt:      rec.createdAt,
 	}
@@ -1060,6 +1117,10 @@ func newInteractiveService(registry *ProviderRegistry, catalog CatalogStore, wor
 		chatSessionIndexRepairing: map[string]struct{}{},
 		gitnexusAnalyzeOnce:       map[string]bool{},
 	}
+	// Task-449: the service implements the CP-86 usageBudgetRouter seam —
+	// usage-budget rotate answers and context-reset headroom escalations enter
+	// the quota routing gate through it.
+	svc.usageRouter = svc
 	// Seed the id counter above the highest persisted run id so a runner restart does NOT
 	// reuse ids (run-1, run-2, …). Reuse made a fresh chat collide with a previous run of
 	// the same id and inherit its persisted child agents — old sub-agents appeared in a
@@ -4686,6 +4747,8 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 		ProviderSessionID:          providerSessionID,
 		ProviderKey:                rs.providerKey,
 		ProviderAccountID:          rs.providerAccountID,
+		AccountPinned:              rs.accountPinned,
+		QuotaClaimID:               rs.quotaClaimID,
 		WorkingDirectory:           rs.workspaceCwd,
 		Status:                     rs.status,
 		LastPrompt:                 rs.lastPrompt,
@@ -4722,10 +4785,11 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 		ChatSubMode:                rs.chatSubMode,
 		ChatFlowRef:                rs.chatFlowRef,
 		WorkingMode:                rs.workingMode,
+		QuotaRouting:               rs.quotaRouting,
 		VibeAwaitingLock:           rs.vibeAwaitingLock,
 		VibeTaskPlan:               append([]string(nil), rs.vibeTaskPlan...),
 		VibeCpDocID:                rs.vibeCpDocID,
-		VibeRequirementFromNode:   rs.vibeRequirementFromNode,
+		VibeRequirementFromNode:    rs.vibeRequirementFromNode,
 		VibeSprintIndex:            rs.vibeSprintIndex,
 		VibeSprintBudget:           rs.vibeSprintBudget,
 		VibeSprintBoundaryDeclined: rs.vibeSprintBoundaryDeclined,
@@ -5241,6 +5305,9 @@ func (s *InteractiveService) rehydratePendingGatesLocked(runID string) {
 					expiresAt:   st.ExpiresAt,
 					revision:    st.Revision,
 					createdAt:   st.CreatedAt,
+					// Task-450: restore the structured quota decision so the
+					// rehydrated card serves the identical candidate table.
+					quotaDecision: st.QuotaDecision,
 				}
 				if rs.pendingQuestionID == "" {
 					rs.pendingQuestionID = st.QuestionID
@@ -6111,6 +6178,40 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 			deferGateCompleted = true
 		}
 	}
+	// CP-86 P-1 (Task-440): fill ModelContextWindow from the provider catalog
+	// when the adapter did not self-report (Claude never sends one), so every
+	// consumer reads one uniform field. Pure in-memory lookup — no I/O under
+	// s.mu. Self-reported values are never overridden; unknown stays nil.
+	// Fallback order: adapter-reported → static catalog → last window seen on
+	// THIS leg (the window is a leg property; e.g. Devin reports `size` on
+	// mid-turn usage_update but omits it on the turn-terminal event, which
+	// would otherwise land nil and skip the pressure ladder on the deciding
+	// event). A new leg never inherits the previous leg's window.
+	if ev.Type == EventTokenUsageUpdated && ev.TokenUsage != nil {
+		if ev.TokenUsage.ModelContextWindow == nil {
+			if window := modelContextWindowFor(rs.providerKey, rs.modelName); window != nil {
+				ev.TokenUsage.ModelContextWindow = window
+			} else if rs.legContextWindows != nil {
+				if w := rs.legContextWindows[ev.ProviderSessionID]; w > 0 {
+					carried := w
+					ev.TokenUsage.ModelContextWindow = &carried
+				}
+			}
+		}
+		if ev.TokenUsage.ModelContextWindow != nil && *ev.TokenUsage.ModelContextWindow > 0 && ev.ProviderSessionID != "" {
+			if rs.legContextWindows == nil {
+				rs.legContextWindows = map[string]int64{}
+			}
+			rs.legContextWindows[ev.ProviderSessionID] = *ev.TokenUsage.ModelContextWindow
+		}
+	}
+	// Task-444 T-1 (CP-86 P-5): stamp the heuristic prompt-size estimate on
+	// every usage event so the UI can show "prompt ~Nk est" next to the real
+	// "usage Nk" figure without conflating the two. Pure in-memory, no I/O.
+	if ev.Type == EventTokenUsageUpdated && ev.TokenUsage != nil && ev.TokenUsage.EstPromptTokens == nil && rs.lastPrompt != "" {
+		est := int64(len(rs.lastPrompt)) / 4
+		ev.TokenUsage.EstPromptTokens = &est
+	}
 	rs.events = append(rs.events, ev)
 	rs.lastEventType = ev.Type
 	rs.updatedAt = ev.OccurredAt
@@ -6459,6 +6560,13 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 	// user-initiated control instead — ongoing chats have no terminal point).
 	if worktreeTerminal(rs.status) {
 		s.maybeEmitWorktreeMergeRequest(rs)
+	}
+	// Task-443 (CP-86 P-4): flag-gated context-pressure ladder + provider
+	// self-compaction detection. Evaluated AFTER the usage event is appended
+	// (enrichment above already filled the catalog window); pressure events
+	// are not usage events so emission cannot recurse. Default OFF.
+	if contextPressureEnabled() && ev.Type == EventTokenUsageUpdated {
+		s.evalContextPressureLocked(rs, ev)
 	}
 	// CP-84 (Task-429): every emitted event can change the run's lane
 	// projection (status flips, vibe gates, worktree_terminal arming the
@@ -7472,19 +7580,38 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 		childModel = defaultModelForProvider(providerKey)
 	}
 
+	// Task-447 (CP-87): resolve the child's account pin. An explicit claim
+	// (in.ProviderAccountID) wins; otherwise a same-provider child of a
+	// claim-pinned parent inherits the pin so the child runs under the same
+	// account the router bound — never a re-resolved active account. A
+	// cross-provider child or unpinned parent falls through to the legacy
+	// active-account stamp in createRun.
+	childAccountID := strings.TrimSpace(in.ProviderAccountID)
+	childPinned := childAccountID != ""
+	if childAccountID == "" && providerKey == parentProviderKey {
+		s.mu.Lock()
+		if parent := s.runs[parentRunID]; parent != nil && parent.accountPinned && parent.providerAccountID != "" {
+			childAccountID = parent.providerAccountID
+			childPinned = true
+		}
+		s.mu.Unlock()
+	}
+
 	// Create the child run. createRun acquires s.mu internally; call it unlocked.
 	// The child inherits the parent's YOLO posture (BUG-129): with YOLO on, the
 	// child's gated actions must auto-approve just like the parent's, instead of
 	// stalling the (often wait=true) parent turn on a child approval prompt.
 	startIn := StartRunInput{
-		ProjectID:       projectID,
-		WorkflowID:      workflowID,
-		ChatMode:        "normal_chat",
-		Cwd:             cwd,
-		ProviderKey:     providerKey,
-		Model:           childModel,
-		ReasoningEffort: childReasoningEffort,
-		YoloMode:        parentYolo,
+		ProjectID:         projectID,
+		WorkflowID:        workflowID,
+		ChatMode:          "normal_chat",
+		Cwd:               cwd,
+		ProviderKey:       providerKey,
+		Model:             childModel,
+		ReasoningEffort:   childReasoningEffort,
+		YoloMode:          parentYolo,
+		ProviderAccountID: childAccountID,
+		AccountPinned:     childPinned,
 	}
 	handle, apiErr := s.createRun(startIn)
 	if apiErr != nil {
@@ -9109,6 +9236,13 @@ func (s *InteractiveService) sendTurnWithRetry(ctx context.Context, adapter Prov
 		if err == nil || !isRecoverableSendError(err) || attempt == attempts {
 			return err
 		}
+		// Task-445 T-3: a typed rate-limit carries the provider's Retry-After;
+		// honor it (bounded) instead of hammering back immediately.
+		if limit, ok := providerLimitFromError(err); ok && limit.RetryAfterSeconds > 0 {
+			if werr := providerLimitRetryDelayFn(ctx, time.Duration(limit.RetryAfterSeconds)*time.Second); werr != nil {
+				return werr
+			}
+		}
 		bridge.Emit(ProviderEvent{
 			Type: EventMessageDelta,
 			Text: fmt.Sprintf("\n[recovering: re-sending turn after a recoverable error (attempt %d/%d)]\n", attempt+1, attempts),
@@ -9132,54 +9266,26 @@ func isRecoverableSendError(err error) bool {
 	if errors.Is(err, errGeminiWorkspaceRequired) {
 		return false
 	}
+	// Task-445 T-3: typed provider limits own the retry decision — only a
+	// bounded Retry-After rate limit re-sends; everything else is terminal so
+	// the CP-87 router can handle it.
+	if limit, ok := providerLimitFromError(err); ok {
+		return providerLimitRecoverable(*limit)
+	}
 	if isProviderUsageLimitError(err) {
 		return false
 	}
 	return true
 }
 
+// isProviderUsageLimitError reports whether an untyped error string classifies
+// as a provider limit (BUG-361). Task-445: the token table now lives in
+// provider_limit.go's shared classifier — this wrapper preserves the name for
+// existing callers/tests while the typed path (providerLimitError) takes
+// precedence in isRecoverableSendError.
 func isProviderUsageLimitError(err error) bool {
-	if err == nil {
-		return false
-	}
-	message := strings.ToLower(err.Error())
-	return strings.Contains(message, "usage limit reached") ||
-		strings.Contains(message, "extra usage unavailable") ||
-		strings.Contains(message, "out of credits") ||
-		strings.Contains(message, "out_of_credits") ||
-		strings.Contains(message, "quota reset") ||
-		strings.Contains(message, "rate limit") ||
-		// BUG-361: OpenCode ACP quota/billing shapes. Underscore/dash
-		// variants ("rate_limited", "quota_exceeded") never matched the
-		// space-separated tokens above, so a returned quota error looked
-		// recoverable and retried instead of failing fast. All tokens are
-		// unambiguously billing/quota; healthy errors never contain them.
-		strings.Contains(message, "rate_limit") ||
-		strings.Contains(message, "rate-limit") ||
-		strings.Contains(message, "rate_limited") ||
-		strings.Contains(message, "quota exceeded") ||
-		strings.Contains(message, "quota_exceeded") ||
-		strings.Contains(message, "insufficient credit") ||
-		strings.Contains(message, "insufficient_credit") ||
-		// BUG-361 follow-up review: the ACP layer already treats usage_limit /
-		// usage-limit as quota stopReasons — the RPC-error layer must agree,
-		// or a "usage_limit exceeded" RPC error still classifies recoverable.
-		strings.Contains(message, "usage_limit") ||
-		strings.Contains(message, "usage-limit") ||
-		strings.Contains(message, "payment required") ||
-		strings.Contains(message, "payment_required") ||
-		// Live ACP probe 2026-09-07 (opencode 1.18.29, gpt-5.4-nano):
-		// session/prompt JSON-RPC -32603
-		// "Internal error: No payment method. Add a payment method here: …/billing"
-		// "payment required" does not match this copy.
-		strings.Contains(message, "no payment method") ||
-		strings.Contains(message, "add a payment method") ||
-		// Grok Build (CP-46/Task-210, GR-19): live-observed 402 signature during
-		// CP-46 authoring. Appended additively; other providers' classification
-		// above is unchanged.
-		strings.Contains(message, "personal-team-blocked") ||
-		strings.Contains(message, "spending-limit") ||
-		strings.Contains(message, "spending_limit")
+	_, ok := classifyProviderLimit("", nil, err)
+	return ok
 }
 
 // finishTurn does the locked post-turn bookkeeping: clears in-flight state, emits
@@ -9212,6 +9318,10 @@ func (s *InteractiveService) finishTurn(rs *interactiveRun, turnID string, err e
 	// outcome outside the lock and terminalize after unlock.
 	var dispatchOutcome string
 	var dispatchErrMsg string
+	// Task-449: hard provider-limit failures enter the quota gate after the
+	// turn's terminal events settle (post-unlock — the gate resolves/queries
+	// durable state and must not run inside s.mu's emit block).
+	var quotaGateRunID, quotaGateTrigger string
 
 	switch {
 	case err == nil:
@@ -9373,6 +9483,36 @@ func (s *InteractiveService) finishTurn(rs *interactiveRun, turnID string, err e
 		// Logging the terminal error here (alongside logTurnProviderParams'
 		// model/reasoning/cwd/yolo) makes the failure reason findable after the fact.
 		log.Printf("[turn-failed] run=%s turn=%s provider=%s error=%q", rs.id, turnID, rs.providerKey, err.Error())
+		// Task-445: a limit-shaped failure publishes the typed classification
+		// event before the terminal failure so clients never parse error text.
+		limit, limitOK := providerLimitFromError(err)
+		if !limitOK {
+			limit, limitOK = classifyProviderLimit(rs.providerKey, nil, err)
+		}
+		if limitOK && limit != nil {
+			if limit.ProviderKey == "" {
+				limit.ProviderKey = rs.providerKey
+			}
+			if limit.AccountID == "" {
+				limit.AccountID = rs.providerAccountID
+			}
+			s.emitLocked(rs, ProviderEvent{Type: EventProviderLimitReached, ProviderTurnID: turnID, ProviderLimit: limit})
+			// Task-447: a live-observed hard limit marks the account in the
+			// durable routing ledger so rotation never re-picks it while the
+			// block stands (billing_required = account unusable; credits
+			// exhausted = unusable until the quota window resets).
+			if limit.Kind == ProviderLimitBillingRequired || limit.Kind == ProviderLimitCreditsExhausted {
+				s.noteAccountBlockedLocked(string(rs.providerKey), limit.AccountID, string(limit.Kind))
+			}
+			// Task-449 T-4: hard kinds (not transient rate_limited — the
+			// Task-445 retry policy owns that) enter the quota routing gate
+			// once the failed turn has settled — never mid-turn.
+			switch limit.Kind {
+			case ProviderLimitQuotaExhausted, ProviderLimitCreditsExhausted, ProviderLimitBillingRequired:
+				quotaGateRunID = rs.id
+				quotaGateTrigger = string(limit.Kind)
+			}
+		}
 		s.emitLocked(rs, ProviderEvent{Type: EventTurnFailed, ProviderTurnID: turnID, Error: err.Error(), Recoverable: false})
 		dispatchOutcome = "failed"
 		dispatchErrMsg = err.Error()
@@ -9380,6 +9520,11 @@ func (s *InteractiveService) finishTurn(rs *interactiveRun, turnID string, err e
 	s.mu.Unlock()
 	if dispatchOutcome != "" {
 		s.commitFinishTurnDispatchTerminal(rs, turnID, dispatchOutcome, dispatchErrMsg)
+	}
+	if quotaGateRunID != "" {
+		if gerr := s.enterQuotaGate(context.Background(), quotaGateRunID, quotaGateTrigger); gerr != nil {
+			log.Printf("[quota-gate] post-failure gate failed run=%s trigger=%s err=%v", quotaGateRunID, quotaGateTrigger, gerr)
+		}
 	}
 	return false, finalizeInput{}
 }
@@ -9523,6 +9668,27 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 		s.mu.Unlock()
 		return "", newAPIErr(http.StatusConflict, "awaiting_user", "run has a pending approval or question; resolve it before a new turn")
 	}
+	// Task-443 (CP-86 P-4): a committed rotate_leg intent executes HERE — the
+	// turn-admission boundary — never mid-turn. The turn lands on the fresh
+	// same-binding leg. Headroom failure escalates to the routing gate (CP-87).
+	if rs.contextResetPending {
+		s.mu.Unlock()
+		if newLegID := s.consumePendingContextReset(context.Background(), runID); newLegID != "" {
+			return s.startTurn(newLegID, in, scenario, idempotencyKey)
+		}
+		s.mu.Lock()
+		rs = s.runs[runID]
+		if rs == nil {
+			s.mu.Unlock()
+			return "", newAPIErr(http.StatusNotFound, "run_not_found", "workflow run not found")
+		}
+	}
+	// Task-443: a leg the provider self-compacted is context-degraded — the
+	// next admission treats it like the ask tier and offers rotate_leg (once
+	// per leg; the card is async — the admitted turn proceeds regardless).
+	if contextPressureEnabled() {
+		s.maybeOfferContextResetAtAdmissionLocked(rs)
+	}
 	// BUG-399 (live run-3439): a first turn that launches vibe-cp-ingest must
 	// name a CP-shaped source before cp_reader drafts anything. Without this
 	// fence a bare `README.md` prompt sailed through intake → SS drafts → lock
@@ -9628,7 +9794,15 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 		s.mu.Unlock()
 		return "", newAPIErr(http.StatusConflict, "gate_in_progress", "post-turn gate still running; wait for gate pass/block before a new turn")
 	}
-	if rs.providerAccountID != s.activeAccountForProvider(rs.providerKey) {
+	if rs.accountPinned {
+		// Task-447: a claim-pinned leg legitimately diverges from the global
+		// active account — validate the pin itself (exists + connected) instead
+		// of comparing. A dead pin fails closed; it never silently rebinds.
+		if _, err := s.resolveConnectedAccount(string(rs.providerKey), rs.providerAccountID); err != nil {
+			s.mu.Unlock()
+			return "", newAPIErr(http.StatusConflict, "account_unavailable", "pinned provider account is no longer available: "+err.Error())
+		}
+	} else if rs.providerAccountID != s.activeAccountForProvider(rs.providerKey) {
 		if rs.runKind != "chat" {
 			s.mu.Unlock()
 			return "", newAPIErr(http.StatusConflict, "provider_account_changed", "active provider account changed since the run started")
@@ -9675,7 +9849,11 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 			Text:   "Devin is starting — first run may open a browser sign-in.",
 		})
 	}
-	adapter, aerr := s.registry.AdapterWithScope(rs.providerKey, turnModel, turnEffort, opencodeChildScopeHint(rs))
+	// Task-447: adapter construction is account-scoped — the leg's pinned (or
+	// ambiently stamped) account resolves inside the factory, so a rotation
+	// leg spawns its process under the claimed account's home, not whichever
+	// account happens to be globally active.
+	adapter, aerr := s.registry.AdapterForAccount(rs.providerKey, turnModel, turnEffort, opencodeChildScopeHint(rs), rs.providerAccountID)
 	if devinCold {
 		if aerr != nil {
 			s.emitLocked(rs, ProviderEvent{
@@ -10957,7 +11135,34 @@ func (s *InteractiveService) AnswerQuestion(questionID string, choice []string) 
 		rec.resolvingSnapshot = nil
 		rec.resolvingSession = nil
 	}
+	// Task-442/443: engine-emitted decision cards route their resolved choice
+	// to a semantic handler instead of a turn reprompt.
+	var decisionTarget *interactiveRun
+	var usageBudgetChoice, pressureChoice, quotaRouteChoice string
+	if len(rec.choice) > 0 {
+		decisionTarget = s.runs[rec.runID]
+		// questionRecordKind recovers the kind from the persisted prompt prefix
+		// for rehydrated records (in-memory kind doesn't survive restart).
+		switch questionRecordKind(rec) {
+		case usageBudgetQuestionKind:
+			usageBudgetChoice = rec.choice[0]
+		case contextPressureQuestionKind:
+			pressureChoice = rec.choice[0]
+		case quotaRouteQuestionKind:
+			quotaRouteChoice = rec.choice[0]
+		}
+	}
 	s.mu.Unlock()
+
+	if decisionTarget != nil && usageBudgetChoice != "" {
+		s.applyUsageBudgetAnswer(decisionTarget, usageBudgetChoice)
+	}
+	if decisionTarget != nil && pressureChoice != "" {
+		s.applyContextPressureAnswer(decisionTarget, pressureChoice)
+	}
+	if decisionTarget != nil && quotaRouteChoice != "" {
+		s.applyQuotaRouteAnswer(decisionTarget, questionID, quotaRouteChoice)
+	}
 
 	if resumeStepTurn {
 		s.setFlowStepStatus(context.Background(), resumeStepParent, resumeStepLabel, StepStatusRunning)

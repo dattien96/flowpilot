@@ -158,6 +158,10 @@ func (s *InteractiveService) runFlowGate(
 func (s *InteractiveService) runFlowGateAtEpoch(
 	ctx context.Context, rs *interactiveRun, turnID string, fin finalizeInput, epoch int64,
 ) (block bool) {
+	// Task-442 (CP-86 P-3): post-turn real-usage budget check at the TOP of
+	// the seam — no rule-dependent early return may skip it (a profiled run's
+	// burned tokens count even when the turn's gate evaluation no-ops).
+	s.checkUsageBudgetPostTurn(rs, turnID)
 	cwd := rs.workspaceCwd
 	if cwd == "" {
 		return false
@@ -698,6 +702,11 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 		return false
 	}
 	cwd := strings.TrimSpace(rs.workspaceCwd)
+	// Task-442 (CP-86 P-3): post-turn real-usage budget check sits at the TOP
+	// of the post-turn gate seam — BEFORE every rule-dependency early return
+	// (no-op guards at ~1228 skip artifact-less, non-coding children like
+	// scout/reviewer, and their spent tokens still count against the cap).
+	s.checkUsageBudgetPostTurn(rs, turnID)
 	if cwd == "" {
 		return false
 	}

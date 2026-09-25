@@ -350,7 +350,13 @@ func (a *opencodeAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge 
 			return ctx.Err()
 		case outcome := <-done:
 			if outcome.err != nil {
-				if isProviderUsageLimitError(outcome.err) {
+				if limit, ok := classifyProviderLimit(ProviderKeyOpencode, nil, outcome.err); ok {
+					if providerLimitRecoverable(*limit) {
+						// Task-445 T-3: a bounded Retry-After rate limit re-sends
+						// through sendTurnWithRetry; the typed error carries the wait.
+						return &providerLimitError{limit: limit, err: outcome.err}
+					}
+					bridge.Emit(ProviderEvent{Type: EventProviderLimitReached, ProviderLimit: limit})
 					msg := strings.TrimSpace(outcome.err.Error())
 					if runes := []rune(msg); len(runes) > 300 {
 						msg = string(runes[:300]) + "…"
@@ -358,7 +364,7 @@ func (a *opencodeAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge 
 					bridge.Emit(ProviderEvent{Type: EventTurnFailed, Error: "OpenCode usage limit reached: " + msg, Recoverable: false})
 					return nil
 				}
-				return outcome.err
+				return providerLimitAwareError(ProviderKeyOpencode, outcome.err)
 			}
 			lastText = a.drainOpencodeNotifications(sessionID, notif, bridge, lastText)
 			// BUG-341: 421135/424302 blank — opencode's agent_message_chunk for
@@ -749,8 +755,9 @@ func (a *opencodeAdapter) emitTerminal(ctx context.Context, req TurnRequest, bri
 		errMsg := fmt.Sprintf("opencode turn ended: %s", stopReason)
 		// BUG-361: quota stopReasons carry usage-limit copy so the card and
 		// any downstream classifier name the cause instead of a bare reason.
-		if opencodeIsQuotaStopReason(stopReason) {
+		if limit, ok := classifyProviderLimit(ProviderKeyOpencode, map[string]any{"stopReason": stopReason}, nil); ok {
 			errMsg = fmt.Sprintf("OpenCode usage limit reached (stopReason=%s)", strings.TrimSpace(stopReason))
+			bridge.Emit(ProviderEvent{Type: EventProviderLimitReached, ProviderLimit: limit})
 		}
 		bridge.Emit(ProviderEvent{Type: EventTurnFailed, Error: errMsg, Recoverable: false})
 		return nil

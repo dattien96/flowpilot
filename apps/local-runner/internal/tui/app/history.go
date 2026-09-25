@@ -739,10 +739,16 @@ func (m *AppModel) applyPendingFromSnapshot(snap client.RunSnapshot) tea.Cmd {
 			Options:     snap.PendingQuestion.Options,
 			MultiSelect: snap.PendingQuestion.MultiSelect,
 			RunID:       runID,
+			Quota:       snap.PendingQuestion.QuotaDecision,
 		}) {
 			m.connStatus = ConnWaiting
 			m.statusMsg = "question"
 			m.addMessage("system", formatQuestionMessage(snap.PendingQuestion.Prompt, snap.PendingQuestion.Options, snap.PendingQuestion.MultiSelect), "question")
+			if snap.PendingQuestion.QuotaDecision != nil {
+				for _, line := range renderQuotaCandidateTable(*snap.PendingQuestion.QuotaDecision, m.width) {
+					m.addMessage("system", line, "question")
+				}
+			}
 		}
 	}
 	return nil
