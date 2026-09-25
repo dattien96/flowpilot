@@ -3,7 +3,7 @@
 - Document ID: `CP-86`
 - Title: `Separate est-prompt budget from real token usage; provider context-window coverage; pressure ladder + usage cap escalation`
 - Phase: `coding_plan`
-- Status: `draft`
+- Status: `done`
 - Owner: `dat.nguyen`
 - Reviewers: ``
 - Created: `2026-09-25`
