@@ -1,10 +1,7 @@
 # BUG-502 — Second-project chat run durable rows lost across runner restart
 
 ## Status
-Open — live-found 2026-09-25 on build b501. Symptom confirmed; write-path
-exonerated on current build; exact loss mechanism unproven. Needs an
-instrumented repro before a fix is landed (per safe-fix contract: no blind
-fix).
+Fixed — root cause proven 2026-09-25, fix landed on build b502, live-verified.
 
 ## Live-found during
 CP-84 mux matrix + B-59 durability drill on bed `/Users/tiendat/fp-beds/full`.
@@ -26,50 +23,71 @@ CP-84 mux matrix + B-59 durability drill on bed `/Users/tiendat/fp-beds/full`.
 - Control: `run-260775` (workspace project, same shape, seconds apart) —
   4 session rows present, rehydrates as `cancelled` after restart.
 
-## Evidence collected
+## Root cause — proven
+
+**Out-of-band `git reset --hard HEAD~1` at 19:30:50 rewound the git-tracked
+`.flowpilot/` durable files** while the runner kept serving.
+
+Proof chain:
+
+| Evidence | Detail |
+|---|---|
+| Reflog | `HEAD@{0}: reset: moving to HEAD~1` at 19:30:50 — the probe-commit cleanup in the CP-71 L-7 drill |
+| File birth times | `sessions.ndjson` recreated 19:30:50, `approvals.ndjson` 19:30:49 — exact reset window |
+| Byte-identical prefix | committed blob (Sep-24 snapshot, 318 lines) == current file's first 318 lines — the file was reverted to HEAD then appended onto |
+| Git tracking | `.gitignore` excludes only `.flowpilot/worktrees/`; 152 files under `.flowpilot/` were tracked, including `sessions.ndjson`/`approvals.ndjson` |
+| Gate diff log | `sessions.ndjson Status:M` at 19:23 — the lost rows were written to disk before the rewind |
+
+So this was **not** a write-path gap (in-process reproducer and a fresh
+second-project live run `run-266599` both persisted correctly). The store's
+real defect: it **silently accepted an external rewind** — appended onto the
+reverted file without noticing the 68 rows (19:22–19:29, both projects) that
+had just been destroyed, and its in-memory map kept phantom state. A sibling
+runner process (`:19500`, build `e85776b3`) also shares the same files with
+no write exclusion — an append landing between `DeleteProviderSession`'s
+read and atomic rename would be discarded the same silent way.
+
+## Fix (b502)
+
+Three layers in `internal/runner/local_file_session_store.go` +
+`dispatch_flock_{unix,windows}.go`:
+
+1. **Cross-process write exclusion** — every session/question/approval write
+   runs under a blocking `flock` on a sibling `<file>.lock` (the existing
+   `dispatch.lock` precedent applied per-operation). A sibling append can no
+   longer land between a rewrite's read and its `os.Rename`.
+2. **Out-of-band change guard + resync** — each durable file carries a
+   size+mtime observation; every write re-stats first. On any change (grown,
+   shrunk, replaced, deleted, appeared) the in-memory map is fully rebuilt
+   from disk *before* the write — disk stays SSOT, divergent rows are dropped
+   with an explicit `[session-store] … modified out-of-band — resynced to
+   disk: N durable rows no longer on disk (run_ids: …)` log instead of
+   silent phantom state, and sibling rows are merged in.
+3. **Git protection** — `NewLocalFileSessionStore` appends `.flowpilot/` to
+   `<repo>/.git/info/exclude` (repo-local, never touches tracked `.gitignore`)
+   so new durable files stay out of git scope, and logs a loud warning with
+   the `git rm -r --cached .flowpilot` remediation when durable files are
+   already tracked — the live bed was exactly this case.
+
+Fail-closed preserved: a torn/incomplete resync read surfaces
+`sessionsLoadErr` and never replaces memory with a partial view.
+
+## Live verification on b502 (2026-09-25)
 
 | Check | Result |
 |---|---|
-| `persistProviderSession`/`persistApproval` store plumbing | Unconditional — single `persistenceStore()` = `localFileSessionStore`, no project gate |
-| In-process reproducer (`bug502_cross_project_session_persist_test.go`) | **PASSES** — second-project run writes session rows on current build |
-| Post-restart live recheck (`run-266599`, project db51ec26) | 3 rows written, survives a graceful restart, rehydrates `cancelled` |
-| Gate diff log 19:23:32 | `sessions.ndjson Status:M` — file was modified during the affected window |
-| `DeleteProviderSession` rewrite | Drops only target runID + malformed lines; aborts on read error — cannot explain well-formed rows vanishing |
-| `collectDeleteRunTree` / boot recovery | Subtree-only walk; recovery logs "reconstruct … run not found" and leaves state — no delete |
-| Concurrent writer | A second runner process (`flowpilot-runner-live`, build `e85776b3`, port 19500) shares cwd → same `sessions.ndjson`. It was idle all day (log ends 10:17), so it is a hazard but not a proven actor |
+| Second-project run write path | `run-273982` on `db51ec26`: 3 session rows appended across turns |
+| Incident replay: `git checkout HEAD -- sessions.ndjson` (390→318 lines) | next write logged `modified out-of-band — resynced to disk: 14 durable rows no longer on disk` with all run_ids named; memory resynced to disk truth |
+| Self-heal forward | run-273982 kept working; its new append landed on the rewound file |
+| Sibling process append (`:19500` old binary, no flock) | `run-82865` created on `:19500` merged into `:19400`'s store via resync — visible in `GET /client/projects/db51ec26/workflow-runs` on `:19400` |
+| Restart consistency | after restart: `run-273982` rehydrates `cancelled`, `run-82865` `idle` — no phantom `run_not_found` |
+| Git protection | boot log shows the git-tracked WARNING; `.git/info/exclude` gained `.flowpilot/` |
 
-## Candidate mechanisms (unproven)
+## Regression guards
 
-1. **Cross-process file rewrite**: an older-build runner sharing the dataDir
-   calls `DeleteProviderSession`, whose read+rewrite drops lines that
-   unmarshal-fail under ITS schema (schema drift between builds). Requires
-   the dropped lines to be malformed under the old schema — not verified.
-2. **Torn-tail + rewrite ordering at kill -9**: a partial append at the tail
-   sets `sessionsLoadErr`; a later rewrite path that ignores the torn tail
-   could drop adjacent rows. Requires proving which path wrote last.
-3. Callsites for the affected runs never fired because the turns took a
-   non-`startTurn` path — contradicted by the persisted prompt/transcript
-   lines (`AppendTurnLog` at startTurn ~:10075 runs after the persist at
-   ~:10069 in the same straight-line block).
-
-## Next step (do not skip)
-
-Instrument before fixing:
-
-- `DeleteProviderSession`: when dropping a non-target line (malformed),
-  `log.Printf` the embedded `run_id`/line hash so a post-hoc audit can name
-  the victim and the drop reason.
-- `loadFromDisk`: log per-run_id when `sessionsLoadErr` is set or a row is
-  aged out — so a post-restart diff between file and index is observable.
-- Re-run the exact live drill (second-project grok turn → gate park →
-  `kill -9` mid-activity → restart) with the file snapshotted before kill.
-
-Then RED → fix → re-drill per the standard workflow.
-
-## Regression guard
-
-`internal/runner/bug502_cross_project_session_persist_test.go`
-(`TestBug502SessionRowPersistsForSecondProjectRun`) — asserts a chat run on a
-non-workspace project ID leaves a durable session row. Currently **passes**:
-it locks in the verified-good write path so a future refactor cannot
-reintroduce a project-scoped persist gap silently.
+- `internal/runner/bug502_external_revert_test.go` — 6 tests: external rewind
+  resync for sessions/approvals/questions, sibling-append merge, writer
+  blocks on a held durable lock, `.git/info/exclude` provisioning.
+- `internal/runner/bug502_cross_project_session_persist_test.go` —
+  `TestBug502SessionRowPersistsForSecondProjectRun`: the write-path lock-in
+  (passes before and after the fix).

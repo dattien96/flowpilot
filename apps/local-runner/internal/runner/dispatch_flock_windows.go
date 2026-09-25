@@ -19,3 +19,10 @@ func funlock(f *os.File) error {
 	_ = f
 	return nil
 }
+
+// flockBlock is the blocking counterpart of flockExclusive; no-op on Windows
+// for the same reason as above.
+func flockBlock(f *os.File) error {
+	_ = f
+	return nil
+}
