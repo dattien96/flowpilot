@@ -130,8 +130,8 @@ func (s *InteractiveService) CrossProviderCandidates(ctx context.Context, demand
 			cand.Headroom = NormalizeAccountHeadroom(summary, now, settings)
 			// Hard exclusions — unusable accounts are Rejected outright.
 			hard := false
-			if state.accountBlocked(acct.ID) {
-				cand.RejectionReasons = append(cand.RejectionReasons, QuotaRejectBillingRequired)
+			if reason := state.accountBlockReason(acct.ID); reason != "" {
+				cand.RejectionReasons = append(cand.RejectionReasons, quotaBlockRejectionReason(reason))
 				hard = true
 			}
 			if cand.Headroom.State == "exhausted" {

@@ -1103,6 +1103,10 @@ func newInteractiveService(registry *ProviderRegistry, catalog CatalogStore, wor
 		chatSessionIndexRepairing: map[string]struct{}{},
 		gitnexusAnalyzeOnce:       map[string]bool{},
 	}
+	// Task-449: the service implements the CP-86 usageBudgetRouter seam —
+	// usage-budget rotate answers and context-reset headroom escalations enter
+	// the quota routing gate through it.
+	svc.usageRouter = svc
 	// Seed the id counter above the highest persisted run id so a runner restart does NOT
 	// reuse ids (run-1, run-2, …). Reuse made a fresh chat collide with a previous run of
 	// the same id and inherit its persisted child agents — old sub-agents appeared in a
@@ -9265,6 +9269,10 @@ func (s *InteractiveService) finishTurn(rs *interactiveRun, turnID string, err e
 	// outcome outside the lock and terminalize after unlock.
 	var dispatchOutcome string
 	var dispatchErrMsg string
+	// Task-449: hard provider-limit failures enter the quota gate after the
+	// turn's terminal events settle (post-unlock — the gate resolves/queries
+	// durable state and must not run inside s.mu's emit block).
+	var quotaGateRunID, quotaGateTrigger string
 
 	switch {
 	case err == nil:
@@ -9447,6 +9455,14 @@ func (s *InteractiveService) finishTurn(rs *interactiveRun, turnID string, err e
 			if limit.Kind == ProviderLimitBillingRequired || limit.Kind == ProviderLimitCreditsExhausted {
 				s.noteAccountBlockedLocked(string(rs.providerKey), limit.AccountID, string(limit.Kind))
 			}
+			// Task-449 T-4: hard kinds (not transient rate_limited — the
+			// Task-445 retry policy owns that) enter the quota routing gate
+			// once the failed turn has settled — never mid-turn.
+			switch limit.Kind {
+			case ProviderLimitQuotaExhausted, ProviderLimitCreditsExhausted, ProviderLimitBillingRequired:
+				quotaGateRunID = rs.id
+				quotaGateTrigger = string(limit.Kind)
+			}
 		}
 		s.emitLocked(rs, ProviderEvent{Type: EventTurnFailed, ProviderTurnID: turnID, Error: err.Error(), Recoverable: false})
 		dispatchOutcome = "failed"
@@ -9455,6 +9471,11 @@ func (s *InteractiveService) finishTurn(rs *interactiveRun, turnID string, err e
 	s.mu.Unlock()
 	if dispatchOutcome != "" {
 		s.commitFinishTurnDispatchTerminal(rs, turnID, dispatchOutcome, dispatchErrMsg)
+	}
+	if quotaGateRunID != "" {
+		if gerr := s.enterQuotaGate(context.Background(), quotaGateRunID, quotaGateTrigger); gerr != nil {
+			log.Printf("[quota-gate] post-failure gate failed run=%s trigger=%s err=%v", quotaGateRunID, quotaGateTrigger, gerr)
+		}
 	}
 	return false, finalizeInput{}
 }
@@ -11068,14 +11089,18 @@ func (s *InteractiveService) AnswerQuestion(questionID string, choice []string) 
 	// Task-442/443: engine-emitted decision cards route their resolved choice
 	// to a semantic handler instead of a turn reprompt.
 	var decisionTarget *interactiveRun
-	var usageBudgetChoice, pressureChoice string
+	var usageBudgetChoice, pressureChoice, quotaRouteChoice string
 	if len(rec.choice) > 0 {
 		decisionTarget = s.runs[rec.runID]
-		switch rec.kind {
+		// questionRecordKind recovers the kind from the persisted prompt prefix
+		// for rehydrated records (in-memory kind doesn't survive restart).
+		switch questionRecordKind(rec) {
 		case usageBudgetQuestionKind:
 			usageBudgetChoice = rec.choice[0]
 		case contextPressureQuestionKind:
 			pressureChoice = rec.choice[0]
+		case quotaRouteQuestionKind:
+			quotaRouteChoice = rec.choice[0]
 		}
 	}
 	s.mu.Unlock()
@@ -11085,6 +11110,9 @@ func (s *InteractiveService) AnswerQuestion(questionID string, choice []string) 
 	}
 	if decisionTarget != nil && pressureChoice != "" {
 		s.applyContextPressureAnswer(decisionTarget, pressureChoice)
+	}
+	if decisionTarget != nil && quotaRouteChoice != "" {
+		s.applyQuotaRouteAnswer(decisionTarget, questionID, quotaRouteChoice)
 	}
 
 	if resumeStepTurn {

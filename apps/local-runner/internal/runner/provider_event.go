@@ -246,6 +246,9 @@ type ProviderEvent struct {
 	// provider_limit_reached (Task-445): typed classification evidence emitted
 	// immediately before the terminal turn_failed on a limit-shaped failure.
 	ProviderLimit *ProviderLimit `json:"providerLimit,omitempty"`
+	// quota_route_committed / quota_route_stopped / quota_route_blocked
+	// (Task-449): the route decision record — requested → resolved binding.
+	QuotaRoute *QuotaRoutePayload `json:"quotaRoute,omitempty"`
 	// flow_gate_violation (r-reg decision card — Task-155)
 	GateOptions        []string `json:"gateOptions,omitempty"`
 	GateRegressedTests []string `json:"gateRegressedTests,omitempty"`

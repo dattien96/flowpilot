@@ -45,6 +45,11 @@ type ExecutionDemand struct {
 	// zero disables the filter. Callers size it from the leg's current
 	// context pressure, not from quota.
 	MinContextTokens int64 `json:"minContextTokens,omitempty"`
+	// ObservedLimit carries a provider-limit kind just observed live on the
+	// requested binding (Task-449 gate entry): fresher than telemetry or the
+	// ledger, it hard-rejects the current account for THIS decision without
+	// persisting a durable block (quota_exhausted self-heals on reset).
+	ObservedLimit ProviderLimitKind `json:"observedLimit,omitempty"`
 }
 
 // AccountCandidate is one connected account of the demand's provider, ranked
@@ -171,8 +176,16 @@ func (s *InteractiveService) SameProviderCandidates(ctx context.Context, demand 
 			summary = s.quotaTelemetryFn(ctx, acct)
 		}
 		cand.Headroom = NormalizeAccountHeadroom(summary, now, settings)
-		if state.accountBlocked(acct.ID) {
-			cand.RejectionReasons = append(cand.RejectionReasons, QuotaRejectBillingRequired)
+		if reason := state.accountBlockReason(acct.ID); reason != "" {
+			cand.RejectionReasons = append(cand.RejectionReasons, quotaBlockRejectionReason(reason))
+		}
+		// Task-449: a live-observed hard limit on the demanded account is
+		// authoritative for this decision — telemetry hasn't caught up yet.
+		if cand.IsCurrent {
+			switch demand.ObservedLimit {
+			case ProviderLimitQuotaExhausted, ProviderLimitCreditsExhausted, ProviderLimitBillingRequired:
+				cand.RejectionReasons = append(cand.RejectionReasons, quotaBlockRejectionReason(string(demand.ObservedLimit)))
+			}
 		}
 		if !cand.IsCurrent && state.accountClaimedByOtherRun(acct.ID, demand.RunID) {
 			cand.RejectionReasons = append(cand.RejectionReasons, QuotaRejectAccountClaimed)

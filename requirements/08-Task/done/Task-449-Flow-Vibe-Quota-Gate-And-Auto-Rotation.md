@@ -3,7 +3,7 @@
 - Document ID: `Task-449`
 - Title: `Integrate quota preflight into hub and child admission; manual gate by default, bounded automatic new-leg rotation when enabled`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `dat.nguyen`
 - Reviewers: ``
 - Created: `2026-09-25`
@@ -143,16 +143,42 @@ func (s *InteractiveService) ResumeQuotaGate(ctx context.Context, runID, decisio
 
 ## 10. Definition of Done
 
-- [ ] §6 signatures landed or deviation documented
-- [ ] §7 additive + recovery tests green
-- [ ] Manual Flow/Vibe gate parity proven
-- [ ] Auto uncertain inputs always gate
-- [ ] New-leg/CAS/restart invariants proven
-- [ ] CA ledger + feature key entries complete
-- [ ] GitNexus detect_changes reviewed before commit
+- [x] §6 signatures landed or deviation documented
+- [x] §7 additive + recovery tests green
+- [x] Manual Flow/Vibe gate parity proven
+- [x] Auto uncertain inputs always gate
+- [x] New-leg/CAS/restart invariants proven
+- [x] CA ledger + feature key entries complete
+- [x] GitNexus detect_changes reviewed before commit
 
 ## 11. Completion Notes
 
-- result:
-- follow-ups:
-- upstream docs updated:
+- result: `quota_gate.go` implements the §6 surface —
+  `ResolveQuotaPreflight` (proceed/gate/rotate/blocked), `CommitQuotaResolution`,
+  `ResumeQuotaGate`. Manual mode emits a durable `quota_route_required`
+  decision card (options use-once / use-for-run / stop) and parks identically
+  for Flow and Vibe; auto mode commits only exact/high-confidence candidates
+  and gates on unknown/stale/ambiguous evidence. Same-provider rotation goes
+  through `claimAccountForLeg` (Task-447 ledger, cooldown, max-2 auto cap);
+  cross-provider rotation creates a new chat leg via `switchChatLeg` with
+  `chatSwitchRequest.ProviderAccountID` pinning (no global active-account
+  mutation). Live `ExecutionDemand.ObservedLimit` hard-rejects the just-failed
+  binding for the current decision without persisting a self-healing
+  `quota_exhausted` block. `usageRouter = s` activates the existing CP-86
+  `usage_budget_exceeded`/`context_pressure` rotate path
+  (`RotateUsageBudgetRun`), and `extend` is filtered out of any automatic
+  selection. Structured `quota_route_committed` / `quota_route_stopped`
+  events are persisted through the normal emit path.
+- Deviations: provider-limit handling is anchored at the terminal
+  `finishTurn` failure path (typed `provider_limit_reached` already emitted
+  there in Task-445) rather than a separate admission interceptor — the gate
+  resolves on admission *and* on limit-driven re-entry, which satisfies the
+  "before every provider-backed turn/child spawn" contract through the same
+  resolver. Flow-child rotation reuses the close/respawn seam so a new leg
+  is produced without mid-turn mutation. `detect_changes` is not exposed by
+  the local GitNexus CLI/MCP; equivalent staged-diff scope review performed
+  per commit protocol.
+- follow-ups: Task-450 (Desktop/TUI quota settings, candidate card UI,
+  audit surface); pairwise model-equality checks remain out of scope per
+  Task-448.
+- upstream docs updated: none beyond this doc + CA-981.

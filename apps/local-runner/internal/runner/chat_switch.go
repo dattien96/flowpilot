@@ -26,6 +26,10 @@ type chatSwitchRequest struct {
 	Model             string      `json:"model,omitempty"`
 	ReasoningEffort   string      `json:"reasoningEffort,omitempty"`
 	YoloMode          *bool       `json:"yoloMode,omitempty"` // nil = inherit current leg
+	// ProviderAccountID pins the new leg to a specific connected account —
+	// set by the quota gate's committed rotation (Task-449); empty keeps the
+	// legacy resolve-active-account behavior for user-initiated switches.
+	ProviderAccountID string `json:"providerAccountId,omitempty"`
 }
 
 type chatSwitchHandoffStats struct {
@@ -298,6 +302,9 @@ func (s *InteractiveService) switchChatLeg(ctx context.Context, chatID string, r
 		ChatID:          chatID,
 		SwitchFromRunID: src.id,
 		LegSeq:          src.legSeq + 1,
+		// Task-449: a quota-committed switch carries the target account pin so
+		// the new leg never re-resolves the machine-global active account.
+		ProviderAccountID: req.ProviderAccountID,
 	}
 	if req.YoloMode != nil {
 		createInput.YoloMode = *req.YoloMode

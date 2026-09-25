@@ -93,12 +93,27 @@ type quotaRoutingRuntimeState struct {
 }
 
 func (st *quotaRoutingRuntimeState) accountBlocked(accountID string) bool {
+	return st.accountBlockReason(accountID) != ""
+}
+
+// accountBlockReason returns the recorded block kind (billing_required /
+// credits_exhausted / quota_exhausted) or "" — the candidate table maps it to
+// the matching typed rejection reason instead of flattening to billing.
+func (st *quotaRoutingRuntimeState) accountBlockReason(accountID string) string {
 	for _, b := range st.Blocked {
 		if b.AccountID == accountID {
-			return true
+			return b.Reason
 		}
 	}
-	return false
+	return ""
+}
+
+// quotaBlockRejectionReason maps a recorded block kind to its rejection code.
+func quotaBlockRejectionReason(kind string) string {
+	if kind == string(ProviderLimitBillingRequired) {
+		return QuotaRejectBillingRequired
+	}
+	return QuotaRejectExhaustedQuota
 }
 
 // accountClaimedByOtherRun reports whether another run currently holds an
@@ -272,9 +287,9 @@ func (s *InteractiveService) claimAccountForLeg(ctx context.Context, demand Exec
 			s.quotaMu.Unlock()
 			return LegBinding{}, &quotaCooldownError{until: cd.Until, reason: cd.Reason}
 		}
-		if state.accountBlocked(cand.AccountID) {
+		if reason := state.accountBlockReason(cand.AccountID); reason != "" {
 			s.quotaMu.Unlock()
-			return LegBinding{}, fmt.Errorf("quota_preflight: account %q is blocked (%s)", cand.AccountID, QuotaRejectBillingRequired)
+			return LegBinding{}, fmt.Errorf("quota_preflight: account %q is blocked (%s)", cand.AccountID, quotaBlockRejectionReason(reason))
 		}
 		if state.accountClaimedByOtherRun(cand.AccountID, demand.RunID) {
 			s.quotaMu.Unlock()
