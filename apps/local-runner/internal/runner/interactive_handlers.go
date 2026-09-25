@@ -296,6 +296,20 @@ func (s *InteractiveService) handleListArtifacts(w http.ResponseWriter, r *http.
 		writeInteractiveJSON(w, http.StatusOK, out)
 		return
 	}
+	// Once a turn has finished, the run owns a real artifact surface: its
+	// finalizer output is either recorded, in flight, or failed — serving the
+	// fake catalog here would masquerade as real artifacts (finalizer rows use
+	// run:turn:kind ids; the fake's "3 files changed" preview never happened).
+	s.mu.Lock()
+	turnFinished := false
+	if rs := s.runs[runID]; rs != nil {
+		turnFinished = rs.lastTurnID != ""
+	}
+	s.mu.Unlock()
+	if turnFinished {
+		writeInteractiveJSON(w, http.StatusOK, []Artifact{})
+		return
+	}
 	writeInteractiveJSON(w, http.StatusOK, fakeArtifacts(runID))
 }
 
@@ -491,6 +505,27 @@ func (s *InteractiveService) handleStartTurn(w http.ResponseWriter, r *http.Requ
 		// chat turn instead of getting stuck at "completed" with no reply.
 		log.Printf("[chat-flow-ref] flowRef %q for run %q failed to resolve; falling back to a normal chat turn", body.FlowRef, r.PathValue("runId"))
 		body.FlowRef = ""
+	}
+	// BUG-400 (live CP-41 runs 11597/13679/15641): the run-create path gates
+	// FlowRef through FlowAllowedForWorkingMode but the turn-level fast path
+	// skipped it entirely — a dev-mode run could launch (and complete) a
+	// vibe-family sprint by naming it on a turn. Apply the same user-kind
+	// start-family gate to whatever flowRef survives resolution — explicit or
+	// workflow-adopted — before startResolvedFlow can run it.
+	if flowRef := strings.TrimSpace(body.FlowRef); flowRef != "" {
+		s.mu.Lock()
+		run := s.runs[r.PathValue("runId")]
+		mode := ""
+		if run != nil {
+			mode = run.workingMode
+		}
+		s.mu.Unlock()
+		if run != nil {
+			if err := workingmode.FlowAllowedForWorkingMode(mode, flowRef, "user"); err != nil {
+				writeInteractiveError(w, mapWorkingModeError(err))
+				return
+			}
+		}
 	}
 	turnID, e := s.startTurn(
 		r.PathValue("runId"),
@@ -842,6 +877,18 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 	if e := s.enforceWorktreeStart(&in); e != nil {
 		return RunHandle{}, e
 	}
+	// BUG-455 (live run-94): an API-launched run with a bound project but no
+	// explicit cwd must still resolve a workspace — provider sessions fall
+	// back to Runner.workspace (sessions.go) and worktreeRepoDir applies the
+	// same in.Cwd → runner.workspace default, so without this the run record
+	// carries "" while children work in the real dir: every Go-inline consumer
+	// (command.validate's baseline load, captureGitHead, contract-scope inject,
+	// handoff, gate hooks) then sees no workspace — validate escalates
+	// skipped_no_command forever and Continue can never clear the park.
+	// Explicit in.Cwd stays authoritative; runner workspace is only a default.
+	if strings.TrimSpace(in.Cwd) == "" && s.runner != nil {
+		in.Cwd = strings.TrimSpace(s.runner.workspace)
+	}
 	// CA-638: ensure the target workspace is GitNexus-indexed so scope-drift
 	// HighSeverity and source.dependence can query real dependents. Runs once
 	// per process per workspace; non-blocking.
@@ -871,11 +918,21 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 			return RunHandle{}, newAPIErr(http.StatusBadGateway, "catalog_unavailable", "workflow step catalog is unavailable")
 		}
 		steps, err := stepCatalog.ListWorkflowSteps(context.Background(), in.WorkflowID)
-		if err != nil {
-			return RunHandle{}, newAPIErr(http.StatusBadGateway, "catalog_unavailable", err.Error())
-		}
-		if len(steps) == 0 {
-			return RunHandle{}, newAPIErr(http.StatusUnprocessableEntity, "workflow_has_no_steps", "workflow has no enabled steps")
+		if err != nil || len(steps) == 0 {
+			// BUG-426: a flow-pack ref carries its topology in the flow
+			// definition, not the workflow-step catalog — when the mirror is
+			// absent or dead (offline runner, or a pack-ref inherited by a
+			// spawned child) the run must still launch. Synthesize the
+			// catalog view from the resolved flow's nodes; a workflow that
+			// is not a flow at all still fails closed below.
+			flowSteps, ok := s.flowStepsFromDefinition(context.Background(), in.WorkflowID)
+			if !ok {
+				if err != nil {
+					return RunHandle{}, newAPIErr(http.StatusBadGateway, "catalog_unavailable", err.Error())
+				}
+				return RunHandle{}, newAPIErr(http.StatusUnprocessableEntity, "workflow_has_no_steps", "workflow has no enabled steps")
+			}
+			steps = flowSteps
 		}
 		stepID = steps[0].ID
 		seedSteps = make([]RuntimeWorkflowStep, len(steps))
@@ -1198,6 +1255,11 @@ func (s *InteractiveService) resumeRun(runID string) (RunHandle, *apiErr) {
 	// while boundary is pending, but not vice versa.
 	s.maybeReparkVibeSprintBoundary(rs.id)
 	s.maybeParkVibeResumeConfirm(rs.id)
+	// BUG-410: a flow parent resumed after a mid-flight crash can sit at
+	// status=cancelled + loop "running" with nothing queued — every resume
+	// surface then returns a snapshot but dispatches nothing. Re-drive the
+	// hub when the loop is live but completely quiet.
+	s.redriveQuietFlowLoop(rs.id)
 	// BUG-339: stamp missing ChatID from durable transcript (BUG-338) so
 	// /open can backfill prior legs even when the session row predates
 	// chat_id (provider-agnostic, chatId only).
@@ -1884,6 +1946,26 @@ func (s *InteractiveService) handleSubmitFlowControl(w http.ResponseWriter, r *h
 			writeInteractiveJSON(w, http.StatusOK, s.agentGraphSnapshot(runID))
 			return
 		}
+	}
+	// BUG-392: the HTTP surface must run the same per-AC verdict coverage the
+	// provider bridge runs (turnBridge.SubmitFlowControl). A partial verdict
+	// set posted here previously skipped validation entirely and applied the
+	// raw status — now rejected with the same missing-AC error.
+	s.mu.Lock()
+	coverageRun := s.runs[runID]
+	s.mu.Unlock()
+	if err := s.validateReviewACCoverage(coverageRun, in); err != nil {
+		writeInteractiveError(w, newAPIErr(http.StatusUnprocessableEntity, "review_ac_coverage", err.Error()))
+		return
+	}
+	// BUG-401: an operator done over HTTP must resolve through the hub's
+	// declared done-edge like the tool bridge does (advanceHubDoneThroughEdge)
+	// — otherwise it settles the whole run and skips the hub's done successor
+	// (plan_synthesis→preflight_contract_freeze, cp_synthesis→task_splitter)
+	// or the parked-sprint restore after an owner debate.
+	if _, handled := s.advanceHubDoneThroughEdge(runID, in); handled {
+		writeInteractiveJSON(w, http.StatusOK, s.agentGraphSnapshot(runID))
+		return
 	}
 	if _, err := s.applyFlowControl(runID, in); err != nil {
 		writeInteractiveError(w, newAPIErr(http.StatusUnprocessableEntity, "flow_control_failed", err.Error()))

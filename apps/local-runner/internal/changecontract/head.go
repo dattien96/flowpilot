@@ -2,8 +2,10 @@ package changecontract
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -67,6 +69,44 @@ func headFilePath(workspace, featureKey string) string {
 	return filepath.Join(workspace, ".flowpilot", "canonical", featureKey+".json")
 }
 
+// unsafeHeadFeatureKey reports whether featureKey can never produce a
+// portable Head filename (BUG-427): NTFS-illegal characters
+// (<>:"/\|?* plus control chars) or a bare "." / ".." segment. Such a key's
+// Head file is unwritable on at least one supported platform, and ".." would
+// escape .flowpilot/canonical outright — staging must reject it
+// deterministically instead of letting the write outcome depend on the host
+// filesystem's rules.
+// windowsReservedDeviceNames are the NTFS device basenames Windows refuses
+// as filenames in ANY extension ("CON.json" still opens the console device).
+// Case-insensitive; only the first dot-segment of a key is compared.
+var windowsReservedDeviceNames = map[string]bool{
+	"CON": true, "PRN": true, "AUX": true, "NUL": true,
+	"COM1": true, "COM2": true, "COM3": true, "COM4": true, "COM5": true,
+	"COM6": true, "COM7": true, "COM8": true, "COM9": true,
+	"LPT1": true, "LPT2": true, "LPT3": true, "LPT4": true, "LPT5": true,
+	"LPT6": true, "LPT7": true, "LPT8": true, "LPT9": true,
+}
+
+func unsafeHeadFeatureKey(featureKey string) bool {
+	k := strings.TrimSpace(featureKey)
+	if k == "" || k == "." || k == ".." {
+		return true
+	}
+	if strings.ContainsAny(k, `<>:"/\|?*`) {
+		return true
+	}
+	if strings.IndexFunc(k, func(r rune) bool { return r < 0x20 }) >= 0 {
+		return true
+	}
+	// BUG-441: a device-named key produces an unwritable/unportable Head
+	// filename on Windows — reject by first dot-segment, case-insensitively.
+	base := k
+	if i := strings.IndexByte(base, '.'); i >= 0 {
+		base = base[:i]
+	}
+	return windowsReservedDeviceNames[strings.ToUpper(base)]
+}
+
 // LoadHead reads the stored Head for featureKey. ok=false (no error) when no
 // Head file exists yet — callers should then mint one via BuildHead.
 //
@@ -74,6 +114,9 @@ func headFilePath(workspace, featureKey string) string {
 // ok=false with nil error so callers can rebuild rather than hard-fail the
 // whole gate into a silent permanent block. Non-corrupt IO errors still fail.
 func LoadHead(workspace, featureKey string) (CanonicalHead, bool, error) {
+	if unsafeHeadFeatureKey(featureKey) {
+		return CanonicalHead{}, false, nil
+	}
 	data, err := os.ReadFile(headFilePath(workspace, featureKey))
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -115,6 +158,9 @@ func SaveHead(workspace string, h CanonicalHead) error {
 // Call CommitHeadWrite once every Head in the batch has staged successfully,
 // or DiscardHeadWrite to abandon this one tmp file without committing it.
 func StageHeadWrite(workspace string, h CanonicalHead) (tmpPath, finalPath string, err error) {
+	if unsafeHeadFeatureKey(h.FeatureKey) {
+		return "", "", fmt.Errorf("feature key %q cannot produce a portable canonical Head filename", h.FeatureKey)
+	}
 	finalPath = headFilePath(workspace, h.FeatureKey)
 	if err := os.MkdirAll(filepath.Dir(finalPath), 0o755); err != nil {
 		return "", "", err

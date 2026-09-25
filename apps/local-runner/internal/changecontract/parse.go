@@ -74,15 +74,33 @@ func ParseDeclaration(text string) (Contract, bool) {
 }
 
 // splitAndTrim splits a comma-separated `files:` value into trimmed,
-// non-empty entries.
+// non-empty entries. BUG-418: entries are validated as path-shaped — a token
+// containing unquoted whitespace is prose glued onto a path (live row:
+// "stringutil/reverse.goTask-54LT-B is done…" persisted as declared_paths[0])
+// and is dropped rather than persisted as a scope member. A genuinely
+// space-containing path survives when the entry is quoted.
 func splitAndTrim(s string) []string {
 	parts := strings.Split(s, ",")
 	out := make([]string, 0, len(parts))
 	for _, p := range parts {
 		p = strings.TrimSpace(p)
-		if p != "" {
-			out = append(out, p)
+		if p == "" {
+			continue
 		}
+		// Quoted entries may legitimately contain spaces ("src/my file.go").
+		if len(p) >= 2 {
+			if q := p[0]; (q == '"' || q == '\'' || q == '`') && p[len(p)-1] == q {
+				p = strings.TrimSpace(p[1 : len(p)-1])
+				if p != "" {
+					out = append(out, p)
+				}
+				continue
+			}
+		}
+		if strings.ContainsAny(p, " \t") {
+			continue
+		}
+		out = append(out, p)
 	}
 	if len(out) == 0 {
 		return nil

@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 )
 
 // DispatchV2EnvEnabled reports whether new runs use the durable V2 dispatch path.
@@ -467,7 +468,7 @@ func (b *turnBridge) Accepted(receipt ReceiptEvidence) {
 			return
 		}
 		log.Printf("[dispatch] receipt commit failed run=%s turn=%s: %v (intent held)", rs.id, turnID, err)
-		s.scheduleDispatchCommitRetry(rs.id, turnID)
+		go s.retryReceiptCommit(rs.id, turnID, receipt)
 		return
 	}
 	// Refresh cache
@@ -511,7 +512,7 @@ func (b *turnBridge) Terminal(proof TerminalEvidence) {
 		proof, r.IntentOwnerRunID, r.OuterIntentKey, r.OuterIntentGen)
 	if err != nil {
 		log.Printf("[dispatch] terminal commit failed run=%s turn=%s: %v", rs.id, turnID, err)
-		s.scheduleDispatchCommitRetry(rs.id, turnID)
+		go s.retryTerminalCommit(rs.id, turnID, proof)
 		return
 	}
 	if got, rev, gerr := s.dispatchStore.Get(ctx, rs.id, turnID); gerr == nil {
@@ -541,8 +542,93 @@ func (s *InteractiveService) scheduleDispatchReconcile(runID, turnID string) {
 	go s.reconcileDispatchTurn(context.Background(), runID, turnID)
 }
 
-func (s *InteractiveService) scheduleDispatchCommitRetry(runID, turnID string) {
-	go s.reconcileDispatchTurn(context.Background(), runID, turnID)
+// dispatchCommitMaxAttempts bounds the in-process CAS retry for terminal and
+// receipt commits. A stale revision means someone else wrote first — the retry
+// reloads the record and re-commits with the fresh revision instead of
+// leaving the turn non-terminal forever.
+const dispatchCommitMaxAttempts = 4
+
+// retryTerminalCommit re-attempts CommitTerminalAndSettleIntent after a stale
+// revision (or transient store error). BUG-410 (run-3914): the previous
+// "reconcile" was a wake marker that only Get()ed the record — a single lost
+// CAS left the record non-terminal forever, so the settle phases never drove
+// and the outer run handle stayed "running" over a done loop. Reload the
+// record each attempt (fresh revision + the current intent-owner fields) and
+// drive the settle on success.
+func (s *InteractiveService) retryTerminalCommit(runID, turnID string, proof TerminalEvidence) {
+	if s == nil || s.dispatchStore == nil || runID == "" || turnID == "" {
+		return
+	}
+	ctx := context.Background()
+	for attempt := 0; attempt < dispatchCommitMaxAttempts; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(attempt) * 25 * time.Millisecond)
+		}
+		rec, rev, err := s.dispatchStore.Get(ctx, runID, turnID)
+		if err != nil {
+			log.Printf("[dispatch] terminal commit retry: Get failed run=%s turn=%s: %v", runID, turnID, err)
+			return
+		}
+		if rec.State.IsTerminal() {
+			s.maybeScheduleSettleAfterTerminal(runID, turnID)
+			return
+		}
+		_, err = s.dispatchStore.CommitTerminalAndSettleIntent(ctx, runID, turnID, rev,
+			proof, rec.IntentOwnerRunID, rec.OuterIntentKey, rec.OuterIntentGen)
+		if err == nil {
+			if got, rev2, gerr := s.dispatchStore.Get(ctx, runID, turnID); gerr == nil {
+				s.mu.Lock()
+				if rs := s.runs[runID]; rs != nil {
+					if rs.dispatch == nil {
+						rs.dispatch = map[string]*DispatchRecord{}
+					}
+					cp := got
+					cp.Revision = rev2
+					rs.dispatch[turnID] = &cp
+				}
+				s.mu.Unlock()
+			}
+			s.maybeScheduleSettleAfterTerminal(runID, turnID)
+			return
+		}
+		if !errors.Is(err, ErrStaleDispatch) {
+			log.Printf("[dispatch] terminal commit retry aborted run=%s turn=%s: %v", runID, turnID, err)
+			return
+		}
+	}
+	log.Printf("[dispatch] terminal commit retries exhausted run=%s turn=%s", runID, turnID)
+}
+
+// retryReceiptCommit mirrors retryTerminalCommit for CommitReceiptAndClearIntent.
+func (s *InteractiveService) retryReceiptCommit(runID, turnID string, receipt ReceiptEvidence) {
+	if s == nil || s.dispatchStore == nil || runID == "" || turnID == "" {
+		return
+	}
+	ctx := context.Background()
+	for attempt := 0; attempt < dispatchCommitMaxAttempts; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(attempt) * 25 * time.Millisecond)
+		}
+		rec, rev, err := s.dispatchStore.Get(ctx, runID, turnID)
+		if err != nil {
+			log.Printf("[dispatch] receipt commit retry: Get failed run=%s turn=%s: %v", runID, turnID, err)
+			return
+		}
+		if rec.State == DispatchTerminalCompleted || rec.State == DispatchTerminalFailed ||
+			rec.State == DispatchTerminalCancelled || rec.State == DispatchProviderAccepted {
+			return
+		}
+		_, err = s.dispatchStore.CommitReceiptAndClearIntent(ctx, runID, turnID, rev,
+			receipt, rec.IntentOwnerRunID, rec.OuterIntentKey, rec.OuterIntentGen)
+		if err == nil {
+			return
+		}
+		if errors.Is(err, ErrReceiptConflict) || !errors.Is(err, ErrStaleDispatch) {
+			log.Printf("[dispatch] receipt commit retry aborted run=%s turn=%s: %v", runID, turnID, err)
+			return
+		}
+	}
+	log.Printf("[dispatch] receipt commit retries exhausted run=%s turn=%s", runID, turnID)
 }
 
 // pending commit retries (in-process).

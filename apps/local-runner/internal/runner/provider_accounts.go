@@ -639,6 +639,15 @@ func providerAccountsConfigPath() string {
 		return filepath.Clean(override)
 	}
 
+	// BUG-385a: under `go test` the machine-global store must never resolve —
+	// a bare-service test that reaches this path would read the developer's
+	// real provider-accounts.json and a sync-triggered save would write it
+	// back (a synthetic acct-* record leaked into the real store this way).
+	// Tests that intentionally exercise the store set the env override above.
+	if runningUnderGoTest() {
+		return filepath.Join(os.TempDir(), "flowpilot-go-test", "provider-accounts.json")
+	}
+
 	if configDir, err := os.UserConfigDir(); err == nil && strings.TrimSpace(configDir) != "" {
 		return filepath.Join(configDir, "FlowPilot", "provider-accounts.json")
 	}

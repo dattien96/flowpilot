@@ -703,6 +703,55 @@ func appendTemplatedInputArtifactMention(prompt string, node agentpack.FlowNode)
 	return prompt + b.String()
 }
 
+// appendResolvedVibeTemplatedInputs (BUG-469) names the concrete file behind
+// a node's templated INPUT bindings when the run already pinned it. The
+// generic mention above can only say "find the newest matching" — on a
+// multi-CP bed the vibe task_slicer then sliced the newest CP on disk
+// instead of the run's source CP (live run-96970 wrote CP-02 tasks under a
+// CP-01 ingest). resolvedPath is the run's pinned source document
+// (rs.vibeLockedCP, stamped at cp-ingest admission/lock and by
+// forceStartVibeTaskSlicer); empty keeps the generic mention unchanged.
+func appendResolvedVibeTemplatedInputs(prompt string, node agentpack.FlowNode, resolvedPath string) string {
+	resolvedPath = strings.TrimSpace(resolvedPath)
+	if resolvedPath == "" {
+		return prompt
+	}
+	var slots []string
+	seen := make(map[string]bool)
+	for _, b := range node.ArtifactBindings {
+		if b.Direction != "input" || b.ArtifactTypeID != ArtifactTypeFile {
+			continue
+		}
+		raw, ok := b.ConfigJSON["pathTemplate"].(string)
+		if !ok || strings.TrimSpace(raw) == "" {
+			continue
+		}
+		name := strings.TrimSpace(b.SlotName)
+		if name == "" {
+			name = strings.TrimSpace(b.ArtifactInstanceID)
+		}
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		slots = append(slots, name)
+	}
+	if len(slots) == 0 {
+		return prompt
+	}
+	var b strings.Builder
+	b.WriteString("\n\n## Bound input artifacts — resolved for this run\n")
+	b.WriteString("The run already pinned the exact source document for this node. Read THIS file — do not substitute any other file that happens to match the same pattern:\n")
+	for _, slot := range slots {
+		b.WriteString("- `")
+		b.WriteString(slot)
+		b.WriteString("`: `")
+		b.WriteString(resolvedPath)
+		b.WriteString("`\n")
+	}
+	return prompt + b.String()
+}
+
 // composeFlowNodeAgentPrompt applies Task-223 INPUT read inject, OUTPUT
 // write-contract inject, and Task-233's Telegram OUTPUT write-contract to a
 // base agent prompt for a flow node. CP-58 Task-307 adds the templated

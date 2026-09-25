@@ -116,6 +116,15 @@ type TurnResult struct {
 	// successful reproduction (CP-64 P-2 Key Decision) and always reprompts
 	// with compile guidance instead of passing the gate.
 	ReproduceCompileFailed bool `json:"reproduce_compile_failed,omitempty"`
+	// BUG-389: fabricated-RED guard. The runner resolves each failing test to
+	// its source file and checks whether the file exercises a symbol declared
+	// in the step's frozen DeclaredPaths. ReproduceTargetChecked reports that
+	// the check could run at all (Go targets, resolvable test file);
+	// ReproduceExercisesTarget reports the verdict. When Checked && !Exercises
+	// the failure is unrelated to the reported bug and must not satisfy
+	// r-reproduce (live: `simulatedBuggy := 3 + 4` passed the gate).
+	ReproduceTargetChecked   bool `json:"reproduce_target_checked,omitempty"`
+	ReproduceExercisesTarget bool `json:"reproduce_exercises_target,omitempty"`
 	// CP-60 P-2: vibe-only r-requirement advisory (signature↔locked SS).
 	RequirementDrift       bool   `json:"requirement_drift,omitempty"`
 	RequirementDriftDetail string `json:"requirement_drift_detail,omitempty"`

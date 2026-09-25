@@ -41,7 +41,10 @@ func TestIsFlowPlannerExcludedPathCoversSkillpackScaffold(t *testing.T) {
 	}
 	notExcluded := []string{
 		"src/calc.go", "calc.go", "calc_test.go", "user_test.go",
-		"planner_touched.go", "docs/report.md", "format.go",
+		// docs/report.go — not .md: e39d261d intentionally excludes all *.md
+		// (plan Task md lands mid-flow legitimately); a code file under docs/
+		// is still a real project file the planner must not touch.
+		"planner_touched.go", "docs/report.go", "format.go",
 	}
 	for _, p := range notExcluded {
 		if isFlowPlannerExcludedPath(p) {

@@ -113,6 +113,16 @@ func checkReproduceRule(rule Rule, tr TurnResult) *Violation {
 				"do not weaken an existing test",
 		}
 	}
+	// BUG-389: when the runner could verify it, at least one failing test must
+	// exercise a symbol from the step's declared production scope — a
+	// self-contained t.Fatalf on a constant is not a reproduction.
+	if tr.ReproduceTargetChecked && !tr.ReproduceExercisesTarget {
+		return &Violation{
+			Rule: rule,
+			Detail: "the failing test(s) do not exercise any symbol declared in this step's scope — " +
+				"the failure looks fabricated; assert against the reported production code (or conclude the report is false and say so)",
+		}
+	}
 	return nil
 }
 

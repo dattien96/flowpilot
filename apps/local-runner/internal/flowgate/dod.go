@@ -29,6 +29,14 @@ var (
 	// dodParenRegex additionally accepts h2/h3 headings that carry the DOD
 	// phrase parenthesized ("## 6. Acceptance Check (Definition of Done)").
 	dodParenRegex = regexp.MustCompile("(?i)^#{2,3}\\s+.*\\(definition\\s+of\\s+done\\)")
+	// acceptanceCheckHeadingRegex accepts the spec-mandated acceptance
+	// checklist section (BUG-395): plan-task.md, task-splitter.md and
+	// FORMAT-REFERENCE-TASK.md all define the Task/BUG checkbox list under
+	// "## 6. Acceptance Check" (numbered h2/h3 variants) — never a literal
+	// "Definition of Done" heading. The acceptance checklist IS the document's
+	// definition-of-done contract, so its checkboxes satisfy r-dod-present.
+	// A heading with zero checkboxes still reports Present=false (Total==0).
+	acceptanceCheckHeadingRegex = regexp.MustCompile("(?i)^#{2,3}\\s+(?:\\d+(?:\\.\\d+)*[.)]?\\s*)?acceptance\\s+(check|criteria)\\b")
 	// anyHeadingRegex closes the DOD section: only level-1/level-2 headings
 	// end it. Real repo DOD sections legitimately contain ### sub-headings
 	// between checklist items (review round 2, real-repo scan) — those must
@@ -67,14 +75,17 @@ func ParseDefinitionOfDone(content string) DodStatus {
 		if fenceMarker != "" {
 			continue // dòng trong fenced code block: bỏ qua hoàn toàn
 		}
-		if dodHeadingRegex.MatchString(line) || dodParenRegex.MatchString(line) {
+		if dodHeadingRegex.MatchString(line) || dodParenRegex.MatchString(line) || acceptanceCheckHeadingRegex.MatchString(line) {
 			inSection = true
 			continue
 		}
 		if anyHeadingRegex.MatchString(line) {
-			if inSection {
-				break // heading markdown kế tiếp đóng section DOD
-			}
+			// BUG-395: close the current section but keep scanning — a doc may
+			// carry the checklist under a LATER matching heading (e.g.
+			// "## 6. Acceptance Check" prose followed by "## Definition of
+			// Done" checkboxes, or the reverse). Items across all matching
+			// sections union into one DodStatus.
+			inSection = false
 			continue
 		}
 		if !inSection {

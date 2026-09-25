@@ -712,6 +712,11 @@ func TestListRemoteChatSessionsIncludesRecordsFromSameDriveRootWithDifferentProj
 	if indexFileID == "" {
 		t.Fatal("expected Drive index")
 	}
+	// UpdatedAt must be relative: seedLocalChatRun stamps the Codex record with
+	// time.Now(), so a hardcoded Claude date silently drifts behind it and the
+	// UpdatedAt-desc ordering assertion flips (same class as ece72e4d). The
+	// remote record must be OLDER than the fresh local one — the assertion
+	// below expects the local codex record to lead.
 	indexFile := api.files[indexFileID]
 	indexFile.Content = mergeChatSessionDriveIndex(indexFile.Content, chatSessionDriveIndexRecord{
 		RunID:           "run-claude",
@@ -720,7 +725,7 @@ func TestListRemoteChatSessionsIncludesRecordsFromSameDriveRootWithDifferentProj
 		RunKind:         "chat",
 		SourceMachineID: "mch_remote",
 		SourceRunID:     "run-claude",
-		UpdatedAt:       "2026-06-19T10:00:00Z",
+		UpdatedAt:       time.Now().UTC().Add(-time.Hour).Format(time.RFC3339Nano),
 		ManifestPath:    "chat-sessions/runs/mch_remote/run-claude/manifest.json",
 	})
 	api.files[indexFileID] = indexFile

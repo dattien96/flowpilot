@@ -159,6 +159,21 @@ func resolveEnabledContextSourceIDs(def agentpack.FlowDefinition, node agentpack
 	return nil
 }
 
+// producedContextSourceIDs resolves the enabled source set for a package
+// built at a context.produce node. BUG-421: the package is packed into the
+// CONSUMING node's prompt, so the consumer's contextProfile.candidateSources
+// (and its contextSources/artifact bindings) govern — the produce node is a
+// bare producer in every builtin flow, and resolving only its own fields
+// left candidateSources dead wiring. When the consumer declares nothing, the
+// producer's own declarations still apply (a produce node may deliberately
+// narrow its output).
+func producedContextSourceIDs(def agentpack.FlowDefinition, producer, consumer agentpack.FlowNode) []string {
+	if ids := resolveEnabledContextSourceIDs(def, consumer); ids != nil {
+		return ids
+	}
+	return resolveEnabledContextSourceIDs(def, producer)
+}
+
 // registerBuiltinContextSources adds the three migrated built-in sources plus
 // the mcp.driver external source to r. mcp.driver is registered (so a flow
 // can validate/enable it via `contexts.<name>.sources`, Task-194) but is not

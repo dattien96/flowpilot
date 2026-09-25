@@ -248,6 +248,17 @@ func (s *InteractiveService) handleDispatchRepairResolution(w http.ResponseWrite
 	}
 	attemptRev, raw, err := s.dispatchStore.BeginRepairResolution(r.Context(), runID, req.ExpectedRepairRev, req.ResolutionID, action)
 	if err != nil {
+		// BUG-407 (contract row RR): a replayed resolutionId returns the
+		// recorded outcome with HTTP 200 — idempotent like resolve/retry-as-new.
+		var replay *RepairResolutionReplay
+		if errors.As(err, &replay) {
+			writeInteractiveJSON(w, http.StatusOK, map[string]any{
+				"revision": replay.Revision,
+				"outcome":  replay.Outcome,
+				"detail":   "idempotent replay of recorded resolution",
+			})
+			return
+		}
 		writeInteractiveError(w, dispatchOperatorErr(err))
 		return
 	}
@@ -296,7 +307,7 @@ func dispatchOperatorErr(err error) *apiErr {
 	switch {
 	case errors.Is(err, ErrNotFound):
 		return newAPIErr(http.StatusNotFound, "dispatch_not_found", err.Error())
-	case errors.Is(err, ErrStaleDispatch), errors.Is(err, ErrIllegalTransition), errors.Is(err, ErrReceiptConflict), errors.Is(err, ErrEffectConflict):
+	case errors.Is(err, ErrStaleDispatch), errors.Is(err, ErrIllegalTransition), errors.Is(err, ErrReceiptConflict), errors.Is(err, ErrEffectConflict), errors.Is(err, ErrRepairNotOpen):
 		return newAPIErr(http.StatusConflict, "dispatch_conflict", err.Error())
 	default:
 		return newAPIErr(http.StatusBadGateway, "dispatch_operator_error", err.Error())

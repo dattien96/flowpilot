@@ -214,6 +214,13 @@ func (s *InteractiveService) switchChatProvider(ctx context.Context, chatID stri
 	if chatID == "" {
 		return chatSwitchResponse{}, newAPIErr(http.StatusBadRequest, "invalid_request", "chatId is required")
 	}
+	// BUG-466: the transcript stack is lazy (chatOnce) — restored legs never
+	// run createRun, so on a fresh process the first switch can be the first
+	// transcript-touching call. Without this, buildChatHandoffContext saw a
+	// nil writer and silently degraded to fresh_start: no seed turn, zero
+	// context on the new leg, and an E-9 record durably logging the wrong
+	// stats. Initialize before Phase A so heal paths can append too.
+	s.ensureChatTranscriptWriter()
 
 	// ---- Phase A (s.mu): heal, guards, durable intent, release -------------
 	s.mu.Lock()
@@ -323,7 +330,19 @@ func (s *InteractiveService) switchChatProvider(ctx context.Context, chatID stri
 	delete(s.chatSwitchInFlight, chatID)
 	s.mu.Unlock()
 
-	return chatSwitchResponse{Handle: newHandle, ChatID: chatID, LegSeq: newHandle.LegSeq, Model: req.Model, Handoff: env.Stats}, nil
+	// BUG-452: report the leg's RESOLVED model, not the raw request — an empty
+	// request model must not round-trip as "" and push clients onto a
+	// catalog-index-0 guess that can differ from the session's actual model.
+	// modelName holds the request verbatim for chat legs; empty falls back to
+	// the provider default a turn would resolve to.
+	resolvedModel := req.Model
+	if newLeg != nil {
+		resolvedModel = newLeg.modelName
+		if resolvedModel == "" {
+			resolvedModel = defaultModelForProvider(newLeg.providerKey)
+		}
+	}
+	return chatSwitchResponse{Handle: newHandle, ChatID: chatID, LegSeq: newHandle.LegSeq, Model: resolvedModel, Handoff: env.Stats}, nil
 }
 
 // buildChatHandoffContext assembles the chat-scoped envelope (SD-26 D-9):

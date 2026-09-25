@@ -87,6 +87,11 @@ func (s *InteractiveService) recordScaffoldArtifactsLock(cwd, parentRunID string
 		log.Printf("[gate] scaffold: no agent.code/scaffold writer node in run %q; skipping artifact lock", parentRunID)
 		return
 	}
+	// BUG-463: providers may report file-change paths absolute (devin did for
+	// run-37268 sprint-2) — Join(cwd, abs) reads nothing so the signature pin
+	// silently lands empty, and the raw LockScaffoldArtifacts call would store
+	// the absolute paths the workspace-relative deny-list never matches.
+	written = workspaceRelPaths(cwd, written)
 	store, err := changecontract.NewFrozenStore(cwd)
 	if err != nil {
 		log.Printf("[gate] scaffold: frozen store open failed: %v", err)

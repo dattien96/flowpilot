@@ -103,6 +103,20 @@ func IsRunnerChatBookkeepingPath(p string) bool {
 	return strings.HasPrefix(normalizeScopePath(p), ".flowpilot/chats/")
 }
 
+// IsRunnerLogsBookkeepingPath reports whether p lives under the runner's own
+// flow diagnostic log directory (.flowpilot/logs/). flowDiagLog appends
+// per-feature run logs there on every flow event — including mid-turn inside
+// the exact diff window the frozen-scope gate observes — so without the
+// exemption every writer false-positives on the runner's own observability
+// output (BUG-457, live run-13080: implement parked on
+// .flowpilot/logs/features/agent-flow-engine/run-13080.ndjson). Same narrow-
+// prefix reasoning as IsRunnerChatBookkeepingPath: nothing under logs/ is a
+// gate input, while .flowpilot/settings/ and .flowpilot/contracts/ stay fully
+// subject to drift enforcement (CA-427 Finding 2).
+func IsRunnerLogsBookkeepingPath(p string) bool {
+	return strings.HasPrefix(normalizeScopePath(p), ".flowpilot/logs/")
+}
+
 // IsChangeAuditPath reports whether p is a change audit note — flat, direct
 // children of change-audit/ named CA-*.md — which coding agents are explicitly
 // allowed to create per BUG-278 without triggering code scope drift.
@@ -204,6 +218,40 @@ func LegacyContractsStorePath() string {
 // sibling like forged.ndjson still drifts (CA-427 Finding 2).
 func IsLegacyContractsStorePath(p string) bool {
 	return normalizeScopePath(p) == LegacyContractsStorePath()
+}
+
+// RunnerOwnedConfigPaths returns the exact repo-relative paths (forward slash)
+// the runner/gate/provider harness itself writes into the workspace during a
+// flow — never the coder:
+//   - .flowpilot/guard/test_baseline.json: the gate's own baseline snapshot,
+//     captured inside the same gate pass that diffs (BUG-394 runs 11/4472/2737)
+//   - .flowpilot/settings/gate-config.json: first-init default written by
+//     writeDefaultGateConfig (BUG-394 run-2284)
+//   - .devin/mcp_config.local.json: the Devin provider session's MCP config
+//     (BUG-394 run-4472)
+//
+// Exact paths only per CA-427 Finding 2 — .flowpilot/settings/flow-rules.json,
+// .flowpilot/contracts/*.ndjson and every other .flowpilot/** or .devin/**
+// sibling stay fully subject to scope-drift enforcement.
+func RunnerOwnedConfigPaths() []string {
+	return []string{
+		path.Join(".flowpilot", "guard", "test_baseline.json"),
+		path.Join(".flowpilot", "settings", "gate-config.json"),
+		path.Join(".devin", "mcp_config.local.json"),
+	}
+}
+
+// IsRunnerOwnedConfigPath reports whether p is one of RunnerOwnedConfigPaths
+// (after the same normalization FrozenContractScopeDrift applies to every path
+// it compares).
+func IsRunnerOwnedConfigPath(p string) bool {
+	np := normalizeScopePath(p)
+	for _, b := range RunnerOwnedConfigPaths() {
+		if np == b {
+			return true
+		}
+	}
+	return false
 }
 
 // ToolOwnedScaffoldPaths returns the repo-relative path prefixes and exact
@@ -485,6 +533,10 @@ func sameStringSet(a, b []string) bool {
 // that as a no-op with a diagnostic, never as a reason to block a legitimate
 // turn (CP-64 P-3).
 func LockReproduceTestPaths(workspace, runID, coderStepID string, paths []string, now time.Time) (FrozenContractRecord, error) {
+	// BUG-388: WrittenPaths arrive absolute from the runner; ReadOnlyPaths must
+	// store workspace-relative form or IsReadOnlyLockedPath (which compares
+	// against the approval bridge's relativized candidate) never matches.
+	paths = relativizePathsToWorkspace(workspace, paths)
 	if len(normalizeScopePaths(paths)) == 0 {
 		return FrozenContractRecord{}, nil
 	}
@@ -500,6 +552,23 @@ func LockReproduceTestPaths(workspace, runID, coderStepID string, paths []string
 		return FrozenContractRecord{}, fmt.Errorf("changecontract: no active frozen contract for step %q in run %q to lock read-only paths on", coderStepID, runID)
 	}
 	return LockReproduceTestPathsOn(store, existing, paths, now)
+}
+
+// relativizePathsToWorkspace converts absolute paths under workspace to
+// workspace-relative slash form; anything else is returned unchanged.
+func relativizePathsToWorkspace(workspace string, paths []string) []string {
+	ws := strings.TrimSpace(workspace)
+	out := make([]string, 0, len(paths))
+	for _, p := range paths {
+		np := p
+		if ws != "" && filepath.IsAbs(filepath.FromSlash(strings.ReplaceAll(strings.TrimSpace(p), `\`, `/`))) {
+			if rel, err := filepath.Rel(ws, filepath.FromSlash(p)); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				np = filepath.ToSlash(rel)
+			}
+		}
+		out = append(out, np)
+	}
+	return out
 }
 
 // LockReproduceTestPathsOn is LockReproduceTestPaths against an already-loaded
@@ -610,6 +679,8 @@ func LockScaffoldArtifacts(store *FrozenStore, existing FrozenContractRecord, te
 // (runID, coderStepID) — the same open-and-lock shape LockReproduceTestPaths
 // gives the reproduce gate (CP-67 P-2).
 func LockScaffoldArtifactsForStep(workspace, runID, coderStepID string, testPaths []string, signatureHash string, lockedSignatures []string, now time.Time) (FrozenContractRecord, error) {
+	// BUG-388: same abs->rel store normalization as LockReproduceTestPaths.
+	testPaths = relativizePathsToWorkspace(workspace, testPaths)
 	if len(normalizeScopePaths(testPaths)) == 0 && strings.TrimSpace(signatureHash) == "" {
 		return FrozenContractRecord{}, nil
 	}
@@ -638,6 +709,36 @@ func IsReadOnlyLockedPath(rec FrozenContractRecord, candidate string) bool {
 	}
 	for _, p := range rec.ReadOnlyPaths {
 		if normalizeScopePath(p) == np {
+			return true
+		}
+	}
+	return false
+}
+
+// IsReadOnlyLockedPathUnder is IsReadOnlyLockedPath plus handling for records
+// written before BUG-388 whose ReadOnlyPaths were stored ABSOLUTE: such a
+// stored path is first relativized against workspace, then compared. Stored
+// absolute paths outside the workspace never match (fail visible — they
+// cannot denote a workspace file the bridge will see).
+func IsReadOnlyLockedPathUnder(rec FrozenContractRecord, candidate, workspace string) bool {
+	if IsReadOnlyLockedPath(rec, candidate) {
+		return true
+	}
+	ws := strings.TrimSpace(workspace)
+	np := normalizeScopePath(candidate)
+	if ws == "" || np == "" {
+		return false
+	}
+	for _, p := range rec.ReadOnlyPaths {
+		sp := normalizeScopePath(p)
+		if !filepath.IsAbs(filepath.FromSlash(sp)) {
+			continue
+		}
+		rel, err := filepath.Rel(ws, filepath.FromSlash(sp))
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		if normalizeScopePath(rel) == np {
 			return true
 		}
 	}

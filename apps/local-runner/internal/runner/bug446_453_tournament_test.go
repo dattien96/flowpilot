@@ -1,0 +1,248 @@
+package runner
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+
+	"flowpilot-runner/internal/agentpack"
+	"flowpilot-runner/internal/tournament"
+)
+
+// BUG-446: escalateToTournament allocates the child id inside s.mu but never
+// re-checks for an existing tournament_escalation child inside that same
+// critical section. Two triggers that both pass the outer scan can spawn
+// -tournament and -tournament-2. The insertion lock itself must be the
+// authoritative dedup point.
+func TestBug446SecondEscalationIsRefused(t *testing.T) {
+	svc, parentID := tournamentEscalationFixture(t, true)
+	first, err := svc.escalateToTournament(parentID, "review cap 3 reached")
+	if err != nil {
+		t.Fatalf("first escalation: %v", err)
+	}
+	if _, err := svc.escalateToTournament(parentID, "review cap 3 reached"); err == nil {
+		t.Fatal("second escalation must be refused — a tournament child already exists")
+	}
+	svc.mu.Lock()
+	count := 0
+	for _, rs := range svc.runs {
+		if rs.parentRunID == parentID && rs.label == "tournament_escalation" {
+			count++
+		}
+	}
+	svc.mu.Unlock()
+	if count != 1 {
+		t.Fatalf("exactly one tournament child must exist, got %d (first=%q)", count, first)
+	}
+}
+
+// BUG-446: concurrent cap/stall triggers racing through the dedup scan must
+// still produce exactly one durable child and one dispatched first turn.
+func TestBug446ConcurrentEscalationSingleChild(t *testing.T) {
+	svc, parentID := tournamentEscalationFixture(t, true)
+	const triggers = 8
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < triggers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			svc.maybeEscalateCapToTournament(parentID, "review cap 3 reached")
+		}()
+	}
+	close(start)
+	wg.Wait()
+	svc.mu.Lock()
+	var children []string
+	for _, rs := range svc.runs {
+		if rs.parentRunID == parentID && rs.label == "tournament_escalation" {
+			children = append(children, rs.id)
+		}
+	}
+	svc.mu.Unlock()
+	if len(children) != 1 {
+		t.Fatalf("concurrent triggers must yield exactly 1 tournament child, got %v", children)
+	}
+}
+
+// BUG-453: the arbiter ignored mgr.Diff errors, so a candidate whose patch
+// snapshot failed could still be offered on the escalate decision card after
+// its worktree was cleaned — the pick then hits "no worktree for owner".
+// Snapshot failure must fail closed like the sibling probe errors: error +
+// full candidate cleanup, never an unmergeable card.
+func TestBug453SnapshotFailureFailsClosed(t *testing.T) {
+	repo := tournamentE2EBugRepo(t)
+	stubTournamentProbes(t)
+	ctx := context.Background()
+	var mgr tournament.WorktreeManager
+	base := tournamentHead(t, repo)
+	pathA, err := mgr.Create(repo, base, "candidate-a")
+	if err != nil {
+		t.Fatalf("Create A: %v", err)
+	}
+	pathB, err := mgr.Create(repo, base, "candidate-b")
+	if err != nil {
+		t.Fatalf("Create B: %v", err)
+	}
+	for _, p := range []string{pathA, pathB} {
+		if err := os.WriteFile(filepath.Join(p, "calc.go"),
+			[]byte("package tournamentmini\n\nfunc Add(a, b int) int { return a + b }\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Poison candidate-a's worktree index so `git add -N` inside Diff fails
+	// while `git status` and the test suite still work — a Diff-only fault.
+	gitFile, err := os.ReadFile(filepath.Join(pathA, ".git"))
+	if err != nil {
+		t.Fatalf("read worktree .git: %v", err)
+	}
+	gitDir := strings.TrimSpace(strings.TrimPrefix(string(gitFile), "gitdir:"))
+	if gitDir == "" || gitDir == string(gitFile) {
+		t.Fatalf("unexpected .git file content: %q", gitFile)
+	}
+	if err := os.WriteFile(filepath.Join(gitDir, "index.lock"), []byte("held"), 0o644); err != nil {
+		t.Fatalf("seed index.lock: %v", err)
+	}
+	// Confirm the injection really breaks only the diff path.
+	if _, derr := mgr.Diff(repo, "candidate-a"); derr == nil {
+		t.Fatal("index.lock must make Diff fail for candidate-a")
+	}
+
+	_, err = behaviorTournamentArbiter(ctx, BehaviorInput{
+		NodeID: "tournament_arbiter", WorkspaceCwd: repo,
+		RawArgs: map[string]any{"base_commit": base},
+	})
+	if err == nil {
+		t.Fatal("arbiter must fail closed when a candidate patch snapshot fails")
+	}
+	if !strings.Contains(err.Error(), "candidate-a") {
+		t.Fatalf("error must name the failed candidate, got %v", err)
+	}
+	// No candidate worktree may survive a failed arbiter — same no-orphan
+	// contract as the sibling ensure/metrics errors.
+	for _, id := range []string{"candidate-a", "candidate-b"} {
+		if fi, statErr := os.Stat(tournament.WorktreePath(repo, id)); statErr == nil && fi.IsDir() {
+			t.Fatalf("failed arbiter must clean worktree %q", id)
+		}
+	}
+}
+
+// BUG-459 (live run-20041): the arbiter's auto-pick "done" branch stashed
+// rs.tournamentWinner but never rs.tournamentPatches — only the escalate/ask
+// branch did. A winner picked without a human card therefore reached
+// runTournamentMergeNode with an ABSENT patch key, took the legacy
+// MergeWinner path, and an untouched winner worktree merged as a silent
+// no-op "tournament winner candidate-b merged" — the flow completed having
+// applied nothing (candidate-b's clean baseline out-scored candidate-a's
+// real green fix on blast radius alone). The done branch must stash the
+// patch snapshots exactly like the escalate branch so a recorded-but-empty
+// winner patch hits the BUG-453 explicit escalate.
+func TestBug459AutoPickedEmptyWinnerPatchEscalates(t *testing.T) {
+	repo := tournamentE2EGreenRepo(t)
+	ctx := context.Background()
+	var mgr tournament.WorktreeManager
+	base := tournamentHead(t, repo)
+
+	pathA, err := mgr.Create(repo, base, "candidate-a")
+	if err != nil {
+		t.Fatalf("Create A: %v", err)
+	}
+	if _, err := mgr.Create(repo, base, "candidate-b"); err != nil {
+		t.Fatalf("Create B: %v", err)
+	}
+	t.Cleanup(func() { _ = mgr.Cleanup(repo, []string{"candidate-a", "candidate-b"}) })
+	// candidate-a lands a real green change; candidate-b never writes.
+	if err := os.WriteFile(filepath.Join(pathA, "mul.go"),
+		[]byte("package tournamentmini\n\nfunc Mul(a, b int) int { return a * b }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// candidate-a pays a blast-radius penalty for touching depended-on code;
+	// the untouched worktree still out-scores it 1.00 vs 0.86 — an auto-pick
+	// on an empty diff, exactly the live shape.
+	oldLSP, oldDeps := TournamentLSPProbe, TournamentDependentsProbe
+	TournamentLSPProbe = func(context.Context, string, []string) int { return 0 }
+	TournamentDependentsProbe = func(_ context.Context, dir string, _ []string) int {
+		if strings.Contains(dir, "candidate-a") {
+			return 5
+		}
+		return 0
+	}
+	t.Cleanup(func() { TournamentLSPProbe, TournamentDependentsProbe = oldLSP, oldDeps })
+
+	svc, _ := newTestServerWith(t, DefaultProviderRegistry(), newInteractiveCatalog(), newFakeWorkflowStore())
+	parent, aerr := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if aerr != nil {
+		t.Fatalf("parent: %v", aerr)
+	}
+	childA, aerr := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if aerr != nil {
+		t.Fatalf("childA: %v", aerr)
+	}
+	childB, aerr := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if aerr != nil {
+		t.Fatalf("childB: %v", aerr)
+	}
+
+	nodes := []agentpack.FlowNode{
+		{ID: "candidate-a", Cohort: "tournament"},
+		{ID: "candidate-b", Cohort: "tournament"},
+		{ID: "tournament_arbiter", Run: "inline", Behavior: "tournament.arbiter", Join: "all"},
+		{ID: "merge_and_audit", Run: "inline", Behavior: "tournament.merge"},
+	}
+	edges := []agentpack.FlowEdge{
+		{From: "candidate-a", To: "tournament_arbiter", When: "done", Kind: "forward"},
+		{From: "candidate-b", To: "tournament_arbiter", When: "done", Kind: "forward"},
+		{From: "tournament_arbiter", To: "merge_and_audit", When: "done", Kind: "forward"},
+	}
+	svc.mu.Lock()
+	prs := svc.runs[parent.RunID]
+	prs.flowEngineDriven = true
+	prs.workspaceCwd = repo
+	prs.flowStartGitHead = base
+	prs.activeFlowNodes = nodes
+	for _, pair := range [][2]string{{childA.RunID, "candidate-a"}, {childB.RunID, "candidate-b"}} {
+		crs := svc.runs[pair[0]]
+		crs.parentRunID = parent.RunID
+		crs.label = pair[1]
+		crs.status = RunStatusCompleted
+	}
+	svc.mu.Unlock()
+
+	svc.runTournamentArbiterNode(ctx, parent.RunID, edges, nodes, nodes[2], "")
+
+	svc.mu.Lock()
+	prs = svc.runs[parent.RunID]
+	_, recorded := prs.tournamentPatches["candidate-b"]
+	svc.mu.Unlock()
+	if !recorded {
+		t.Fatal("arbiter done branch must stash patch snapshots — an auto-picked empty winner currently merges as a silent no-op")
+	}
+	if st := svc.agentOrchestrator.loopStateFor(parent.RunID); st.Status == "done" {
+		t.Fatal("merge on an empty winner patch must escalate, not settle the flow done")
+	}
+}
+
+// BUG-453 (merge half): a recorded-but-empty patch snapshot means the picked
+// candidate changed nothing — an explicit escalate, not a "no worktree for
+// owner" error against a cleaned directory. An ABSENT patch key keeps the
+// legacy MergeWinner path (arbiter-picked winner retains its worktree).
+func TestBug453EmptyStoredPatchEscalatesExplicitly(t *testing.T) {
+	repo := tournamentE2EBugRepo(t)
+	out, err := behaviorTournamentMerge(context.Background(), BehaviorInput{
+		NodeID: "merge_and_audit", WorkspaceCwd: repo,
+		RawArgs: map[string]any{"winner": "candidate-a", "patch": ""},
+	})
+	if err != nil {
+		t.Fatalf("empty recorded patch must escalate, not error: %v", err)
+	}
+	if out.Status != "escalate" {
+		t.Fatalf("empty recorded patch must escalate, got %q", out.Status)
+	}
+	if reason, _ := out.Payload["reason"].(string); reason != "empty_patch" {
+		t.Fatalf("escalate must mark reason=empty_patch, got %+v", out.Payload)
+	}
+}

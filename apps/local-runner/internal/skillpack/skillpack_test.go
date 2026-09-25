@@ -22,6 +22,8 @@ var commonSkills = []string{
 	"safe-fix-contract",
 	"web-design-guidelines",
 	"flow-mode-orchestrator",
+	// CA-903 / Task-412 intentionally added these two common skills; the list
+	// must track the pack or the install-count assertions drift.
 	"flow-harness-contract",
 	"vibe-lanes",
 }

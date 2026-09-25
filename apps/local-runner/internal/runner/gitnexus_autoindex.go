@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"flowpilot-runner/internal/tooling"
+	"flowpilot-runner/internal/worktree"
 )
 
 // ensureGitNexusIndexAsync auto-indexes a target project once per runner
@@ -22,9 +23,22 @@ import (
 // Fired when a run is created against the workspace (chat / flow / workflow).
 // The guard map makes it a no-op on every subsequent run in the same process;
 // a failed analyze clears the guard so a later process/bind can retry.
+// isRunnerManagedWorktreePath reports whether dir lives under the runner's
+// own .flowpilot/worktrees/ scratch root (tournament candidates, CP-71 run
+// worktrees). Those dirs are ephemeral and runner-owned: indexing them is
+// wasted work and — worse — `gitnexus analyze` stamps its <!-- gitnexus -->
+// header into the worktree's tracked AGENTS.md/CLAUDE.md, which then lands
+// in the candidate's patch and can merge into the main workspace
+// (BUG-460, live run-21364).
+func isRunnerManagedWorktreePath(dir string) bool {
+	p := filepath.ToSlash(strings.TrimSpace(dir))
+	return strings.Contains(p, "/"+worktree.WorktreeRootRel+"/") ||
+		strings.HasSuffix(p, "/"+worktree.WorktreeRootRel)
+}
+
 func (s *InteractiveService) ensureGitNexusIndexAsync(workspace string) {
 	workspace = strings.TrimSpace(workspace)
-	if workspace == "" {
+	if workspace == "" || isRunnerManagedWorktreePath(workspace) {
 		return
 	}
 	if _, err := os.Stat(filepath.Join(workspace, ".gitnexus")); err == nil {

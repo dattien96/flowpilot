@@ -31,8 +31,17 @@ type DecisionCardEvidence struct {
 	Excerpt string `json:"excerpt,omitempty"`
 }
 
+// DecisionCardKindTournament marks a decision card emitted by the tournament
+// arbiter's ask leg (CP-65): its option ids are candidate ids plus the
+// "retry"/"ask" actions, and a captured choice routes into tournament.merge
+// or a retry rollout rather than the generic blocked-resume path.
+const DecisionCardKindTournament = "tournament"
+
 // UserDecisionCard is the schema'd payload of request_user_decision.
 type UserDecisionCard struct {
+	// Kind is an internal routing tag (never required on the wire): "tournament"
+	// cards consume their choice in resumeFlowWithFeedback's tournament branch.
+	Kind        string                 `json:"kind,omitempty"`
 	Question    string                 `json:"question"`
 	Options     []DecisionCardOption   `json:"options"`
 	Recommended string                 `json:"recommended,omitempty"`
@@ -47,6 +56,7 @@ type UserDecisionCard struct {
 // the prose fallback (never a silent drop).
 func parseUserDecisionCard(args map[string]any) (UserDecisionCard, error) {
 	var card UserDecisionCard
+	card.Kind, _ = args["kind"].(string)
 	card.Question, _ = args["question"].(string)
 	if strings.TrimSpace(card.Question) == "" {
 		return card, fmt.Errorf("request_user_decision: question is required")

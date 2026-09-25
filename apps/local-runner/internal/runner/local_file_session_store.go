@@ -108,6 +108,8 @@ type ndjsonSessionRecord struct {
 	WorkingMode                string   `json:"working_mode,omitempty"`
 	VibeAwaitingLock           bool     `json:"vibe_awaiting_lock,omitempty"`
 	VibeTaskPlan               []string `json:"vibe_task_plan,omitempty"`
+	VibeCpDocID                string   `json:"vibe_cp_doc_id,omitempty"`
+	VibeRequirementFromNode    string   `json:"vibe_requirement_from_node,omitempty"`
 	VibeSprintIndex            int      `json:"vibe_sprint_index,omitempty"`
 	VibeSprintBudget           int      `json:"vibe_sprint_budget,omitempty"`
 	VibeSprintBoundaryDeclined bool     `json:"vibe_sprint_boundary_declined,omitempty"`
@@ -120,6 +122,15 @@ type ndjsonSessionRecord struct {
 	VibeTaskIndex              int      `json:"vibe_task_index,omitempty"`
 	VibeTaskTotal              int      `json:"vibe_task_total,omitempty"`
 	VibeTaskName               string   `json:"vibe_task_name,omitempty"`
+	// BUG-404: parked sprint topology + buffered coder batches must survive
+	// restart — RAM-only here meant a mid-debate restart false-done'd the flow.
+	VibeParkedNodes      []agentpack.FlowNode `json:"vibe_parked_nodes,omitempty"`
+	VibeParkedEdges      []agentpack.FlowEdge `json:"vibe_parked_edges,omitempty"`
+	VibeParkedAcceptance []string             `json:"vibe_parked_acceptance,omitempty"`
+	VibeParkedFlowRef    string               `json:"vibe_parked_flow_ref,omitempty"`
+	// PendingBatchSignatureByStep buffers coder submit_coder_outcome batches
+	// until the negotiation hub consumes them (BUG-404).
+	PendingBatchSignatureByStep map[string][]CoderBatchSignatureRequest `json:"pending_batch_signature_by_step,omitempty"`
 	// FlowStartGitHead persists Task-242 tier-3 audit aggregate base (Codex review Important #3).
 	FlowStartGitHead string `json:"flow_start_git_head,omitempty"`
 	// V10 P0 / V10R: durable post-turn gate pending across restart + turn snapshot.
@@ -464,6 +475,8 @@ func sessionStateFromRecord(r ndjsonSessionRecord) ProviderSessionState {
 		WorkingMode:                        r.WorkingMode,
 		VibeAwaitingLock:                   r.VibeAwaitingLock,
 		VibeTaskPlan:                       append([]string(nil), r.VibeTaskPlan...),
+		VibeCpDocID:                        r.VibeCpDocID,
+		VibeRequirementFromNode:           r.VibeRequirementFromNode,
 		VibeSprintIndex:                    r.VibeSprintIndex,
 		VibeSprintBudget:                   r.VibeSprintBudget,
 		VibeSprintBoundaryDeclined:         r.VibeSprintBoundaryDeclined,
@@ -476,6 +489,11 @@ func sessionStateFromRecord(r ndjsonSessionRecord) ProviderSessionState {
 		VibeTaskIndex:                      r.VibeTaskIndex,
 		VibeTaskTotal:                      r.VibeTaskTotal,
 		VibeTaskName:                       r.VibeTaskName,
+		VibeParkedNodes:                    append([]agentpack.FlowNode(nil), r.VibeParkedNodes...),
+		VibeParkedEdges:                    append([]agentpack.FlowEdge(nil), r.VibeParkedEdges...),
+		VibeParkedAcceptance:               append([]string(nil), r.VibeParkedAcceptance...),
+		VibeParkedFlowRef:                  r.VibeParkedFlowRef,
+		PendingBatchSignatureByStep:        copyBatchSignatureMap(r.PendingBatchSignatureByStep),
 		FlowStartGitHead:                   r.FlowStartGitHead,
 		PendingFlowGateSettle:              r.PendingFlowGateSettle,
 		PendingFlowGateFinalMsg:            r.PendingFlowGateFinalMsg,
@@ -943,6 +961,8 @@ func sessionRecordFrom(s ProviderSessionState) ndjsonSessionRecord {
 		WorkingMode:                        s.WorkingMode,
 		VibeAwaitingLock:                   s.VibeAwaitingLock,
 		VibeTaskPlan:                       append([]string(nil), s.VibeTaskPlan...),
+		VibeCpDocID:                        s.VibeCpDocID,
+		VibeRequirementFromNode:           s.VibeRequirementFromNode,
 		VibeSprintIndex:                    s.VibeSprintIndex,
 		VibeSprintBudget:                   s.VibeSprintBudget,
 		VibeSprintBoundaryDeclined:         s.VibeSprintBoundaryDeclined,
@@ -955,6 +975,11 @@ func sessionRecordFrom(s ProviderSessionState) ndjsonSessionRecord {
 		VibeTaskIndex:                      s.VibeTaskIndex,
 		VibeTaskTotal:                      s.VibeTaskTotal,
 		VibeTaskName:                       s.VibeTaskName,
+		VibeParkedNodes:                    append([]agentpack.FlowNode(nil), s.VibeParkedNodes...),
+		VibeParkedEdges:                    append([]agentpack.FlowEdge(nil), s.VibeParkedEdges...),
+		VibeParkedAcceptance:               append([]string(nil), s.VibeParkedAcceptance...),
+		VibeParkedFlowRef:                  s.VibeParkedFlowRef,
+		PendingBatchSignatureByStep:        copyBatchSignatureMap(s.PendingBatchSignatureByStep),
 		FlowStartGitHead:                   s.FlowStartGitHead,
 		PendingFlowGateSettle:              s.PendingFlowGateSettle,
 		PendingFlowGateFinalMsg:            s.PendingFlowGateFinalMsg,
@@ -1031,6 +1056,19 @@ func copyStringMap(m map[string]string) map[string]string {
 	out := make(map[string]string, len(m))
 	for k, v := range m {
 		out[k] = v
+	}
+	return out
+}
+
+// copyBatchSignatureMap deep-copies the pending coder batch-signature buffer
+// (BUG-404 — durable round-trip must not share slices with the live map).
+func copyBatchSignatureMap(m map[string][]CoderBatchSignatureRequest) map[string][]CoderBatchSignatureRequest {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string][]CoderBatchSignatureRequest, len(m))
+	for k, v := range m {
+		out[k] = append([]CoderBatchSignatureRequest(nil), v...)
 	}
 	return out
 }

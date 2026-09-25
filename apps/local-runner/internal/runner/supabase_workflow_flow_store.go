@@ -293,8 +293,125 @@ func recordFromWorkflowRow(row dbWorkflowRow) FlowDefinitionRecord {
 		}
 		def.Nodes = append(def.Nodes, node)
 	}
+	// BUG-458: step_definitions has no column for a node's `run`,
+	// `posture`, `context_profile`, or free-form `config:` map, so every
+	// mirrored definition used to drop them. The tournament-harness
+	// parallel_rollout marker is behaviorless and identified ONLY by
+	// run:inline — reconstructed as "", the executor's rollout passthrough
+	// rejected it and the flow stalled after problem_scout (run-16693).
+	// For a built-in mirror the embedded pack is the authoritative source
+	// those fields were synced FROM (nothing admin-editable exists in the
+	// schema to override them), so restore them from the pack definition.
+	if row.IsBuiltin && row.PackID != nil && row.PackFlowID != nil {
+		if embeddedDef := embeddedFlowDefinition(*row.PackID, *row.PackFlowID); embeddedDef != nil {
+			// Flow-level `contextProfiles` (CP-62 P-5) has no workflows column
+			// either — without it the node-level ContextProfile restore above
+			// re-attaches refs (e.g. vibe-sprint's preflight_contract_plan
+			// contextProfile: scout) that ValidateFlowContextSources then
+			// rejects as unknown, failing the whole flow load (live
+			// run-34947). Restore the map from the same embedded source.
+			if len(def.ContextProfiles) == 0 && len(embeddedDef.ContextProfiles) > 0 {
+				def.ContextProfiles = embeddedDef.ContextProfiles
+			}
+			if len(def.Tools) == 0 && len(embeddedDef.Tools) > 0 {
+				def.Tools = embeddedDef.Tools
+			}
+		}
+		if embedded := embeddedFlowNodesByID(*row.PackID, *row.PackFlowID); embedded != nil {
+			for i := range def.Nodes {
+				src, ok := embedded[def.Nodes[i].ID]
+				if !ok {
+					continue
+				}
+				n := &def.Nodes[i]
+				if n.Run == "" {
+					n.Run = src.Run
+				}
+				if n.Posture == "" {
+					n.Posture = src.Posture
+				}
+				// BUG-469: step_artifact_bindings rows are only seeded for the
+				// harness flows (and only when the mirror re-upserts), so a
+				// builtin mirror synced before/without the seed drops every
+				// declared artifactBinding — vibe-cp-ingest's task_slicer then
+				// composed with no bound-input section and sliced the newest
+				// CP on disk instead of the run's CP (live run-96970). For a
+				// built-in the embedded pack is authoritative; restore only
+				// when the mirror has none, matching run/posture precedence.
+				if len(n.ArtifactBindings) == 0 && len(src.ArtifactBindings) > 0 {
+					n.ArtifactBindings = src.ArtifactBindings
+				}
+				if n.ContextProfile == "" {
+					n.ContextProfile = src.ContextProfile
+				}
+				if n.Config == nil {
+					n.Config = src.Config
+				}
+				// Model is a real column but mirror sync never writes the
+				// pack value (the column is reserved for admin overrides), so
+				// pack-declared `model:` is lost the same way. Restoring it
+				// only when the row carries none keeps admin precedence
+				// (resolveConfiguredModelForAgent consults the row first) and
+				// matches embedded resolution exactly — e.g. tournament
+				// candidates must spawn on their pack-declared providers.
+				if n.Model == "" {
+					n.Model = src.Model
+				}
+			}
+		}
+	}
+	// Non-builtin rows (cloned/user-authored) and builtin nodes missing from
+	// the embedded pack still need a valid `run`: it is never stored, so ""
+	// is never a correct reconstructed value. Derive it from the behavior —
+	// agent.* spawns a child (delegate); every other behavior and every
+	// behaviorless marker executes in-process (inline).
+	for i := range def.Nodes {
+		n := &def.Nodes[i]
+		if n.Run != "" {
+			continue
+		}
+		if canonical, ok := agentpack.NormalizeBehaviorID(n.Behavior); ok && strings.HasPrefix(canonical, "agent.") {
+			n.Run = "delegate"
+		} else {
+			n.Run = "inline"
+		}
+	}
 	rec.Definition = def
 	return rec
+}
+
+// embeddedFlowDefinition returns the embedded pack's FlowDefinition for
+// packID/flowID, or nil when the flow is not a built-in pack flow (or the
+// embedded pack fails to load). Flow-level fields the workflows schema cannot
+// store (contextProfiles, tools) are restored from it (BUG-458 follow-up).
+func embeddedFlowDefinition(packID, flowID string) *agentpack.FlowDefinition {
+	pack, err := agentpack.LoadBuiltinPack()
+	if err != nil || pack.Manifest.ID != packID {
+		return nil
+	}
+	for i := range pack.Flows {
+		if pack.Flows[i].ID == flowID {
+			return &pack.Flows[i]
+		}
+	}
+	return nil
+}
+
+// embeddedFlowNodesByID returns the embedded pack's node set for
+// packID/flowID keyed by node id, or nil when the flow is not a built-in
+// pack flow (or the embedded pack fails to load). Used by
+// recordFromWorkflowRow to restore pack-declared node fields the
+// step_definitions schema cannot store (BUG-458).
+func embeddedFlowNodesByID(packID, flowID string) map[string]agentpack.FlowNode {
+	def := embeddedFlowDefinition(packID, flowID)
+	if def == nil {
+		return nil
+	}
+	nodes := make(map[string]agentpack.FlowNode, len(def.Nodes))
+	for _, n := range def.Nodes {
+		nodes[n.ID] = n
+	}
+	return nodes
 }
 
 func (s *SupabaseWorkflowFlowStore) fetchOne(ctx context.Context, query string) (FlowDefinitionRecord, bool, error) {

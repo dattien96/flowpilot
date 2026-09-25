@@ -54,6 +54,39 @@ func tournamentE2EBugRepo(t *testing.T) string {
 	return dir
 }
 
+// tournamentE2EGreenRepo is tournamentE2EBugRepo's twin with a GREEN
+// baseline: Add is correct and TestAdd passes — the shape an empty-diff
+// tournament winner exploits (BUG-459 live run-20041).
+func tournamentE2EGreenRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	write := func(rel, body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, rel), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("go.mod", "module tournamentmini\n\ngo 1.26\n")
+	write("calc.go", "package tournamentmini\n\nfunc Add(a, b int) int { return a + b }\n")
+	write("calc_test.go", "package tournamentmini\n\nimport \"testing\"\n\nfunc TestAdd(t *testing.T) { if Add(1, 2) != 3 { t.Fatal(\"add broken\") } }\n")
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %s: %v %s", strings.Join(args, " "), err, out)
+		}
+	}
+	git("init")
+	git("config", "user.email", "tournament@test.local")
+	git("config", "user.name", "tournament-test")
+	git("config", "core.autocrlf", "false")
+	git("config", "commit.gpgsign", "false")
+	git("add", ".")
+	git("commit", "-m", "green base")
+	return dir
+}
+
 func stubTournamentProbes(t *testing.T) {
 	t.Helper()
 	oldLSP, oldDeps := TournamentLSPProbe, TournamentDependentsProbe

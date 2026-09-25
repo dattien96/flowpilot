@@ -41,6 +41,22 @@ func parseOpencodeVerboseModelsOutput(output []byte) ([]ProviderModel, bool) {
 		if !opencodeVerboseIDLine(id) {
 			continue
 		}
+		// BUG-431: same non-chat-family filter as the plain parser.
+		if !opencodeIsChatCapableModel(id) {
+			// Still must consume the following JSON blob — skip it by letting
+			// the decoder run so pos advances past the metadata.
+			braceSkip := strings.IndexByte(s[pos:], '{')
+			if braceSkip < 0 || opencodeVerboseIDLinesIn(s[pos:pos+braceSkip]) {
+				return nil, false
+			}
+			skipDec := json.NewDecoder(strings.NewReader(s[pos+braceSkip:]))
+			var skipMeta opencodeVerboseModelMeta
+			if err := skipDec.Decode(&skipMeta); err != nil {
+				return nil, false
+			}
+			pos += braceSkip + int(skipDec.InputOffset())
+			continue
+		}
 		// The metadata blob must start at the next `{` with no other ID line
 		// in between — otherwise this is not the verbose shape.
 		brace := strings.IndexByte(s[pos:], '{')
@@ -85,6 +101,33 @@ func opencodeVerboseIDLine(line string) bool {
 	// Skip the broken default model if ever listed (ProviderModelNotFoundError).
 	if line == "opencode/deepseek-v4-flash-free" {
 		return false
+	}
+	return true
+}
+
+// opencodeIsChatCapableModel reports whether a catalog id is a conversational
+// model usable for chat turns (BUG-431). Multi-family accounts list Google's
+// full model family via models.dev — including families that cannot serve a
+// chat turn: Interactions-API-only deep-research (every turn fails "This model
+// only supports Interactions API"), embeddings, image/video/music generation,
+// TTS, live-API, and computer-use models. Filtering them here keeps pickers
+// and default resolution on turn-capable ids.
+func opencodeIsChatCapableModel(id string) bool {
+	id = strings.ToLower(strings.TrimSpace(id))
+	if id == "" {
+		return false
+	}
+	for _, bad := range []string{
+		"deep-research", "deep_research",
+		"embedding",
+		"veo-", "lyria",
+		"tts",
+		"live-",
+		"computer-use",
+	} {
+		if strings.Contains(id, bad) {
+			return false
+		}
 	}
 	return true
 }

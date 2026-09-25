@@ -127,6 +127,27 @@ func (m WorktreeManager) MergeWinner(repoDir, candidateID string) error {
 	}
 }
 
+// ApplyPatch applies a snapshot diff for candidateID onto the main
+// workspace — the merge path for human picks after an escalate cleaned the
+// worktrees (BUG-414). Same conflict contract as MergeWinner: typed
+// *MergeConflictError with patch + paths, no force-apply, no commit.
+func (m WorktreeManager) ApplyPatch(repoDir, candidateID string, patch []byte) error {
+	err := m.shared.ApplyPatch(context.Background(), repoDir, candidateID, patch)
+	if err == nil {
+		return nil
+	}
+	var conflict *worktree.MergeConflictError
+	if !errors.As(err, &conflict) {
+		return err
+	}
+	return &MergeConflictError{
+		CandidateID:   candidateID,
+		Reason:        conflict.Reason,
+		Patch:         conflict.Patch,
+		ConflictPaths: conflict.ConflictPaths,
+	}
+}
+
 // Cleanup removes the given candidate worktrees and their base sidecars,
 // then prunes stale worktree metadata (Task-369 T-4). Idempotent: unknown
 // or already-removed ids are no-ops, so calling it twice (verdict-time +

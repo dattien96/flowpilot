@@ -22,13 +22,14 @@ type FileDiagnostic struct {
 type DiagnosticsCollector struct {
 	mu         sync.Mutex
 	byURI      map[string][]Diagnostic
-	generation uint64 // bumped on every publish, even empty ones
+	byURIGen   map[string]uint64 // per-URI publish counter (BUG-380)
+	generation uint64            // bumped on every publish, even empty ones
 }
 
 // NewDiagnosticsCollector creates a collector and, unless client is nil,
 // registers it as the client's diagnostics handler.
 func NewDiagnosticsCollector(client *Client) *DiagnosticsCollector {
-	dc := &DiagnosticsCollector{byURI: make(map[string][]Diagnostic)}
+	dc := &DiagnosticsCollector{byURI: make(map[string][]Diagnostic), byURIGen: make(map[string]uint64)}
 	if client != nil {
 		client.SetDiagnosticsHandler(dc.Handle)
 	}
@@ -41,6 +42,7 @@ func (dc *DiagnosticsCollector) Handle(p PublishDiagnosticsParams) {
 	defer dc.mu.Unlock()
 	stored := append([]Diagnostic(nil), p.Diagnostics...)
 	dc.byURI[p.URI] = stored
+	dc.byURIGen[p.URI]++
 	dc.generation++
 }
 
@@ -112,6 +114,38 @@ func (dc *DiagnosticsCollector) WaitForDiagnostics(ctx context.Context, timeout 
 			return fmt.Errorf("lsp: diagnostics wait timed out: %w", ctx.Err())
 		case <-ticker.C:
 			if dc.Generation() != start {
+				return nil
+			}
+		}
+	}
+}
+
+// uriGeneration returns how many publishes this URI has received.
+func (dc *DiagnosticsCollector) uriGeneration(uri string) uint64 {
+	dc.mu.Lock()
+	defer dc.mu.Unlock()
+	return dc.byURIGen[uri]
+}
+
+// WaitForDiagnosticsForURI blocks until a publish notification for THE GIVEN
+// uri arrives after the call — BUG-380 secondary: the generation-wide wait
+// returned on any file's publish, so a foreign file's diagnostics could end
+// the wait before the target file's own publish arrived.
+func (dc *DiagnosticsCollector) WaitForDiagnosticsForURI(ctx context.Context, uri string, timeout time.Duration) error {
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+	start := dc.uriGeneration(uri)
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("lsp: diagnostics wait timed out: %w", ctx.Err())
+		case <-ticker.C:
+			if dc.uriGeneration(uri) != start {
 				return nil
 			}
 		}

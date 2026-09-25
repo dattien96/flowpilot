@@ -174,7 +174,7 @@ func Install(targetRepoDir string, platform string) (InstallResult, error) {
 				continue
 			}
 
-			if writeErr := os.WriteFile(destFile, srcBytes, 0o644); writeErr != nil {
+			if writeErr := os.WriteFile(destFile, ensurePackVersionMarker(srcBytes, PackVersion), 0o644); writeErr != nil {
 				result.Errors = append(result.Errors, fmt.Sprintf("write %s: %v", destFile, writeErr))
 				continue
 			}
@@ -335,6 +335,58 @@ func Status(targetRepoDir string, platform string) (PackStatus, error) {
 	}
 
 	return status, nil
+}
+
+// ensurePackVersionMarker stamps the installed copy with `version: <v>` so the
+// file self-reports the pack version that wrote it. Embedded pack sources ship
+// without version markers (BUG-415): with YAML frontmatter the key is inserted
+// (or replaced) inside the block; without frontmatter the legacy first-line
+// format is prepended. The stamp matches exactly what fileMatchesVersion
+// parses, keeping staleness detection and bind-init skipping truthful.
+func ensurePackVersionMarker(src []byte, v int) []byte {
+	versionLine := fmt.Sprintf("version: %d", v)
+	lines := strings.Split(string(src), "\n")
+
+	// Locate the first non-empty line to decide whether frontmatter exists.
+	firstIdx := -1
+	for i, line := range lines {
+		if strings.TrimSpace(line) != "" {
+			firstIdx = i
+			break
+		}
+	}
+	if firstIdx == -1 {
+		return append([]byte(versionLine+"\n"), src...)
+	}
+
+	if strings.TrimSpace(lines[firstIdx]) != "---" {
+		// No frontmatter — legacy leading version line (or none at all).
+		if _, ok := parseVersionLine(lines[firstIdx]); ok {
+			lines[firstIdx] = versionLine
+			return []byte(strings.Join(lines, "\n"))
+		}
+		out := append([]string{}, lines[:firstIdx]...)
+		out = append(out, versionLine)
+		out = append(out, lines[firstIdx:]...)
+		return []byte(strings.Join(out, "\n"))
+	}
+
+	// Frontmatter: find the closing --- and insert/replace version inside.
+	for i := firstIdx + 1; i < len(lines); i++ {
+		if strings.TrimSpace(lines[i]) == "---" {
+			for j := firstIdx + 1; j < i; j++ {
+				if _, ok := parseVersionLine(lines[j]); ok {
+					lines[j] = versionLine
+					return []byte(strings.Join(lines, "\n"))
+				}
+			}
+			out := append([]string{}, lines[:i]...)
+			out = append(out, versionLine)
+			out = append(out, lines[i:]...)
+			return []byte(strings.Join(out, "\n"))
+		}
+	}
+	return src
 }
 
 // fileMatchesVersion reads a top-of-file YAML frontmatter version when present,

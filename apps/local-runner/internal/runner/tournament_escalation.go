@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -33,6 +34,12 @@ const TournamentEscalationEnv = "FLOWPILOT_ENABLE_TOURNAMENT_ESCALATION"
 
 // tournamentHarnessFlowID is the pack flow id opened for a rescue.
 const tournamentHarnessFlowID = "tournament-harness"
+
+// errTournamentEscalationExists is returned by escalateToTournament when the
+// in-lock authoritative dedup finds a tournament_escalation child already
+// registered (BUG-446). Callers treat it as "rescue already in flight", not
+// a failure — the legacy park path must NOT run over a live tournament.
+var errTournamentEscalationExists = errors.New("tournament escalation child already exists")
 
 // TournamentEscalationEnabled reports whether the escalation leg is on.
 // Only the explicit truthy set enables it (same pattern as
@@ -111,12 +118,31 @@ func (s *InteractiveService) escalateToTournament(parentRunID, reason string) (s
 		s.mu.Unlock()
 		return "", fmt.Errorf("tournament: parent run %q vanished", parentRunID)
 	}
+	// BUG-446: the authoritative dedup lives INSIDE the insertion lock — the
+	// outer scan in maybeEscalateCapToTournament is a cheap pre-check only.
+	// Two triggers that both pass the pre-check must not allocate
+	// -tournament and -tournament-2 and dispatch competing rescues.
+	for _, other := range s.runs {
+		if other.parentRunID == parentRunID && other.label == "tournament_escalation" {
+			s.mu.Unlock()
+			return "", fmt.Errorf("%w: run %q already has child %q", errTournamentEscalationExists, parentRunID, other.id)
+		}
+	}
 	intent := fmt.Sprintf("Tournament escalation of run %s (%s). Prior loop: %s (round %d/%d). The prior direction failed — solve from a clean slate, do not repeat it.",
 		parentRunID, strings.TrimSpace(reason), strings.TrimSpace(loop.GateReason), loop.Round, effectiveCap(loop))
 	base := parentRunID + "-tournament"
 	childID := base
 	for n := 2; s.runs[childID] != nil; n++ {
 		childID = fmt.Sprintf("%s-%d", base, n)
+	}
+	// BUG-412: the child must carry the same durable provider identity a
+	// createRun child gets — a synthetic thread-* session id plus the active
+	// provider account — or its first/resume turn rejects 409
+	// provider_account_changed / session_unavailable. The account read can
+	// hit disk, so resolve it before taking s.mu.
+	accountID := strings.TrimSpace(parent.providerAccountID)
+	if accountID == "" {
+		accountID = s.activeAccountForProvider(parent.providerKey)
 	}
 	child := &interactiveRun{
 		id:                childID,
@@ -129,9 +155,12 @@ func (s *InteractiveService) escalateToTournament(parentRunID, reason string) (s
 		workflowID:        workingmode.PackPrefix + tournamentHarnessFlowID,
 		chatFlowRef:       workingmode.PackPrefix + tournamentHarnessFlowID,
 		pendingTurnPrompt: intent,
-		flowEngineDriven:  parent.flowEngineDriven,
+		flowEngineDriven:  true,
 		runKind:           parent.runKind,
 		status:            RunStatusIdle,
+		stepID:            tournamentHarnessFlowID,
+		providerSessionID: s.nextID("thread"),
+		providerAccountID: accountID,
 		activeFlowNodes:   append([]agentpack.FlowNode(nil), def.Nodes...),
 		activeFlowEdges:   append([]agentpack.FlowEdge(nil), def.Edges...),
 	}
@@ -149,6 +178,22 @@ func (s *InteractiveService) escalateToTournament(parentRunID, reason string) (s
 	s.flowDiagLog(childID, "tournament_child_dispatched", "tournament-harness child ready for its first turn",
 		"parent_run_id", parentRunID, "flow_ref", workingmode.PackPrefix+tournamentHarnessFlowID,
 	)
+	// BUG-412: kick the child's first turn so the engine actually starts the
+	// harness (problem_scout entry) — previously the child sat idle with only
+	// pendingTurnPrompt recorded and never ran. Async: startTurn takes s.mu and
+	// the caller may still hold loop/dispatch state.
+	go func() {
+		if _, aerr := s.startTurn(childID, TurnInput{
+			StepID:  tournamentHarnessFlowID,
+			FlowRef: workingmode.PackPrefix + tournamentHarnessFlowID,
+			Prompt:  intent,
+		}, "tournament", ""); aerr != nil {
+			log.Printf("[tournament] child %q first turn rejected: %s", childID, aerr.msg)
+			s.flowDiagLog(parentRunID, "tournament_child_start_failed", "tournament child first turn rejected",
+				"child_run_id", childID, "error", aerr.msg,
+			)
+		}
+	}()
 	return childID, nil
 }
 
@@ -183,8 +228,30 @@ func (s *InteractiveService) maybeEscalateCapToTournament(parentRunID, reason st
 	if loop.Status != "blocked" {
 		return false
 	}
+	// BUG-413: belt-and-suspenders — any caller that already mutated the loop
+	// status (e.g. a continue that ran Round++ before this check) would see
+	// "blocked" and re-dispatch. Refuse while a tournament child exists,
+	// regardless of the parent's current loop status.
+	s.mu.Lock()
+	for _, rs := range s.runs {
+		if rs.parentRunID == parentRunID && rs.label == "tournament_escalation" {
+			s.mu.Unlock()
+			s.flowDiagLog(parentRunID, "tournament_escalation_deduped",
+				"tournament escalation refused: a tournament child already exists")
+			return false
+		}
+	}
+	s.mu.Unlock()
 	childID, err := s.escalateToTournament(parentRunID, reason)
 	if err != nil {
+		// BUG-446: a concurrent trigger won the in-lock claim — the rescue is
+		// already dispatched, so report handled; the caller must not run its
+		// legacy park path over an in-flight tournament.
+		if errors.Is(err, errTournamentEscalationExists) {
+			s.flowDiagLog(parentRunID, "tournament_escalation_deduped",
+				"tournament escalation refused: a tournament child already exists")
+			return true
+		}
 		log.Printf("[tournament] escalation failed for run %q: %v", parentRunID, err)
 		return false
 	}

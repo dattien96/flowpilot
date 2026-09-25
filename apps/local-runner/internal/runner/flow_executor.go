@@ -205,6 +205,7 @@ func (s *InteractiveService) startResolvedFlowFromNode(ctx context.Context, pare
 		)
 		agentDef, _ := resolvePackAgentDefinition(agentName)
 		entryPrompt := composeFlowNodeAgentPrompt(s.workspaceCwdFor(parentRunID), userPrompt, node)
+		entryPrompt = appendResolvedVibeTemplatedInputs(entryPrompt, node, s.vibeResolvedSlicerSource(parentRunID))
 		entryPrompt = appendChangeContractIfAnyWithSecret(s.workspaceCwdFor(parentRunID), parentRunID, entryPrompt, s.markerSecret)
 		if _, err := s.spawnChildRun(ctx, parentRunID, SpawnAgentInput{
 			Agent:             agentName,
@@ -415,6 +416,43 @@ func (s *InteractiveService) takePendingFlowRefInvalidErr(runID string) error {
 	err := rs.pendingFlowRefInvalidErr
 	rs.pendingFlowRefInvalidErr = nil
 	return err
+}
+
+// flowStepsFromDefinition synthesizes the catalog step view for a workflowID
+// that resolves to a flow definition but has no mirrored workflow_steps rows
+// (BUG-426: offline runner / pack-ref child spawn). Step ids follow the
+// mirror's packID__flowID__nodeID convention so downstream model/role lookups
+// keep working. Returns ok=false when the id is not a resolvable flow — the
+// caller keeps the workflow_has_no_steps rejection for plain empty workflows.
+func (s *InteractiveService) flowStepsFromDefinition(ctx context.Context, workflowID string) ([]Step, bool) {
+	s.mu.Lock()
+	store := s.flowDefinitionStore
+	s.mu.Unlock()
+	record, err := NewFlowDefinitionResolver(store).ResolveFlowRef(ctx, workflowID)
+	if err != nil || len(record.Definition.Nodes) == 0 {
+		return nil, false
+	}
+	flowName := record.Name
+	if flowName == "" {
+		flowName = record.Definition.ID
+	}
+	flowKey := record.PackID + "__" + record.PackFlowID
+	if strings.TrimSpace(record.PackID) == "" || strings.TrimSpace(record.PackFlowID) == "" {
+		flowKey = record.Definition.ID
+	}
+	steps := make([]Step, 0, len(record.Definition.Nodes))
+	for _, n := range record.Definition.Nodes {
+		steps = append(steps, Step{
+			ID:         sanitizeStepType(flowKey + "__" + n.ID),
+			WorkflowID: workflowID,
+			Name:       flowName + ": " + humanizeFlowNodeID(n.ID),
+			NodeID:     n.ID,
+			BehaviorID: n.Behavior,
+			AgentRef:   n.Agent,
+			Model:      n.Model,
+		})
+	}
+	return steps, true
 }
 
 // explicitFlowRefResolves synchronously confirms an explicit chat flowRef
@@ -1308,6 +1346,20 @@ func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID
 				}
 				return s.parkVibeLock(parentRunID, target.ID)
 			}
+			// BUG-426: a behavior-less inline marker node (tournament-harness's
+			// parallel_rollout) carries no behavior id — dispatching it through
+			// the inline switch is impossible, and the spawnable-only filter
+			// below rejects it too, so the whole cohort never spawned. Expand
+			// its declared forward "done" targets and fan them out as the
+			// candidate cohort instead.
+			if candidates, ok := tournamentRolloutPassthrough(target, edges, nodes); ok {
+				if s.isFlowEngineDriven(parentRunID) {
+					s.setFlowStepStatus(context.Background(), parentRunID, completedNodeID, StepStatusDone)
+					s.setFlowStepStatus(context.Background(), parentRunID, target.ID, StepStatusDone)
+				}
+				s.spawnTournamentCandidates(parentRunID, target, candidates, resultMessage)
+				return true
+			}
 			if canonical, ok := agentpack.NormalizeBehaviorID(target.Behavior); ok && canonical != "agent.delegate" {
 				if spec, err := DefaultBehaviorRegistry().Resolve(canonical); err == nil && spec.Scope == BehaviorScopeInline {
 					if s.isFlowEngineDriven(parentRunID) {
@@ -1399,28 +1451,34 @@ func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID
 				mode = p.workingMode
 			}
 			s.mu.Unlock()
-			if vibeCoderSpawnBlocked(mode, node.ID, hasVibeTddOutput(cwd)) {
-				s.flowDiagLog(parentRunID, "vibe_tdd_missing", "coder refused; tdd artifact missing",
-					"completed_node_id", completedNodeID,
-					"target_node_id", node.ID,
-				)
-				s.parkVibeRequirement(parentRunID, "tdd artifact missing before coder (no bypass)")
-				continue
-			}
 			store, storeErr := changecontract.NewFrozenStore(cwd)
 			if storeErr != nil {
 				s.flowDiagLog(parentRunID, "flow_advance_writer_store_failed", "cannot open frozen contract store for writer spawn",
 					"target_node_id", node.ID, "error", storeErr.Error(),
 				)
-				s.parkVibeRequirement(parentRunID, "cannot open frozen contract store for coder")
+				s.parkVibeRequirementFrom(parentRunID, "cannot open frozen contract store for coder", completedNodeID)
 				continue
 			}
 			rec, frozenOK, _ := store.GetFrozenForStep(parentRunID, node.ID)
+			// BUG-462: post-freeze lock evidence on this step's frozen contract
+			// (LockedSignatures or ReadOnlyPaths) is durable TDD evidence — the
+			// filesystem glob alone cannot see full-body test files the scaffold
+			// adopted/locked, and BUG-463 can leave sigs empty while paths lock.
+			hasTddEvidence := hasVibeTddOutput(cwd) ||
+				(frozenOK && (len(rec.LockedSignatures) > 0 || len(rec.ReadOnlyPaths) > 0))
+			if vibeCoderSpawnBlocked(mode, node.ID, hasTddEvidence) {
+				s.flowDiagLog(parentRunID, "vibe_tdd_missing", "coder refused; tdd artifact missing",
+					"completed_node_id", completedNodeID,
+					"target_node_id", node.ID,
+				)
+				s.parkVibeRequirementFrom(parentRunID, "tdd artifact missing before coder (no bypass)", completedNodeID)
+				continue
+			}
 			if !frozenOK {
 				s.flowDiagLog(parentRunID, "flow_advance_writer_no_contract", "agent.code target has no frozen contract; blocking spawn",
 					"target_node_id", node.ID,
 				)
-				s.parkVibeRequirement(parentRunID, "coder has no frozen contract after tdd")
+				s.parkVibeRequirementFrom(parentRunID, "coder has no frozen contract after tdd", completedNodeID)
 				continue
 			}
 			if err := s.spawnFrozenWriterChild(context.Background(), parentRunID, node, rec); err != nil {
@@ -1428,7 +1486,7 @@ func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID
 				s.flowDiagLog(parentRunID, "flow_advance_writer_spawn_failed", "writer spawn failed",
 					"target_node_id", node.ID, "error", err.Error(),
 				)
-				s.parkVibeRequirement(parentRunID, "coder spawn failed after tdd")
+				s.parkVibeRequirementFrom(parentRunID, "coder spawn failed after tdd", completedNodeID)
 				continue
 			}
 			spawnedAny = true
@@ -1444,6 +1502,7 @@ func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID
 		baseReviewPrompt := buildFlowReviewHandoffPrompt(completedNodeID, resultMessage, node)
 		// Task-223: each target node gets its own INPUT path inject + OUTPUT write contract.
 		prompt := composeFlowNodeAgentPrompt(cwd, baseReviewPrompt, node)
+		prompt = appendResolvedVibeTemplatedInputs(prompt, node, s.vibeResolvedSlicerSource(parentRunID))
 		prompt = appendChangeContractIfAnyWithSecret(cwd, parentRunID, prompt, s.markerSecret)
 		if flowNodeReusesChild(node) {
 			// BUG-318: pass THIS round's cohort id + size so a reinvoke-lifecycle

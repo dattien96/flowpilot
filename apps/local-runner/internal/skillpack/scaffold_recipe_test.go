@@ -152,7 +152,8 @@ func TestScaffoldYAMLIsNotTreatedAsSkill(t *testing.T) {
 	// Regression guard (Task-383 constraint): scaffold.yaml lives inside the
 	// platform group directory, and skillsForPlatform reads directory entries —
 	// only directories may become skills, so the manifest must never be installed
-	// as a skill folder and the react-native skill count must stay 23.
+	// as a skill folder. Count updated 23 → 25 after CA-903 / Task-412 added
+	// flow-harness-contract + vibe-lanes to common (15 common + 10 platform).
 	names, err := SkillNames("react-native")
 	if err != nil {
 		t.Fatalf("SkillNames(react-native) error = %v", err)

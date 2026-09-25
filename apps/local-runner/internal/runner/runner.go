@@ -2241,6 +2241,14 @@ func parseOpencodePlainModelsOutput(output []byte) ([]ProviderModel, error) {
 		if id == "opencode/deepseek-v4-flash-free" {
 			continue
 		}
+		// BUG-431: multi-family accounts list non-conversational models
+		// (Interactions-API-only deep-research, embeddings, veo/lyria/tts/live,
+		// computer-use). Serving them as available let the picker default land
+		// on google/deep-research-max-preview — every turn fails "This model
+		// only supports Interactions API".
+		if !opencodeIsChatCapableModel(id) {
+			continue
+		}
 		display := opencodeModelDisplayName(id)
 		model := ProviderModel{
 			ID:                        id,

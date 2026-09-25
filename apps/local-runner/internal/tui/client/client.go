@@ -1039,6 +1039,16 @@ func (c *Client) ListBuiltinOrchestrationOptions(ctx context.Context, subMode st
 	return opts, err
 }
 
+// ListFlowPickerOptions fetches GET /client/flow-picker-options — the
+// user-startable builtin flow catalog for the session's working mode
+// (dev harnesses / vibe flows). BUG-429: /flow must read this endpoint, not
+// the chat-orchestration picker, so list and arm share one catalog.
+func (c *Client) ListFlowPickerOptions(ctx context.Context, workingMode string) ([]BuiltinFlowOption, error) {
+	var opts []BuiltinFlowOption
+	err := c.getJSON(ctx, "/client/flow-picker-options?workingMode="+neturl.QueryEscape(workingMode), &opts)
+	return opts, err
+}
+
 // StartRun sends POST /client/workflow-runs and returns a RunHandle.
 func (c *Client) StartRun(ctx context.Context, input StartRunInput) (RunHandle, error) {
 	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)

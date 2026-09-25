@@ -69,17 +69,28 @@ func mapOpencodeToolCallUpdate(update map[string]any) ([]ProviderEvent, bool) {
 	if status == "" {
 		return nil, false
 	}
+	mappedStatus := opencodeToolStatus(status)
+	// BUG-382: in_progress/pending/running updates are progress signals, not
+	// completions — emitting tool_completed closes the tool row early and a
+	// mutation-kind update additionally forged file_changed events for files
+	// that were never written (denied permissions arrive as status:"failed").
+	if mappedStatus != "success" && mappedStatus != "failed" {
+		return nil, true
+	}
 	title, _ := update["title"].(string)
 	mutationKind := opencodeToolMutationKind(update)
 
 	events := []ProviderEvent{{
 		Type:     EventToolCompleted,
 		ToolName: opencodeToolDisplayName(update, title),
-		Status:   opencodeToolStatus(status),
+		Status:   mappedStatus,
 		Output:   opencodeToolOutput(update),
 	}}
 
-	if mutationKind != "" {
+	// file_changed only when the mutation actually succeeded — a failed or
+	// permission-denied call wrote nothing, and a phantom event poisons
+	// WrittenPaths → false r-ca/r-contract gate violations.
+	if mutationKind != "" && mappedStatus == "success" {
 		for _, path := range opencodeMutationPaths(update) {
 			events = append(events, ProviderEvent{
 				Type:       EventFileChanged,

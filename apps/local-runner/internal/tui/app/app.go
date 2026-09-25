@@ -1422,7 +1422,11 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		var sb strings.Builder
-		sb.WriteString("Built-in flows (bug mode):\n")
+		mode := m.workingMode
+		if mode == "" {
+			mode = "dev"
+		}
+		sb.WriteString(fmt.Sprintf("Built-in flows (%s mode):\n", mode))
 		if len(msg.Builtins) == 0 {
 			sb.WriteString("  (none)\n")
 		} else {
@@ -1669,12 +1673,24 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case orchStreamOpenedMsg:
+		// BUG-450: an open issued for a previous leg/run is stale the moment
+		// adoption moved on (provider switch, chat open). Cancel it — letting
+		// it through would kill the CURRENT stream via stopOrchestrationStream
+		// and pin the dead leg's channels.
+		if msg.RunID != "" && (m.runHandle == nil || m.runHandle.RunID != msg.RunID) {
+			if msg.Cancel != nil {
+				msg.Cancel()
+			}
+			return m, nil
+		}
 		m.stopOrchestrationStream()
 		m.orchStream = &orchStreamState{evCh: msg.EvCh, cancel: msg.Cancel}
 		return m, m.cmdPollOrchStream()
 
 	case orchStreamEventMsg:
-		if m.orchStream == nil {
+		if m.orchStream == nil || (msg.st != nil && msg.st != m.orchStream) {
+			// BUG-428: a cancelled pre-switch stream's in-flight poll still
+			// delivers — drop it so old-run seqs/events never touch the new leg.
 			return m, nil
 		}
 		if msg.Ev.Seq > m.lastEventSeq {
@@ -1739,6 +1755,10 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case orchStreamClosedMsg:
+		if msg.st != nil && msg.st != m.orchStream {
+			// BUG-428: a replaced stream's close must not kill the current one.
+			return m, nil
+		}
 		m.stopOrchestrationStream()
 		return m, m.cmdRefreshStepsRuntime()
 
@@ -3084,6 +3104,18 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.authPhase == AuthNone && m.actionRingEnterActivates() {
 			return m.activateHighlightedAction()
 		}
+		// BUG-430(c): a "/cmd" typed after a collapsed paste token must run as
+		// a command — expansion would bury the "/" inside the pasted text.
+		// The paste draft survives for the next Enter.
+		if m.authPhase == AuthNone {
+			if cmd, ok := m.pastedDraftSlashCommand(); ok {
+				m.collapseDraftToPasteTokens()
+				if cmd == "/" {
+					cmd = "/help"
+				}
+				return m.processInput(cmd)
+			}
+		}
 		input := strings.TrimSpace(m.expandPasteTokens(m.inputValue))
 		if input == "" {
 			return m, nil
@@ -3808,9 +3840,10 @@ func (m *AppModel) turnIsActive() bool {
 	// (BUG-371). A done loop with a still-RUNNING child still arms [stop].
 	// A pending send is live work too: the post-done follow-up's send→stream
 	// gap must keep [stop] armed (CA-544); turnSendPending was split from
-	// pendingPrompt in BUG-341 and must count here as well.
+	// pendingPrompt in BUG-341 and must count here as well. An open turn
+	// stream is live work too (same gap, post-attach).
 	if strings.EqualFold(strings.TrimSpace(m.flowLoopStatus), "done") && !m.hasLiveWorkingChild() &&
-		m.pendingPrompt == "" && !m.turnSendPending {
+		m.pendingPrompt == "" && !m.turnSendPending && m.turnStream == nil {
 		return false
 	}
 	// An open approval does NOT disarm [stop]: the underlying turn is still
@@ -7148,11 +7181,15 @@ func (m *AppModel) cmdPrefetchFlows() tea.Cmd {
 
 func (m *AppModel) cmdFetchFlows(silent bool) tea.Cmd {
 	runnerURL := m.runnerURL
+	workingMode := m.workingMode
 	return func() tea.Msg {
 		cl := client.New(runnerURL)
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		builtins, _ := cl.ListBuiltinOrchestrationOptions(ctx, "bug")
+		// BUG-429: the flow catalog comes from the flow-picker endpoint (the
+		// same source the arming resolver uses) — the chat-orchestration
+		// endpoint answers a different question and returns [] here.
+		builtins, _ := cl.ListFlowPickerOptions(ctx, workingMode)
 		workflows, err := cl.ListWorkflows(ctx)
 		msg := FlowListMsg{Builtins: builtins, Workflows: workflows, Silent: silent}
 		if err != nil {

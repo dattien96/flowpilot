@@ -175,8 +175,11 @@ func TestSkillsMergeClaudeProjectAndProviderHomeWithPrecedence(t *testing.T) {
 	if _, ok := byName["workspace-only"]; !ok {
 		t.Fatalf("workspace-only skill missing: %+v", skills)
 	}
-	if _, ok := byName["flowpilot-only"]; ok {
-		t.Fatalf("flowpilot-only should not load for claude project skills: %+v", skills)
+	// BUG-062 F-2 (bbca52dc): .agents/skills is the common flow-pack loaded for
+	// every provider — claude included — ranked below .claude/skills and above
+	// the provider home.
+	if got := byName["flowpilot-only"]; got.Source != "flowpilot" {
+		t.Fatalf("flowpilot-only skill = %+v, want common flow-pack source", got)
 	}
 }
 
