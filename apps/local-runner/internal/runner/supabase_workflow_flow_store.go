@@ -136,6 +136,15 @@ type dbWorkflowRow struct {
 	EdgesJSON           []dbFlowEdgeRow             `json:"edges_json"`
 	ContextsJSON        map[string]dbFlowContextRow `json:"contexts_json"`
 	WorkflowSteps       []dbWorkflowStepRow         `json:"workflow_steps"`
+	// DefinitionJSON is the FlowDefinition snapshot persisted at save time
+	// for non-builtin rows (BUG-474). The schema has no columns for node
+	// run/posture/context_profile/config or flow-level
+	// contextProfiles/tools; built-in mirrors restore them from the
+	// embedded pack, and this snapshot is the equivalent authority for
+	// cloned/user-authored definitions. NULL for rows written before the
+	// column existed and for built-in mirrors (embedded pack stays their
+	// sole authority).
+	DefinitionJSON json.RawMessage `json:"definition_json"`
 }
 
 const workflowSelect = "*,workflow_steps(step_type,order_index,step_definitions(step_type,node_id,node_lifecycle,behavior_id,agent_ref,join_mode,cohort,prompt_template_ref,model,context_ref,context_sources,step_artifact_bindings(id,direction,slot_name,required,position,artifact_instance_id,artifact_instances(artifact_type_id,config_json,status))))"
@@ -318,46 +327,26 @@ func recordFromWorkflowRow(row dbWorkflowRow) FlowDefinitionRecord {
 			}
 		}
 		if embedded := embeddedFlowNodesByID(*row.PackID, *row.PackFlowID); embedded != nil {
-			for i := range def.Nodes {
-				src, ok := embedded[def.Nodes[i].ID]
-				if !ok {
-					continue
-				}
-				n := &def.Nodes[i]
-				if n.Run == "" {
-					n.Run = src.Run
-				}
-				if n.Posture == "" {
-					n.Posture = src.Posture
-				}
-				// BUG-469: step_artifact_bindings rows are only seeded for the
-				// harness flows (and only when the mirror re-upserts), so a
-				// builtin mirror synced before/without the seed drops every
-				// declared artifactBinding — vibe-cp-ingest's task_slicer then
-				// composed with no bound-input section and sliced the newest
-				// CP on disk instead of the run's CP (live run-96970). For a
-				// built-in the embedded pack is authoritative; restore only
-				// when the mirror has none, matching run/posture precedence.
-				if len(n.ArtifactBindings) == 0 && len(src.ArtifactBindings) > 0 {
-					n.ArtifactBindings = src.ArtifactBindings
-				}
-				if n.ContextProfile == "" {
-					n.ContextProfile = src.ContextProfile
-				}
-				if n.Config == nil {
-					n.Config = src.Config
-				}
-				// Model is a real column but mirror sync never writes the
-				// pack value (the column is reserved for admin overrides), so
-				// pack-declared `model:` is lost the same way. Restoring it
-				// only when the row carries none keeps admin precedence
-				// (resolveConfiguredModelForAgent consults the row first) and
-				// matches embedded resolution exactly — e.g. tournament
-				// candidates must spawn on their pack-declared providers.
-				if n.Model == "" {
-					n.Model = src.Model
-				}
+			restoreFlowNodeExecutionFields(&def, embedded)
+		}
+	} else if !row.IsBuiltin && len(row.DefinitionJSON) > 0 {
+		// BUG-474: cloned/user-owned rows have no embedded pack to recover
+		// the schema-less fields from, so Upsert persists the full
+		// FlowDefinition as workflows.definition_json. Restore the same
+		// fields the embedded path restores for built-ins, with the same
+		// precedence: real columns (admin-editable) win, the snapshot only
+		// fills what the schema cannot store. A missing/undecodable
+		// snapshot leaves the row on the deterministic legacy path below
+		// (run derived from behavior) — never a silent field swap.
+		var snap agentpack.FlowDefinition
+		if err := json.Unmarshal(row.DefinitionJSON, &snap); err == nil {
+			if len(def.ContextProfiles) == 0 && len(snap.ContextProfiles) > 0 {
+				def.ContextProfiles = snap.ContextProfiles
 			}
+			if len(def.Tools) == 0 && len(snap.Tools) > 0 {
+				def.Tools = snap.Tools
+			}
+			restoreFlowNodeExecutionFields(&def, flowNodesByID(snap.Nodes))
 		}
 	}
 	// Non-builtin rows (cloned/user-authored) and builtin nodes missing from
@@ -412,6 +401,66 @@ func embeddedFlowNodesByID(packID, flowID string) map[string]agentpack.FlowNode 
 		nodes[n.ID] = n
 	}
 	return nodes
+}
+
+// flowNodesByID keys a definition snapshot's nodes by node id — the snapshot
+// equivalent of embeddedFlowNodesByID for non-builtin rows (BUG-474).
+func flowNodesByID(nodes []agentpack.FlowNode) map[string]agentpack.FlowNode {
+	byID := make(map[string]agentpack.FlowNode, len(nodes))
+	for _, n := range nodes {
+		byID[n.ID] = n
+	}
+	return byID
+}
+
+// restoreFlowNodeExecutionFields fills the per-node fields the
+// step_definitions schema cannot store (run, posture, artifact bindings when
+// the join is empty, context_profile, free-form config, model) from an
+// authoritative node source — the embedded pack for built-in mirrors, the
+// persisted definition_json snapshot for cloned/user rows (BUG-474).
+// Fill-only precedence: anything the row already carries (a real column or a
+// joined table) wins, so admin edits can never be clobbered by the source.
+func restoreFlowNodeExecutionFields(def *agentpack.FlowDefinition, src map[string]agentpack.FlowNode) {
+	for i := range def.Nodes {
+		from, ok := src[def.Nodes[i].ID]
+		if !ok {
+			continue
+		}
+		n := &def.Nodes[i]
+		if n.Run == "" {
+			n.Run = from.Run
+		}
+		if n.Posture == "" {
+			n.Posture = from.Posture
+		}
+		// BUG-469: step_artifact_bindings rows are only seeded for the
+		// harness flows (and only when the mirror re-upserts), so a
+		// builtin mirror synced before/without the seed drops every
+		// declared artifactBinding — vibe-cp-ingest's task_slicer then
+		// composed with no bound-input section and sliced the newest
+		// CP on disk instead of the run's CP (live run-96970). For a
+		// built-in the embedded pack is authoritative; restore only
+		// when the mirror has none, matching run/posture precedence.
+		if len(n.ArtifactBindings) == 0 && len(from.ArtifactBindings) > 0 {
+			n.ArtifactBindings = from.ArtifactBindings
+		}
+		if n.ContextProfile == "" {
+			n.ContextProfile = from.ContextProfile
+		}
+		if n.Config == nil {
+			n.Config = from.Config
+		}
+		// Model is a real column but mirror sync never writes the
+		// pack value (the column is reserved for admin overrides), so
+		// pack-declared `model:` is lost the same way. Restoring it
+		// only when the row carries none keeps admin precedence
+		// (resolveConfiguredModelForAgent consults the row first) and
+		// matches embedded resolution exactly — e.g. tournament
+		// candidates must spawn on their pack-declared providers.
+		if n.Model == "" {
+			n.Model = from.Model
+		}
+	}
 }
 
 func (s *SupabaseWorkflowFlowStore) fetchOne(ctx context.Context, query string) (FlowDefinitionRecord, bool, error) {
@@ -663,9 +712,20 @@ func (s *SupabaseWorkflowFlowStore) Upsert(ctx context.Context, record FlowDefin
 		payload["pack_version"] = nilIfEmpty(record.PackVersion)
 		payload["pack_flow_id"] = record.PackFlowID
 		payload["pack_hash"] = nilIfEmpty(record.PackHash)
+		// Built-in mirrors restore schema-less fields from the embedded pack,
+		// never from a stored snapshot — clear any stale value so the pack
+		// stays the sole authority (BUG-474).
+		payload["definition_json"] = nil
 		endpoint = s.restURL + "/workflows?on_conflict=pack_id,pack_flow_id"
 	} else {
 		payload["is_builtin"] = false
+		// BUG-474: persist the full definition so reload can restore the
+		// execution-significant fields the relational schema cannot store
+		// (run/posture/contextProfile/config/tools/contextProfiles).
+		// Columns remain authoritative where both exist.
+		if snapshot, err := json.Marshal(record.Definition); err == nil {
+			payload["definition_json"] = json.RawMessage(snapshot)
+		}
 		if looksLikeUUID(record.FlowRef) {
 			payload["id"] = record.FlowRef
 			endpoint = s.restURL + "/workflows?on_conflict=id"
