@@ -122,6 +122,19 @@ func (s *InteractiveService) persistRunWorktreeLocked(rs *interactiveRun) {
 	_ = s.persistProviderSession(st)
 }
 
+// worktreeOps is the narrow slice of worktree.Manager resolveWorktree uses.
+// The production implementation is the real manager; tests substitute a
+// fault injector (BUG-472: dirty-scan errors must fail closed, never proceed
+// to cleanup).
+type worktreeOps interface {
+	Create(ctx context.Context, repoDir, ownerID, prefix, baseCommit, slug string) (worktree.Info, error)
+	Diff(ctx context.Context, repoDir, ownerID, prefix string) ([]byte, error)
+	Uncommitted(ctx context.Context, repoDir, ownerID, prefix string) ([]string, error)
+	Untracked(ctx context.Context, repoDir, ownerID, prefix string) ([]string, error)
+	ApplyWithOptions(ctx context.Context, repoDir, ownerID, prefix string, opts worktree.ApplyOptions) error
+	Cleanup(ctx context.Context, repoDir, ownerID, prefix string, keepBranch bool) error
+}
+
 // resolveWorktree handles the merge decision (Task-410 T-2). Modes:
 //   - apply_patch: serialized drift-checked apply; conflict → 409 with
 //     evidence, state stays merge_pending (retry = same call after fix).
@@ -150,7 +163,10 @@ func (s *InteractiveService) resolveWorktree(ctx context.Context, runID, mode st
 	repoDir := s.worktreeRepoDirOfRun(rs)
 	s.mu.Unlock()
 
-	mgr := worktree.NewManager()
+	mgr := s.wtOps
+	if mgr == nil {
+		mgr = worktree.NewManager()
+	}
 	respond := func(state string, extra map[string]any) (map[string]any, *apiErr) {
 		out := map[string]any{"runId": runID, "worktreeState": state, "mode": mode}
 		for k, v := range extra {
@@ -206,7 +222,13 @@ func (s *InteractiveService) resolveWorktree(ctx context.Context, runID, mode st
 		}
 		// The kept branch only holds commits — uncommitted worktree changes
 		// vanish with the directory. Same confirm contract as discard (Q-2).
-		uncommitted, _ := mgr.Uncommitted(ctx, repoDir, b.OwnerID, "")
+		// BUG-472: a dirty-scan error is NOT "clean" — fail closed with a
+		// retryable error before any cleanup or state transition runs.
+		uncommitted, err := mgr.Uncommitted(ctx, repoDir, b.OwnerID, "")
+		if err != nil {
+			return nil, newAPIErr(http.StatusServiceUnavailable, "worktree_inspection_failed",
+				"cannot verify the worktree has no uncommitted work; nothing was removed: "+err.Error())
+		}
 		if len(uncommitted) > 0 && !confirm {
 			return map[string]any{
 					"runId": runID, "worktreeState": b.State, "mode": mode,
@@ -220,7 +242,13 @@ func (s *InteractiveService) resolveWorktree(ctx context.Context, runID, mode st
 
 	case "discard":
 		if b.State != "lost" {
-			untracked, _ := mgr.Untracked(ctx, repoDir, b.OwnerID, "")
+			// BUG-472: same fail-closed rule — an unverifiable worktree is
+			// never destroyed on the assumption it was clean.
+			untracked, err := mgr.Untracked(ctx, repoDir, b.OwnerID, "")
+			if err != nil {
+				return nil, newAPIErr(http.StatusServiceUnavailable, "worktree_inspection_failed",
+					"cannot verify the worktree has no untracked artifacts; nothing was removed: "+err.Error())
+			}
 			if len(untracked) > 0 && !confirm {
 				return map[string]any{
 						"runId": runID, "worktreeState": b.State, "mode": mode,
@@ -340,10 +368,88 @@ func (s *InteractiveService) worktreeDeleteGate(runID, mode string) *apiErr {
 	return nil
 }
 
+// worktreeGCVerdict is the three-state outcome of consulting persisted
+// binding authorities for one worktree owner (BUG-473): the sweep may delete
+// only on gcOrphan. "Could not check" is never "safe to delete".
+type worktreeGCVerdict int
+
+const (
+	gcOrphan  worktreeGCVerdict = iota // every consulted authority proved no live binding
+	gcBound                            // an active/merge_pending/resumable/lost binding exists
+	gcUnknown                          // an authority could not be read or was corrupt — fail closed
+)
+
+// worktreeGCVerdictFor resolves one owner's binding status against the
+// persisted stores. Chat-owned bindings are proved via the chat-leg list;
+// flow-owned bindings via the run session record — a failed chat lookup is
+// never re-read as "not found" through the run lookup. Any read error or a
+// matching row with a zero/corrupt state yields gcUnknown. A store that
+// cannot answer a binding class at all also yields gcUnknown: GC requires a
+// positive proof of orphan-hood.
+func (s *InteractiveService) worktreeGCVerdictFor(ctx context.Context, ownerID string) worktreeGCVerdict {
+	consulted := false
+	if reader, ok := s.workflowStore.(ChatSessionReader); ok {
+		consulted = true
+		rows, err := reader.ListProviderSessionsByChat(ctx, ownerID)
+		if err != nil {
+			return gcUnknown
+		}
+		for _, row := range rows {
+			if row.WorktreeOwnerID != ownerID {
+				continue
+			}
+			switch row.WorktreeState {
+			case "discarded", "merged":
+				// Resolved binding — does not protect the dir; keep looking.
+			case "":
+				return gcUnknown // partially-written/corrupt record
+			default:
+				return gcBound
+			}
+		}
+	}
+	if reader, ok := s.workflowStore.(SessionHistoryReader); ok {
+		consulted = true
+		row, found, err := reader.GetProviderSession(ctx, ownerID)
+		if err != nil {
+			return gcUnknown
+		}
+		if found && row.WorktreeOwnerID == ownerID {
+			switch row.WorktreeState {
+			case "discarded", "merged":
+			case "":
+				return gcUnknown
+			default:
+				return gcBound
+			}
+		}
+	}
+	if !consulted {
+		return gcUnknown // no authority can prove orphan-hood — fail closed
+	}
+	return gcOrphan
+}
+
+// removeWorktreeDir deletes a proven-orphan worktree dir: `git worktree
+// remove` when it is registered, os.RemoveAll for the unregistered dirs this
+// GC usually targets. An error means data may remain — the caller must not
+// report a prune.
+func removeWorktreeDir(repoDir, path string) error {
+	if _, err := exec.Command("git", "-C", repoDir, "worktree", "remove", "--force", path).CombinedOutput(); err == nil {
+		return nil
+	}
+	return os.RemoveAll(path)
+}
+
 // sweepOrphanedWorktrees is the boot-time GC (SD-27 §8, Task-411 T-3): prune
 // worktree dirs whose owner has no live or persisted binding — never touching
 // tournament candidates (candidate-* prefix, owned by Task-369 lifecycle) or
 // owners whose binding is active/merge_pending/resumable.
+//
+// BUG-473: deletion requires a proven orphan verdict. Store read errors,
+// corrupt rows, or a store that cannot answer a binding class defer the
+// owner (gc_deferred diagnostic) — never prune on "authority unavailable".
+// A prune is logged only after the removal actually succeeded.
 func (s *InteractiveService) sweepOrphanedWorktrees(ctx context.Context) {
 	repoDir := ""
 	if s.runner != nil {
@@ -375,36 +481,19 @@ func (s *InteractiveService) sweepOrphanedWorktrees(ctx context.Context) {
 		}
 		// Persisted sessions may bind this owner even when the run is not
 		// resident — merge_pending and resumable owners are never GC'd.
-		bound := false
-		if reader, ok := s.workflowStore.(ChatSessionReader); ok {
-			if rows, rerr := reader.ListProviderSessionsByChat(ctx, ownerID); rerr == nil {
-				for _, row := range rows {
-					if row.WorktreeOwnerID == ownerID && row.WorktreeState != "" &&
-						row.WorktreeState != "discarded" && row.WorktreeState != "merged" {
-						bound = true
-						break
-					}
-				}
-			}
-		}
-		// Flow-run owners are keyed by runId (not chatId) — check the session
-		// record directly when the chat lookup found nothing.
-		if !bound {
-			if reader, ok := s.workflowStore.(SessionHistoryReader); ok {
-				if row, found, rerr := reader.GetProviderSession(ctx, ownerID); rerr == nil && found &&
-					row.WorktreeOwnerID == ownerID && row.WorktreeState != "" &&
-					row.WorktreeState != "discarded" && row.WorktreeState != "merged" {
-					bound = true
-				}
-			}
-		}
-		if bound {
+		switch s.worktreeGCVerdictFor(ctx, ownerID) {
+		case gcBound:
+			continue
+		case gcUnknown:
+			log.Printf("[worktree-gc] gc_deferred owner=%s (binding authority unreadable or corrupt)", ownerID)
 			continue
 		}
-		// Orphan: remove dir + sidecars, keep an audit line.
+		// Proven orphan: remove dir + sidecars, log pruned only on success.
 		path := filepath.Join(root, ownerID)
-		_ = exec.Command("git", "-C", repoDir, "worktree", "remove", "--force", path).Run()
-		_ = os.RemoveAll(path)
+		if err := removeWorktreeDir(repoDir, path); err != nil {
+			log.Printf("[worktree-gc] gc_failed owner=%s path=%s err=%v", ownerID, path, err)
+			continue
+		}
 		_ = os.Remove(worktree.BaseSidecar(repoDir, ownerID, ""))
 		_ = os.Remove(patchArtifactPath(repoDir, ownerID))
 		log.Printf("[worktree-gc] pruned orphan worktree owner=%s path=%s", ownerID, path)

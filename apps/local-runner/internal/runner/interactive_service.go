@@ -92,6 +92,11 @@ type InteractiveService struct {
 	// treats it as "no diagnostics" with zero behavior change. Tests inject
 	// fakes here; production falls back to lsp.DefaultSet().
 	lspChecker lspChecker
+	// wtOps overrides the worktree manager used by resolveWorktree (BUG-472
+	// fault-injection seam). Nil selects the real worktree.NewManager();
+	// tests inject a wrapper to force Git inspection failures without
+	// breaking the filesystem under test.
+	wtOps worktreeOps
 
 	// scaffoldDispatcherFactory overrides scaffold-dispatcher construction
 	// (CP-68 / Task-385). Nil means the production wiring,
