@@ -156,6 +156,30 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 				go interactive.ScanDispatchRecoveryOnBoot(ctx)
 			}
 			interactive.AttachRunner(instance)
+			// CP-87 Task-447: bridge the per-account quota probe into the
+			// runner's routing seam (loadAccountLaunchMetadata lives in cli —
+			// the runner can't import upward). Failure returns an empty
+			// summary → unknown headroom → never auto-eligible.
+			interactive.SetQuotaTelemetry(func(_ context.Context, account runner.ProviderAccount) runner.ProviderAccountSummary {
+				metadata, err := loadAccountLaunchMetadata(account)
+				if err != nil {
+					return runner.ProviderAccountSummary{ID: account.ID, ProviderKey: account.ProviderKey}
+				}
+				usageSource := "unavailable"
+				if metadata.remaining5hPercent != nil || metadata.remaining7dPercent != nil || len(metadata.usageDetailLines) > 0 {
+					usageSource = "provider_api"
+				}
+				return runner.ProviderAccountSummary{
+					ID:                 account.ID,
+					ProviderKey:        account.ProviderKey,
+					Remaining5hPercent: metadata.remaining5hPercent,
+					Remaining7dPercent: metadata.remaining7dPercent,
+					Remaining5hResetAt: metadata.remaining5hResetAt,
+					Remaining7dResetAt: metadata.remaining7dResetAt,
+					UsageSource:        usageSource,
+					ObservedAt:         time.Now().UTC().Format(time.RFC3339),
+				}
+			})
 			// Task-439: warm the Devin ACP process at boot whenever a connected
 			// account exists — regardless of the currently-selected provider —
 			// so the first chat turn never pays spawn+PKCE cold-start latency.

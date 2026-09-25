@@ -1081,7 +1081,12 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 	// Stamp the run with the account that is active for THIS provider, not the
 	// single global activeAccountID (Task-067 issue 1). Resolved before the lock
 	// since it may read the provider-accounts store.
+	// Task-447: an explicit pin (routing claim or switch leg) wins over ambient
+	// resolution — the pin was already validated at claim time.
 	stampAccount := s.activeAccountForProvider(providerKey)
+	if strings.TrimSpace(in.ProviderAccountID) != "" {
+		stampAccount = strings.TrimSpace(in.ProviderAccountID)
+	}
 
 	// CP-87 P-5 (Task-446 T-3): freeze the machine-global routing policy into
 	// the run — a settings edit mid-run must never retarget its decisions.
@@ -1126,6 +1131,8 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 		providerKey:       providerKey,
 		providerSessionID: sessionID,
 		providerAccountID: stampAccount,
+		accountPinned:     in.AccountPinned,
+		quotaClaimID:      in.QuotaClaimID,
 		workspaceCwd:      in.Cwd,
 		modelName:         resolvedModel,
 		yolo:              resolvedYolo,

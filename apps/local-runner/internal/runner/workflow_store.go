@@ -202,6 +202,12 @@ type ProviderSessionState struct {
 	// routing decisions the run was created under; a mid-run settings edit
 	// never rewrites it.
 	QuotaRouting *QuotaRoutingSnapshot `json:"quotaRouting,omitempty"`
+	// AccountPinned/QuotaClaimID are the CP-87 Task-447 durable leg pin: when
+	// AccountPinned, ProviderAccountID came from a routing claim and the
+	// admission guard validates the pin directly instead of comparing it to
+	// the machine-global active account. Survives restart with the run.
+	AccountPinned bool   `json:"accountPinned,omitempty"`
+	QuotaClaimID  string `json:"quotaClaimId,omitempty"`
 	// CP-71 run worktree binding (local-only, sessions.ndjson — no Supabase
 	// columns). Empty on toggle-off runs.
 	WorktreeOwnerID    string `json:"worktreeOwnerId,omitempty"`

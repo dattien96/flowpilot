@@ -436,6 +436,16 @@ type StartRunInput struct {
 	ChatID          string `json:"chatId,omitempty"`
 	SwitchFromRunID string `json:"switchFromRunId,omitempty"`
 	LegSeq          int    `json:"legSeq,omitempty"`
+	// ProviderAccountID pins the run's leg to a specific provider account
+	// (CP-87 Task-447). Set by the routing claim path — a same-provider
+	// rotation leg or a claimed child spawn; when empty the run stamps the
+	// machine-global active account as before. AccountPinned records that the
+	// pin came from a durable QuotaClaim rather than ambient resolution: the
+	// admission guard then validates the pin itself instead of comparing to
+	// the active account.
+	ProviderAccountID string `json:"providerAccountId,omitempty"`
+	AccountPinned     bool   `json:"accountPinned,omitempty"`
+	QuotaClaimID      string `json:"quotaClaimId,omitempty"`
 	// Worktree opts the run into per-owner git worktree isolation (SS-23/CP-71).
 	// Client-gated to desktop|tui (enforceWorktreeStart); a chat's legs share
 	// the one worktree owned by chatId (SD-27 D-8).

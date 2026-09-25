@@ -289,6 +289,11 @@ type SpawnAgentInput struct {
 	// from parentRunID topology alone (DOD-I4 — a sibling/unrelated source must
 	// never be trusted by topology). Internal-only, like ParentContextNote above.
 	FCPMarkerProvenanceRunID string `json:"-"`
+	// ProviderAccountID is a routing-claimed account pin for the child's leg
+	// (CP-87 Task-447). Internal-only: when empty, a same-provider child
+	// inherits the parent's pin (if any); a cross-provider child resolves its
+	// own provider's active account. An explicit value (fresh claim) wins.
+	ProviderAccountID string `json:"-"`
 	// WorkspaceCwd overrides the child's working directory (internal-only —
 	// never decoded from the wire). The tournament executor binds each
 	// candidate to its isolated worktree path (BUG-426 / CP-65 P-5).

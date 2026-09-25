@@ -46,11 +46,16 @@ const (
 
 // opencodeLaunchEnv resolves the account-scoped scopeKey + launch env for an
 // `opencode acp` process (shared by the turn adapter factory and the variant
-// prober so both always agree).
+// prober so both always agree). Task-447: the ForAccount variant resolves a
+// routing pin ("" = active account, as before).
 func (r *Runner) opencodeLaunchEnv() (string, map[string]string, error) {
+	return r.opencodeLaunchEnvForAccount("")
+}
+
+func (r *Runner) opencodeLaunchEnvForAccount(accountID string) (string, map[string]string, error) {
 	scopeKey := "default"
 	env := map[string]string{}
-	account, err := r.ResolveProviderAccount(string(ProviderKeyOpencode), "")
+	account, err := r.resolveAdapterAccount(string(ProviderKeyOpencode), accountID)
 	if err == nil {
 		scopeKey = account.ID
 		for k, v := range account.ExtraEnv {

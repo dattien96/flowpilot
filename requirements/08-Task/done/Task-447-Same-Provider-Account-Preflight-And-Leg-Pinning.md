@@ -3,7 +3,7 @@
 - Document ID: `Task-447`
 - Title: `Resolve hub/child demand, select healthy same-provider accounts safely, and pin account per leg`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `dat.nguyen`
 - Reviewers: ``
 - Created: `2026-09-25`
@@ -145,15 +145,35 @@ func (s *InteractiveService) ClaimAccountForLeg(ctx context.Context, demand Exec
 
 ## 10. Definition of Done
 
-- [ ] §6 signatures landed or deviation documented
-- [ ] §7 additive + race tests green
-- [ ] No automatic path calls SetActiveAccount
-- [ ] Cooldown/cap/claims durable across restart
-- [ ] CA ledger + feature key entries complete
-- [ ] GitNexus detect_changes reviewed before commit
+- [x] §6 signatures landed or deviation documented — all five landed;
+  `ExecutionDemand.MaxUsageTokens` resolves via the node's named
+  `contextProfile` (Task-341 schema on `ContextProfile`, not a FlowNode
+  field); `AccountCandidate` additionally carries `DisplayName`,
+  `SlotIndex`, `IsCurrent`.
+- [x] §7 additive + race tests green — all 10 implemented and passing.
+- [x] No automatic path calls SetActiveAccount — `pinRunAccount` only writes
+  run/session state + the routing ledger; `NoGlobalSetActiveAccount` asserts
+  byte-identical `IsActive` flags after a claim.
+- [x] Cooldown/cap/claims durable across restart — quota-routing-state.json
+  ledger; `RestartPreservesClaimAndCooldown` replays both across a new
+  service instance.
+- [x] CA ledger + feature key entries complete — CA-979 (`ai-providers`).
+- [x] GitNexus detect_changes reviewed before commit — CLI has no
+  `detect_changes` (MCP-only tool, not configured); equivalent staged-diff
+  scope review performed instead (same fallback as CA-978).
 
 ## 11. Completion Notes
 
-- result:
-- follow-ups:
-- upstream docs updated:
+- result: demand resolution (hub → pinned leg; child → Task-320 model
+  precedence + workload class + named context profile cap), same-provider
+  candidate ranking with typed rejection reasons, durable claim ledger with
+  exactly-20s `same_provider_ip_safety` cooldown and max-2 auto-switch cap,
+  per-leg account pinning end-to-end (StartRunInput → run/session state →
+  pin-aware admission → account-scoped adapter factories for all six live
+  providers). `ensureResumeReady` treats the pin as the expected account so a
+  pinned leg never rebinds to the global active account.
+- follow-ups: Task-448 (cross-provider routing), Task-449 (gate + auto path —
+  `claimAccountForLeg(automatic=true)` is the wired seam; the gate projection
+  must publish candidates + cooldown fields), Task-450 (candidate table UI).
+  Billing/credits blocks recorded from live `provider_limit_reached` events.
+- upstream docs updated: change-audit/CA-979; this task moved to done/.

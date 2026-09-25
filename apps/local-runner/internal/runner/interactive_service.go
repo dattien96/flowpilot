@@ -154,6 +154,14 @@ type InteractiveService struct {
 	// afford the handoff. nil = no quota feed yet → assume OK (degrade-soft).
 	contextResetHeadroomOK func(rs *interactiveRun) bool
 
+	// CP-87 P-3/P-4 (Task-447) quota-routing seams. quotaMu serializes the
+	// durable claims/cooldown ledger (quota-routing-state.json); it is always
+	// the innermost lock — code holding quotaMu never acquires s.mu.
+	quotaMu          sync.Mutex
+	quotaRuntimePath string
+	quotaNowFn       func() time.Time
+	quotaTelemetryFn func(ctx context.Context, account ProviderAccount) ProviderAccountSummary
+
 	// maxTurnAttempts bounds send-with-retry: a turn whose adapter call fails with a
 	// recoverable error (e.g. the shared app-server stream died mid-turn) is re-sent
 	// up to this many times before failing the turn (04-05 send-with-retry). A user
@@ -216,7 +224,14 @@ type interactiveRun struct {
 	// observed this turn so model-switch resume re-loads the real session.
 	lastDevinTurnSessionID string
 	providerAccountID      string
-	workspaceCwd           string
+	// accountPinned marks providerAccountID as a routing-claimed pin
+	// (CP-87 Task-447): the admission guard validates the pin itself instead
+	// of comparing against the machine-global active account, and a
+	// same-provider child inherits the pin at spawn. quotaClaimID records
+	// the minting claim for the audit trail.
+	accountPinned bool
+	quotaClaimID  string
+	workspaceCwd  string
 	// worktree is the CP-71 binding when the run opted into worktree
 	// isolation; nil for normal runs.
 	worktree  *worktreeBinding
@@ -4689,6 +4704,8 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 		ProviderSessionID:          providerSessionID,
 		ProviderKey:                rs.providerKey,
 		ProviderAccountID:          rs.providerAccountID,
+		AccountPinned:              rs.accountPinned,
+		QuotaClaimID:               rs.quotaClaimID,
 		WorkingDirectory:           rs.workspaceCwd,
 		Status:                     rs.status,
 		LastPrompt:                 rs.lastPrompt,
@@ -7510,19 +7527,38 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 		childModel = defaultModelForProvider(providerKey)
 	}
 
+	// Task-447 (CP-87): resolve the child's account pin. An explicit claim
+	// (in.ProviderAccountID) wins; otherwise a same-provider child of a
+	// claim-pinned parent inherits the pin so the child runs under the same
+	// account the router bound — never a re-resolved active account. A
+	// cross-provider child or unpinned parent falls through to the legacy
+	// active-account stamp in createRun.
+	childAccountID := strings.TrimSpace(in.ProviderAccountID)
+	childPinned := childAccountID != ""
+	if childAccountID == "" && providerKey == parentProviderKey {
+		s.mu.Lock()
+		if parent := s.runs[parentRunID]; parent != nil && parent.accountPinned && parent.providerAccountID != "" {
+			childAccountID = parent.providerAccountID
+			childPinned = true
+		}
+		s.mu.Unlock()
+	}
+
 	// Create the child run. createRun acquires s.mu internally; call it unlocked.
 	// The child inherits the parent's YOLO posture (BUG-129): with YOLO on, the
 	// child's gated actions must auto-approve just like the parent's, instead of
 	// stalling the (often wait=true) parent turn on a child approval prompt.
 	startIn := StartRunInput{
-		ProjectID:       projectID,
-		WorkflowID:      workflowID,
-		ChatMode:        "normal_chat",
-		Cwd:             cwd,
-		ProviderKey:     providerKey,
-		Model:           childModel,
-		ReasoningEffort: childReasoningEffort,
-		YoloMode:        parentYolo,
+		ProjectID:         projectID,
+		WorkflowID:        workflowID,
+		ChatMode:          "normal_chat",
+		Cwd:               cwd,
+		ProviderKey:       providerKey,
+		Model:             childModel,
+		ReasoningEffort:   childReasoningEffort,
+		YoloMode:          parentYolo,
+		ProviderAccountID: childAccountID,
+		AccountPinned:     childPinned,
 	}
 	handle, apiErr := s.createRun(startIn)
 	if apiErr != nil {
@@ -9404,6 +9440,13 @@ func (s *InteractiveService) finishTurn(rs *interactiveRun, turnID string, err e
 				limit.AccountID = rs.providerAccountID
 			}
 			s.emitLocked(rs, ProviderEvent{Type: EventProviderLimitReached, ProviderTurnID: turnID, ProviderLimit: limit})
+			// Task-447: a live-observed hard limit marks the account in the
+			// durable routing ledger so rotation never re-picks it while the
+			// block stands (billing_required = account unusable; credits
+			// exhausted = unusable until the quota window resets).
+			if limit.Kind == ProviderLimitBillingRequired || limit.Kind == ProviderLimitCreditsExhausted {
+				s.noteAccountBlockedLocked(string(rs.providerKey), limit.AccountID, string(limit.Kind))
+			}
 		}
 		s.emitLocked(rs, ProviderEvent{Type: EventTurnFailed, ProviderTurnID: turnID, Error: err.Error(), Recoverable: false})
 		dispatchOutcome = "failed"
@@ -9681,7 +9724,15 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 		s.mu.Unlock()
 		return "", newAPIErr(http.StatusConflict, "gate_in_progress", "post-turn gate still running; wait for gate pass/block before a new turn")
 	}
-	if rs.providerAccountID != s.activeAccountForProvider(rs.providerKey) {
+	if rs.accountPinned {
+		// Task-447: a claim-pinned leg legitimately diverges from the global
+		// active account — validate the pin itself (exists + connected) instead
+		// of comparing. A dead pin fails closed; it never silently rebinds.
+		if _, err := s.resolveConnectedAccount(string(rs.providerKey), rs.providerAccountID); err != nil {
+			s.mu.Unlock()
+			return "", newAPIErr(http.StatusConflict, "account_unavailable", "pinned provider account is no longer available: "+err.Error())
+		}
+	} else if rs.providerAccountID != s.activeAccountForProvider(rs.providerKey) {
 		if rs.runKind != "chat" {
 			s.mu.Unlock()
 			return "", newAPIErr(http.StatusConflict, "provider_account_changed", "active provider account changed since the run started")
@@ -9728,7 +9779,11 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 			Text:   "Devin is starting — first run may open a browser sign-in.",
 		})
 	}
-	adapter, aerr := s.registry.AdapterWithScope(rs.providerKey, turnModel, turnEffort, opencodeChildScopeHint(rs))
+	// Task-447: adapter construction is account-scoped — the leg's pinned (or
+	// ambiently stamped) account resolves inside the factory, so a rotation
+	// leg spawns its process under the claimed account's home, not whichever
+	// account happens to be globally active.
+	adapter, aerr := s.registry.AdapterForAccount(rs.providerKey, turnModel, turnEffort, opencodeChildScopeHint(rs), rs.providerAccountID)
 	if devinCold {
 		if aerr != nil {
 			s.emitLocked(rs, ProviderEvent{

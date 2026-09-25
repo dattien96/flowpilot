@@ -1352,10 +1352,15 @@ func devinAccountEnv(account ProviderAccount) map[string]string {
 // devinLaunchEnv resolves the account-scoped scopeKey + launch env for a
 // `devin acp` process (shared by the turn adapter factory and probes, mirroring
 // opencodeLaunchEnv). Devin resolves config under XDG_CONFIG_HOME and
-// credentials/sessions under XDG_DATA_HOME.
+// credentials/sessions under XDG_DATA_HOME. Task-447: the ForAccount variant
+// honors a routing pin ("" = active account, as before).
 func (r *Runner) devinLaunchEnv() (string, map[string]string, error) {
+	return r.devinLaunchEnvForAccount("")
+}
+
+func (r *Runner) devinLaunchEnvForAccount(accountID string) (string, map[string]string, error) {
 	scopeKey := "default"
-	account, err := r.ResolveProviderAccount(string(ProviderKeyDevin), "")
+	account, err := r.resolveAdapterAccount(string(ProviderKeyDevin), accountID)
 	if err == nil {
 		return account.ID, devinAccountEnv(account), nil
 	}
