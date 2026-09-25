@@ -702,6 +702,14 @@ func (s *InteractiveService) handleAllEventsStream(w http.ResponseWriter, r *htt
 	w.Header().Set("Connection", "keep-alive")
 	w.WriteHeader(http.StatusOK)
 
+	// BUG-475: the subscriber was closed retryable during subscribe because
+	// the dispatch-attention authority was unreadable — a snapshot here would
+	// erase live repair items client-side. Emit resync; never a snapshot.
+	if s.runUpdateSubRetryableClosed(subID) {
+		writeRunUpdateFrame(w, flusher, RunRealtimeFrame{Kind: RunRealtimeResync, Retryable: true})
+		return
+	}
+
 	snapshotID := fmt.Sprintf("snap-%d-%d", subID, time.Now().UnixNano())
 	if len(snapshot) == 0 {
 		if !writeRunUpdateFrame(w, flusher, RunRealtimeFrame{Kind: RunRealtimeSnapshot, SnapshotID: snapshotID, Complete: true}) {
