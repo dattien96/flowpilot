@@ -144,6 +144,16 @@ type InteractiveService struct {
 	approvalTTL time.Duration
 	questionTTL time.Duration
 
+	// usageRouter is the CP-87 seam: the quota-aware routing gate plugs in to
+	// handle `rotate` answers on usage_budget_exceeded cards (Task-442).
+	// nil until CP-87 lands — cards then offer extend/stop only.
+	usageRouter usageBudgetRouter
+
+	// contextResetHeadroomOK is the CP-87 headroom seam for same-binding leg
+	// resets (Task-443): reseed costs tokens, so the pinned account must
+	// afford the handoff. nil = no quota feed yet → assume OK (degrade-soft).
+	contextResetHeadroomOK func(rs *interactiveRun) bool
+
 	// maxTurnAttempts bounds send-with-retry: a turn whose adapter call fails with a
 	// recoverable error (e.g. the shared app-server stream died mid-turn) is re-sent
 	// up to this many times before failing the turn (04-05 send-with-retry). A user
@@ -903,6 +913,10 @@ type questionRecord struct {
 	// (Task-430); they round-trip through ProviderQuestionState.
 	revision  int64
 	createdAt string
+	// kind distinguishes engine-emitted decision questions (Task-442's
+	// usage_budget_exceeded card) from model-asked AskQuestion cards — the
+	// resolved choice routes to a semantic handler, not a turn reprompt.
+	kind string
 }
 
 // questionResolveResult is the typed payload sent on questionRecord.resolve
@@ -10970,7 +10984,21 @@ func (s *InteractiveService) AnswerQuestion(questionID string, choice []string) 
 		rec.resolvingSnapshot = nil
 		rec.resolvingSession = nil
 	}
+	// Task-442/443: engine-emitted decision cards route their resolved choice
+	// to a semantic handler instead of a turn reprompt.
+	var decisionTarget *interactiveRun
+	var usageBudgetChoice string
+	if len(rec.choice) > 0 {
+		decisionTarget = s.runs[rec.runID]
+		if rec.kind == usageBudgetQuestionKind {
+			usageBudgetChoice = rec.choice[0]
+		}
+	}
 	s.mu.Unlock()
+
+	if decisionTarget != nil && usageBudgetChoice != "" {
+		s.applyUsageBudgetAnswer(decisionTarget, usageBudgetChoice)
+	}
 
 	if resumeStepTurn {
 		s.setFlowStepStatus(context.Background(), resumeStepParent, resumeStepLabel, StepStatusRunning)
