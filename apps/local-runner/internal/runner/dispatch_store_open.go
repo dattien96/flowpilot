@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -175,19 +176,32 @@ func (m *multiProjectDispatchStore) forRun(runID string) (*localDispatchStore, e
 			return st, nil
 		}
 	}
-	entries, _ := os.ReadDir(m.root)
+	entries, rerr := os.ReadDir(m.root)
+	var firstErr error
+	if rerr != nil {
+		firstErr = rerr
+	}
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
 		}
 		st, err := m.openProjectLocked(e.Name())
 		if err != nil {
+			// BUG-486: an unreadable shard means "run not found" is
+			// unprovable — remember the failure and report it if no healthy
+			// shard ends up containing the run.
+			if firstErr == nil {
+				firstErr = err
+			}
 			continue
 		}
 		if st.findRunLocked(runID) {
 			m.runProject[runID] = sanitizeProjectID(e.Name())
 			return st, nil
 		}
+	}
+	if firstErr != nil {
+		return nil, firstErr
 	}
 	return nil, fmt.Errorf("%w: no project shard for run %s", ErrNotFound, runID)
 }
@@ -572,30 +586,62 @@ func (m *multiProjectDispatchStore) ListRecoverable(ctx context.Context, runID s
 	if runID != "" {
 		st, err := m.forRun(runID)
 		if err != nil {
-			return nil, nil
+			// BUG-486: ErrNotFound means every shard read cleanly and the run
+			// is genuinely absent; any other error means absence is
+			// unprovable — surface it instead of masquerading as empty.
+			if errors.Is(err, ErrNotFound) {
+				return nil, nil
+			}
+			return nil, err
 		}
 		return st.ListRecoverable(ctx, runID)
 	}
-	// All projects
+	// All projects — discover on-disk shards too, not just already-open ones
+	// (same enumeration ListAttention performs; a shard created before this
+	// process or not yet written must still be recoverable).
 	m.mu.Lock()
 	ids := make([]string, 0, len(m.byProject))
 	for id := range m.byProject {
 		ids = append(ids, id)
 	}
 	m.mu.Unlock()
+	var firstErr error
+	entries, rerr := os.ReadDir(m.root)
+	if rerr != nil {
+		firstErr = rerr
+	} else {
+		seen := make(map[string]bool, len(ids))
+		for _, id := range ids {
+			seen[id] = true
+		}
+		for _, e := range entries {
+			if e.IsDir() && !seen[e.Name()] {
+				ids = append(ids, e.Name())
+			}
+		}
+	}
 	var out []DispatchRecord
 	for _, id := range ids {
 		st, err := m.forProject(id)
 		if err != nil {
+			// BUG-486: an unreadable shard must not look like an empty one —
+			// recovery callers fail closed on error, so keep the partial
+			// results but return the failure too.
+			if firstErr == nil {
+				firstErr = err
+			}
 			continue
 		}
 		list, err := st.ListRecoverable(ctx, "")
 		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
 			continue
 		}
 		out = append(out, list...)
 	}
-	return out, nil
+	return out, firstErr
 }
 
 func (m *multiProjectDispatchStore) FindActiveByOuterIntent(ctx context.Context, runID, intentKey string, intentGen int64) (DispatchRecord, bool, error) {
@@ -613,8 +659,12 @@ func (m *multiProjectDispatchStore) ListAttention(ctx context.Context) ([]Attent
 		ids = append(ids, id)
 	}
 	// Also discover dirs not yet open.
-	entries, _ := os.ReadDir(m.root)
+	entries, rerr := os.ReadDir(m.root)
 	m.mu.Unlock()
+	var firstErr error
+	if rerr != nil {
+		firstErr = rerr
+	}
 	seen := map[string]bool{}
 	for _, id := range ids {
 		seen[id] = true
@@ -628,15 +678,24 @@ func (m *multiProjectDispatchStore) ListAttention(ctx context.Context) ([]Attent
 	for _, id := range ids {
 		st, err := m.forProject(id)
 		if err != nil {
+			// BUG-486: same fail-closed contract as ListRecoverable —
+			// attention consumers (SSE snapshot, operator endpoint) treat a
+			// nil error as "authority says empty", so surface shard failures.
+			if firstErr == nil {
+				firstErr = err
+			}
 			continue
 		}
 		list, err := st.ListAttention(ctx)
 		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
 			continue
 		}
 		out = append(out, list...)
 	}
-	return out, nil
+	return out, firstErr
 }
 
 func (m *multiProjectDispatchStore) ListAudit(ctx context.Context, runID, turnID string) ([]AuditEntry, error) {
