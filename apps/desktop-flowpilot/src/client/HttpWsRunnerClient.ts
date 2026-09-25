@@ -546,18 +546,34 @@ export class HttpWsRunnerClient implements RunnerClient {
         const { done, value } = chunk;
         if (done) return;
         buf += decoder.decode(value, { stream: true });
-        let idx: number;
-        while ((idx = buf.indexOf("\n\n")) >= 0) {
-          const frame = buf.slice(0, idx);
-          buf = buf.slice(idx + 2);
-          const dataLine = frame.split("\n").find((l) => l.startsWith("data:"));
-          if (!dataLine) continue;
-          const json = dataLine.slice(dataLine.indexOf(":") + 1).trim();
+        // SSE spec: events split on a blank line (\n\n or \r\n\r\n); one event
+        // may carry several data: lines which join with "\n". Comment (":")
+        // and field lines are ignored.
+        for (;;) {
+          const m = /\r?\n\r?\n/.exec(buf);
+          if (!m) break;
+          const frame = buf.slice(0, m.index);
+          buf = buf.slice(m.index + m[0].length);
+          const dataLines = frame.split(/\r?\n/).filter((l) => l.startsWith("data:"));
+          if (dataLines.length === 0) continue;
+          const json = dataLines
+            .map((l) => l.slice(l.indexOf(":") + 1).replace(/^ /, ""))
+            .join("\n");
+          let parsed: RunRealtimeFrame;
           try {
-            yield JSON.parse(json) as RunRealtimeFrame;
+            parsed = JSON.parse(json) as RunRealtimeFrame;
           } catch {
-            // skip malformed frame
+            // BUG-482: these frames are authoritative level-state changes —
+            // a parse failure means lane/decision state may now be stale.
+            // Terminate so consumeRunUpdatesLoop reconnects for a healing
+            // full snapshot; log byte metadata only, never payload text.
+            throw new RunnerApiError(
+              0,
+              "stream_protocol_error",
+              `run-updates: malformed SSE data frame (${json.length} bytes)`,
+            );
           }
+          yield parsed;
         }
       }
     } finally {

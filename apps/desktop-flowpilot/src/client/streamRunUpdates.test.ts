@@ -73,14 +73,19 @@ test("multiple frames in one chunk are all yielded in order", async () => {
   }
 });
 
-test("malformed JSON frame is skipped, stream continues", async () => {
+// BUG-482: this test previously pinned "skip malformed, keep streaming" —
+// that WAS the defect. Authoritative frames must fail the stream so the
+// consumer reconnects for a healing snapshot.
+test("malformed JSON frame terminates the stream with stream_protocol_error", async () => {
   const restore = stubFetch(
     sseBody(["data: {not-json\n\n", `data: ${UPSERT}\n\n`]),
   );
   try {
-    const frames = await collect(new HttpWsRunnerClient("http://localhost:4317"));
-    assert.equal(frames.length, 1);
-    assert.equal(frames[0].kind, "upsert");
+    await assert.rejects(
+      collect(new HttpWsRunnerClient("http://localhost:4317")),
+      (err: unknown) =>
+        err instanceof RunnerApiError && (err as RunnerApiError).code === "stream_protocol_error",
+    );
   } finally {
     restore();
   }

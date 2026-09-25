@@ -156,6 +156,30 @@ test("BUG-479: cross-project insertion does not steal focus or rewrite selected 
   });
 });
 
+test("BUG-482: stream_protocol_error drop reconnects and a fresh snapshot heals lanes", async () => {
+  resetMux();
+  const { set, get, state } = fakeStore();
+  // Connection 1: one valid upsert, then the stream ends — at the transport
+  // level this models the parser's stream_protocol_error drop (the loop's
+  // catch treats both identically: backoff + reconnect).
+  const poisoned: RunRealtimeFrame[] = [
+    { kind: "upsert", run: lane({ runId: "r-live", status: "running", revision: 1 }) },
+  ];
+  // Connection 2 (reconnect): complete snapshot — the authoritative heal.
+  const heal: RunRealtimeFrame = {
+    kind: "snapshot",
+    snapshotId: "s-heal",
+    complete: true,
+    runs: [lane({ runId: "r-healed", status: "waiting_approval", revision: 9 })],
+  };
+  const { client } = scriptedClient([poisoned, [heal], "park"]);
+  await runLoop(client, set, get, 1100, () => {
+    const items = (state.projectHistoryById!["p-1"] ?? []) as RunHistoryItem[];
+    assert.ok(items.some((it) => it.runId === "r-live"), "pre-drop upsert should still be visible");
+    assert.ok(items.some((it) => it.runId === "r-healed"), "reconnect snapshot must heal the lane set");
+  });
+});
+
 test("BUG-479: patching an existing row preserves polled metadata", async () => {
   resetMux();
   const { set, get, state } = fakeStore();
