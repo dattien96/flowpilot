@@ -14,21 +14,20 @@ import (
 // packer), and the catalog tier keeps one-line metadata for pruned sections
 // so the model sees WHAT exists even when bodies were dropped.
 
-// flowNodeProfileBudgetFor returns the max token budget declared by the
-// profile of the flow node the run is currently executing (0 = no profile
-// budget). Mirrors flowNodePostureFor's node resolution (parent
-// activeFlowNodes matched on stepID/label); the profile map itself resolves
-// from the builtin pack by the parent's flow ref — hubs/roots and
-// pack-less flows return 0, keeping behavior unchanged.
-func (s *InteractiveService) flowNodeProfileBudgetFor(rs *interactiveRun) int {
+// flowNodeProfileFor resolves the ContextProfile of the flow node the run is
+// currently executing (false when no profile applies). Mirrors
+// flowNodePostureFor's node resolution (parent activeFlowNodes matched on
+// stepID/label); the profile map itself resolves from the builtin pack by the
+// parent's flow ref — hubs/roots and pack-less flows have no profile.
+func (s *InteractiveService) flowNodeProfileFor(rs *interactiveRun) (agentpack.ContextProfile, bool) {
 	if s == nil || rs == nil || strings.TrimSpace(rs.parentRunID) == "" {
-		return 0
+		return agentpack.ContextProfile{}, false
 	}
 	s.mu.Lock()
 	parent := s.runs[rs.parentRunID]
 	if parent == nil || len(parent.activeFlowNodes) == 0 {
 		s.mu.Unlock()
-		return 0
+		return agentpack.ContextProfile{}, false
 	}
 	stepID, label := strings.TrimSpace(rs.stepID), strings.TrimSpace(rs.label)
 	profileName := ""
@@ -41,11 +40,11 @@ func (s *InteractiveService) flowNodeProfileBudgetFor(rs *interactiveRun) int {
 	flowRef := parent.chatFlowRef
 	s.mu.Unlock()
 	if profileName == "" {
-		return 0
+		return agentpack.ContextProfile{}, false
 	}
 	pack, err := agentpack.LoadBuiltinPack()
 	if err != nil {
-		return 0
+		return agentpack.ContextProfile{}, false
 	}
 	bare := workingmode.BareFlowID(flowRef)
 	for i := range pack.Flows {
@@ -53,10 +52,20 @@ func (s *InteractiveService) flowNodeProfileBudgetFor(rs *interactiveRun) int {
 			continue
 		}
 		if profile, ok := pack.Flows[i].ContextProfiles[profileName]; ok {
-			return profile.MaxTokens
+			return profile, true
 		}
 	}
-	return 0
+	return agentpack.ContextProfile{}, false
+}
+
+// flowNodeProfileBudgetFor returns the estimated prompt token budget declared
+// by the node's context profile (0 = no profile budget).
+func (s *InteractiveService) flowNodeProfileBudgetFor(rs *interactiveRun) int {
+	profile, ok := s.flowNodeProfileFor(rs)
+	if !ok {
+		return 0
+	}
+	return profile.MaxEstPromptTokens
 }
 
 // flowContextProfilesFor returns the run's active flow definition's

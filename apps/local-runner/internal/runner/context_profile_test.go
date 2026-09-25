@@ -17,8 +17,8 @@ func profileDefs() agentpack.FlowDefinition {
 	return agentpack.FlowDefinition{
 		ID: "task-harness",
 		ContextProfiles: map[string]agentpack.ContextProfile{
-			"scout":    {Name: "scout", CandidateSources: []string{"canonical.head", "feature.history"}, MaxTokens: 6000},
-			"reviewer": {Name: "reviewer", CandidateSources: []string{"change.contract", "source.excerpt"}, MaxTokens: 12000},
+			"scout":    {Name: "scout", CandidateSources: []string{"canonical.head", "feature.history"}, MaxEstPromptTokens: 6000},
+			"reviewer": {Name: "reviewer", CandidateSources: []string{"change.contract", "source.excerpt"}, MaxEstPromptTokens: 12000},
 		},
 		Nodes: []agentpack.FlowNode{
 			{ID: "preflight_contract_plan", ContextProfile: "scout"},
