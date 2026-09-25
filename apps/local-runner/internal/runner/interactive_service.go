@@ -185,6 +185,10 @@ type InteractiveService struct {
 	// must strictly increase whenever meaningful lane state changes — rs.seq
 	// alone fails (dispatch settles don't bump it). Guarded by s.mu.
 	runUpdateSeq int64
+
+	// recoveryScanRunning is the single-flight guard for the boot recovery
+	// coordinator (BUG-484): only one bounded-retry pass loop may run.
+	recoveryScanRunning atomic.Bool
 }
 
 type interactiveRun struct {
