@@ -61,4 +61,3 @@ func TestBUG495_PendingGateStatesHealthyUnchanged(t *testing.T) {
 		t.Fatalf("pending states lost on healthy path: approvals=%d questions=%d", len(approvals), len(questions))
 	}
 }
-

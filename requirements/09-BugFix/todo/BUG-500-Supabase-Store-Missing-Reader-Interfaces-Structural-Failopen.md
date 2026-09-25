@@ -1,58 +1,60 @@
-# BUG-500 — SupabaseWorkflowStore lacks the reader interfaces BUG-488/491/495 now depend on → structural fail-open on that backend
+# BUG-500 — SupabaseWorkflowStore lacked gate-history readers → structural fail-open on resume
 
 ## Status
-todo — documented, not yet implemented (needs Supabase schema query design)
+fixed (code) — `ListApprovalsByRun` + `ListQuestionsByRun` implemented;
+`ListProviderSessionsByChat` was already present in
+`supabase_chat_transcript_store.go` (initial audit missed it).
 
 ## Severity
 High on Supabase backend; latent (file store is the default backend)
 
 ## Symptom
 
-`SupabaseWorkflowStore` (`internal/runner/supabase_workflow_store.go`)
-implements writes (`UpsertApproval`, `UpsertQuestion`,
-`UpsertProviderSession`) and *some* reads (`ListAllProviderSessions`,
-`ListProviderSessionsByProject`, `GetProviderSession`) but NOT:
+`SupabaseWorkflowStore` implemented writes (`UpsertApproval`,
+`UpsertQuestion`, `UpsertProviderSession`) but only *some* reads. Missing:
 
 - `ApprovalHistoryReader.ListApprovalsByRun`
 - `QuestionHistoryReader.ListQuestionsByRun`
-- `ChatSessionReader.ListProviderSessionsByChat`
 
-Every consumer guards with `store.(X); ok` — a missing implementation is
-indistinguishable from "no rows", so on the Supabase backend:
+(~~`ChatSessionReader.ListProviderSessionsByChat`~~ — already implemented
+in `supabase_chat_transcript_store.go:150`; corrected during fix.)
 
-- **resume pending-gate reconstruction NEVER runs** — `pendingGateStates`
-  and `childPendingGateNodeIDs` return empty on every resume, so a run
-  durably waiting on an approval/question is promoted to not-waiting —
-  structurally, not just under fault (the BUG-495 class made permanent).
-- **`resolveChatIdentity` computes legSeq from memory only** — BUG-488's
-  duplicate-legSeq hole remains fully open on Supabase.
+Consumers guard with `store.(X); ok` — a missing implementation is
+indistinguishable from "no rows", so on the Supabase backend pending-gate
+reconstruction NEVER ran: `pendingGateStates` and
+`childPendingGateNodeIDs` returned empty on every resume, promoting durably
+waiting approval/question nodes — structurally, not just under fault.
 
-The BUG-495/488 fixes propagate *errors*; they cannot help when the
-interface itself is absent — the `ok` guard silently succeeds.
+## Fix (implemented)
 
-## Root cause
+- `ListApprovalsByRun` — PostgREST `workflow_provider_approvals` filtered
+  by `workflow_run_id`, mapped to `ProviderApprovalState`.
+- `ListQuestionsByRun` — `workflow_provider_questions` filtered by
+  `workflow_run_id`, mapped to `ProviderQuestionState`.
+- Both propagate non-2xx/decode errors (fail-closed, mirrors file store).
+- Query params escaped via `neturl.QueryEscape`.
+- Compile-time `var _ X = (*Store)(nil)` assertions now pin the full
+  reader surface on both backends — a dropped reader method fails the
+  build instead of silently degrading resume again.
+- Row decoding targets the **migration schema**
+  (`20260615120000_add_workflow_provider_tables.sql`):
+  `selected_decision`, `request_payload_json` (carries command/cwd/
+  reason/policy/resolved_choices), `requested_at` → `CreatedAt`,
+  `options_json` / `selected_choice_json`. Flat `command`/`decision`/
+  `options`/`choice` columns are also decoded for drifted deployments.
 
-Reader interfaces were added incrementally against the file store; the
-Supabase backend was never extended to match. `upsert`-only parity is a
-write-only mirror — state round-trips into Supabase but never comes back.
+## Follow-up finding — write-side schema drift (tracked, not fixed)
 
-## Proposed fix
-
-Implement the three readers on `SupabaseWorkflowStore` against the
-existing tables (`provider_approval_states`, `provider_question_states`,
-`step_artifact_bindings`-adjacent session rows — verify actual schema
-names in supabase migrations before coding). Each must return
-`(rows, error)` and propagate query errors, mirroring the file store's
-semantics.
-
-Until then, the `ok`-guard silence remains: consider a boot-time warning
-when the active store lacks a reader the runtime depends on, so the gap
-is at least visible instead of fail-open.
-
-## Tests
-
-- Store-capability contract test: assert the configured store implements
-  the reader set a given feature requires, or that the service logs the
-  degraded capability once at boot.
-- Reader behavior tests against the Supabase fake/emulator used by
-  existing supabase_workflow_store tests.
+While aligning the readers, audit found `UpsertApproval`/`UpsertQuestion`
+POST payloads name columns the migration schema does **not** have
+(`command`, `cwd`, `reason`, `decision`, `policy`, `options`, `choice`),
+and omit columns the schema requires (`provider_key` on questions is NOT
+NULL; the state struct has no provider field). On a real deployment the
+upserts would fail PostgREST validation — the write path has likely never
+persisted a gate row on Supabase. This is latent:
+`NewSupabaseWorkflowStore` is only referenced from tests today; no prod
+wiring exists. Before that backend is wired, payloads must be remapped to
+the migration columns (`selected_decision`, `request_payload_json`,
+`options_json`, `selected_choice_json`, `provider_key`) or the schema
+extended — and `Revision` (Task-430 stale-frame identity) needs a column
+or an acceptable zero-value contract.

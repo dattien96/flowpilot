@@ -4704,7 +4704,14 @@ func (s *InteractiveService) persistProviderSession(session ProviderSessionState
 	if store == nil {
 		return nil
 	}
-	return store.UpsertProviderSession(context.Background(), session)
+	if err := store.UpsertProviderSession(context.Background(), session); err != nil {
+		// BUG-499: ~22 callers discard this error — log here once so a
+		// silently-lost durable write is at least visible in diagnostics,
+		// regardless of which caller dropped it.
+		log.Printf("persistProviderSession: durable write failed run_id=%q status=%q: %v", session.RunID, session.Status, err)
+		return err
+	}
+	return nil
 }
 
 // snapshotWithLoop returns a ProviderSessionState for rs that also includes the

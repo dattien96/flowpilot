@@ -25,28 +25,39 @@ fakeWorkflowStore.mu` is consistent across both paths — no deadlock.
 Same ordering fixed in `UpsertQuestion`, `UpsertApproval`, `AppendEvent`
 (flow-sidecar branch) — durable append precedes the memory commit.
 
-## Finding 1b — dispatch ledger ordering (partially fixed)
+## Finding 1b — dispatch ledger ordering (fixed)
 
-`memoryDispatchStore` mutations (~28 sites) all mutate memory then call
+`memoryDispatchStore` mutators (~20 sites) mutated memory **before**
 `commitLine` (the `afterCommit` hook → `persistLine` fsync append). A
-persist failure leaves memory ahead of disk permanently — and the
-create-if-absent fast path then reported *success* for a record that never
+persist failure left memory ahead of disk permanently: a retry hit
+`ErrStaleDispatch`/`ErrAlreadyExists` on state the log never recorded, and
+the create-if-absent fast path reported *success* for a record that never
 reached disk.
 
-**Fix:** `commitLine` now latches the first persist error into
-`persistErr` — every later mutation fails fast with "dispatch store
-degraded" instead of growing a ledger the restart will lose.
-`CreatePrepared`'s idempotent fast path checks the latch before reporting
-success, so a never-persisted in-memory record can no longer masquerade as
-durable.
+An earlier iteration latched `persistErr` in `commitLine` and made every
+later mutation fail closed. That broke the designed **retryable** contract
+(`TestBug449_FailedTerminalCommitDoesNotBurnSeq`: commit-before-mutate
+paths — BUG-289/BUG-447/BUG-448 — must retry cleanly after a transient
+fsync failure), so the latch was reverted.
 
-**Tracked residual:** ~14 idempotent/dedupe early-success paths in the
-other mutators (`RecordEffectDone`, `CommitReceiptAndClearIntent`,
-`ResolveUncertain`, `RetryAsNew`, repair APIs, …) return success without
-reaching `commitLine`; on a latched store they still report done for
-non-durable in-memory state. Each has a different return signature —
-converting them is a mechanical sweep tracked here, deliberately not
-bundled into this change to keep the diff reviewable.
+**Fix (final):** every remaining mutator now follows the BUG-289/447/448
+disk-before-RAM template — build the post-state on a clone (`cloneRec`,
+`*st`/`*item`/`*r` repair copies), `appendAuditLocked`, `commitLine`, and
+apply to memory only on success (`*r = cp`, map inserts, `clearIntentLocked`,
+`setLiveIntentLocked`, `s.resolutions[…]` all move after the durable line
+lands). On failure `uncommitAudit` restores `seq`/`audits` so no phantom
+audit or burned seq survives — the operation is fully retryable.
+
+Converted sites: `CreatePrepared`, `casAdvance` (CASAdvance /
+CASRecoveryAdvance), `CASAdvanceSettle`, `ClaimRecovery`,
+`SetCancelRequested`, `RequestRunStop`, `ReleaseRunStopFence`,
+`CommitRecoveryUnknownOrRequireCancel`, `ClaimRecoveryAttach`,
+`EnterRecoveryAttach`, `RecordRecoveryAttachedEffect`, `commitPreSend`,
+`ResolveUncertain`, `RetryAsNew`, `RecordEffectDone`,
+`CreateReleaseManifestItem`, `CommitReleaseManifestItem`,
+`SuppressReleaseManifestItem`, `OpenRepair`, `BeginRepairResolution`.
+(`commitTerminal`, `CommitReceiptAndClearIntent`, `CommitRepairResolution`
+were already disk-first from BUG-289/447/448.)
 
 ## Finding 2 — systemic `_ = s.persistProviderSession(...)` (classified, tracked)
 
@@ -75,4 +86,8 @@ BUG-489/490 class and is fixed.
 
 - `bug499_persist_ordering_test.go` — write-failure → memory clean;
   rewrite-failure → memory intact; missing-file delete → memory dropped;
-  healthy round-trip unchanged.
+  healthy round-trip unchanged; dispatch create failure → no record/
+  envelope/audit in memory + retry succeeds; dispatch advance failure →
+  revision/state unchanged + retry at same rev succeeds.
+- `bug447_449_durability_test.go` — existing BUG-447/448/449 retryable
+  contracts still pass unchanged (no test weakened).

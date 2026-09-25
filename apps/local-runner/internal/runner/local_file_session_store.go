@@ -206,38 +206,38 @@ type ndjsonSessionRecord struct {
 	PendingGateCodePaths       []string `json:"pending_gate_code_paths,omitempty"`
 	RepromptAttempts           int      `json:"reprompt_attempts,omitempty"`
 	// CP-71 run worktree binding (see ProviderSessionState).
-	WorktreeOwnerID                 string   `json:"worktree_owner_id,omitempty"`
-	WorktreePath                    string   `json:"worktree_path,omitempty"`
-	WorktreeBranch                  string   `json:"worktree_branch,omitempty"`
-	WorktreeBaseCommit              string   `json:"worktree_base_commit,omitempty"`
-	WorktreeSlug                    string   `json:"worktree_slug,omitempty"`
-	WorktreeState                   string   `json:"worktree_state,omitempty"`
-	WorktreeEnabled                 bool     `json:"worktree_enabled,omitempty"`
-	WorktreeResolutionID            string   `json:"worktree_resolution_id,omitempty"`
-	WorktreeResolutionMode          string   `json:"worktree_resolution_mode,omitempty"`
-	WorktreeResolutionPhase         string   `json:"worktree_resolution_phase,omitempty"`
+	WorktreeOwnerID         string `json:"worktree_owner_id,omitempty"`
+	WorktreePath            string `json:"worktree_path,omitempty"`
+	WorktreeBranch          string `json:"worktree_branch,omitempty"`
+	WorktreeBaseCommit      string `json:"worktree_base_commit,omitempty"`
+	WorktreeSlug            string `json:"worktree_slug,omitempty"`
+	WorktreeState           string `json:"worktree_state,omitempty"`
+	WorktreeEnabled         bool   `json:"worktree_enabled,omitempty"`
+	WorktreeResolutionID    string `json:"worktree_resolution_id,omitempty"`
+	WorktreeResolutionMode  string `json:"worktree_resolution_mode,omitempty"`
+	WorktreeResolutionPhase string `json:"worktree_resolution_phase,omitempty"`
 	// BUG-478: parked tournament merge state must survive restart — see
 	// ProviderSessionState.
-	TournamentWinner   string            `json:"tournament_winner,omitempty"`
-	TournamentPatches  map[string]string `json:"tournament_patches,omitempty"`
-	TournamentAttempt  int               `json:"tournament_attempt,omitempty"`
-	DecisionCard       *UserDecisionCard `json:"decision_card,omitempty"`
-	DecisionCardChosen string            `json:"decision_card_chosen,omitempty"`
-	PendingResumePrompt             string   `json:"pending_resume_prompt,omitempty"`
-	PendingResumeStepID             string   `json:"pending_resume_step_id,omitempty"`
-	PendingResumeGen                int64    `json:"pending_resume_gen,omitempty"`
-	PendingGateRepromptGen          int64    `json:"pending_gate_reprompt_gen,omitempty"`
-	PendingResumeDeliveredGen       int64    `json:"pending_resume_delivered_gen,omitempty"`
-	PendingGateRepromptDeliveredGen int64    `json:"pending_gate_reprompt_delivered_gen,omitempty"`
-	PendingResumeAcceptedTurn       string   `json:"pending_resume_accepted_turn,omitempty"`
-	PendingGateRepromptAcceptedTurn string   `json:"pending_gate_reprompt_accepted_turn,omitempty"`
-	PendingResumeFailCount          int      `json:"pending_resume_fail_count,omitempty"`
-	PendingResumeFailGen            int64    `json:"pending_resume_fail_gen,omitempty"`
-	PendingGateRepromptFailCount    int      `json:"pending_gate_reprompt_fail_count,omitempty"`
-	PendingGateRepromptFailGen      int64    `json:"pending_gate_reprompt_fail_gen,omitempty"`
-	PendingResumeApprovalID         string   `json:"pending_resume_approval_id,omitempty"`
-	PendingResumeDecision           string   `json:"pending_resume_decision,omitempty"`
-	PendingResumeQuestionChoices    []string `json:"pending_resume_question_choices,omitempty"`
+	TournamentWinner                string            `json:"tournament_winner,omitempty"`
+	TournamentPatches               map[string]string `json:"tournament_patches,omitempty"`
+	TournamentAttempt               int               `json:"tournament_attempt,omitempty"`
+	DecisionCard                    *UserDecisionCard `json:"decision_card,omitempty"`
+	DecisionCardChosen              string            `json:"decision_card_chosen,omitempty"`
+	PendingResumePrompt             string            `json:"pending_resume_prompt,omitempty"`
+	PendingResumeStepID             string            `json:"pending_resume_step_id,omitempty"`
+	PendingResumeGen                int64             `json:"pending_resume_gen,omitempty"`
+	PendingGateRepromptGen          int64             `json:"pending_gate_reprompt_gen,omitempty"`
+	PendingResumeDeliveredGen       int64             `json:"pending_resume_delivered_gen,omitempty"`
+	PendingGateRepromptDeliveredGen int64             `json:"pending_gate_reprompt_delivered_gen,omitempty"`
+	PendingResumeAcceptedTurn       string            `json:"pending_resume_accepted_turn,omitempty"`
+	PendingGateRepromptAcceptedTurn string            `json:"pending_gate_reprompt_accepted_turn,omitempty"`
+	PendingResumeFailCount          int               `json:"pending_resume_fail_count,omitempty"`
+	PendingResumeFailGen            int64             `json:"pending_resume_fail_gen,omitempty"`
+	PendingGateRepromptFailCount    int               `json:"pending_gate_reprompt_fail_count,omitempty"`
+	PendingGateRepromptFailGen      int64             `json:"pending_gate_reprompt_fail_gen,omitempty"`
+	PendingResumeApprovalID         string            `json:"pending_resume_approval_id,omitempty"`
+	PendingResumeDecision           string            `json:"pending_resume_decision,omitempty"`
+	PendingResumeQuestionChoices    []string          `json:"pending_resume_question_choices,omitempty"`
 	// BUG-288 R13-01: stall-Retry restart intent must survive LocalFileSessionStore
 	// (ProviderSessionState already had these; NDJSON record was missing them).
 	PendingRestartRunID  string `json:"pending_restart_run_id,omitempty"`
@@ -612,7 +612,7 @@ func sessionStateFromRecord(r ndjsonSessionRecord) ProviderSessionState {
 		VibeAwaitingLock:                   r.VibeAwaitingLock,
 		VibeTaskPlan:                       append([]string(nil), r.VibeTaskPlan...),
 		VibeCpDocID:                        r.VibeCpDocID,
-		VibeRequirementFromNode:           r.VibeRequirementFromNode,
+		VibeRequirementFromNode:            r.VibeRequirementFromNode,
 		VibeSprintIndex:                    r.VibeSprintIndex,
 		VibeSprintBudget:                   r.VibeSprintBudget,
 		VibeSprintBoundaryDeclined:         r.VibeSprintBoundaryDeclined,
@@ -1124,7 +1124,7 @@ func sessionRecordFrom(s ProviderSessionState) ndjsonSessionRecord {
 		VibeAwaitingLock:                   s.VibeAwaitingLock,
 		VibeTaskPlan:                       append([]string(nil), s.VibeTaskPlan...),
 		VibeCpDocID:                        s.VibeCpDocID,
-		VibeRequirementFromNode:           s.VibeRequirementFromNode,
+		VibeRequirementFromNode:            s.VibeRequirementFromNode,
 		VibeSprintIndex:                    s.VibeSprintIndex,
 		VibeSprintBudget:                   s.VibeSprintBudget,
 		VibeSprintBoundaryDeclined:         s.VibeSprintBoundaryDeclined,
@@ -1239,3 +1239,13 @@ func copyBatchSignatureMap(m map[string][]CoderBatchSignatureRequest) map[string
 	}
 	return out
 }
+
+// BUG-500: same pin for the default backend — a dropped reader method must
+// fail the build, not degrade resume silently.
+var (
+	_ SessionIndexReader    = (*localFileSessionStore)(nil)
+	_ SessionHistoryReader  = (*localFileSessionStore)(nil)
+	_ ApprovalHistoryReader = (*localFileSessionStore)(nil)
+	_ QuestionHistoryReader = (*localFileSessionStore)(nil)
+	_ ChatSessionReader     = (*localFileSessionStore)(nil)
+)

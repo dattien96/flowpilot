@@ -1059,17 +1059,17 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 		// BUG-404: restore the debate-parked sprint topology + buffered coder
 		// batches — previously RAM-only, so a restart mid-negotiation lost them
 		// and the debate_synthesis done verdict settled the whole flow.
-		vibeParkedNodes:             append([]agentpack.FlowNode(nil), st.VibeParkedNodes...),
-		vibeParkedEdges:             append([]agentpack.FlowEdge(nil), st.VibeParkedEdges...),
-		vibeParkedAcceptance:        append([]string(nil), st.VibeParkedAcceptance...),
-		vibeParkedFlowRef:           st.VibeParkedFlowRef,
+		vibeParkedNodes:      append([]agentpack.FlowNode(nil), st.VibeParkedNodes...),
+		vibeParkedEdges:      append([]agentpack.FlowEdge(nil), st.VibeParkedEdges...),
+		vibeParkedAcceptance: append([]string(nil), st.VibeParkedAcceptance...),
+		vibeParkedFlowRef:    st.VibeParkedFlowRef,
 		// BUG-478: parked merge card + patch snapshots were RAM-only — a
 		// restart dropped every actionable alternate.
-		tournamentWinner:   st.TournamentWinner,
-		tournamentPatches:  copyStringMap(st.TournamentPatches),
-		tournamentAttempt:  st.TournamentAttempt,
-		decisionCard:       st.DecisionCard,
-		decisionCardChosen: st.DecisionCardChosen,
+		tournamentWinner:            st.TournamentWinner,
+		tournamentPatches:           copyStringMap(st.TournamentPatches),
+		tournamentAttempt:           st.TournamentAttempt,
+		decisionCard:                st.DecisionCard,
+		decisionCardChosen:          st.DecisionCardChosen,
 		pendingBatchSignatureByStep: copyBatchSignatureMap(st.PendingBatchSignatureByStep),
 		flowStartGitHead:            st.FlowStartGitHead,
 		pendingRestartRunID:         st.PendingRestartRunID,
