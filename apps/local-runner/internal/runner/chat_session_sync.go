@@ -22,6 +22,13 @@ import (
 	"flowpilot-runner/internal/agentpack"
 )
 
+// chatSessionManifestSchemaVersion stays 1: the RUN-level manifest keeps its
+// format version and gains BUG-476 leg identity as additive omitempty fields
+// (older readers ignore unknown JSON fields). The versioned artifact is the
+// chat-level envelope (chat.json, chatSyncManifestSchemaVersion=2) — matching
+// the pre-existing contract "v1 is run-level, v2 is chat-level"
+// (chat_sync_manifest.go). A v1 manifest without chatId restores explicitly
+// as a single-leg chat.
 const chatSessionManifestSchemaVersion = 1
 
 // remoteChatSessionsManifestScanConcurrency bounds how many manifest fetches
@@ -87,6 +94,16 @@ type ChatSessionSyncManifest struct {
 	// turnCount-gated behaviors a restored run silently mis-ran (review-outcome
 	// tool offering, mode-prefix). omitempty: absent == 0 == pre-fix behavior.
 	TurnCount int `json:"turnCount,omitempty"`
+	// BUG-476 (CP-59/SD-26): the sync unit is the LOGICAL CHAT, not one run.
+	// These fields carry the durable provider-leg identity (CP-63 leg model)
+	// so a manifest describes WHICH leg of WHICH chat it is and where it sits
+	// in the switch chain. Empty/zero on a pre-fix (v1) manifest — restore
+	// treats that as an explicit single-leg chat.
+	ChatID          string `json:"chatId,omitempty"`
+	LegSeq          int    `json:"legSeq,omitempty"`
+	LegState        string `json:"legState,omitempty"`
+	LegClosedReason string `json:"legClosedReason,omitempty"`
+	SwitchFromRunID string `json:"switchFromRunId,omitempty"`
 	// TurnLog carries the run's durable turn-log sidecar verbatim (BUG-313):
 	// raw user prompts, per-turn provider session-id chains, and durable
 	// transcript_turn/assistant frames. Restore rewrites the local sidecar so a
@@ -174,6 +191,8 @@ type RemoteChatSessionSummary struct {
 	StartedAt       string      `json:"startedAt,omitempty"`
 	UpdatedAt       string      `json:"updatedAt,omitempty"`
 	SyncedAt        string      `json:"syncedAt,omitempty"`
+	ChatID          string      `json:"chatId,omitempty"`
+	LegSeq          int         `json:"legSeq,omitempty"`
 }
 
 type chatSessionDriveIndexRecord struct {
@@ -192,6 +211,10 @@ type chatSessionDriveIndexRecord struct {
 	SyncedAt        string `json:"synced_at"`
 	ManifestPath    string `json:"manifest_path"`
 	ParentRunID     string `json:"parent_run_id,omitempty"`
+	// BUG-476: chat-leg identity so remote listing can group legs of one
+	// logical chat into a single row (absent on pre-v2 rows == single-leg).
+	ChatID string `json:"chat_id,omitempty"`
+	LegSeq int    `json:"leg_seq,omitempty"`
 }
 
 func (s *InteractiveService) chatSessionStoreDir() string {
@@ -233,6 +256,39 @@ func chatSessionManifestPath(machineID, runID string) string {
 		safeChatSessionSegment(runID),
 		"manifest.json",
 	))
+}
+
+// chatSessionChatManifestPath is the chat-level (BUG-476) commit marker: the
+// ordered list of provider legs for one logical chat. It is uploaded LAST —
+// only after every leg's own manifest + provider file landed — so a partial
+// upload never advertises a complete restorable chat.
+func chatSessionChatManifestPath(machineID, chatID string) string {
+	return filepath.ToSlash(filepath.Join(
+		"chat-sessions",
+		"chats",
+		safeChatSessionSegment(machineID),
+		safeChatSessionSegment(chatID),
+		"chat.json",
+	))
+}
+
+// chatSessionChatManifest is the v2 chat-level envelope. Restore prefers it
+// (ordered legs, explicit completeness) and falls back to index rows sharing
+// the same chat_id when it is absent (partial upload / interrupted sync).
+type chatSessionChatManifest struct {
+	SchemaVersion   int                  `json:"schemaVersion"`
+	ChatID          string               `json:"chatId"`
+	SourceMachineID string               `json:"sourceMachineId"`
+	Legs            []chatSessionChatLeg `json:"legs"`
+	SyncedAt        string               `json:"syncedAt"`
+}
+
+type chatSessionChatLeg struct {
+	SourceRunID  string `json:"sourceRunId"`
+	LegSeq       int    `json:"legSeq"`
+	LegState     string `json:"legState,omitempty"`
+	ProviderKey  string `json:"providerKey"`
+	ManifestPath string `json:"manifestPath"`
 }
 
 func chatSessionProviderLogicalPath(machineID, runID string, providerKey ProviderKey, relativePath string) string {
@@ -406,6 +462,13 @@ func (s *InteractiveService) BuildChatSessionSyncManifest(ctx context.Context, r
 		ChatSubMode:         session.ChatSubMode,
 		ChatFlowRef:         session.ChatFlowRef,
 		TurnCount:           session.TurnCount, // BUG-315
+		// BUG-476: carry the durable provider-leg identity so the manifest
+		// describes which leg of which logical chat it is.
+		ChatID:          session.ChatID,
+		LegSeq:          session.LegSeq,
+		LegState:        session.LegState,
+		LegClosedReason: session.LegClosedReason,
+		SwitchFromRunID: session.SwitchFromRunID,
 	}
 	if children := s.listAgentRunSummaries(runID); len(children) > 0 {
 		manifest.ChildAgents = children
@@ -875,6 +938,8 @@ func manifestToDriveIndexRecord(manifest ChatSessionSyncManifest) chatSessionDri
 		SyncedAt:        manifest.SyncedAt,
 		ManifestPath:    chatSessionManifestPath(manifest.SourceMachineID, manifest.SourceRunID),
 		ParentRunID:     manifest.ParentRunID,
+		ChatID:          manifest.ChatID,
+		LegSeq:          manifest.LegSeq,
 	}
 }
 
@@ -949,6 +1014,35 @@ func (s *InteractiveService) uploadChatSessionRunFiles(accessToken, rootFolderID
 	return nil
 }
 
+// uploadChildAgentManifests uploads one parent's child-agent manifests best-
+// effort (extracted from syncChatRunToDrive for BUG-476 — sibling legs reuse
+// the same loop so every leg's own subtree is uploaded too). Returns the
+// uploaded manifests and the child runIDs that actually landed.
+func (s *InteractiveService) uploadChildAgentManifests(ctx context.Context, accessToken, rootFolderID, parentRunID string, children []AgentRunSummary) ([]ChatSessionSyncManifest, []string) {
+	var uploaded []ChatSessionSyncManifest
+	var syncedChildRunIDs []string
+	for _, child := range children {
+		childRunID := strings.TrimSpace(child.RunID)
+		if childRunID == "" || childRunID == parentRunID {
+			continue
+		}
+		childManifest, childBytes, childErr := s.BuildChatSessionSyncManifest(ctx, childRunID)
+		if childErr != nil {
+			// Best-effort: a child whose transcript is missing locally shouldn't fail the
+			// whole sync — log and continue so the rest still upload.
+			log.Printf("[chat-sync] skip child run_id=%q parent=%q code=%q msg=%q", childRunID, parentRunID, childErr.code, childErr.msg)
+			continue
+		}
+		if upErr := s.uploadChatSessionRunFiles(accessToken, rootFolderID, &childManifest, childBytes); upErr != nil {
+			log.Printf("[chat-sync] child upload failed run_id=%q parent=%q code=%q msg=%q", childRunID, parentRunID, upErr.code, upErr.msg)
+			continue
+		}
+		uploaded = append(uploaded, childManifest)
+		syncedChildRunIDs = append(syncedChildRunIDs, childRunID)
+	}
+	return uploaded, syncedChildRunIDs
+}
+
 func (s *InteractiveService) syncChatRunToDrive(ctx context.Context, runID string, req ChatSessionSyncRequest) (ChatSessionSyncResult, *apiErr) {
 	manifest, providerBytes, apiErr := s.BuildChatSessionSyncManifest(ctx, runID)
 	if apiErr != nil {
@@ -973,25 +1067,46 @@ func (s *InteractiveService) syncChatRunToDrive(ctx context.Context, runID strin
 	if upErr := s.uploadChatSessionRunFiles(accessToken, rootFolderID, &manifests[0], providerBytes); upErr != nil {
 		return ChatSessionSyncResult{}, upErr
 	}
-	syncedChildRunIDs := []string{}
-	for _, child := range manifest.ChildAgents {
-		childRunID := strings.TrimSpace(child.RunID)
-		if childRunID == "" || childRunID == runID {
-			continue
+	childManifests, syncedChildRunIDs := s.uploadChildAgentManifests(ctx, accessToken, rootFolderID, runID, manifest.ChildAgents)
+	manifests = append(manifests, childManifests...)
+
+	// BUG-476: the sync unit is the logical chat. When this run is a leg of a
+	// multi-provider chat, upload EVERY sibling leg (and each leg's child
+	// agents) before publishing the chat-level manifest — the chat is only
+	// advertised complete once every leg landed.
+	chatLegs := []ChatSessionSyncManifest{manifest}
+	syncedLegRunIDs := []string{}
+	chatComplete := true
+	if chatID := strings.TrimSpace(manifest.ChatID); chatID != "" {
+		if reader, ok := s.workflowStore.(ChatSessionReader); ok {
+			legs, legErr := reader.ListProviderSessionsByChat(ctx, chatID)
+			if legErr != nil {
+				log.Printf("[chat-sync] leg listing failed chat=%q: %v", chatID, legErr)
+				chatComplete = false
+			}
+			for _, leg := range legs {
+				if leg.RunID == runID {
+					continue
+				}
+				legManifest, legBytes, buildErr := s.BuildChatSessionSyncManifest(ctx, leg.RunID)
+				if buildErr != nil {
+					log.Printf("[chat-sync] skip leg run_id=%q chat=%q code=%q msg=%q", leg.RunID, chatID, buildErr.code, buildErr.msg)
+					chatComplete = false
+					continue
+				}
+				if upErr := s.uploadChatSessionRunFiles(accessToken, rootFolderID, &legManifest, legBytes); upErr != nil {
+					log.Printf("[chat-sync] leg upload failed run_id=%q chat=%q code=%q msg=%q", leg.RunID, chatID, upErr.code, upErr.msg)
+					chatComplete = false
+					continue
+				}
+				manifests = append(manifests, legManifest)
+				chatLegs = append(chatLegs, legManifest)
+				syncedLegRunIDs = append(syncedLegRunIDs, leg.RunID)
+				legChildManifests, legChildSynced := s.uploadChildAgentManifests(ctx, accessToken, rootFolderID, leg.RunID, legManifest.ChildAgents)
+				manifests = append(manifests, legChildManifests...)
+				syncedChildRunIDs = append(syncedChildRunIDs, legChildSynced...)
+			}
 		}
-		childManifest, childBytes, childErr := s.BuildChatSessionSyncManifest(ctx, childRunID)
-		if childErr != nil {
-			// Best-effort: a child whose transcript is missing locally shouldn't fail the
-			// whole sync — log and continue so the rest still upload.
-			log.Printf("[chat-sync] skip child run_id=%q parent=%q code=%q msg=%q", childRunID, runID, childErr.code, childErr.msg)
-			continue
-		}
-		if upErr := s.uploadChatSessionRunFiles(accessToken, rootFolderID, &childManifest, childBytes); upErr != nil {
-			log.Printf("[chat-sync] child upload failed run_id=%q parent=%q code=%q msg=%q", childRunID, runID, upErr.code, upErr.msg)
-			continue
-		}
-		manifests = append(manifests, childManifest)
-		syncedChildRunIDs = append(syncedChildRunIDs, childRunID)
 	}
 
 	indexRecords := make([]chatSessionDriveIndexRecord, 0, len(manifests))
@@ -1008,6 +1123,38 @@ func (s *InteractiveService) syncChatRunToDrive(ctx context.Context, runID strin
 		return ChatSessionSyncResult{}, indexErr
 	}
 
+	// BUG-476: publish the chat-level manifest LAST, after every leg's own
+	// manifest/provider file and the index rows landed. A partial upload never
+	// writes this commit marker, so an interrupted sync is discoverable only
+	// as per-leg index rows — never as a complete restorable chat.
+	if chatID := strings.TrimSpace(manifest.ChatID); chatID != "" && chatComplete {
+		sort.Slice(chatLegs, func(i, j int) bool { return chatLegs[i].LegSeq < chatLegs[j].LegSeq })
+		chatDoc := chatSessionChatManifest{
+			SchemaVersion:   chatSyncManifestSchemaVersion,
+			ChatID:          chatID,
+			SourceMachineID: manifest.SourceMachineID,
+			SyncedAt:        manifest.SyncedAt,
+		}
+		for _, leg := range chatLegs {
+			chatDoc.Legs = append(chatDoc.Legs, chatSessionChatLeg{
+				SourceRunID:  leg.SourceRunID,
+				LegSeq:       leg.LegSeq,
+				LegState:     leg.LegState,
+				ProviderKey:  string(leg.ProviderKey),
+				ManifestPath: chatSessionManifestPath(leg.SourceMachineID, leg.SourceRunID),
+			})
+		}
+		if chatBytes, err := json.Marshal(chatDoc); err == nil {
+			if chatDirID, dirErr := ensureGoogleDriveFolderPath(accessToken, rootFolderID, []string{
+				"chat-sessions", "chats", safeChatSessionSegment(manifest.SourceMachineID), safeChatSessionSegment(chatID),
+			}); dirErr != nil {
+				log.Printf("[chat-sync] chat manifest folder failed chat=%q: %v", chatID, dirErr)
+			} else if _, upErr := upsertGoogleDriveFile(accessToken, chatDirID, "chat.json", chatBytes, "application/json", nil); upErr != nil {
+				log.Printf("[chat-sync] chat manifest upload failed chat=%q: %v", chatID, upErr)
+			}
+		}
+	}
+
 	// CP-51: upload per-project dispatch.ndjson alongside chat sessions so another
 	// machine can restore durable turn state (best-effort — session sync still wins).
 	if dispErr := s.syncDispatchLogToDrive(ctx, projectID, accessToken, rootFolderID); dispErr != nil {
@@ -1022,14 +1169,24 @@ func (s *InteractiveService) syncChatRunToDrive(ctx context.Context, runID strin
 	}); syncErr != nil {
 		return ChatSessionSyncResult{}, syncErr
 	}
-	// Mark each synced child as synced too (best-effort — index/parent already uploaded).
-	for i, childRunID := range syncedChildRunIDs {
-		childManifest := manifests[i+1]
-		_ = s.updateLocalSessionSyncStatus(ctx, childRunID, func(state *ProviderSessionState) {
-			state.SourceMachineID = childManifest.SourceMachineID
-			state.SourceRunID = childManifest.SourceRunID
+	// Mark each synced leg/child as synced too (best-effort — index/parent
+	// already uploaded). manifests now interleaves the primary run, sibling
+	// legs, and every subtree's children, so resolve each runID's own manifest
+	// rather than indexing by position.
+	manifestBySourceRunID := make(map[string]ChatSessionSyncManifest, len(manifests))
+	for i := range manifests {
+		manifestBySourceRunID[manifests[i].SourceRunID] = manifests[i]
+	}
+	for _, syncedRunID := range append(syncedLegRunIDs, syncedChildRunIDs...) {
+		syncedManifest, ok := manifestBySourceRunID[syncedRunID]
+		if !ok {
+			continue
+		}
+		_ = s.updateLocalSessionSyncStatus(ctx, syncedRunID, func(state *ProviderSessionState) {
+			state.SourceMachineID = syncedManifest.SourceMachineID
+			state.SourceRunID = syncedManifest.SourceRunID
 			state.SyncStatus = "synced"
-			state.SyncUpdatedAt = childManifest.SyncedAt
+			state.SyncUpdatedAt = syncedManifest.SyncedAt
 		})
 	}
 
@@ -1129,8 +1286,31 @@ func (s *InteractiveService) listRemoteChatSessions(ctx context.Context, project
 			StartedAt:       record.StartedAt,
 			UpdatedAt:       record.UpdatedAt,
 			SyncedAt:        record.SyncedAt,
+			ChatID:          record.ChatID,
+			LegSeq:          record.LegSeq,
 		})
 	}
+	// BUG-476: legs of one logical chat list as ONE row — the newest leg
+	// (highest legSeq) represents the chat; restoring it pulls every leg.
+	// Pre-v2 rows carry no chatId and keep their own rows (single-leg chats).
+	grouped := make([]RemoteChatSessionSummary, 0, len(out))
+	chatRowIdx := make(map[string]int, len(out))
+	for _, row := range out {
+		if strings.TrimSpace(row.ChatID) == "" {
+			grouped = append(grouped, row)
+			continue
+		}
+		key := row.SourceMachineID + "\x00" + row.ChatID
+		if idx, seen := chatRowIdx[key]; seen {
+			if row.LegSeq > grouped[idx].LegSeq {
+				grouped[idx] = row
+			}
+			continue
+		}
+		chatRowIdx[key] = len(grouped)
+		grouped = append(grouped, row)
+	}
+	out = grouped
 	sort.Slice(out, func(i, j int) bool { return out[i].UpdatedAt > out[j].UpdatedAt })
 	return out, nil
 }
@@ -1202,7 +1382,61 @@ func firstFreeRestoredRunID(sourceMachineID, sourceRunID string, isTaken func(ca
 }
 
 func (s *InteractiveService) restoreChatRunFromDrive(ctx context.Context, req ChatSessionRestoreRequest) (ChatSessionRestoreResult, *apiErr) {
-	return s.restoreChatRunTreeFromDrive(ctx, req, make(map[string]struct{}))
+	return s.restoreChatRunTreeFromDrive(ctx, req, make(map[string]struct{}), make(map[string]string), true)
+}
+
+// remoteChatSiblingRunIDs enumerates a logical chat's other legs on Drive
+// (BUG-476): prefer the chat-level commit marker (chat.json — ordered, only
+// present when every leg uploaded), and fall back to index rows sharing the
+// same chat_id when the marker is absent (partial/interrupted upload still
+// leaves per-leg index rows worth restoring). Returned runIDs are ordered by
+// legSeq so a switch chain remaps predecessor-first.
+func (s *InteractiveService) remoteChatSiblingRunIDs(accessToken, rootFolderID string, indexRecords []chatSessionDriveIndexRecord, manifest ChatSessionSyncManifest) ([]string, error) {
+	chatID := strings.TrimSpace(manifest.ChatID)
+	if chatID == "" {
+		return nil, nil
+	}
+	// Preferred: the commit marker written only after ALL legs uploaded.
+	if chatFile, findErr := findGoogleDriveFileByLogicalPath(accessToken, rootFolderID, chatSessionChatManifestPath(manifest.SourceMachineID, chatID)); findErr == nil {
+		if chatBytes, dlErr := downloadGoogleDriveFileByID(context.Background(), accessToken, chatFile.ID); dlErr == nil {
+			var doc chatSessionChatManifest
+			if json.Unmarshal(chatBytes, &doc) == nil && doc.ChatID == chatID && len(doc.Legs) > 0 {
+				legs := append([]chatSessionChatLeg(nil), doc.Legs...)
+				sort.Slice(legs, func(i, j int) bool { return legs[i].LegSeq < legs[j].LegSeq })
+				out := make([]string, 0, len(legs))
+				for _, leg := range legs {
+					if id := strings.TrimSpace(leg.SourceRunID); id != "" {
+						out = append(out, id)
+					}
+				}
+				return out, nil
+			}
+		} else {
+			return nil, dlErr
+		}
+	} else if !errors.Is(findErr, os.ErrNotExist) {
+		return nil, findErr
+	}
+	// Fallback: per-leg index rows carrying the same chat_id (partial upload —
+	// the commit marker is absent by design). Order by leg_seq; rows without
+	// a seq sort last but stay restorable.
+	var rows []chatSessionDriveIndexRecord
+	for _, record := range indexRecords {
+		if record.SourceMachineID == manifest.SourceMachineID && record.ChatID == chatID {
+			rows = append(rows, record)
+		}
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].LegSeq == rows[j].LegSeq {
+			return rows[i].SourceRunID < rows[j].SourceRunID
+		}
+		return rows[i].LegSeq < rows[j].LegSeq
+	})
+	out := make([]string, 0, len(rows))
+	for _, record := range rows {
+		out = append(out, record.SourceRunID)
+	}
+	return out, nil
 }
 
 // chatSessionRemoteRunKnown reports whether a run has ANY remote trace on
@@ -1252,7 +1486,12 @@ func terminalizeTombstoneStatus(status RunStatus) RunStatus {
 	}
 }
 
-func (s *InteractiveService) restoreChatRunTreeFromDrive(ctx context.Context, req ChatSessionRestoreRequest, restoring map[string]struct{}) (ChatSessionRestoreResult, *apiErr) {
+// legMap maps source runID → collision-resolved local runID across the whole
+// restore (requested leg + every sibling leg), so SwitchFromRunID chains and
+// any cross-leg references stamp LOCAL ids. expandLegs is true only for the
+// top-level restore — sibling recursion restores each leg's own subtree
+// without re-expanding the chat (the restoring map also guards cycles).
+func (s *InteractiveService) restoreChatRunTreeFromDrive(ctx context.Context, req ChatSessionRestoreRequest, restoring map[string]struct{}, legMap map[string]string, expandLegs bool) (ChatSessionRestoreResult, *apiErr) {
 	restoreKey := strings.TrimSpace(req.SourceMachineID) + "\x00" + strings.TrimSpace(req.SourceRunID)
 	if _, duplicate := restoring[restoreKey]; duplicate {
 		return ChatSessionRestoreResult{}, newAPIErr(http.StatusConflict, "sync_integrity_failed", "remote chat session child graph contains a cycle")
@@ -1435,6 +1674,33 @@ func (s *InteractiveService) restoreChatRunTreeFromDrive(ctx context.Context, re
 	}
 
 	localRunID := s.resolveRestoredRunID(ctx, manifest.SourceMachineID, manifest.SourceRunID)
+	legMap[manifest.SourceRunID] = localRunID
+
+	// BUG-476: restore the whole logical chat — sibling legs in legSeq order
+	// so switch chains remap predecessor-first into legMap before this leg's
+	// own session is stamped below. A sibling restore failure hard-fails like
+	// a missing child: silently dropping a leg recreates the exact data loss
+	// this change fixes.
+	if expandLegs {
+		siblings, sibErr := s.remoteChatSiblingRunIDs(accessToken, rootFolderID, indexRecords, manifest)
+		if sibErr != nil {
+			return ChatSessionRestoreResult{}, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", sibErr.Error())
+		}
+		for _, sibRunID := range siblings {
+			if sibRunID == manifest.SourceRunID {
+				continue
+			}
+			if _, sibRestoreErr := s.restoreChatRunTreeFromDrive(ctx, ChatSessionRestoreRequest{
+				ProjectID:       projectID,
+				SourceMachineID: manifest.SourceMachineID,
+				SourceRunID:     sibRunID,
+				Cwd:             cwd,
+			}, restoring, legMap, false); sibRestoreErr != nil {
+				return ChatSessionRestoreResult{}, sibRestoreErr
+			}
+		}
+	}
+
 	session := ProviderSessionState{
 		RunID:             localRunID,
 		ProjectID:         projectID,
@@ -1473,6 +1739,22 @@ func (s *InteractiveService) restoreChatRunTreeFromDrive(ctx context.Context, re
 		ChatSubMode:         manifest.ChatSubMode,
 		ChatFlowRef:         manifest.ChatFlowRef,
 		TurnCount:           manifest.TurnCount, // BUG-315
+		// BUG-476: restore the leg's logical-chat identity so the restored chat
+		// groups correctly via ListProviderSessionsByChat and keeps its history.
+		ChatID:          manifest.ChatID,
+		LegSeq:          manifest.LegSeq,
+		LegState:        manifest.LegState,
+		LegClosedReason: manifest.LegClosedReason,
+	}
+	// Switch lineage stamps the LOCAL id of the predecessor leg (restored
+	// earlier in legSeq order); an unmapped source id is kept verbatim so the
+	// chain stays diagnostically traceable rather than silently dropped.
+	if src := strings.TrimSpace(manifest.SwitchFromRunID); src != "" {
+		if mapped, ok := legMap[src]; ok {
+			session.SwitchFromRunID = mapped
+		} else {
+			session.SwitchFromRunID = src
+		}
 	}
 	if localAhead {
 		// The local rollout file is ahead of the restored snapshot, so the older
@@ -1619,7 +1901,7 @@ func (s *InteractiveService) restoreChatRunTreeFromDrive(ctx context.Context, re
 				SourceMachineID: manifest.SourceMachineID,
 				SourceRunID:     childRunID,
 				Cwd:             cwd,
-			}, restoring)
+			}, restoring, legMap, false)
 			if childErr != nil {
 				log.Printf("[chat-sync] child restore failed run_id=%q parent=%q code=%q msg=%q", childRunID, manifest.SourceRunID, childErr.code, childErr.msg)
 				return ChatSessionRestoreResult{}, childErr
