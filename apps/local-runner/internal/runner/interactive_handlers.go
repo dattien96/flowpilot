@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -2030,6 +2031,14 @@ func (s *InteractiveService) handleContinueFlow(w http.ResponseWriter, r *http.R
 	s.captureDecisionChoice(runID, body.Feedback)
 	snap, err := s.resumeFlowWithFeedback(runID, body.Feedback)
 	if err != nil {
+		// BUG-480: a typed apiErr (e.g. pending_gate_decision 409) keeps its
+		// status/code so the client can route to the canonical surface
+		// instead of retrying the same wrong endpoint.
+		var ae *apiErr
+		if errors.As(err, &ae) {
+			writeInteractiveError(w, ae)
+			return
+		}
 		writeInteractiveError(w, newAPIErr(http.StatusUnprocessableEntity, "continue_flow_failed", err.Error()))
 		return
 	}

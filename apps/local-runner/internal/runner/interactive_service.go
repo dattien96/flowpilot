@@ -2264,6 +2264,31 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 			return s.agentGraphSnapshot(parentRunID), nil
 		}
 	}
+	// BUG-480 (live run-37268): a mounted vibeResumeConfirm gate owns this
+	// run's decision surface, but generic Continue fell through to the
+	// unblock+hub-reinvoke below — the loop ran while the gate stayed
+	// mounted. Route unambiguous ok/continue/cancel through the gate's own
+	// consumer (SubmitGateDecision); ambiguous prose gets a typed
+	// pending_gate_decision conflict with NOTHING unblocked.
+	s.mu.Lock()
+	resumeConfirmMounted := s.runs[parentRunID] != nil && s.runs[parentRunID].vibeResumeConfirm
+	s.mu.Unlock()
+	if resumeConfirmMounted {
+		opt := ""
+		switch strings.ToLower(feedback) {
+		case "", "ok", "continue":
+			opt = "ok"
+		case "cancel":
+			opt = "cancel"
+		default:
+			return AgentGraphSnapshot{}, newAPIErr(409, "pending_gate_decision",
+				"run is parked on a resume-confirm gate; submit a gate option (ok/cancel) via gate-decision")
+		}
+		if e := s.SubmitGateDecision(parentRunID, opt, feedback); e != nil {
+			return AgentGraphSnapshot{}, e
+		}
+		return s.agentGraphSnapshot(parentRunID), nil
+	}
 	// BUG-414: a tournament decision card's captured choice routes into the
 	// tournament execution path (merge the picked candidate / retry the
 	// rollout) — never the generic blocked-resume below, which reopened the
