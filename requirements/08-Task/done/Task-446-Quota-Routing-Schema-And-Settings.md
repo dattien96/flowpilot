@@ -3,7 +3,7 @@
 - Document ID: `Task-446`
 - Title: `Workload classes, normalized headroom, provider priority/model bindings, and manual-or-auto rotation setting`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `dat.nguyen`
 - Reviewers: ``
 - Created: `2026-09-25`
@@ -141,15 +141,39 @@ func NormalizeAccountHeadroom(summary ProviderAccountSummary, now time.Time, set
 
 ## 10. Definition of Done
 
-- [ ] §6 signatures landed or deviation documented
-- [ ] §7 additive tests green; old tests remain regression guards
-- [ ] All builtin packs pass validation
-- [ ] Default manual mode migration/restart verified
-- [ ] CA ledger + feature key entries complete
-- [ ] GitNexus detect_changes reviewed before commit
+- [x] §6 signatures landed or deviation documented
+- [x] §7 additive tests green; old tests remain regression guards
+- [x] All builtin packs pass validation
+- [x] Default manual mode migration/restart verified
+- [x] CA ledger + feature key entries complete
+- [x] GitNexus detect_changes reviewed before commit
 
 ## 11. Completion Notes
 
-- result:
-- follow-ups:
-- upstream docs updated:
+- result: `FlowNode.WorkloadClass` (`scan`|`high_reasoning`|`coding`) parsed
+  from YAML and validated fail-closed: unknown values rejected, classes on
+  non-provider nodes rejected, and `LoadBuiltinPack` requires every
+  provider-backed node (agent.delegate/agent.code/agent.reproduce/
+  agent.scaffold) to be classified — all 52 builtin nodes annotated. Machine-
+  global `QuotaRoutingSettings` (mode default `manual`, providerPriority,
+  modelBindings, headroomLowPercent, telemetryTtlSeconds=120,
+  sameProviderCooldownSeconds=20) persists beside chat-posture.json behind
+  `GET/PUT /client/quota-routing-settings`; normalization fails closed to
+  manual+defaults. Every run snapshots the policy into
+  `ProviderSessionState.QuotaRouting` (policyVersion 1) at creation and
+  restores it on resume — mid-run edits cannot change an active run's rules.
+  `NormalizeAccountHeadroom` folds provider quota windows (min of declared
+  5h/7d percentages) into unknown/stale/exhausted/low/healthy with
+  exact|none confidence — percentages, never token balances. Desktop gained
+  contract types, optional client methods (HttpWs + Mock), and store
+  load/save actions. Signature deviation: `ModelClassBinding.WorkloadClass`
+  uses `agentpack.WorkloadClass` (same type, cross-package reference).
+- follow-ups: Task-447 consumes the snapshot + headroom for same-provider
+  account preflight and leg pinning; Task-450 adds the settings UI surface.
+  Also repaired (CA-977 follow-up): five desktop quota-surface tests still
+  drove the deleted string-classifier path via `turn_failed` text; they now
+  emit the typed `provider_limit_reached` event like production. Pre-existing
+  suite failures documented in CA-978 (env: localStorage/gitnexus auto-index/
+  MCP/inventory; upstream drift: replay ordering, message_completed text
+  assumption, stop-interrupt scope).
+- upstream docs updated: CA-978; this task doc moved to done/.
