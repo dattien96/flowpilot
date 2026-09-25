@@ -722,6 +722,17 @@ export class SupabaseAdminRepository implements
       // must deep-copy the declared acceptance boundary exactly like it
       // already deep-copies edges_json.
       acceptance_nodes_json: source.acceptanceNodes ?? [],
+      // BUG-474 (live-path follow-up): the runner restores schema-less
+      // execution fields (posture/contextProfile/config/tools/
+      // contextProfiles) from workflows.definition_json. A clone whose
+      // source already carries the snapshot keeps it verbatim; a built-in
+      // source carries none — the runner's read-time heal then rebuilds it
+      // from cloned_from → the mirror's embedded pack flow. The key is only
+      // sent when the source has a snapshot: PostgREST rejects unknown
+      // columns outright, so sending the key unconditionally would break
+      // cloning entirely on projects that have not run the
+      // definition_json migration yet.
+      ...(sourceRow.definition_json ? { definition_json: sourceRow.definition_json } : {}),
       updated_at: now(),
     };
     const { data: cloned, error: cloneError } = await this.supabase

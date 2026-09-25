@@ -36,6 +36,11 @@ type fakeChatDriveAPI struct {
 	files       map[string]fakeChatDriveFile
 	uploadOrder []string
 	failUpload  bool
+	// BUG-483 fault hooks: failDownload makes every content GET fail;
+	// onDownload fires after a successful content GET (id = file id) so a
+	// test can simulate a concurrent writer mutating the file mid-merge.
+	failDownload bool
+	onDownload   func(id string)
 }
 
 type recordingChatSessionStore struct {
@@ -78,6 +83,9 @@ func (api *fakeChatDriveAPI) handle(_ context.Context, method, endpoint string, 
 }
 
 func (api *fakeChatDriveAPI) handleDownloadLocked(endpoint string) (int, []byte, error) {
+	if api.failDownload {
+		return 500, []byte(`{"error":"download failed"}`), nil
+	}
 	id := pathBaseWithoutQuery(endpoint)
 	file, ok := api.files[id]
 	if !ok {
@@ -85,6 +93,9 @@ func (api *fakeChatDriveAPI) handleDownloadLocked(endpoint string) (int, []byte,
 	}
 	// Copy content so concurrent readers are not affected by later upserts.
 	out := append([]byte(nil), file.Content...)
+	if api.onDownload != nil {
+		api.onDownload(id)
+	}
 	return 200, out, nil
 }
 

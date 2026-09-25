@@ -41,10 +41,17 @@ func (sc *RecoveryScanner) ScanRun(ctx context.Context, runID string) error {
 	if err != nil {
 		return err
 	}
+	failed := 0
 	for _, rec := range list {
 		if err := sc.reconcileOne(ctx, rec); err != nil {
+			failed++
 			log.Printf("[dispatch-recovery] run=%s turn=%s: %v", rec.RunID, rec.TurnID, err)
 		}
+	}
+	if failed > 0 {
+		// BUG-484: per-record transient failures mark the pass failed so the
+		// boot coordinator retries — lease ownership still gates each retry.
+		return fmt.Errorf("%d record(s) failed reconciliation in run %s", failed, runID)
 	}
 	return nil
 }
@@ -118,14 +125,19 @@ func (sc *RecoveryScanner) ScanAllRecoverable(ctx context.Context) error {
 		return err
 	}
 	seen := map[string]bool{}
+	failed := 0
 	for _, rec := range list {
 		if rec.RunID == "" || seen[rec.RunID] {
 			continue
 		}
 		seen[rec.RunID] = true
 		if err := sc.ScanRun(ctx, rec.RunID); err != nil {
+			failed++
 			log.Printf("[dispatch-recovery] boot scan run=%s: %v", rec.RunID, err)
 		}
+	}
+	if failed > 0 {
+		return fmt.Errorf("%d run(s) failed boot recovery scan", failed)
 	}
 	return nil
 }

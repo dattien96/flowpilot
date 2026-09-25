@@ -9,9 +9,11 @@ package runner
 // never git merge/commit/push in the user's repo (BR-2).
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -108,18 +110,36 @@ func (s *InteractiveService) writeWorktreePatchArtifact(rs *interactiveRun, patc
 }
 
 // persistRunWorktreeLocked writes the binding state back to the session
-// record. Caller holds s.mu.
-func (s *InteractiveService) persistRunWorktreeLocked(rs *interactiveRun) {
+// record. Caller holds s.mu. Returns the store error so callers that must
+// not report success on persistence failure (BUG-481 resolution phases) can
+// fail instead — best-effort callers ignore the return.
+func (s *InteractiveService) persistRunWorktreeLocked(rs *interactiveRun) error {
 	reader, ok := s.workflowStore.(SessionHistoryReader)
 	if !ok {
-		return
+		return errors.New("session store cannot read bindings")
 	}
 	st, found, err := reader.GetProviderSession(context.Background(), rs.id)
-	if err != nil || !found {
-		return
+	if err != nil {
+		return err
+	}
+	if !found {
+		return errors.New("session record missing for run")
 	}
 	worktreeFieldsToSession(&st, rs.worktree)
-	_ = s.persistProviderSession(st)
+	return s.persistProviderSession(st)
+}
+
+// worktreeOps is the narrow slice of worktree.Manager resolveWorktree uses.
+// The production implementation is the real manager; tests substitute a
+// fault injector (BUG-472: dirty-scan errors must fail closed, never proceed
+// to cleanup).
+type worktreeOps interface {
+	Create(ctx context.Context, repoDir, ownerID, prefix, baseCommit, slug string) (worktree.Info, error)
+	Diff(ctx context.Context, repoDir, ownerID, prefix string) ([]byte, error)
+	Uncommitted(ctx context.Context, repoDir, ownerID, prefix string) ([]string, error)
+	Untracked(ctx context.Context, repoDir, ownerID, prefix string) ([]string, error)
+	ApplyWithOptions(ctx context.Context, repoDir, ownerID, prefix string, opts worktree.ApplyOptions) error
+	Cleanup(ctx context.Context, repoDir, ownerID, prefix string, keepBranch bool) error
 }
 
 // resolveWorktree handles the merge decision (Task-410 T-2). Modes:
@@ -150,7 +170,10 @@ func (s *InteractiveService) resolveWorktree(ctx context.Context, runID, mode st
 	repoDir := s.worktreeRepoDirOfRun(rs)
 	s.mu.Unlock()
 
-	mgr := worktree.NewManager()
+	mgr := s.wtOps
+	if mgr == nil {
+		mgr = worktree.NewManager()
+	}
 	respond := func(state string, extra map[string]any) (map[string]any, *apiErr) {
 		out := map[string]any{"runId": runID, "worktreeState": state, "mode": mode}
 		for k, v := range extra {
@@ -160,78 +183,8 @@ func (s *InteractiveService) resolveWorktree(ctx context.Context, runID, mode st
 	}
 
 	switch mode {
-	case "apply_patch":
-		if b.State == "lost" {
-			return nil, newAPIErr(http.StatusConflict, "worktree_lost", "worktree is missing; nothing to apply")
-		}
-		patch, _ := mgr.Diff(ctx, repoDir, b.OwnerID, "")
-		// Run worktrees use git apply --check as the conflict oracle (not the
-		// strict HEAD check): non-conflicting drift still merges, and the user
-		// can fix conflicting content then retry apply_patch (SS-23 retry).
-		if err := mgr.ApplyWithOptions(ctx, repoDir, b.OwnerID, "",
-			worktree.ApplyOptions{StrictHead: false}); err != nil {
-			var conflict *worktree.MergeConflictError
-			if errors.As(err, &conflict) {
-				ref := ""
-				if p := conflict.Patch; len(p) > 0 {
-					if r, werr := s.writeWorktreePatchArtifact(rs, p); werr == nil {
-						ref = r
-					}
-				}
-				s.mu.Lock()
-				rs.worktree.State = "merge_pending"
-				s.persistRunWorktreeLocked(rs)
-				s.emitLocked(rs, ProviderEvent{Type: EventWorktreeMergeRequested, Input: map[string]any{
-					"ownerId": b.OwnerID, "path": b.Path, "branch": b.Branch, "slug": b.Slug,
-					"conflictPaths": conflict.ConflictPaths, "patchArtifactRef": ref,
-					"conflict": true,
-				}})
-				s.mu.Unlock()
-				return map[string]any{
-					"runId": runID, "worktreeState": "merge_pending", "mode": mode,
-					"conflict": true, "conflictPaths": conflict.ConflictPaths,
-					"patchArtifactRef": ref, "reason": conflict.Reason,
-				}, newAPIErr(http.StatusConflict, "worktree_merge_conflict", conflict.Error())
-			}
-			return nil, newAPIErr(http.StatusInternalServerError, "worktree_merge_failed", err.Error())
-		}
-		_ = mgr.Cleanup(ctx, repoDir, b.OwnerID, "", false)
-		_ = os.Remove(patchArtifactPath(repoDir, b.OwnerID))
-		s.setWorktreeState(rs, "merged")
-		return respond("merged", map[string]any{"applied": len(patch) > 0})
-
-	case "keep_branch":
-		if b.State == "lost" {
-			return nil, newAPIErr(http.StatusConflict, "worktree_lost", "worktree is missing; nothing to keep")
-		}
-		// The kept branch only holds commits — uncommitted worktree changes
-		// vanish with the directory. Same confirm contract as discard (Q-2).
-		uncommitted, _ := mgr.Uncommitted(ctx, repoDir, b.OwnerID, "")
-		if len(uncommitted) > 0 && !confirm {
-			return map[string]any{
-					"runId": runID, "worktreeState": b.State, "mode": mode,
-					"requiresConfirm": true, "uncommitted": uncommitted,
-				}, newAPIErr(http.StatusConflict, "worktree_keep_branch_confirm",
-					"worktree has uncommitted changes that are not on the branch; resend with confirm")
-		}
-		_ = mgr.Cleanup(ctx, repoDir, b.OwnerID, "", true)
-		s.setWorktreeState(rs, "kept_branch")
-		return respond("kept_branch", map[string]any{"branch": b.Branch})
-
-	case "discard":
-		if b.State != "lost" {
-			untracked, _ := mgr.Untracked(ctx, repoDir, b.OwnerID, "")
-			if len(untracked) > 0 && !confirm {
-				return map[string]any{
-						"runId": runID, "worktreeState": b.State, "mode": mode,
-						"requiresConfirm": true, "untracked": untracked,
-					}, newAPIErr(http.StatusConflict, "worktree_discard_confirm",
-						"worktree has untracked artifacts; resend with confirm to discard")
-			}
-		}
-		_ = mgr.Cleanup(ctx, repoDir, b.OwnerID, "", false)
-		s.setWorktreeState(rs, "discarded")
-		return respond("discarded", nil)
+	case "apply_patch", "keep_branch", "discard":
+		return s.resolveDestructiveWorktree(ctx, rs, b, repoDir, mgr, runID, mode, confirm, respond)
 
 	case "archive":
 		// Lost-state resolution: keep the run, mark the binding archived —
@@ -267,6 +220,315 @@ func (s *InteractiveService) resolveWorktree(ctx context.Context, runID, mode st
 		return nil, newAPIErr(http.StatusBadRequest, "invalid_mode",
 			"mode must be apply_patch|keep_branch|discard|archive|recreate_empty")
 	}
+}
+
+// Durable resolution phases (BUG-481). Each transition is persisted before
+// the next external effect runs, so a kill/restart resumes only the missing
+// idempotent effects; the intent row is cleared at finalize.
+const (
+	wtResRequested        = "resolution_requested"
+	wtResRepoCommitted    = "repository_effect_committed"
+	wtResCleanupCommitted = "cleanup_committed"
+)
+
+// resolveDestructiveWorktree runs a destructive merge decision
+// (apply_patch|keep_branch|discard) as a durable phased transaction
+// (BUG-481): evidence gate → mint intent → repo effect → cleanup → finalize.
+// Success is reported only after the terminal state is persisted; every
+// earlier failure returns a typed retryable error carrying resolutionId +
+// the durable phase. Replays resume at the recorded phase — same-mode calls
+// converge, conflicting modes past resolution_requested are rejected, and a
+// binding already terminal for this mode answers idempotently.
+func (s *InteractiveService) resolveDestructiveWorktree(
+	ctx context.Context, rs *interactiveRun, b *worktreeBinding, repoDir string,
+	mgr worktreeOps, runID, mode string, confirm bool,
+	respond func(string, map[string]any) (map[string]any, *apiErr),
+) (map[string]any, *apiErr) {
+	terminal := map[string]string{
+		"apply_patch": "merged", "keep_branch": "kept_branch", "discard": "discarded",
+	}[mode]
+
+	if b.State == terminal {
+		return respond(terminal, map[string]any{"replayed": true})
+	}
+	if b.State == "merged" || b.State == "kept_branch" || b.State == "discarded" {
+		return map[string]any{
+				"runId": runID, "mode": mode, "worktreeState": b.State,
+				"code": "worktree_already_resolved",
+			}, newAPIErr(http.StatusConflict, "worktree_already_resolved",
+				"worktree already resolved as "+b.State)
+	}
+	if b.State == "lost" && mode != "discard" {
+		msg := "worktree is missing; nothing to apply"
+		if mode == "keep_branch" {
+			msg = "worktree is missing; nothing to keep"
+		}
+		return nil, newAPIErr(http.StatusConflict, "worktree_lost", msg)
+	}
+
+	fail := func(res *worktreeResolution, msg string) (map[string]any, *apiErr) {
+		out := map[string]any{"runId": runID, "mode": mode, "code": "worktree_resolution_failed"}
+		if res != nil {
+			out["resolutionId"] = res.ID
+			out["phase"] = res.Phase
+		}
+		return out, newAPIErr(http.StatusServiceUnavailable, "worktree_resolution_failed", msg)
+	}
+
+	// Snapshot any in-flight intent under the lock.
+	s.mu.Lock()
+	var res *worktreeResolution
+	if rs.worktree != nil && rs.worktree.Resolution != nil {
+		c := *rs.worktree.Resolution
+		res = &c
+	}
+	s.mu.Unlock()
+
+	if res != nil && res.Mode != mode {
+		if res.Phase != wtResRequested {
+			out := map[string]any{
+				"runId": runID, "mode": mode, "resolutionId": res.ID,
+				"inFlightMode": res.Mode, "phase": res.Phase,
+				"code": "worktree_resolution_conflict",
+			}
+			return out, newAPIErr(http.StatusConflict, "worktree_resolution_conflict",
+				fmt.Sprintf("worktree resolution %q is in flight at phase %s; complete or retry it before choosing another mode", res.Mode, res.Phase))
+		}
+		res = nil // no external effects committed — adopt the new mode below
+	}
+
+	// Evidence gate (BUG-472 fail-closed): runs while no effect is committed.
+	// It is a precondition check, not an effect — failures leave no intent.
+	if res == nil || res.Phase == wtResRequested {
+		switch mode {
+		case "keep_branch":
+			uncommitted, err := mgr.Uncommitted(ctx, repoDir, b.OwnerID, "")
+			if err != nil {
+				return nil, newAPIErr(http.StatusServiceUnavailable, "worktree_inspection_failed",
+					"cannot verify the worktree has no uncommitted work; nothing was removed: "+err.Error())
+			}
+			if len(uncommitted) > 0 && !confirm {
+				return map[string]any{
+						"runId": runID, "worktreeState": b.State, "mode": mode,
+						"requiresConfirm": true, "uncommitted": uncommitted,
+					}, newAPIErr(http.StatusConflict, "worktree_keep_branch_confirm",
+						"worktree has uncommitted changes that are not on the branch; resend with confirm")
+			}
+		case "discard":
+			if b.State != "lost" {
+				untracked, err := mgr.Untracked(ctx, repoDir, b.OwnerID, "")
+				if err != nil {
+					return nil, newAPIErr(http.StatusServiceUnavailable, "worktree_inspection_failed",
+						"cannot verify the worktree has no untracked artifacts; nothing was removed: "+err.Error())
+				}
+				if len(untracked) > 0 && !confirm {
+					return map[string]any{
+							"runId": runID, "worktreeState": b.State, "mode": mode,
+							"requiresConfirm": true, "untracked": untracked,
+						}, newAPIErr(http.StatusConflict, "worktree_discard_confirm",
+							"worktree has untracked artifacts; resend with confirm to discard")
+				}
+			}
+		}
+	}
+
+	if res == nil {
+		res = &worktreeResolution{
+			ID:    fmt.Sprintf("wres-%d", s.idCounter.Add(1)),
+			Mode:  mode,
+			Phase: wtResRequested,
+		}
+		if err := s.persistWorktreeResolution(rs, res); err != nil {
+			return fail(res, "cannot persist resolution intent: "+err.Error())
+		}
+	}
+
+	// Phase: repository effect (apply_patch only).
+	applied := true
+	if mode == "apply_patch" && res.Phase == wtResRequested {
+		if patch, derr := mgr.Diff(ctx, repoDir, b.OwnerID, ""); derr == nil {
+			applied = len(bytes.TrimSpace(patch)) > 0
+		}
+		repoCommitted := false
+		if err := mgr.ApplyWithOptions(ctx, repoDir, b.OwnerID, "",
+			worktree.ApplyOptions{StrictHead: false}); err != nil {
+			var conflict *worktree.MergeConflictError
+			if errors.As(err, &conflict) {
+				if gitApplyCheckReverse(ctx, repoDir, conflict.Patch) {
+					// Resume after a crash between the apply and its durable
+					// write: the patch already landed on main.
+					repoCommitted = true
+				} else {
+					ref := ""
+					if p := conflict.Patch; len(p) > 0 {
+						if r, werr := s.writeWorktreePatchArtifact(rs, p); werr == nil {
+							ref = r
+						}
+					}
+					s.mu.Lock()
+					rs.worktree.State = "merge_pending"
+					_ = s.persistRunWorktreeLocked(rs)
+					s.emitLocked(rs, ProviderEvent{Type: EventWorktreeMergeRequested, Input: map[string]any{
+						"ownerId": b.OwnerID, "path": b.Path, "branch": b.Branch, "slug": b.Slug,
+						"conflictPaths": conflict.ConflictPaths, "patchArtifactRef": ref,
+						"conflict": true,
+					}})
+					s.mu.Unlock()
+					return map[string]any{
+						"runId": runID, "worktreeState": "merge_pending", "mode": mode,
+						"conflict": true, "conflictPaths": conflict.ConflictPaths,
+						"patchArtifactRef": ref, "reason": conflict.Reason,
+						"resolutionId": res.ID,
+					}, newAPIErr(http.StatusConflict, "worktree_merge_conflict", conflict.Error())
+				}
+			} else {
+				// Merge-engine failure (non-conflict): keep the established
+				// 500 worktree_merge_failed contract. The intent is durably
+				// recorded at resolution_requested so a retry still resumes
+				// the transaction instead of starting a divergent one.
+				return nil, newAPIErr(http.StatusInternalServerError, "worktree_merge_failed", err.Error())
+			}
+		} else {
+			repoCommitted = true
+		}
+		if repoCommitted {
+			prev := res.Phase
+			res.Phase = wtResRepoCommitted
+			if err := s.persistWorktreeResolution(rs, res); err != nil {
+				res.Phase = prev
+				return fail(res, "cannot persist resolution phase: "+err.Error())
+			}
+		}
+	}
+
+	// Phase: cleanup (dir + sidecar + branch per mode), verified.
+	if res.Phase == wtResRequested || res.Phase == wtResRepoCommitted {
+		if err := worktreeCleanupEffect(ctx, mgr, repoDir, b, mode); err != nil {
+			return fail(res, "cleanup effect failed: "+err.Error())
+		}
+		prev := res.Phase
+		res.Phase = wtResCleanupCommitted
+		if err := s.persistWorktreeResolution(rs, res); err != nil {
+			res.Phase = prev
+			return fail(res, "cannot persist resolution phase: "+err.Error())
+		}
+	}
+
+	// Phase: finalize — the terminal state is persisted BEFORE success is
+	// reported and before worktree_resolved is emitted.
+	if e := s.finalizeWorktreeResolution(rs, terminal); e != nil {
+		return fail(res, "cannot finalize resolution durably: "+e.msg)
+	}
+	extra := map[string]any{"resolutionId": res.ID}
+	switch mode {
+	case "apply_patch":
+		extra["applied"] = applied
+	case "keep_branch":
+		extra["branch"] = b.Branch
+	}
+	return respond(terminal, extra)
+}
+
+// persistWorktreeResolution writes the resolution intent onto the binding
+// durably. On store failure the in-memory binding is rolled back so RAM
+// never diverges from the session record.
+func (s *InteractiveService) persistWorktreeResolution(rs *interactiveRun, res *worktreeResolution) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	prev := rs.worktree.Resolution
+	cp := *res
+	rs.worktree.Resolution = &cp
+	if err := s.persistRunWorktreeLocked(rs); err != nil {
+		rs.worktree.Resolution = prev
+		return err
+	}
+	return nil
+}
+
+// finalizeWorktreeResolution commits the terminal binding state durably
+// (state + cleared intent), then emits worktree_resolved. On persist failure
+// the in-memory binding is rolled back and no event is emitted — the caller
+// reports a retryable failure, not success (BUG-481).
+func (s *InteractiveService) finalizeWorktreeResolution(rs *interactiveRun, terminal string) *apiErr {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if rs.worktree == nil {
+		return newAPIErr(http.StatusConflict, "worktree_not_found", "run has no worktree binding")
+	}
+	prev := *rs.worktree
+	rs.worktree.State = terminal
+	rs.worktree.Resolution = nil
+	if err := s.persistRunWorktreeLocked(rs); err != nil {
+		*rs.worktree = prev
+		return newAPIErr(http.StatusServiceUnavailable, "worktree_resolution_failed",
+			"cannot persist terminal worktree state: "+err.Error())
+	}
+	s.emitLocked(rs, ProviderEvent{Type: EventWorktreeResolved, Input: map[string]any{
+		"ownerId": rs.worktree.OwnerID, "state": terminal, "branch": rs.worktree.Branch,
+	}})
+	return nil
+}
+
+// worktreeCleanupEffect performs the filesystem/Git effects of a destructive
+// resolution and verifies the post-conditions the terminal state will claim:
+// worktree dir and base sidecar gone, branch present iff keep_branch. Every
+// step is idempotent so a retry after a partial failure converges.
+func worktreeCleanupEffect(ctx context.Context, mgr worktreeOps, repoDir string, b *worktreeBinding, mode string) error {
+	keepBranch := mode == "keep_branch"
+	if err := mgr.Cleanup(ctx, repoDir, b.OwnerID, "", keepBranch); err != nil {
+		return fmt.Errorf("worktree cleanup: %w", err)
+	}
+	if mode == "apply_patch" {
+		if err := os.Remove(patchArtifactPath(repoDir, b.OwnerID)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove patch artifact: %w", err)
+		}
+	}
+	if !keepBranch && b.Branch != "" {
+		// Cleanup reads the branch from the worktree HEAD before removal —
+		// on a resume the worktree may already be gone, so delete the branch
+		// explicitly (idempotent: "not found" is success).
+		if out, err := exec.CommandContext(ctx, "git", "-C", repoDir, "branch", "-D", b.Branch).CombinedOutput(); err != nil &&
+			!strings.Contains(string(out), "not found") {
+			return fmt.Errorf("delete branch %s: %s", b.Branch, strings.TrimSpace(string(out)))
+		}
+	}
+	wtDir := b.Path
+	if wtDir == "" {
+		wtDir = worktree.Path(repoDir, b.OwnerID, "")
+	}
+	if _, err := os.Stat(wtDir); err == nil {
+		return fmt.Errorf("cleanup incomplete: worktree dir still present: %s", wtDir)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("verify worktree dir removal: %w", err)
+	}
+	if _, err := os.Stat(worktree.BaseSidecar(repoDir, b.OwnerID, "")); err == nil {
+		return errors.New("cleanup incomplete: base sidecar still present")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("verify sidecar removal: %w", err)
+	}
+	if b.Branch != "" {
+		out, err := exec.CommandContext(ctx, "git", "-C", repoDir, "rev-parse", "--verify", b.Branch).CombinedOutput()
+		if keepBranch && err != nil {
+			return fmt.Errorf("cleanup incomplete: kept branch %s missing: %s", b.Branch, strings.TrimSpace(string(out)))
+		}
+		if !keepBranch && err == nil {
+			return fmt.Errorf("cleanup incomplete: branch %s still present", b.Branch)
+		}
+	}
+	return nil
+}
+
+// gitApplyCheckReverse reports whether patch is already applied to repoDir:
+// `git apply --check --reverse` succeeds only when the forward changes are
+// present. It distinguishes "patch landed before the crash" from a real
+// merge conflict on resolution resume (BUG-481).
+func gitApplyCheckReverse(ctx context.Context, repoDir string, patch []byte) bool {
+	if len(bytes.TrimSpace(patch)) == 0 {
+		return false
+	}
+	cmd := exec.CommandContext(ctx, "git", "-C", repoDir, "apply", "--check", "--reverse", "-")
+	cmd.Stdin = bytes.NewReader(patch)
+	return cmd.Run() == nil
 }
 
 func patchArtifactPath(repoDir, ownerID string) string {
@@ -340,10 +602,88 @@ func (s *InteractiveService) worktreeDeleteGate(runID, mode string) *apiErr {
 	return nil
 }
 
+// worktreeGCVerdict is the three-state outcome of consulting persisted
+// binding authorities for one worktree owner (BUG-473): the sweep may delete
+// only on gcOrphan. "Could not check" is never "safe to delete".
+type worktreeGCVerdict int
+
+const (
+	gcOrphan  worktreeGCVerdict = iota // every consulted authority proved no live binding
+	gcBound                            // an active/merge_pending/resumable/lost binding exists
+	gcUnknown                          // an authority could not be read or was corrupt — fail closed
+)
+
+// worktreeGCVerdictFor resolves one owner's binding status against the
+// persisted stores. Chat-owned bindings are proved via the chat-leg list;
+// flow-owned bindings via the run session record — a failed chat lookup is
+// never re-read as "not found" through the run lookup. Any read error or a
+// matching row with a zero/corrupt state yields gcUnknown. A store that
+// cannot answer a binding class at all also yields gcUnknown: GC requires a
+// positive proof of orphan-hood.
+func (s *InteractiveService) worktreeGCVerdictFor(ctx context.Context, ownerID string) worktreeGCVerdict {
+	consulted := false
+	if reader, ok := s.workflowStore.(ChatSessionReader); ok {
+		consulted = true
+		rows, err := reader.ListProviderSessionsByChat(ctx, ownerID)
+		if err != nil {
+			return gcUnknown
+		}
+		for _, row := range rows {
+			if row.WorktreeOwnerID != ownerID {
+				continue
+			}
+			switch row.WorktreeState {
+			case "discarded", "merged":
+				// Resolved binding — does not protect the dir; keep looking.
+			case "":
+				return gcUnknown // partially-written/corrupt record
+			default:
+				return gcBound
+			}
+		}
+	}
+	if reader, ok := s.workflowStore.(SessionHistoryReader); ok {
+		consulted = true
+		row, found, err := reader.GetProviderSession(ctx, ownerID)
+		if err != nil {
+			return gcUnknown
+		}
+		if found && row.WorktreeOwnerID == ownerID {
+			switch row.WorktreeState {
+			case "discarded", "merged":
+			case "":
+				return gcUnknown
+			default:
+				return gcBound
+			}
+		}
+	}
+	if !consulted {
+		return gcUnknown // no authority can prove orphan-hood — fail closed
+	}
+	return gcOrphan
+}
+
+// removeWorktreeDir deletes a proven-orphan worktree dir: `git worktree
+// remove` when it is registered, os.RemoveAll for the unregistered dirs this
+// GC usually targets. An error means data may remain — the caller must not
+// report a prune.
+func removeWorktreeDir(repoDir, path string) error {
+	if _, err := exec.Command("git", "-C", repoDir, "worktree", "remove", "--force", path).CombinedOutput(); err == nil {
+		return nil
+	}
+	return os.RemoveAll(path)
+}
+
 // sweepOrphanedWorktrees is the boot-time GC (SD-27 §8, Task-411 T-3): prune
 // worktree dirs whose owner has no live or persisted binding — never touching
 // tournament candidates (candidate-* prefix, owned by Task-369 lifecycle) or
 // owners whose binding is active/merge_pending/resumable.
+//
+// BUG-473: deletion requires a proven orphan verdict. Store read errors,
+// corrupt rows, or a store that cannot answer a binding class defer the
+// owner (gc_deferred diagnostic) — never prune on "authority unavailable".
+// A prune is logged only after the removal actually succeeded.
 func (s *InteractiveService) sweepOrphanedWorktrees(ctx context.Context) {
 	repoDir := ""
 	if s.runner != nil {
@@ -375,36 +715,19 @@ func (s *InteractiveService) sweepOrphanedWorktrees(ctx context.Context) {
 		}
 		// Persisted sessions may bind this owner even when the run is not
 		// resident — merge_pending and resumable owners are never GC'd.
-		bound := false
-		if reader, ok := s.workflowStore.(ChatSessionReader); ok {
-			if rows, rerr := reader.ListProviderSessionsByChat(ctx, ownerID); rerr == nil {
-				for _, row := range rows {
-					if row.WorktreeOwnerID == ownerID && row.WorktreeState != "" &&
-						row.WorktreeState != "discarded" && row.WorktreeState != "merged" {
-						bound = true
-						break
-					}
-				}
-			}
-		}
-		// Flow-run owners are keyed by runId (not chatId) — check the session
-		// record directly when the chat lookup found nothing.
-		if !bound {
-			if reader, ok := s.workflowStore.(SessionHistoryReader); ok {
-				if row, found, rerr := reader.GetProviderSession(ctx, ownerID); rerr == nil && found &&
-					row.WorktreeOwnerID == ownerID && row.WorktreeState != "" &&
-					row.WorktreeState != "discarded" && row.WorktreeState != "merged" {
-					bound = true
-				}
-			}
-		}
-		if bound {
+		switch s.worktreeGCVerdictFor(ctx, ownerID) {
+		case gcBound:
+			continue
+		case gcUnknown:
+			log.Printf("[worktree-gc] gc_deferred owner=%s (binding authority unreadable or corrupt)", ownerID)
 			continue
 		}
-		// Orphan: remove dir + sidecars, keep an audit line.
+		// Proven orphan: remove dir + sidecars, log pruned only on success.
 		path := filepath.Join(root, ownerID)
-		_ = exec.Command("git", "-C", repoDir, "worktree", "remove", "--force", path).Run()
-		_ = os.RemoveAll(path)
+		if err := removeWorktreeDir(repoDir, path); err != nil {
+			log.Printf("[worktree-gc] gc_failed owner=%s path=%s err=%v", ownerID, path, err)
+			continue
+		}
 		_ = os.Remove(worktree.BaseSidecar(repoDir, ownerID, ""))
 		_ = os.Remove(patchArtifactPath(repoDir, ownerID))
 		log.Printf("[worktree-gc] pruned orphan worktree owner=%s path=%s", ownerID, path)
@@ -421,9 +744,11 @@ func (s *InteractiveService) handleWorktreeResolve(w http.ResponseWriter, r *htt
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	out, e := s.resolveWorktree(r.Context(), r.PathValue("runId"), body.Mode, body.Confirm)
 	if e != nil {
-		// Conflict responses still carry the evidence payload for the card.
+		// Conflict/resolution responses still carry the evidence payload for
+		// the card (BUG-481: resolutionId + durable phase for the client).
 		if e.code == "worktree_merge_conflict" || e.code == "worktree_discard_confirm" ||
-			e.code == "worktree_keep_branch_confirm" {
+			e.code == "worktree_keep_branch_confirm" || e.code == "worktree_resolution_failed" ||
+			e.code == "worktree_resolution_conflict" || e.code == "worktree_already_resolved" {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(e.status)
 			_ = json.NewEncoder(w).Encode(out)

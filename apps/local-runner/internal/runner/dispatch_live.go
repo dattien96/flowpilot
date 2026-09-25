@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math/rand/v2"
 	"os"
 	"strings"
 	"sync"
@@ -673,35 +674,93 @@ func (s *InteractiveService) reconcileDispatchTurn(ctx context.Context, runID, t
 // query-by-operation-id, so those records correctly fall through to
 // CommitRecoveryUnknownOrRequireCancel (uncertain/cancel-required), matching
 // the Task-257 evidenced guarantee class for every enabled provider.
+var (
+	// BUG-484: bounded in-process retry for the boot recovery pass. A
+	// transient store outage must not wedge non-terminal records until the
+	// next restart (CP-51 INV-5). Vars (not consts) so tests can shrink the
+	// backoff window.
+	dispatchRecoveryRetryBase   = 500 * time.Millisecond
+	dispatchRecoveryRetryCap    = 30 * time.Second
+	dispatchRecoveryMaxAttempts = 8
+)
+
 func (s *InteractiveService) ScanDispatchRecoveryOnBoot(ctx context.Context) {
 	if s == nil || s.dispatchStore == nil {
 		return
 	}
+	if !s.recoveryScanRunning.CompareAndSwap(false, true) {
+		return // single-flight — one recovery coordinator per service
+	}
+	defer s.recoveryScanRunning.Store(false)
+
+	backoff := dispatchRecoveryRetryBase
+	for attempt := 1; attempt <= dispatchRecoveryMaxAttempts; attempt++ {
+		err := s.dispatchRecoveryPass(ctx)
+		if err == nil {
+			if attempt > 1 {
+				log.Printf("[dispatch-recovery] pass succeeded after %d attempts", attempt)
+			}
+			return
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		if attempt == dispatchRecoveryMaxAttempts {
+			log.Printf("[dispatch-recovery] pass still failing after %d attempts: %v — records remain for operator attention / next trigger", dispatchRecoveryMaxAttempts, err)
+			return
+		}
+		wait := backoff + time.Duration(rand.Int64N(int64(backoff)/4+1))
+		if wait > dispatchRecoveryRetryCap {
+			wait = dispatchRecoveryRetryCap
+		}
+		log.Printf("[dispatch-recovery] pass %d failed: %v — retrying in %s", attempt, err, wait)
+		t := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			return
+		case <-t.C:
+		}
+		backoff *= 2
+	}
+}
+
+// dispatchRecoveryPass is one full recovery enumeration: scanner over every
+// non-terminal record plus the settle drive. Any enumeration or per-record
+// failure marks the pass failed so the coordinator retries it (BUG-484).
+func (s *InteractiveService) dispatchRecoveryPass(ctx context.Context) error {
 	sc := &RecoveryScanner{
 		Store:                   s.dispatchStore,
 		Owner:                   "boot-recovery-scanner",
 		EnsureLiveAndRedispatch: s.ensureLiveAndRedispatch,
 	}
+	var failed error
 	if err := sc.ScanAllRecoverable(ctx); err != nil {
 		log.Printf("[dispatch-recovery] boot scan failed: %v", err)
+		failed = err
 	}
 	// Task-251 T-1/T-3: production settle drive with EvaluateGate (fail-closed
 	// when gate still pending — schedules resumePendingFlowGate instead of
 	// default-allow). RetrySettleWithBackoff is the sole boot settle driver.
-	s.drivePendingSettlesOnBoot(ctx)
+	if err := s.drivePendingSettlesOnBoot(ctx); err != nil && failed == nil {
+		failed = err
+	}
+	return failed
 }
 
 // drivePendingSettlesOnBoot walks terminal+settle_owed records and drives
 // SettleDriver with production EvaluateGate (Task-251). Gate-pending turns
 // are handed to resumePendingFlowGate; others RetrySettleWithBackoff.
-func (s *InteractiveService) drivePendingSettlesOnBoot(ctx context.Context) {
+// Returns the enumeration error so the recovery coordinator can retry
+// (BUG-484); callers that don't need it may ignore the return.
+func (s *InteractiveService) drivePendingSettlesOnBoot(ctx context.Context) error {
 	if s == nil || s.dispatchStore == nil {
-		return
+		return nil
 	}
 	list, err := s.dispatchStore.ListRecoverable(ctx, "")
 	if err != nil {
 		log.Printf("[dispatch-settle] boot list recoverable: %v", err)
-		return
+		return err
 	}
 	n := 0
 	for _, rec := range list {
@@ -734,6 +793,7 @@ func (s *InteractiveService) drivePendingSettlesOnBoot(ctx context.Context) {
 	if n > 0 {
 		log.Printf("[dispatch-settle] boot drive: %d terminal+settle_owed queued", n)
 	}
+	return nil
 }
 
 // ensureLiveAndRedispatch reconstructs runID into RAM if it is not already

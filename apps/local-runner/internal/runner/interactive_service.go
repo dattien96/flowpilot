@@ -92,6 +92,11 @@ type InteractiveService struct {
 	// treats it as "no diagnostics" with zero behavior change. Tests inject
 	// fakes here; production falls back to lsp.DefaultSet().
 	lspChecker lspChecker
+	// wtOps overrides the worktree manager used by resolveWorktree (BUG-472
+	// fault-injection seam). Nil selects the real worktree.NewManager();
+	// tests inject a wrapper to force Git inspection failures without
+	// breaking the filesystem under test.
+	wtOps worktreeOps
 
 	// scaffoldDispatcherFactory overrides scaffold-dispatcher construction
 	// (CP-68 / Task-385). Nil means the production wiring,
@@ -180,6 +185,10 @@ type InteractiveService struct {
 	// must strictly increase whenever meaningful lane state changes — rs.seq
 	// alone fails (dispatch settles don't bump it). Guarded by s.mu.
 	runUpdateSeq int64
+
+	// recoveryScanRunning is the single-flight guard for the boot recovery
+	// coordinator (BUG-484): only one bounded-retry pass loop may run.
+	recoveryScanRunning atomic.Bool
 }
 
 type interactiveRun struct {
@@ -2254,6 +2263,31 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 			s.continueVibeSprintBoundary(parentRunID, normalizeBoundaryNote(feedback))
 			return s.agentGraphSnapshot(parentRunID), nil
 		}
+	}
+	// BUG-480 (live run-37268): a mounted vibeResumeConfirm gate owns this
+	// run's decision surface, but generic Continue fell through to the
+	// unblock+hub-reinvoke below — the loop ran while the gate stayed
+	// mounted. Route unambiguous ok/continue/cancel through the gate's own
+	// consumer (SubmitGateDecision); ambiguous prose gets a typed
+	// pending_gate_decision conflict with NOTHING unblocked.
+	s.mu.Lock()
+	resumeConfirmMounted := s.runs[parentRunID] != nil && s.runs[parentRunID].vibeResumeConfirm
+	s.mu.Unlock()
+	if resumeConfirmMounted {
+		opt := ""
+		switch strings.ToLower(feedback) {
+		case "", "ok", "continue":
+			opt = "ok"
+		case "cancel":
+			opt = "cancel"
+		default:
+			return AgentGraphSnapshot{}, newAPIErr(409, "pending_gate_decision",
+				"run is parked on a resume-confirm gate; submit a gate option (ok/cancel) via gate-decision")
+		}
+		if e := s.SubmitGateDecision(parentRunID, opt, feedback); e != nil {
+			return AgentGraphSnapshot{}, e
+		}
+		return s.agentGraphSnapshot(parentRunID), nil
 	}
 	// BUG-414: a tournament decision card's captured choice routes into the
 	// tournament execution path (merge the picked candidate / retry the
@@ -4770,6 +4804,13 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 		PreflightDraftResult:      rs.preflightDraftResult,
 		LastFailedDelegateNodeID:  rs.lastFailedDelegateNodeID,
 		LastEscalatedInlineNodeID: rs.lastEscalatedInlineNodeID,
+		// BUG-478: the parked merge card is only durable if its inputs are —
+		// patches, winner, attempt counter and the card itself.
+		TournamentWinner:   rs.tournamentWinner,
+		TournamentPatches:  copyStringMap(rs.tournamentPatches),
+		TournamentAttempt:  rs.tournamentAttempt,
+		DecisionCard:       rs.decisionCard,
+		DecisionCardChosen: rs.decisionCardChosen,
 	}
 	// The binding rides every status write: sessions are append-only with
 	// last-wins reads, so a row missing the fields erases the binding and

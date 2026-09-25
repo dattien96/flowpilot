@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"fmt"
+	"log"
 	"sort"
 	"strconv"
 	"strings"
@@ -647,17 +648,22 @@ func realtimeFingerprint(p RunRealtimeProjection) string {
 // dispatchAttentionByRun reads the durable dispatch store OUTSIDE s.mu — the
 // store is the authority; rs.dispatch is a mirror written by turn goroutines
 // without s.mu and must not be iterated here (CP-84 race review).
-func dispatchAttentionByRun(store DispatchStore) map[string][]AttentionItem {
+// BUG-475: a read failure is NOT an empty set — the error propagates so
+// callers can fail closed (retryable resync) instead of emitting a
+// decision-clearing frame built on an unreadable authority.
+func dispatchAttentionByRun(store DispatchStore) (map[string][]AttentionItem, error) {
 	byRun := map[string][]AttentionItem{}
 	if store == nil {
-		return byRun
+		return byRun, nil // no dispatch authority configured — not a failure
 	}
-	if list, err := store.ListAttention(context.Background()); err == nil {
-		for _, item := range list {
-			byRun[item.RunID] = append(byRun[item.RunID], item)
-		}
+	list, err := store.ListAttention(context.Background())
+	if err != nil {
+		return nil, err
 	}
-	return byRun
+	for _, item := range list {
+		byRun[item.RunID] = append(byRun[item.RunID], item)
+	}
+	return byRun, nil
 }
 
 func sortDecisions(ds []DecisionPayload) {
@@ -701,7 +707,20 @@ func (s *InteractiveService) subscribeRunUpdates() (int64, <-chan struct{}, []Ru
 	}
 	s.mu.Unlock()
 
-	byRun := dispatchAttentionByRun(store)
+	byRun, attErr := dispatchAttentionByRun(store)
+	if attErr != nil {
+		// BUG-475 fail-closed: a snapshot built without the dispatch
+		// authority would project "no dispatch attention" and let the client
+		// reconcile away live repair/uncertain/cancel items. Register the
+		// subscriber as retryable-closed and return no lanes — the handler
+		// answers with a resync, never a decision-clearing snapshot.
+		log.Printf("[mux] subscriber %d snapshot deferred: dispatch attention authority unreadable", sub.id)
+		s.mu.Lock()
+		sub.closed = true
+		sub.retryable = true
+		s.mu.Unlock()
+		return sub.id, sub.wake, nil
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -732,6 +751,17 @@ func (s *InteractiveService) unsubscribeRunUpdates(subID int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.runUpdateSubs, subID)
+}
+
+// runUpdateSubRetryableClosed reports whether the subscriber was registered
+// already closed-retryable (BUG-475: dispatch authority unreadable at
+// subscribe). The handler answers such a subscriber with a resync frame
+// instead of a snapshot.
+func (s *InteractiveService) runUpdateSubRetryableClosed(subID int64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sub := s.runUpdateSubs[subID]
+	return sub != nil && sub.closed && sub.retryable
 }
 
 // runUpdateSubCount reports the live subscriber count (T-7 telemetry).
@@ -821,10 +851,21 @@ func (s *InteractiveService) drainRunUpdates(subID int64) []RunRealtimeFrame {
 	store := s.dispatchStore
 	s.mu.Unlock()
 
-	byRun := dispatchAttentionByRun(store)
+	byRun, attErr := dispatchAttentionByRun(store)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if attErr != nil {
+		// BUG-475 fail-closed: commit nothing derived from an unreadable
+		// authority — fps/removed/dirty are left untouched and the subscriber
+		// is closed retryable so the client re-snapshots against a healed
+		// store. A terminal repair-required lane is never tombstoned here.
+		log.Printf("[mux] subscriber %d drain deferred: dispatch attention authority unreadable", subID)
+		sub.closed = true
+		sub.retryable = true
+		delete(s.runUpdateSubs, subID)
+		return []RunRealtimeFrame{{Kind: RunRealtimeResync, Retryable: true}}
+	}
 	frames := make([]RunRealtimeFrame, 0, len(cands)+len(removes)+len(gates))
 	emitRemove := func(id string) {
 		if sub.removed[id] {

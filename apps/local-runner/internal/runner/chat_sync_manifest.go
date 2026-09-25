@@ -322,8 +322,12 @@ func ReadChatSyncManifest(data []byte) (isV2 bool, v2 ChatSyncManifest, v1 ChatS
 	if err := json.Unmarshal(data, &probe); err != nil {
 		return false, ChatSyncManifest{}, ChatSessionSyncManifest{}, fmt.Errorf("decode manifest probe: %w", err)
 	}
-	// Prefer v2 when chatId is present or schemaVersion is 2.
-	if strings.TrimSpace(probe.ChatID) != "" || probe.SchemaVersion == chatSyncManifestSchemaVersion {
+	// Prefer v2 when chatId is present or schemaVersion is 2 — but only for
+	// CHAT-level blobs. A run-level (v1) manifest always carries sourceRunId
+	// and, since BUG-476, may also carry chatId as leg identity; without this
+	// disambiguator such a leg manifest would mis-decode as v2.
+	if strings.TrimSpace(probe.SourceRunID) == "" &&
+		(strings.TrimSpace(probe.ChatID) != "" || probe.SchemaVersion == chatSyncManifestSchemaVersion) {
 		var candidate ChatSyncManifest
 		if err := json.Unmarshal(data, &candidate); err == nil {
 			if strings.TrimSpace(candidate.ChatID) != "" {

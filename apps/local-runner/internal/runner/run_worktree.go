@@ -19,6 +19,17 @@ import (
 	"flowpilot-runner/internal/worktree"
 )
 
+// worktreeResolution is the durable intent for one destructive merge
+// decision (BUG-481). It is persisted on the session binding BEFORE external
+// effects run and advanced monotonically; Phase is cleared together with the
+// intent at finalize. A kill/restart resumes from the durable phase so only
+// missing idempotent effects re-run.
+type worktreeResolution struct {
+	ID    string `json:"id,omitempty"`
+	Mode  string `json:"mode,omitempty"`
+	Phase string `json:"phase,omitempty"` // resolution_requested|repository_effect_committed|cleanup_committed
+}
+
 // worktreeBinding is the persisted run-record binding (SD-27 §5). All fields
 // are omitempty so toggle-off runs serialize byte-identically to before.
 type worktreeBinding struct {
@@ -28,8 +39,9 @@ type worktreeBinding struct {
 	BaseCommit string `json:"baseCommit,omitempty"`
 	Slug       string `json:"slug,omitempty"`
 	// State: none|active|merge_pending|merged|kept_branch|discarded|lost
-	State   string `json:"state,omitempty"`
-	Enabled bool   `json:"enabled,omitempty"`
+	State      string              `json:"state,omitempty"`
+	Enabled    bool                `json:"enabled,omitempty"`
+	Resolution *worktreeResolution `json:"resolution,omitempty"`
 }
 
 // worktreeView is the client-facing projection on runSnapshotView.
@@ -41,6 +53,10 @@ type worktreeView struct {
 	Slug       string `json:"slug,omitempty"`
 	State      string `json:"state,omitempty"`
 	Enabled    bool   `json:"enabled,omitempty"`
+	// Resolution exposes an in-flight destructive merge decision (BUG-481)
+	// so clients can render "resolution in progress" instead of a stale
+	// card. Additive — nil when no intent is recorded.
+	Resolution *worktreeResolution `json:"resolution,omitempty"`
 }
 
 // worktreeAllowedClients mirrors the working_mode client gate (SD-27 §6):
@@ -200,6 +216,14 @@ func worktreeFieldsToSession(st *ProviderSessionState, b *worktreeBinding) {
 	st.WorktreeSlug = b.Slug
 	st.WorktreeState = b.State
 	st.WorktreeEnabled = b.Enabled
+	st.WorktreeResolutionID = ""
+	st.WorktreeResolutionMode = ""
+	st.WorktreeResolutionPhase = ""
+	if b.Resolution != nil {
+		st.WorktreeResolutionID = b.Resolution.ID
+		st.WorktreeResolutionMode = b.Resolution.Mode
+		st.WorktreeResolutionPhase = b.Resolution.Phase
+	}
 }
 
 // worktreeBindingFromSession rebuilds the binding from a persisted record.
@@ -207,7 +231,7 @@ func worktreeBindingFromSession(st ProviderSessionState) *worktreeBinding {
 	if st.WorktreePath == "" && st.WorktreeOwnerID == "" {
 		return nil
 	}
-	return &worktreeBinding{
+	b := &worktreeBinding{
 		OwnerID:    st.WorktreeOwnerID,
 		Path:       st.WorktreePath,
 		Branch:     st.WorktreeBranch,
@@ -216,6 +240,14 @@ func worktreeBindingFromSession(st ProviderSessionState) *worktreeBinding {
 		State:      st.WorktreeState,
 		Enabled:    st.WorktreeEnabled,
 	}
+	if st.WorktreeResolutionID != "" {
+		b.Resolution = &worktreeResolution{
+			ID:    st.WorktreeResolutionID,
+			Mode:  st.WorktreeResolutionMode,
+			Phase: st.WorktreeResolutionPhase,
+		}
+	}
+	return b
 }
 
 // markChatWorktreeState updates the persisted worktree state on every session
@@ -253,6 +285,7 @@ func worktreeViewOf(b *worktreeBinding) *worktreeView {
 		BaseCommit: b.BaseCommit,
 		Slug:       b.Slug,
 		State:      b.State,
-		Enabled:    b.Enabled,
+		Enabled:   b.Enabled,
+		Resolution: b.Resolution,
 	}
 }

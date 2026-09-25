@@ -205,6 +205,24 @@ type ProviderSessionState struct {
 	WorktreeSlug       string `json:"worktreeSlug,omitempty"`
 	WorktreeState      string `json:"worktreeState,omitempty"`
 	WorktreeEnabled    bool   `json:"worktreeEnabled,omitempty"`
+	// BUG-481: durable resolution intent for a destructive merge decision.
+	// Written BEFORE external effects run and advanced monotonically
+	// (resolution_requested → repository_effect_committed →
+	// cleanup_committed → cleared on finalize) so a kill/restart resumes only
+	// the missing idempotent effects instead of reporting false success.
+	WorktreeResolutionID    string `json:"worktreeResolutionId,omitempty"`
+	WorktreeResolutionMode  string `json:"worktreeResolutionMode,omitempty"`
+	WorktreeResolutionPhase string `json:"worktreeResolutionPhase,omitempty"`
+	// BUG-478: the tournament merge-stage park is only as durable as its
+	// inputs — the picked winner, the per-candidate patch snapshots, the
+	// bounded attempt counter, and the parked decision card (plus a captured
+	// but unconsumed choice) were RAM-only, so a restart dropped the card's
+	// actionable alternates and reverted to the unreachable-patches state.
+	TournamentWinner   string            `json:"tournamentWinner,omitempty"`
+	TournamentPatches  map[string]string `json:"tournamentPatches,omitempty"`
+	TournamentAttempt  int               `json:"tournamentAttempt,omitempty"`
+	DecisionCard       *UserDecisionCard `json:"decisionCard,omitempty"`
+	DecisionCardChosen string            `json:"decisionCardChosen,omitempty"`
 	// StepID / LastTurnStepID persist the execution-step context needed to
 	// restart a rehydrated approval/question turn after restart (V10R P1).
 	StepID         string
