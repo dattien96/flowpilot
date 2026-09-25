@@ -564,6 +564,53 @@ func formatHistoryChangedAt(it client.RunHistoryItem) string {
 	return formatQuotaResetAt(it.StartedAt)
 }
 
+// contextStatus is the client-tracked CP-86 pressure/compaction state for the
+// focused run's current leg (Task-444 T-5). Aware/ask tiers and the compacted
+// mark are inline status-line decorations — never modals, never cards.
+type contextStatus struct {
+	pressureTier string // "" | "aware" | "ask"
+	pressurePct  int    // rounded ratio*100 at the last pressure event
+	compacted    bool
+	compactPrev  int64
+	compactCur   int64
+}
+
+// formatContextStatus extends formatContextLimits with the Task-444 surfaces:
+// the labeled "prompt ~Nk est" figure (T-1), a "~NN%" pressure tint marker,
+// and the compacted glyph with prev→cur figures (T-2/T-3). The base formatter
+// stays byte-identical — the wrapper composes, never forks.
+func formatContextStatus(usage *client.TokenUsageSnapshot, fallbackWindow int64, st contextStatus) string {
+	line := formatContextLimits(usage, fallbackWindow)
+	if usage != nil && usage.EstPromptTokens != nil && *usage.EstPromptTokens > 0 {
+		est := fmt.Sprintf("prompt ~%s est", formatTokenCount(*usage.EstPromptTokens))
+		if line == "" {
+			line = est
+		} else {
+			line += " · " + est
+		}
+	}
+	if st.compacted {
+		mark := "compacted"
+		if st.compactPrev > 0 || st.compactCur > 0 {
+			mark = fmt.Sprintf("compacted %s→%s", formatTokenCount(st.compactPrev), formatTokenCount(st.compactCur))
+		}
+		if line != "" {
+			line += " · "
+		}
+		line += mark
+	}
+	if st.pressureTier != "" && st.pressurePct > 0 {
+		if line != "" {
+			line += " · "
+		}
+		line += fmt.Sprintf("!ctx ~%d%%", st.pressurePct)
+		if st.pressureTier == "ask" {
+			line += " — decision above"
+		}
+	}
+	return line
+}
+
 func formatContextLimits(usage *client.TokenUsageSnapshot, fallbackWindow int64) string {
 	if usage == nil {
 		if fallbackWindow > 0 {

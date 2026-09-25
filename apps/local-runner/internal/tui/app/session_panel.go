@@ -705,7 +705,7 @@ func (m *AppModel) renderSidebarStatusSection(w int) []string {
 		// looks empty; account appears once SessionDefaultsMsg binds it.
 		appendWrapped(styleStatus.Render(p))
 	}
-	if usage := formatContextLimits(m.lastTokens, m.modelContextWin); usage != "" {
+	if usage := formatContextStatus(m.lastTokens, m.modelContextWin, m.ctxStatus); usage != "" {
 		appendWrapped(usage)
 	}
 	return out

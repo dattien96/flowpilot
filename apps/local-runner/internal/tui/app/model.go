@@ -654,6 +654,13 @@ type AppModel struct {
 	providerAccounts []client.ProviderAccountSummary // for ChatInput-parity readiness
 	modelContextWin  int64
 	lastTokens       *client.TokenUsageSnapshot
+	// Task-444 T-5: CP-86 context pressure/compaction marks for the focused
+	// run's current leg — inline status-line decorations, never modals.
+	// ctxStatusLegID pins the marks to one provider session; a leg change
+	// (rotate_leg / provider switch) resets them so stale marks never bleed
+	// onto the fresh leg.
+	ctxStatus      contextStatus
+	ctxStatusLegID string
 	agentRuns        []client.AgentRunSummary
 	focusedAgentIdx  int
 	stepID           string // synthetic chat step from StartRun / Resume

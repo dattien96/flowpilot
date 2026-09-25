@@ -167,6 +167,20 @@ type TokenUsageSnapshot struct {
 	Last               *TokenUsageBreakdown `json:"last,omitempty"`
 	Total              *TokenUsageBreakdown `json:"total,omitempty"`
 	ModelContextWindow *int64               `json:"modelContextWindow,omitempty"`
+	// EstPromptTokens is the runner's heuristic prompt-size estimate
+	// (Task-444 T-1) — rendered "prompt ~Nk est", distinct from usage.
+	EstPromptTokens *int64 `json:"estPromptTokens,omitempty"`
+}
+
+// ContextPressurePayload mirrors the runner's context_pressure /
+// provider_compacted payload (Task-443/444, flag-gated FLOWPILOT_CONTEXT_PRESSURE).
+type ContextPressurePayload struct {
+	Tier         string  `json:"tier"` // "aware" | "ask"
+	Ratio        float64 `json:"ratio"`
+	UsedTokens   int64   `json:"usedTokens"`
+	WindowTokens int64   `json:"windowTokens"`
+	PrevTokens   int64   `json:"prevTokens,omitempty"`
+	LegID        string  `json:"legId,omitempty"`
 }
 
 // AgentRunSummary summarises a single agent run inside an agent graph.
@@ -507,6 +521,8 @@ type ProviderEvent struct {
 	Seq                int64    `json:"seq"`
 	Type               string   `json:"type"`
 	WorkflowRunID      string   `json:"workflowRunId"`
+	// ProviderSessionID pins pressure/compaction marks to one leg (Task-444).
+	ProviderSessionID string   `json:"providerSessionId,omitempty"`
 	ProviderTurnID     string   `json:"providerTurnId,omitempty"`
 	ProviderKey        string   `json:"providerKey"`
 	Text               string   `json:"text,omitempty"`
@@ -532,6 +548,9 @@ type ProviderEvent struct {
 	OccurredAt   string            `json:"occurredAt"`
 	// TokenUsage is present on token_usage_updated events.
 	TokenUsage *TokenUsageSnapshot `json:"tokenUsage,omitempty"`
+	// ContextPressure is present on context_pressure / provider_compacted
+	// events (Task-444 T-5) — inline awareness markers, never cards.
+	ContextPressure *ContextPressurePayload `json:"contextPressure,omitempty"`
 	// AgentGraph is present on agent_graph_updated events (legacy runner name).
 	AgentGraph *AgentGraphSnapshot `json:"agentGraph,omitempty"`
 	// AgentGraphSnapshot is the canonical desktop-aligned name ("agentGraphSnapshot").

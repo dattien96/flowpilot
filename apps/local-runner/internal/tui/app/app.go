@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -2093,6 +2094,19 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// trackCtxLeg pins ctxStatus marks to one provider session. A leg change
+// (rotate_leg / provider switch mints a fresh providerSessionID) resets the
+// marks so stale pressure/compaction never bleeds onto the new leg.
+func (m *AppModel) trackCtxLeg(sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	if m.ctxStatusLegID != sessionID {
+		m.ctxStatus = contextStatus{}
+		m.ctxStatusLegID = sessionID
+	}
+}
+
 func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 	switch ev.Type {
 	case "message_delta":
@@ -2316,10 +2330,47 @@ func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 
 	case "token_usage_updated":
 		if ev.TokenUsage != nil {
+			m.trackCtxLeg(ev.ProviderSessionID)
 			m.lastTokens = ev.TokenUsage
 			if ev.TokenUsage.ModelContextWindow != nil && *ev.TokenUsage.ModelContextWindow > 0 {
 				m.modelContextWin = *ev.TokenUsage.ModelContextWindow
 			}
+			// Task-444 T-2: the aware mark clears when a later usage event
+			// drops below the tier; compaction is a fact — stays pinned.
+			if m.ctxStatus.pressureTier != "" && ev.TokenUsage.ModelContextWindow != nil && *ev.TokenUsage.ModelContextWindow > 0 {
+				var used int64
+				if ev.TokenUsage.Total != nil {
+					used = ev.TokenUsage.Total.TotalTokens
+				} else if ev.TokenUsage.Last != nil {
+					used = ev.TokenUsage.Last.TotalTokens
+				}
+				if float64(used)/float64(*ev.TokenUsage.ModelContextWindow) < 0.8 {
+					m.ctxStatus.pressureTier = ""
+					m.ctxStatus.pressurePct = 0
+				}
+			}
+		}
+
+	case "context_pressure":
+		// Task-444 T-2/T-5: awareness tier → status-line marker only. The
+		// ask-tier decision card arrives via user_question_required — no new
+		// card surface here.
+		if ev.ContextPressure != nil {
+			m.trackCtxLeg(ev.ProviderSessionID)
+			m.ctxStatus.pressureTier = ev.ContextPressure.Tier
+			m.ctxStatus.pressurePct = int(math.Round(ev.ContextPressure.Ratio * 100))
+		}
+
+	case "provider_compacted":
+		// Task-444 T-3/T-5: pinned inline notice — the provider compressed the
+		// leg's context mid-turn; output may degrade.
+		if ev.ContextPressure != nil {
+			m.trackCtxLeg(ev.ProviderSessionID)
+			m.ctxStatus.compacted = true
+			m.ctxStatus.compactPrev = ev.ContextPressure.PrevTokens
+			m.ctxStatus.compactCur = ev.ContextPressure.UsedTokens
+			m.addMessage("system", fmt.Sprintf("provider compressed context (%s→%s) — leg output may degrade",
+				formatTokenCount(ev.ContextPressure.PrevTokens), formatTokenCount(ev.ContextPressure.UsedTokens)), "notice")
 		}
 
 	case "agent_graph_updated":
