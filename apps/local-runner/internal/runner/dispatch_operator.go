@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -310,6 +311,10 @@ func dispatchOperatorErr(err error) *apiErr {
 	case errors.Is(err, ErrStaleDispatch), errors.Is(err, ErrIllegalTransition), errors.Is(err, ErrReceiptConflict), errors.Is(err, ErrEffectConflict), errors.Is(err, ErrRepairNotOpen):
 		return newAPIErr(http.StatusConflict, "dispatch_conflict", err.Error())
 	default:
+		// BUG-499 follow-up: a failed durable commit reached the caller as a
+		// 502 but left no server-side trace — log it so operator-visible
+		// durability failures are diagnosable after the fact.
+		log.Printf("[dispatch] operator mutation failed: %v", err)
 		return newAPIErr(http.StatusBadGateway, "dispatch_operator_error", err.Error())
 	}
 }
