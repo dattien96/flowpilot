@@ -44,16 +44,16 @@ contexts:
 contextProfiles:
   scout:
     candidateSources: [conventions, knowledge.flow, canonical.head, feature.history]
-    maxTokens: 6000
+    maxEstPromptTokens: 6000
   plan_writer:
     candidateSources: [conventions, knowledge.flow, canonical.head, feature.history, change.contract, source.excerpt]
-    maxTokens: 16000
+    maxEstPromptTokens: 16000
   reviewer:
     candidateSources: [conventions, change.contract, source.excerpt]
-    maxTokens: 12000
+    maxEstPromptTokens: 12000
   coder:
     candidateSources: [conventions, canonical.head, change.contract, source.dependence, source.excerpt]
-    maxTokens: 24000
+    maxEstPromptTokens: 24000
 tools:
   - tools/submit-review-outcome.yaml
 acceptance_nodes:

@@ -27,13 +27,13 @@ tools:
 contextProfiles:
   scout:
     candidateSources: [conventions, canonical.head, feature.history]
-    maxTokens: 6000
+    maxEstPromptTokens: 6000
   coder:
     candidateSources: [conventions, canonical.head, change.contract, source.dependence, source.excerpt]
-    maxTokens: 24000
+    maxEstPromptTokens: 24000
   tdd:
     candidateSources: [conventions, canonical.head, change.contract, source.excerpt]
-    maxTokens: 12000
+    maxEstPromptTokens: 12000
 acceptance_nodes:
   - validate
   - synthesis

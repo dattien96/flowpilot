@@ -53,16 +53,20 @@ contexts:
 contextProfiles:
   scout:
     candidateSources: [conventions, knowledge.flow, canonical.head, feature.history]
-    maxTokens: 6000
+    maxEstPromptTokens: 6000
   plan_writer:
     candidateSources: [conventions, knowledge.flow, canonical.head, feature.history, change.contract, source.excerpt]
-    maxTokens: 16000
+    maxEstPromptTokens: 16000
   reviewer:
     candidateSources: [conventions, change.contract, source.excerpt]
-    maxTokens: 12000
+    maxEstPromptTokens: 12000
   coder:
     candidateSources: [conventions, canonical.head, change.contract, source.dependence, source.excerpt]
-    maxTokens: 24000
+    maxEstPromptTokens: 24000
+    # CP-86 P-3 (Task-442): real provider-reported usage cap per invocation.
+    # Exceeding is a decision point (extend/rotate/stop card), not a bug —
+    # post-turn check only, the in-flight turn always completes.
+    maxUsageTokens: 500000
 tools:
   - tools/submit-review-outcome.yaml
   # CP-67 P-5 (Task-378): Contract-First TDD handover faces.

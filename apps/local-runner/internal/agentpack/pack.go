@@ -127,7 +127,10 @@ type FlowContextBinding struct {
 type ContextProfile struct {
 	Name             string
 	CandidateSources []string
-	MaxTokens        int
+	MaxEstPromptTokens int
+	// MaxUsageTokens caps REAL provider-reported consumption per node
+	// invocation (cumulative Total.TotalTokens). 0 = uncapped.
+	MaxUsageTokens int
 }
 
 type FlowNode struct {
@@ -798,10 +801,14 @@ func flowFromMap(m map[string]any) (FlowDefinition, error) {
 			if !isMap {
 				return FlowDefinition{}, fmt.Errorf("flow %q contextProfiles.%q must be a map", def.ID, name)
 			}
+			if _, legacy := pm["maxTokens"]; legacy {
+				return FlowDefinition{}, fmt.Errorf("flow %q contextProfiles.%q uses removed key maxTokens; rename to maxEstPromptTokens", def.ID, name)
+			}
 			def.ContextProfiles[name] = ContextProfile{
 				Name:             name,
 				CandidateSources: stringSliceField(pm, "candidateSources"),
-				MaxTokens:        intField(pm, "maxTokens"),
+				MaxEstPromptTokens: intField(pm, "maxEstPromptTokens"),
+				MaxUsageTokens:   intField(pm, "maxUsageTokens"),
 			}
 		}
 	}
