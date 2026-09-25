@@ -4779,6 +4779,13 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 		PreflightDraftResult:      rs.preflightDraftResult,
 		LastFailedDelegateNodeID:  rs.lastFailedDelegateNodeID,
 		LastEscalatedInlineNodeID: rs.lastEscalatedInlineNodeID,
+		// BUG-478: the parked merge card is only durable if its inputs are —
+		// patches, winner, attempt counter and the card itself.
+		TournamentWinner:   rs.tournamentWinner,
+		TournamentPatches:  copyStringMap(rs.tournamentPatches),
+		TournamentAttempt:  rs.tournamentAttempt,
+		DecisionCard:       rs.decisionCard,
+		DecisionCardChosen: rs.decisionCardChosen,
 	}
 	// The binding rides every status write: sessions are append-only with
 	// last-wins reads, so a row missing the fields erases the binding and

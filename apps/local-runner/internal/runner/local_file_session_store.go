@@ -160,6 +160,13 @@ type ndjsonSessionRecord struct {
 	WorktreeResolutionID            string   `json:"worktree_resolution_id,omitempty"`
 	WorktreeResolutionMode          string   `json:"worktree_resolution_mode,omitempty"`
 	WorktreeResolutionPhase         string   `json:"worktree_resolution_phase,omitempty"`
+	// BUG-478: parked tournament merge state must survive restart — see
+	// ProviderSessionState.
+	TournamentWinner   string            `json:"tournament_winner,omitempty"`
+	TournamentPatches  map[string]string `json:"tournament_patches,omitempty"`
+	TournamentAttempt  int               `json:"tournament_attempt,omitempty"`
+	DecisionCard       *UserDecisionCard `json:"decision_card,omitempty"`
+	DecisionCardChosen string            `json:"decision_card_chosen,omitempty"`
 	PendingResumePrompt             string   `json:"pending_resume_prompt,omitempty"`
 	PendingResumeStepID             string   `json:"pending_resume_step_id,omitempty"`
 	PendingResumeGen                int64    `json:"pending_resume_gen,omitempty"`
@@ -508,6 +515,11 @@ func sessionStateFromRecord(r ndjsonSessionRecord) ProviderSessionState {
 		TurnStartGitHead:                   r.TurnStartGitHead,
 		TurnStartWorktree:                  copyStringMap(r.TurnStartWorktree),
 		PendingGateChangedFiles:            append([]string(nil), r.PendingGateChangedFiles...),
+		TournamentWinner:                   r.TournamentWinner,
+		TournamentPatches:                  copyStringMap(r.TournamentPatches),
+		TournamentAttempt:                  r.TournamentAttempt,
+		DecisionCard:                       r.DecisionCard,
+		DecisionCardChosen:                 r.DecisionCardChosen,
 		StepID:                             r.StepID,
 		LastTurnStepID:                     r.LastTurnStepID,
 		PendingGateRepromptPrompt:          r.PendingGateRepromptPrompt,
@@ -997,6 +1009,11 @@ func sessionRecordFrom(s ProviderSessionState) ndjsonSessionRecord {
 		TurnStartGitHead:                   s.TurnStartGitHead,
 		TurnStartWorktree:                  copyStringMap(s.TurnStartWorktree),
 		PendingGateChangedFiles:            append([]string(nil), s.PendingGateChangedFiles...),
+		TournamentWinner:                   s.TournamentWinner,
+		TournamentPatches:                  copyStringMap(s.TournamentPatches),
+		TournamentAttempt:                  s.TournamentAttempt,
+		DecisionCard:                       s.DecisionCard,
+		DecisionCardChosen:                 s.DecisionCardChosen,
 		StepID:                             s.StepID,
 		LastTurnStepID:                     s.LastTurnStepID,
 		PendingGateRepromptPrompt:          s.PendingGateRepromptPrompt,

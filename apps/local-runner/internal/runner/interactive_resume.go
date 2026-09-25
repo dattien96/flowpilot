@@ -1002,6 +1002,13 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 		vibeParkedEdges:             append([]agentpack.FlowEdge(nil), st.VibeParkedEdges...),
 		vibeParkedAcceptance:        append([]string(nil), st.VibeParkedAcceptance...),
 		vibeParkedFlowRef:           st.VibeParkedFlowRef,
+		// BUG-478: parked merge card + patch snapshots were RAM-only — a
+		// restart dropped every actionable alternate.
+		tournamentWinner:   st.TournamentWinner,
+		tournamentPatches:  copyStringMap(st.TournamentPatches),
+		tournamentAttempt:  st.TournamentAttempt,
+		decisionCard:       st.DecisionCard,
+		decisionCardChosen: st.DecisionCardChosen,
 		pendingBatchSignatureByStep: copyBatchSignatureMap(st.PendingBatchSignatureByStep),
 		flowStartGitHead:            st.FlowStartGitHead,
 		pendingRestartRunID:         st.PendingRestartRunID,

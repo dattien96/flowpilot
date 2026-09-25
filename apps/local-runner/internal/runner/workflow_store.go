@@ -213,6 +213,16 @@ type ProviderSessionState struct {
 	WorktreeResolutionID    string `json:"worktreeResolutionId,omitempty"`
 	WorktreeResolutionMode  string `json:"worktreeResolutionMode,omitempty"`
 	WorktreeResolutionPhase string `json:"worktreeResolutionPhase,omitempty"`
+	// BUG-478: the tournament merge-stage park is only as durable as its
+	// inputs — the picked winner, the per-candidate patch snapshots, the
+	// bounded attempt counter, and the parked decision card (plus a captured
+	// but unconsumed choice) were RAM-only, so a restart dropped the card's
+	// actionable alternates and reverted to the unreachable-patches state.
+	TournamentWinner   string            `json:"tournamentWinner,omitempty"`
+	TournamentPatches  map[string]string `json:"tournamentPatches,omitempty"`
+	TournamentAttempt  int               `json:"tournamentAttempt,omitempty"`
+	DecisionCard       *UserDecisionCard `json:"decisionCard,omitempty"`
+	DecisionCardChosen string            `json:"decisionCardChosen,omitempty"`
 	// StepID / LastTurnStepID persist the execution-step context needed to
 	// restart a rehydrated approval/question turn after restart (V10R P1).
 	StepID         string

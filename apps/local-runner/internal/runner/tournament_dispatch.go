@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os/exec"
+	"sort"
 	"strings"
 
 	"flowpilot-runner/internal/agentpack"
@@ -381,7 +382,18 @@ func (s *InteractiveService) runTournamentMergeNode(ctx context.Context, parentR
 		s.finishTournamentRun(parentRunID, winner, out.Summary)
 		return true
 	}
-	// Conflict/escalate — park with the patch evidence.
+	// Conflict/escalate — park with the patch evidence AND an actionable
+	// decision card (BUG-478, live run-23455): the recorded patch snapshots
+	// keep every non-empty candidate mergeable even though the picked
+	// winner's diff was empty or conflicting, so the card must expose them —
+	// otherwise the operator's only way out is abandoning the run.
+	s.mu.Lock()
+	var patches map[string]string
+	if rs := s.runs[parentRunID]; rs != nil {
+		patches = rs.tournamentPatches
+	}
+	s.mu.Unlock()
+	card := tournamentMergeDecisionCard(out, winner, patches)
 	if s.isFlowEngineDriven(parentRunID) {
 		s.stampLastEscalatedInlineNode(parentRunID, node.ID)
 		s.setFlowStepStatus(ctx, parentRunID, node.ID, StepStatusWaitingUserApr)
@@ -389,7 +401,7 @@ func (s *InteractiveService) runTournamentMergeNode(ctx context.Context, parentR
 	if _, aerr := s.applyFlowControl(parentRunID, FlowControlInput{
 		Status:  "escalate",
 		Summary: out.Summary,
-		Payload: map[string]any{"tournament_merge": out.Payload},
+		Payload: map[string]any{"tournament_merge": out.Payload, "decision_card": card},
 	}); aerr != nil {
 		log.Printf("[tournament] merge-conflict escalate failed: %v", aerr)
 	}
@@ -445,6 +457,46 @@ func tournamentDecisionCard(out BehaviorOutput) map[string]any {
 	return map[string]any{
 		"kind":     DecisionCardKindTournament,
 		"question": "Tournament needs a decision — pick a winner, retry, or keep asking",
+		"detail":   out.Summary,
+		"options":  options,
+	}
+}
+
+// tournamentMergeDecisionCard renders the MERGE-stage escalate as a
+// request_user_decision card (BUG-478). Unlike the arbiter card — whose
+// options come from the verdict ranking — merge-stage options are derived
+// ONLY from successfully snapshotted, non-empty patches: a candidate whose
+// recorded diff is empty or absent is never mergeable and must not appear.
+// Every card also offers bounded retry, an honest discard, and ask.
+func tournamentMergeDecisionCard(out BehaviorOutput, winner string, patches map[string]string) map[string]any {
+	options := []any{}
+	ids := make([]string, 0, len(patches))
+	for id := range patches {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		if strings.TrimSpace(patches[id]) == "" {
+			continue // recorded-but-empty (or missing) — not mergeable
+		}
+		label := id
+		if id == winner {
+			label += " (picked winner — patch conflicts)"
+		}
+		options = append(options, map[string]any{
+			"id":          id,
+			"label":       label,
+			"consequence": "merge this candidate's recorded patch into the workspace",
+		})
+	}
+	options = append(options,
+		map[string]any{"id": "retry", "label": "Retry the tournament", "consequence": "spawn a fresh candidate round with the distilled failure brief"},
+		map[string]any{"id": "discard", "label": "Discard the tournament", "consequence": "settle the flow without merging any patch"},
+		map[string]any{"id": "ask", "label": "Keep asking me", "consequence": "stay parked for free-form guidance"},
+	)
+	return map[string]any{
+		"kind":     DecisionCardKindTournament,
+		"question": "Tournament merge needs a decision — pick a candidate patch, retry, discard, or keep asking",
 		"detail":   out.Summary,
 		"options":  options,
 	}
@@ -594,10 +646,63 @@ func (s *InteractiveService) resumeTournamentChoice(runID, chosen, feedback stri
 		_ = mgr.Cleanup(s.workspaceCwdFor(runID), ids)
 		go s.spawnTournamentCandidates(runID, rollout, candidates, feedback)
 		return s.agentGraphSnapshot(runID), nil
+	case chosen == "discard":
+		// BUG-478: honest no-merge settle — clean every candidate worktree,
+		// drop the stored snapshots, and terminalize without pretending a
+		// patch landed.
+		s.discardTournamentMerge(runID, nodes, feedback)
+		return s.agentGraphSnapshot(runID), nil
 	case chosen == "ask":
 		// Stay parked — the human wants to talk, not to resume the loop.
 		return s.agentGraphSnapshot(runID), nil
 	default:
 		return s.agentGraphSnapshot(runID), fmt.Errorf("tournament: unhandled decision choice %q", chosen)
+	}
+}
+
+// discardTournamentMerge settles the tournament with no merge (BUG-478):
+// candidate worktrees are swept, the recorded patch snapshots are cleared,
+// and the run terminalizes with an honest summary — never reporting a merge
+// that did not happen. Idempotent: Cleanup and the state clearing are no-ops
+// on replay, and the consumed decision card stays cleared.
+func (s *InteractiveService) discardTournamentMerge(runID string, nodes []agentpack.FlowNode, feedback string) {
+	var mgr tournament.WorktreeManager
+	ids := make([]string, 0, len(nodes))
+	for _, n := range nodes {
+		if strings.EqualFold(strings.TrimSpace(n.Cohort), "tournament") {
+			ids = append(ids, n.ID)
+		}
+	}
+	_ = mgr.Cleanup(s.workspaceCwdFor(runID), ids)
+	summary := "tournament discarded — no patch merged"
+	if note := strings.TrimSpace(feedback); note != "" {
+		summary += " (" + note + ")"
+	}
+	s.mu.Lock()
+	if rs := s.runs[runID]; rs != nil {
+		rs.tournamentPatches = nil
+		rs.tournamentWinner = ""
+	}
+	s.mu.Unlock()
+	if _, err := s.applyFlowControl(runID, FlowControlInput{
+		Status:  "done",
+		Summary: summary,
+	}); err != nil {
+		log.Printf("[tournament] discard settle failed for %q: %v", runID, err)
+	}
+	s.mu.Lock()
+	rs := s.runs[runID]
+	parentID, isEscalationChild := "", false
+	if rs != nil {
+		parentID = rs.parentRunID
+		isEscalationChild = rs.parentRunID != "" && rs.label == "tournament_escalation"
+	}
+	s.mu.Unlock()
+	if isEscalationChild {
+		// No winner merged: the parent returns to manual escalation exactly
+		// like a refused tie — honest, never a false winner resume.
+		if err := s.resumeParentAfterTournament(parentID, "", false); err != nil {
+			log.Printf("[tournament] resume parent %q after discard failed: %v", parentID, err)
+		}
 	}
 }
