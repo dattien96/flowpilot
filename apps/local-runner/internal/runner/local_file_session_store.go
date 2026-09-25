@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"flowpilot-runner/internal/agentpack"
@@ -30,6 +31,14 @@ type localFileSessionStore struct {
 	mu       sync.Mutex
 	filePath string
 	dataDir  string // BUG-288 R14-04: secret + sessions root
+	// *LoadErr holds the first incomplete read of each durable file
+	// (BUG-485). A partially-loaded store is still usable for writes and
+	// best-effort reads, but consumers that must trust completeness — the
+	// worktree GC binding authority — get the error surfaced through the
+	// matching reader methods.
+	sessionsLoadErr  atomic.Value
+	questionsLoadErr atomic.Value
+	approvalsLoadErr atomic.Value
 }
 
 // NewLocalFileSessionStore creates a localFileSessionStore rooted at dataDir.
@@ -50,6 +59,53 @@ func NewLocalFileSessionStore(dataDir string) (*localFileSessionStore, error) {
 	s.loadFromDisk()
 	return s, nil
 }
+
+// readNDJSONLines streams NDJSON lines through fn with no token cap —
+// bufio.Scanner's default 64KB limit silently aborts on oversized records
+// (live BUG-485: 567 lines >64KB in a real sessions.ndjson; the scan died
+// at line 1457 and every record after it — including live worktree
+// bindings — was invisible to the boot GC, which then pruned them as
+// "orphans"). A mid-file read error is returned so callers can fail closed
+// instead of treating a partial file as complete.
+func readNDJSONLines(r io.Reader, fn func(line []byte)) error {
+	br := bufio.NewReaderSize(r, 64*1024)
+	for {
+		line, err := br.ReadBytes('\n')
+		if len(line) > 0 {
+			trimmed := line
+			for len(trimmed) > 0 && (trimmed[len(trimmed)-1] == '\n' || trimmed[len(trimmed)-1] == '\r') {
+				trimmed = trimmed[:len(trimmed)-1]
+			}
+			if len(trimmed) > 0 {
+				fn(trimmed)
+			}
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return err
+		}
+	}
+}
+
+// fileEndsWithNewline reports whether the file's last byte is a line
+// terminator. An unterminated tail line that fails to parse is the signature
+// of a torn append (crash mid-write): the record it carried is unknowable, so
+// callers must treat the store as incomplete rather than silently dropping it.
+func fileEndsWithNewline(f *os.File) bool {
+	info, err := f.Stat()
+	if err != nil || info.Size() == 0 {
+		return true
+	}
+	buf := make([]byte, 1)
+	if _, err := f.ReadAt(buf, info.Size()-1); err != nil {
+		return true
+	}
+	return buf[0] == '\n'
+}
+
+var errTornTailRecord = errors.New("file ends with an unterminated unparseable record (torn append) — store is incomplete")
 
 // DataDir returns the store root (sessions.ndjson parent). Used to re-init the
 // durable run-marker secret when InteractiveService is wired with this store
@@ -240,26 +296,39 @@ func (s *localFileSessionStore) loadFromDisk() {
 
 	cutoff := time.Now().UTC().Add(-sessionStoreMaxAge)
 	seen := map[string]ndjsonSessionRecord{}
+	tailMalformed := false
 
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		line := sc.Bytes()
-		if len(line) == 0 {
-			continue
-		}
+	readErr := readNDJSONLines(f, func(line []byte) {
 		var rec ndjsonSessionRecord
 		if err := json.Unmarshal(line, &rec); err != nil {
-			continue
+			tailMalformed = true
+			return
 		}
-		if rec.RunID == "" || rec.ProjectID == "" {
-			continue
+		tailMalformed = false
+		// BUG-485: only RunID is load-bearing — normal-chat runs persist
+		// project_id:"" by design, and dropping them here made their session
+		// records (and worktree bindings) invisible to restore + boot GC.
+		if rec.RunID == "" {
+			return
 		}
 		if rec.UpdatedAt != "" {
 			if t, err := time.Parse(time.RFC3339Nano, rec.UpdatedAt); err == nil && t.Before(cutoff) {
-				continue
+				return
 			}
 		}
 		seen[rec.RunID] = rec // last-wins
+	})
+	if readErr == nil && tailMalformed && !fileEndsWithNewline(f) {
+		readErr = errTornTailRecord
+	}
+	if readErr != nil {
+		// A partially-read file must never masquerade as a complete store:
+		// the readers below surface this so consumers (e.g. the worktree GC)
+		// fail closed instead of acting on a truncated view.
+		// Wrap to a single concrete type: atomic.Value panics if a future
+		// reload ever stores a different concrete error type.
+		s.sessionsLoadErr.Store(fmt.Errorf("sessions.ndjson: %w", readErr))
+		log.Printf("[session-store] sessions.ndjson load incomplete: %v", readErr)
 	}
 
 	s.fakeWorkflowStore.mu.Lock()
@@ -281,20 +350,25 @@ func (s *localFileSessionStore) loadQuestionsFromDisk() {
 	defer f.Close()
 
 	seen := map[string]ProviderQuestionState{}
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		line := sc.Bytes()
-		if len(line) == 0 {
-			continue
-		}
+	tailMalformed := false
+	readErr := readNDJSONLines(f, func(line []byte) {
 		var rec ProviderQuestionState
 		if err := json.Unmarshal(line, &rec); err != nil {
-			continue
+			tailMalformed = true
+			return
 		}
+		tailMalformed = false
 		if rec.QuestionID == "" {
-			continue
+			return
 		}
 		seen[rec.QuestionID] = rec // last-wins
+	})
+	if readErr == nil && tailMalformed && !fileEndsWithNewline(f) {
+		readErr = errTornTailRecord
+	}
+	if readErr != nil {
+		s.questionsLoadErr.Store(fmt.Errorf("questions.ndjson: %w", readErr))
+		log.Printf("[session-store] questions.ndjson load incomplete: %v", readErr)
 	}
 
 	s.fakeWorkflowStore.mu.Lock()
@@ -316,20 +390,25 @@ func (s *localFileSessionStore) loadApprovalsFromDisk() {
 	defer f.Close()
 
 	seen := map[string]ProviderApprovalState{}
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		line := sc.Bytes()
-		if len(line) == 0 {
-			continue
-		}
+	tailMalformed := false
+	readErr := readNDJSONLines(f, func(line []byte) {
 		var rec ProviderApprovalState
 		if err := json.Unmarshal(line, &rec); err != nil {
-			continue
+			tailMalformed = true
+			return
 		}
+		tailMalformed = false
 		if rec.ApprovalID == "" {
-			continue
+			return
 		}
 		seen[rec.ApprovalID] = rec // last-wins
+	})
+	if readErr == nil && tailMalformed && !fileEndsWithNewline(f) {
+		readErr = errTornTailRecord
+	}
+	if readErr != nil {
+		s.approvalsLoadErr.Store(fmt.Errorf("approvals.ndjson: %w", readErr))
+		log.Printf("[session-store] approvals.ndjson load incomplete: %v", readErr)
 	}
 
 	s.fakeWorkflowStore.mu.Lock()
@@ -337,6 +416,20 @@ func (s *localFileSessionStore) loadApprovalsFromDisk() {
 		s.fakeWorkflowStore.approvals[id] = rec
 	}
 	s.fakeWorkflowStore.mu.Unlock()
+}
+
+// Read-path load-error surfacing (BUG-485): when a durable file could not be
+// fully read at boot, answering from the partial in-memory map is the same
+// class of lie the old 64KB scanner told — "record not found" for records
+// that exist on disk. Session/question/approval readers therefore surface
+// the stored load error so callers that must trust completeness (the
+// worktree GC binding authority, resume paths) fail closed.
+
+func (s *localFileSessionStore) ListProviderSessionsByChat(ctx context.Context, chatID string) ([]ProviderSessionState, error) {
+	if v := s.sessionsLoadErr.Load(); v != nil {
+		return nil, fmt.Errorf("session store incomplete (load failed): %v", v.(error))
+	}
+	return s.fakeWorkflowStore.ListProviderSessionsByChat(ctx, chatID)
 }
 
 // UpsertProviderSession updates the in-memory map and appends a NDJSON line to
@@ -383,19 +476,20 @@ func (s *localFileSessionStore) DeleteProviderSession(_ context.Context, runID s
 		return err
 	}
 	var kept [][]byte
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		line := sc.Bytes()
-		if len(line) == 0 {
-			continue
-		}
+	// BUG-485: the rewrite must see the whole file — the old bufio.Scanner
+	// aborted at the first >64KB line, so `kept` silently lost every record
+	// after it and the atomic rename destroyed them permanently.
+	readErr := readNDJSONLines(f, func(line []byte) {
 		var rec ndjsonSessionRecord
 		if jsonErr := json.Unmarshal(line, &rec); jsonErr != nil || rec.RunID == runID {
-			continue // drop malformed lines and the target run
+			return // drop malformed lines and the target run
 		}
 		kept = append(kept, append([]byte(nil), line...))
-	}
+	})
 	f.Close()
+	if readErr != nil {
+		return fmt.Errorf("delete provider session: incomplete read of %s: %w", s.filePath, readErr)
+	}
 
 	// Write to a sibling temp file then rename for atomicity.
 	tmpPath := s.filePath + ".tmp"
@@ -421,10 +515,16 @@ func (s *localFileSessionStore) DeleteProviderSession(_ context.Context, runID s
 // in-memory map (populated from disk on startup and kept current by
 // UpsertProviderSession). No extra file read is needed here.
 func (s *localFileSessionStore) ListProviderSessionsByProject(ctx context.Context, projectID string) ([]ProviderSessionState, error) {
+	if v := s.sessionsLoadErr.Load(); v != nil {
+		return nil, fmt.Errorf("session store incomplete (load failed): %v", v.(error))
+	}
 	return s.fakeWorkflowStore.ListProviderSessionsByProject(ctx, projectID)
 }
 
 func (s *localFileSessionStore) GetProviderSession(_ context.Context, runID string) (ProviderSessionState, bool, error) {
+	if v := s.sessionsLoadErr.Load(); v != nil {
+		return ProviderSessionState{}, false, fmt.Errorf("session store incomplete (load failed): %v", v.(error))
+	}
 	s.fakeWorkflowStore.mu.Lock()
 	defer s.fakeWorkflowStore.mu.Unlock()
 	st, ok := s.fakeWorkflowStore.sessions[runID]
@@ -432,6 +532,9 @@ func (s *localFileSessionStore) GetProviderSession(_ context.Context, runID stri
 }
 
 func (s *localFileSessionStore) ListAllProviderSessions(ctx context.Context) ([]ProviderSessionState, error) {
+	if v := s.sessionsLoadErr.Load(); v != nil {
+		return nil, fmt.Errorf("session store incomplete (load failed): %v", v.(error))
+	}
 	return s.fakeWorkflowStore.ListAllProviderSessions(ctx)
 }
 
@@ -610,14 +713,13 @@ func (s *localFileSessionStore) ReadTurnLog(_ context.Context, runID string) ([]
 	}
 	defer f.Close()
 	var lines []turnLogLine
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
+	readErr := readNDJSONLines(f, func(line []byte) {
 		var l turnLogLine
-		if json.Unmarshal(sc.Bytes(), &l) == nil && l.Kind != "" {
+		if json.Unmarshal(line, &l) == nil && l.Kind != "" {
 			lines = append(lines, l)
 		}
-	}
-	return lines, sc.Err()
+	})
+	return lines, readErr
 }
 
 // DeleteTurnLog removes the run's turn-log sidecar (BUG-083).
@@ -665,6 +767,9 @@ func (s *localFileSessionStore) UpsertQuestion(ctx context.Context, question Pro
 // (BUG-StaleQuestion-Restart), populated from questions.ndjson at startup and
 // kept current by UpsertQuestion. No extra file read is needed here.
 func (s *localFileSessionStore) ListQuestionsByRun(ctx context.Context, runID string) ([]ProviderQuestionState, error) {
+	if v := s.questionsLoadErr.Load(); v != nil {
+		return nil, fmt.Errorf("questions store incomplete (load failed): %v", v.(error))
+	}
 	return s.fakeWorkflowStore.ListQuestionsByRun(ctx, runID)
 }
 
@@ -704,6 +809,9 @@ func (s *localFileSessionStore) UpsertApproval(ctx context.Context, approval Pro
 // (BUG-ApprovalReplay-Restart), populated from approvals.ndjson at startup and
 // kept current by UpsertApproval. No extra file read is needed here.
 func (s *localFileSessionStore) ListApprovalsByRun(ctx context.Context, runID string) ([]ProviderApprovalState, error) {
+	if v := s.approvalsLoadErr.Load(); v != nil {
+		return nil, fmt.Errorf("approvals store incomplete (load failed): %v", v.(error))
+	}
 	return s.fakeWorkflowStore.ListApprovalsByRun(ctx, runID)
 }
 
