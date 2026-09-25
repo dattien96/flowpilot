@@ -98,10 +98,15 @@ func ensureChatTagging(rs *interactiveRun) {
 //  4. otherwise a fresh chat mints.
 //
 // Caller must NOT hold s.mu.
-func (s *InteractiveService) resolveChatIdentity(in StartRunInput) (string, int, string) {
+//
+// BUG-488: the reattach path's persisted-leg scan is authoritative for
+// legSeq uniqueness. A store error there means the max is unprovable, so
+// the failure propagates instead of silently minting a legSeq that may
+// already exist on disk.
+func (s *InteractiveService) resolveChatIdentity(in StartRunInput) (string, int, string, error) {
 	if in.ChatID != "" {
 		if in.LegSeq > 0 {
-			return in.ChatID, in.LegSeq, in.SwitchFromRunID
+			return in.ChatID, in.LegSeq, in.SwitchFromRunID, nil
 		}
 		s.mu.Lock()
 		maxSeq := 0
@@ -115,15 +120,17 @@ func (s *InteractiveService) resolveChatIdentity(in StartRunInput) (string, int,
 		// the persisted session store, not s.runs — consult the reader so the
 		// new leg never reuses an existing legSeq.
 		if reader, ok := s.workflowStore.(ChatSessionReader); ok {
-			if rows, err := reader.ListProviderSessionsByChat(context.Background(), in.ChatID); err == nil {
-				for _, row := range rows {
-					if row.LegSeq > maxSeq {
-						maxSeq = row.LegSeq
-					}
+			rows, err := reader.ListProviderSessionsByChat(context.Background(), in.ChatID)
+			if err != nil {
+				return "", 0, "", fmt.Errorf("resolveChatIdentity: persisted leg scan failed for chat %s: %w", in.ChatID, err)
+			}
+			for _, row := range rows {
+				if row.LegSeq > maxSeq {
+					maxSeq = row.LegSeq
 				}
 			}
 		}
-		return in.ChatID, maxSeq + 1, in.SwitchFromRunID
+		return in.ChatID, maxSeq + 1, in.SwitchFromRunID, nil
 	}
 	if in.SwitchFromRunID != "" {
 		s.mu.Lock()
@@ -132,11 +139,11 @@ func (s *InteractiveService) resolveChatIdentity(in StartRunInput) (string, int,
 			ensureChatTagging(src)
 			chatID, legSeq, switchFrom := src.chatID, src.legSeq+1, in.SwitchFromRunID
 			s.mu.Unlock()
-			return chatID, legSeq, switchFrom
+			return chatID, legSeq, switchFrom, nil
 		}
 		s.mu.Unlock()
 	}
-	return newChatID(), 0, ""
+	return newChatID(), 0, "", nil
 }
 
 // chatRunRegistry maps runID → chatID for the transcript capture path

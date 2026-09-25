@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -203,6 +204,9 @@ func (s *InteractiveService) ScanPersistedChatsForSummaries(ctx context.Context)
 	}
 	sessions, err := reader.ListAllProviderSessions(ctx)
 	if err != nil {
+		// BUG-491: a blind sweep skips all summaries silently — log so the
+		// degraded boot pass is visible.
+		log.Printf("ScanPersistedChatsForSummaries: session index unreadable: %v", err)
 		return
 	}
 	for _, sess := range sessions {

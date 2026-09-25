@@ -103,30 +103,36 @@ func (s *InteractiveService) worktreeRepoDir(in StartRunInput) string {
 // findChatWorktreeBindingLocked returns the chat's existing live binding.
 // Caller must hold s.mu. Resident runs win; the persisted session store is
 // consulted for legs that survived a restart (SD-27 D-8 lookup order).
-func (s *InteractiveService) findChatWorktreeBindingLocked(chatID string) *worktreeBinding {
+//
+// BUG-490: a store read error propagates — "no persisted binding" is only a
+// truthful answer when the store actually read clean. Answering nil on fault
+// let run-start provision a second worktree for a chat with a live binding.
+func (s *InteractiveService) findChatWorktreeBindingLocked(chatID string) (*worktreeBinding, error) {
 	for _, rs := range s.runs {
 		if rs.chatID == chatID && rs.worktree != nil && rs.worktree.State != "lost" {
-			return rs.worktree
+			return rs.worktree, nil
 		}
 	}
 	if reader, ok := s.workflowStore.(ChatSessionReader); ok {
-		if rows, err := reader.ListProviderSessionsByChat(context.Background(), chatID); err == nil {
-			for i := len(rows) - 1; i >= 0; i-- { // newest leg first
-				if rows[i].WorktreeState != "" && rows[i].WorktreeState != "lost" && rows[i].WorktreePath != "" {
-					return &worktreeBinding{
-						OwnerID:    rows[i].WorktreeOwnerID,
-						Path:       rows[i].WorktreePath,
-						Branch:     rows[i].WorktreeBranch,
-						BaseCommit: rows[i].WorktreeBaseCommit,
-						Slug:       rows[i].WorktreeSlug,
-						State:      rows[i].WorktreeState,
-						Enabled:    rows[i].WorktreeEnabled,
-					}
-				}
+		rows, err := reader.ListProviderSessionsByChat(context.Background(), chatID)
+		if err != nil {
+			return nil, fmt.Errorf("findChatWorktreeBindingLocked: leg scan failed for chat %s: %w", chatID, err)
+		}
+		for i := len(rows) - 1; i >= 0; i-- { // newest leg first
+			if rows[i].WorktreeState != "" && rows[i].WorktreeState != "lost" && rows[i].WorktreePath != "" {
+				return &worktreeBinding{
+					OwnerID:    rows[i].WorktreeOwnerID,
+					Path:       rows[i].WorktreePath,
+					Branch:     rows[i].WorktreeBranch,
+					BaseCommit: rows[i].WorktreeBaseCommit,
+					Slug:       rows[i].WorktreeSlug,
+					State:      rows[i].WorktreeState,
+					Enabled:    rows[i].WorktreeEnabled,
+				}, nil
 			}
 		}
 	}
-	return nil
+	return nil, nil
 }
 
 // provisionRunWorktree creates or inherits the worktree for rs and points the
@@ -252,16 +258,32 @@ func worktreeBindingFromSession(st ProviderSessionState) *worktreeBinding {
 
 // markChatWorktreeState updates the persisted worktree state on every session
 // record of a chat so later legs read the latest lifecycle value.
-func (s *InteractiveService) markChatWorktreeState(chatID, state string) {
+//
+// BUG-490: the leg list error and each row's persist error were dropped —
+// a store fault silently left persisted legs on the stale lifecycle value
+// that findChatWorktreeBindingLocked later adopts as authoritative. The list
+// error propagates; per-row persist failures are logged and aggregated.
+func (s *InteractiveService) markChatWorktreeState(chatID, state string) error {
 	if chatID == "" {
-		return
+		return nil
 	}
 	if reader, ok := s.workflowStore.(ChatSessionReader); ok {
-		if rows, err := reader.ListProviderSessionsByChat(context.Background(), chatID); err == nil {
-			for _, row := range rows {
-				row.WorktreeState = state
-				_ = s.persistProviderSession(row)
+		rows, err := reader.ListProviderSessionsByChat(context.Background(), chatID)
+		if err != nil {
+			return fmt.Errorf("markChatWorktreeState: leg scan failed for chat %s: %w", chatID, err)
+		}
+		var firstErr error
+		for _, row := range rows {
+			row.WorktreeState = state
+			if perr := s.persistProviderSession(row); perr != nil {
+				fmt.Printf("[worktree] markChatWorktreeState persist failed chat=%s run=%s state=%s: %v\n", chatID, row.RunID, state, perr)
+				if firstErr == nil {
+					firstErr = perr
+				}
 			}
+		}
+		if firstErr != nil {
+			return fmt.Errorf("markChatWorktreeState: persist failed for chat %s: %w", chatID, firstErr)
 		}
 	}
 	s.mu.Lock()
@@ -271,6 +293,7 @@ func (s *InteractiveService) markChatWorktreeState(chatID, state string) {
 		}
 	}
 	s.mu.Unlock()
+	return nil
 }
 
 // worktreeViewOf projects the binding for snapshots; nil-safe.

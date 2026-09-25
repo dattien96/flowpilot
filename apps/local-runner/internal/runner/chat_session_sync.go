@@ -478,7 +478,13 @@ func (s *InteractiveService) BuildChatSessionSyncManifest(ctx context.Context, r
 		LegClosedReason: session.LegClosedReason,
 		SwitchFromRunID: session.SwitchFromRunID,
 	}
-	if children := s.listAgentRunSummaries(runID); len(children) > 0 {
+	children, childrenErr := s.listAgentRunSummaries(runID)
+	if childrenErr != nil {
+		// BUG-493: a manifest built on an unreadable session index silently
+		// drops child agents — the remote side would sync a partial tree.
+		return ChatSessionSyncManifest{}, nil, newAPIErr(http.StatusBadGateway, "session_index_unavailable", childrenErr.Error())
+	}
+	if len(children) > 0 {
 		manifest.ChildAgents = children
 	}
 	// BUG-313: carry the durable turn log with the manifest. Without it a
@@ -1358,41 +1364,51 @@ func (s *InteractiveService) listRemoteChatSessions(ctx context.Context, project
 	return out, nil
 }
 
-func (s *InteractiveService) resolveRestoredRunID(ctx context.Context, sourceMachineID, sourceRunID string) string {
+// BUG-492: every "does this id exist / is it free" answer is only truthful
+// when the store read clean. Read errors propagate so the caller aborts the
+// restore instead of minting an id that clobbers an existing record.
+func (s *InteractiveService) resolveRestoredRunID(ctx context.Context, sourceMachineID, sourceRunID string) (string, error) {
 	indexReader, ok := s.workflowStore.(SessionIndexReader)
 	if !ok {
 		if reader, ok := s.workflowStore.(SessionHistoryReader); ok {
-			if existing, found, _ := reader.GetProviderSession(ctx, sourceRunID); found {
+			existing, found, err := reader.GetProviderSession(ctx, sourceRunID)
+			if err != nil {
+				return "", err
+			}
+			if found {
 				if existing.SourceMachineID == sourceMachineID && existing.SourceRunID == sourceRunID {
-					return existing.RunID
+					return existing.RunID, nil
 				}
 				// BUG-320: the store only supports single-ID lookups here (no
 				// ListAllProviderSessions), so collision-check each derived
 				// candidate one at a time instead of returning the first one
 				// unchecked.
-				return firstFreeRestoredRunID(sourceMachineID, sourceRunID, func(candidate string) bool {
-					_, found, _ := reader.GetProviderSession(ctx, candidate)
-					return found
+				return firstFreeRestoredRunID(sourceMachineID, sourceRunID, func(candidate string) (bool, error) {
+					_, found, err := reader.GetProviderSession(ctx, candidate)
+					if err != nil {
+						return false, err
+					}
+					return found, nil
 				})
 			}
 		}
-		return sourceRunID
+		return sourceRunID, nil
 	}
 	sessions, err := indexReader.ListAllProviderSessions(ctx)
 	if err != nil {
-		return sourceRunID
+		return "", err
 	}
 	takenIDs := make(map[string]struct{}, len(sessions))
 	for _, session := range sessions {
 		if session.SourceMachineID == sourceMachineID && session.SourceRunID == sourceRunID && strings.TrimSpace(session.RunID) != "" {
-			return session.RunID
+			return session.RunID, nil
 		}
 		if id := strings.TrimSpace(session.RunID); id != "" {
 			takenIDs[id] = struct{}{}
 		}
 	}
 	if _, taken := takenIDs[sourceRunID]; !taken {
-		return sourceRunID
+		return sourceRunID, nil
 	}
 	// BUG-320: resolveRestoredRunID previously returned the first derived
 	// "sync-<machine>-<id>" candidate unchecked. If that candidate was ALSO
@@ -1402,26 +1418,94 @@ func (s *InteractiveService) resolveRestoredRunID(ctx context.Context, sourceMac
 	// create-only guard -- it would silently overwrite the unrelated
 	// existing record. Loop with an incrementing suffix until a genuinely
 	// free id is found.
-	return firstFreeRestoredRunID(sourceMachineID, sourceRunID, func(candidate string) bool {
+	return firstFreeRestoredRunID(sourceMachineID, sourceRunID, func(candidate string) (bool, error) {
 		_, taken := takenIDs[candidate]
-		return taken
+		return taken, nil
 	})
 }
 
 // firstFreeRestoredRunID returns the first "sync-<machine>-<sourceRunID>"
 // candidate that isTaken reports as free, appending an incrementing numeric
 // suffix on repeated collisions (see BUG-320 note at the call sites above).
-func firstFreeRestoredRunID(sourceMachineID, sourceRunID string, isTaken func(candidate string) bool) string {
+// BUG-492: an isTaken error aborts the scan — a faulted probe must not be
+// read as "free".
+func firstFreeRestoredRunID(sourceMachineID, sourceRunID string, isTaken func(candidate string) (bool, error)) (string, error) {
 	base := "sync-" + shortMachineID(sourceMachineID) + "-" + sourceRunID
-	if !isTaken(base) {
-		return base
+	if taken, err := isTaken(base); err != nil {
+		return "", err
+	} else if !taken {
+		return base, nil
 	}
 	for i := 2; ; i++ {
 		candidate := base + "-" + strconv.Itoa(i)
-		if !isTaken(candidate) {
-			return candidate
+		if taken, err := isTaken(candidate); err != nil {
+			return "", err
+		} else if !taken {
+			return candidate, nil
 		}
 	}
+}
+
+// applyLocalAheadSessionFields re-reads the live local record and preserves
+// its mutable fields onto the remote-derived session about to be written.
+// BUG-091/BUG-322 contract: local-ahead state wins over a stale remote
+// manifest. BUG-492: the read error propagates — "cannot read local" is not
+// "no local record"; writing anyway would clobber live metadata.
+func (s *InteractiveService) applyLocalAheadSessionFields(ctx context.Context, session *ProviderSessionState, localRunID string) error {
+	reader, ok := s.workflowStore.(SessionHistoryReader)
+	if !ok {
+		return nil
+	}
+	local, found, err := reader.GetProviderSession(ctx, localRunID)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return nil
+	}
+	if strings.TrimSpace(local.LastPrompt) != "" {
+		session.LastPrompt = local.LastPrompt
+	}
+	if strings.TrimSpace(local.LastMessage) != "" {
+		session.LastMessage = local.LastMessage
+	}
+	if strings.TrimSpace(string(local.Status)) != "" {
+		session.Status = local.Status
+	}
+	if strings.TrimSpace(local.UpdatedAt) != "" {
+		session.UpdatedAt = local.UpdatedAt
+	}
+	// BUG-322 (CP-51 C6): fields added after BUG-091 that also track live
+	// flow progress, not just conversation metadata -- a stale remote
+	// manifest must not regress these either, or a re-restore of an
+	// already-locally-progressed chat can resurrect BUG-315's own
+	// symptom (flow re-runs from scratch) by rolling turnCount/loop
+	// state back down. Only fields that mutate over a run's lifetime are
+	// preserved; static per-run identity (ProjectID, AgentName, ModelName,
+	// DependsOn, ChatFlowRef, ...) is left as the manifest's, since it does
+	// not change after the run starts and should already agree.
+	if local.TurnCount > session.TurnCount {
+		session.TurnCount = local.TurnCount
+	}
+	if local.LoopState.Round > session.LoopState.Round {
+		session.LoopState = local.LoopState
+	}
+	if strings.TrimSpace(local.AgentStatus) != "" {
+		session.AgentStatus = local.AgentStatus
+	}
+	if len(local.ActiveFlowNodes) > 0 {
+		session.ActiveFlowNodes = append([]agentpack.FlowNode(nil), local.ActiveFlowNodes...)
+	}
+	if len(local.ActiveFlowEdges) > 0 {
+		session.ActiveFlowEdges = append([]agentpack.FlowEdge(nil), local.ActiveFlowEdges...)
+	}
+	if len(local.PendingAgentContext) > 0 {
+		session.PendingAgentContext = append([]string(nil), local.PendingAgentContext...)
+	}
+	if strings.TrimSpace(local.FlowCohortID) != "" {
+		session.FlowCohortID = local.FlowCohortID
+	}
+	return nil
 }
 
 func (s *InteractiveService) restoreChatRunFromDrive(ctx context.Context, req ChatSessionRestoreRequest) (ChatSessionRestoreResult, *apiErr) {
@@ -1716,7 +1800,10 @@ func (s *InteractiveService) restoreChatRunTreeFromDrive(ctx context.Context, re
 		}
 	}
 
-	localRunID := s.resolveRestoredRunID(ctx, manifest.SourceMachineID, manifest.SourceRunID)
+	localRunID, resolveErr := s.resolveRestoredRunID(ctx, manifest.SourceMachineID, manifest.SourceRunID)
+	if resolveErr != nil {
+		return ChatSessionRestoreResult{}, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", resolveErr.Error())
+	}
 	legMap[manifest.SourceRunID] = localRunID
 
 	// BUG-476: restore the whole logical chat — sibling legs in legSeq order
@@ -1802,51 +1889,10 @@ func (s *InteractiveService) restoreChatRunTreeFromDrive(ctx context.Context, re
 	if localAhead {
 		// The local rollout file is ahead of the restored snapshot, so the older
 		// remote manifest must not downgrade the local conversation metadata. (BUG-091)
-		if reader, ok := s.workflowStore.(SessionHistoryReader); ok {
-			if local, found, _ := reader.GetProviderSession(ctx, localRunID); found {
-				if strings.TrimSpace(local.LastPrompt) != "" {
-					session.LastPrompt = local.LastPrompt
-				}
-				if strings.TrimSpace(local.LastMessage) != "" {
-					session.LastMessage = local.LastMessage
-				}
-				if strings.TrimSpace(string(local.Status)) != "" {
-					session.Status = local.Status
-				}
-				if strings.TrimSpace(local.UpdatedAt) != "" {
-					session.UpdatedAt = local.UpdatedAt
-				}
-				// BUG-322 (CP-51 C6): fields added after BUG-091 that also track live
-				// flow progress, not just conversation metadata -- a stale remote
-				// manifest must not regress these either, or a re-restore of an
-				// already-locally-progressed chat can resurrect BUG-315's own
-				// symptom (flow re-runs from scratch) by rolling turnCount/loop
-				// state back down. Only fields that mutate over a run's lifetime are
-				// preserved; static per-run identity (ProjectID, AgentName, ModelName,
-				// DependsOn, ChatFlowRef, ...) is left as the manifest's, since it does
-				// not change after the run starts and should already agree.
-				if local.TurnCount > session.TurnCount {
-					session.TurnCount = local.TurnCount
-				}
-				if local.LoopState.Round > session.LoopState.Round {
-					session.LoopState = local.LoopState
-				}
-				if strings.TrimSpace(local.AgentStatus) != "" {
-					session.AgentStatus = local.AgentStatus
-				}
-				if len(local.ActiveFlowNodes) > 0 {
-					session.ActiveFlowNodes = append([]agentpack.FlowNode(nil), local.ActiveFlowNodes...)
-				}
-				if len(local.ActiveFlowEdges) > 0 {
-					session.ActiveFlowEdges = append([]agentpack.FlowEdge(nil), local.ActiveFlowEdges...)
-				}
-				if len(local.PendingAgentContext) > 0 {
-					session.PendingAgentContext = append([]string(nil), local.PendingAgentContext...)
-				}
-				if strings.TrimSpace(local.FlowCohortID) != "" {
-					session.FlowCohortID = local.FlowCohortID
-				}
-			}
+		// BUG-492: a read error here is not "no local record" — abort the restore
+		// rather than write remote-stale fields over live local state.
+		if err := s.applyLocalAheadSessionFields(ctx, &session, localRunID); err != nil {
+			return ChatSessionRestoreResult{}, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
 		}
 	}
 	// Restore every child transcript referenced by the parent manifest and persist its
@@ -1908,7 +1954,10 @@ func (s *InteractiveService) restoreChatRunTreeFromDrive(ctx context.Context, re
 			}
 			if !known {
 				log.Printf("[chat-sync] tombstone child restore (never synced) run_id=%q parent=%q", childRunID, manifest.SourceRunID)
-				tombstoneID := s.resolveRestoredRunID(ctx, manifest.SourceMachineID, childRunID)
+				tombstoneID, resolveErr := s.resolveRestoredRunID(ctx, manifest.SourceMachineID, childRunID)
+				if resolveErr != nil {
+					return ChatSessionRestoreResult{}, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", resolveErr.Error())
+				}
 				now := time.Now().UTC().Format(time.RFC3339Nano)
 				tombstones[tombstoneID] = &ProviderSessionState{
 					RunID:           tombstoneID,

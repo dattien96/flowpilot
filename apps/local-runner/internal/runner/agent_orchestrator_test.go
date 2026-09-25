@@ -712,7 +712,7 @@ func TestAgentTreeSurvivesChatSyncManifest(t *testing.T) {
 	}
 
 	// Capture the summaries as BuildChatSessionSyncManifest would.
-	captured := svc.listAgentRunSummaries(parent.RunID)
+	captured, _ := svc.listAgentRunSummaries(parent.RunID)
 	if len(captured) != 1 {
 		t.Fatalf("listAgentRunSummaries = %d, want 1", len(captured))
 	}
@@ -725,7 +725,7 @@ func TestAgentTreeSurvivesChatSyncManifest(t *testing.T) {
 	restoredRunID := "restored-run-1"
 	svc2.agentOrchestrator.setHistoricalChildren(restoredRunID, captured)
 
-	summaries := svc2.listAgentRunSummaries(restoredRunID)
+	summaries, _ := svc2.listAgentRunSummaries(restoredRunID)
 	if len(summaries) != 1 {
 		t.Fatalf("listAgentRunSummaries after restore = %d, want 1", len(summaries))
 	}
@@ -772,7 +772,7 @@ func TestAgentTreeSurvivesRunnerRestartBeforeSync(t *testing.T) {
 	}
 	restarted := NewInteractiveServiceWithStore(reg, nil, reloadedStore)
 
-	summaries := restarted.listAgentRunSummaries(parent.RunID)
+	summaries, _ := restarted.listAgentRunSummaries(parent.RunID)
 	if len(summaries) != 1 {
 		t.Fatalf("listAgentRunSummaries after restart = %d, want 1", len(summaries))
 	}

@@ -142,7 +142,7 @@ func TestChatLegsInheritExistingWorktreeBinding(t *testing.T) {
 
 	// Second leg of the SAME chat: inherits via the resident-binding lookup —
 	// no second Create, same path, validated binding.
-	inherited := s.findChatWorktreeBindingLocked(leg1.chatID)
+	inherited, _ := s.findChatWorktreeBindingLocked(leg1.chatID)
 	if inherited == nil {
 		t.Fatal("no binding found for second leg")
 	}

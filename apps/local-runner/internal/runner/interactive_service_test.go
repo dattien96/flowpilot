@@ -3657,7 +3657,7 @@ func TestAgentSummaryCarriesWaitForResultFlag(t *testing.T) {
 	}
 
 	byID := make(map[string]AgentRunSummary)
-	for _, s := range svc.listAgentRunSummaries(parent.RunID) {
+	for _, s := range func() []AgentRunSummary { v, _ := svc.listAgentRunSummaries(parent.RunID); return v }() {
 		byID[s.RunID] = s
 	}
 	if s, ok := byID[bg.RunID]; !ok || s.WaitForResult {
@@ -4237,7 +4237,7 @@ func TestProjectRunHistoryExcludesLiveOrphanAgentMetadataRuns(t *testing.T) {
 	}
 	svc.mu.Unlock()
 
-	history := svc.projectRunHistory("proj-web")
+	history, _ := svc.projectRunHistory("proj-web")
 
 	if len(history) != 1 || history[0].RunID != "parent-run" {
 		t.Fatalf("history = %+v, want only parent; live orphan agent metadata run must stay out of main history", history)
@@ -4265,7 +4265,7 @@ func TestProjectRunHistoryKeepsLiveRootRowsWithAgentMetadata(t *testing.T) {
 	}
 	svc.mu.Unlock()
 
-	history := svc.projectRunHistory("proj-web")
+	history, _ := svc.projectRunHistory("proj-web")
 
 	if len(history) != 1 || history[0].RunID != "main-run" {
 		t.Fatalf("history = %+v, want main root row even when live metadata contains agent-like fields", history)
@@ -4403,7 +4403,7 @@ func TestProjectRunHistoryExcludesResumedChildRunsAfterReopen(t *testing.T) {
 		t.Fatalf("resumeRun(child-run): %v", apiErr)
 	}
 
-	history := svc.projectRunHistory("proj-web")
+	history, _ := svc.projectRunHistory("proj-web")
 	if len(history) != 1 || history[0].RunID != "parent-run" {
 		t.Fatalf("history = %+v, want only parent after reopening a child run", history)
 	}
@@ -4445,7 +4445,7 @@ func TestProjectRunHistoryKeepsCompletedStatusWhenReopeningLegacyFlowRun(t *test
 		t.Fatalf("resumeRun(flow-parent): %v", apiErr)
 	}
 
-	history := svc.projectRunHistory("proj-web")
+	history, _ := svc.projectRunHistory("proj-web")
 	if len(history) != 1 {
 		t.Fatalf("history len = %d, want 1", len(history))
 	}
@@ -4502,7 +4502,7 @@ func TestProjectRunHistoryShowsCompletedForDoneFlowWithStalePersistStatus(t *tes
 
 	svc := newInteractiveService(DefaultProviderRegistry(), newInteractiveCatalog(), store)
 	// Do NOT call resumeRun — test the pure persisted-only history path.
-	history := svc.projectRunHistory("proj-stale")
+	history, _ := svc.projectRunHistory("proj-stale")
 	if len(history) != 1 {
 		t.Fatalf("history len = %d, want 1", len(history))
 	}
@@ -5147,7 +5147,7 @@ func TestListAgentRunSummariesNormalizesStaleRunningStatusAfterRestart(t *testin
 	// chat has been reopened.
 	svc := newInteractiveService(DefaultProviderRegistry(), newInteractiveCatalog(), store)
 
-	summaries := svc.listAgentRunSummaries("run-hub-1")
+	summaries, _ := svc.listAgentRunSummaries("run-hub-1")
 	if len(summaries) != 1 {
 		t.Fatalf("summaries = %+v, want exactly 1", summaries)
 	}

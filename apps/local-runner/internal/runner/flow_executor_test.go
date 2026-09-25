@@ -1279,7 +1279,7 @@ func TestChatModeRunHistoryExposesOrchestrationPickerSelection(t *testing.T) {
 		t.Fatalf("send chat turn body=%s, want the invalid_flow_ref error code", body)
 	}
 
-	history := svc.projectRunHistory("proj")
+	history, _ := svc.projectRunHistory("proj")
 	for i := range history {
 		if history[i].RunID == handle.RunID && history[i].FlowRef == "flowpilot-core-flow-pack/review-loop" {
 			t.Fatalf("rejected hidden flowRef must not be recorded in run history: %#v", history[i])

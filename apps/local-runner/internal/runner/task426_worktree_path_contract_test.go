@@ -34,7 +34,7 @@ func TestRunHistoryItem_IncludesWorktreePathWhenBound(t *testing.T) {
 	}
 	svc.mu.Unlock()
 
-	history := svc.projectRunHistory("proj-web")
+	history, _ := svc.projectRunHistory("proj-web")
 	if len(history) != 1 {
 		t.Fatalf("history = %+v", history)
 	}
@@ -61,7 +61,7 @@ func TestRunHistoryItem_OmitsWorktreePathWhenUnbound(t *testing.T) {
 	}
 	svc.mu.Unlock()
 
-	history := svc.projectRunHistory("proj-web")
+	history, _ := svc.projectRunHistory("proj-web")
 	if len(history) != 1 {
 		t.Fatalf("history = %+v", history)
 	}
@@ -93,7 +93,7 @@ func TestRunHistoryItem_WorktreePathFromPersistedSessionAfterRestart(t *testing.
 	svc, _ := newTestServer(t)
 	svc.workflowStore = store
 
-	history := svc.projectRunHistory("proj-web")
+	history, _ := svc.projectRunHistory("proj-web")
 	if len(history) != 1 || history[0].RunID != "run-persisted-wt" {
 		t.Fatalf("history = %+v", history)
 	}

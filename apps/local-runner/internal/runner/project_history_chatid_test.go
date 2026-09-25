@@ -53,7 +53,7 @@ func TestProjectHistoryLiveBranchCarriesChatId(t *testing.T) {
 	}
 	svc.mu.Unlock()
 
-	history := svc.projectRunHistory("proj-chat")
+	history, _ := svc.projectRunHistory("proj-chat")
 	byID := map[string]runHistoryItem{}
 	for _, it := range history {
 		byID[it.RunID] = it
@@ -125,7 +125,7 @@ func TestProjectHistoryPersistedBranchCarriesChatId(t *testing.T) {
 	}
 
 	svc2 := newInteractiveService(DefaultProviderRegistry(), newInteractiveCatalog(), store)
-	history := svc2.projectRunHistory("proj-chat")
+	history, _ := svc2.projectRunHistory("proj-chat")
 	byID := map[string]runHistoryItem{}
 	for _, it := range history {
 		byID[it.RunID] = it
@@ -243,7 +243,7 @@ func TestProjectHistoryStampsMissingChatIdFromTranscript(t *testing.T) {
 	}
 
 	svc := newInteractiveService(DefaultProviderRegistry(), newInteractiveCatalog(), fws)
-	history := svc.projectRunHistory("proj-gate")
+	history, _ := svc.projectRunHistory("proj-gate")
 	byID := map[string]runHistoryItem{}
 	for _, it := range history {
 		byID[it.RunID] = it

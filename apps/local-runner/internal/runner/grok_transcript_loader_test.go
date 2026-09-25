@@ -58,7 +58,7 @@ func TestLoadGrokTranscriptEvents(t *testing.T) {
 	cwd := `D:\working\gate-sandbox`
 	writeGrokChatHistoryFixture(t, grokHome, cwd, "sess-1", grokFixtureLines())
 
-	events := loadGrokTranscriptEvents(grokChatHistoryPath(grokHome, cwd, "sess-1"))
+	events, _ := loadGrokTranscriptEvents(grokChatHistoryPath(grokHome, cwd, "sess-1"))
 
 	var prompts, messages int
 	var toolStarted, toolCompleted int

@@ -177,6 +177,23 @@ func (s *InteractiveService) hasSwitchRecord(ctx context.Context, chatID, toRunI
 	return false
 }
 
+// persistSwitchLegCloseLocked commits the old leg's closed state durably.
+// BUG-489: the upsert used to be fire-and-forget (`_ =`) — a failure left the
+// leg `active` on disk while memory said closed, resurrecting a dual-active
+// leg pair on restart. One retry absorbs transient IO; a final failure is
+// logged and marks the leg degraded so the operator/timeline can see the
+// close never committed. Caller holds s.mu.
+func (s *InteractiveService) persistSwitchLegCloseLocked(src *interactiveRun) {
+	if err := s.persistProviderSession(sessionStateOf(src)); err != nil {
+		if retryErr := s.persistProviderSession(sessionStateOf(src)); retryErr != nil {
+			fmt.Printf("[chat-switch] leg-close persist failed run=%s: %v — leg may resurrect as active on restart\n", src.id, retryErr)
+			if s.chatRuns != nil {
+				s.chatRuns.setDegraded(src.id, true)
+			}
+		}
+	}
+}
+
 // markSwitchSeedFailed records the SD26-X-7 state as a queryable chat record
 // (type switch_seed_failed) instead of log-only: the timeline consumer and
 // operators can see the committed switch whose seed turn failed, and the chat
@@ -344,7 +361,7 @@ func (s *InteractiveService) switchChatLeg(ctx context.Context, chatID string, r
 	if allowSameProvider {
 		src.legClosedReason = LegClosedReasonContextReset
 	}
-	_ = s.persistProviderSession(sessionStateOf(src))
+	s.persistSwitchLegCloseLocked(src)
 	if newLeg != nil {
 		s.appendChatSwitchRecord(chatID, src, newLeg, env.Stats)
 	}

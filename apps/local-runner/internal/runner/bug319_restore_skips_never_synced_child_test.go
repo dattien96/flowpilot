@@ -125,7 +125,7 @@ func TestRestoreParentChatTombstonesNeverSyncedChildRestoresRest(t *testing.T) {
 	}
 
 	restartedService := NewInteractiveServiceWithStore(DefaultProviderRegistry(), nil, restoredStore)
-	summaries := restartedService.listAgentRunSummaries(restored.RunID)
+	summaries, _ := restartedService.listAgentRunSummaries(restored.RunID)
 	if len(summaries) != 2 {
 		t.Fatalf("agent summaries = %#v, want exactly 2 (coder + reviewer tombstone)", summaries)
 	}
@@ -206,7 +206,7 @@ func TestRestoreParentChatTombstonesAllNeverSyncedChildren(t *testing.T) {
 	if apiErr != nil {
 		t.Fatalf("BUG-320: restoreChatRunFromDrive() failed = %#v, want success with two tombstones", apiErr)
 	}
-	summaries := restoredService.listAgentRunSummaries(restored.RunID)
+	summaries, _ := restoredService.listAgentRunSummaries(restored.RunID)
 	if len(summaries) != 2 {
 		t.Fatalf("agent summaries = %#v, want 2 tombstones (every child was never synced)", summaries)
 	}
@@ -252,7 +252,7 @@ func TestRestoreParentChatTerminalizesNonTerminalTombstoneStatus(t *testing.T) {
 	if apiErr != nil {
 		t.Fatalf("restoreChatRunFromDrive() failed: %#v", apiErr)
 	}
-	summaries := restoredService.listAgentRunSummaries(restored.RunID)
+	summaries, _ := restoredService.listAgentRunSummaries(restored.RunID)
 	reviewerSummary := findSummaryByLabel(t, summaries, "my-reviewer-claude")
 	if reviewerSummary.Status != RunStatusCancelled {
 		t.Fatalf("tombstone status for a RUNNING snapshot = %q, want cancelled (terminalized, not left in-flight)", reviewerSummary.Status)
@@ -317,7 +317,7 @@ func TestRestoreParentChatRemapsDependsOnToTombstoneID(t *testing.T) {
 	if apiErr != nil {
 		t.Fatalf("BUG-320: restoreChatRunFromDrive() failed = %#v", apiErr)
 	}
-	summaries := restoredService.listAgentRunSummaries(restored.RunID)
+	summaries, _ := restoredService.listAgentRunSummaries(restored.RunID)
 	if len(summaries) != 2 {
 		t.Fatalf("agent summaries = %#v, want exactly 2 (reviewer-b + tombstoned reviewer)", summaries)
 	}
@@ -492,7 +492,7 @@ func TestRestoreParentChatTombstoneSurvivesServiceRestart(t *testing.T) {
 		t.Fatalf("NewLocalFileSessionStore reloaded: %v", err)
 	}
 	restartedService := NewInteractiveServiceWithStore(DefaultProviderRegistry(), nil, reloadedStore)
-	summaries := restartedService.listAgentRunSummaries(restored.RunID)
+	summaries, _ := restartedService.listAgentRunSummaries(restored.RunID)
 	if len(summaries) != 1 {
 		t.Fatalf("agent summaries after restart = %#v, want 1 durable tombstone", summaries)
 	}
@@ -582,7 +582,7 @@ func TestRestoreParentChatSkipsNeverSyncedChildAcrossProviders(t *testing.T) {
 			if apiErr != nil {
 				t.Fatalf("BUG-320 (%s): restoreChatRunFromDrive() failed = %#v", tc.provider, apiErr)
 			}
-			summaries := restoredService.listAgentRunSummaries(restored.RunID)
+			summaries, _ := restoredService.listAgentRunSummaries(restored.RunID)
 			if len(summaries) != 1 {
 				t.Fatalf("BUG-320 (%s): agent summaries = %#v, want 1 tombstone", tc.provider, summaries)
 			}

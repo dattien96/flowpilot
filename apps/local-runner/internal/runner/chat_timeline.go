@@ -122,23 +122,29 @@ func (s *InteractiveService) handleChatTimeline(w http.ResponseWriter, r *http.R
 		// Persisted rows may satisfy ChatSessionReader without the registry
 		// existing (flag just turned on); guard anyway.
 		if s.chatRuns != nil || len(legs) > 0 {
-			if rows, err := reader.ListProviderSessionsByChat(r.Context(), chatID); err == nil {
-				for _, row := range rows {
-					if _, have := legs[row.RunID]; have {
-						continue
-					}
-					state := row.LegState
-					if state == "" {
-						state = LegStateActive
-					}
-					legs[row.RunID] = chatLegView{
-						RunID:           row.RunID,
-						ProviderKey:     string(row.ProviderKey),
-						LegSeq:          row.LegSeq,
-						LegState:        state,
-						LegClosedReason: row.LegClosedReason,
-						Status:          string(row.Status),
-					}
+			rows, err := reader.ListProviderSessionsByChat(r.Context(), chatID)
+			if err != nil {
+				// BUG-493: a store read failure must not render a partial
+				// leg list as a healthy 200 — non-resident legs would
+				// silently vanish. Surface a typed error; retryable.
+				writeInteractiveError(w, newAPIErr(http.StatusBadGateway, "chat_legs_unavailable", "chat legs unreadable: "+err.Error()))
+				return
+			}
+			for _, row := range rows {
+				if _, have := legs[row.RunID]; have {
+					continue
+				}
+				state := row.LegState
+				if state == "" {
+					state = LegStateActive
+				}
+				legs[row.RunID] = chatLegView{
+					RunID:           row.RunID,
+					ProviderKey:     string(row.ProviderKey),
+					LegSeq:          row.LegSeq,
+					LegState:        state,
+					LegClosedReason: row.LegClosedReason,
+					Status:          string(row.Status),
 				}
 			}
 		}

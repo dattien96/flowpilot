@@ -29,7 +29,12 @@ func (s *InteractiveService) deleteChatSession(runID string) *apiErr {
 		return newAPIErr(http.StatusNotFound, "run_not_found", "workflow run not found")
 	}
 
-	deleteOrder, sessionsByRun := s.collectDeleteRunTree(runID, session)
+	deleteOrder, sessionsByRun, treeErr := s.collectDeleteRunTree(runID, session)
+	if treeErr != nil {
+		// BUG-491: refuse the delete — a partial tree leaves orphaned
+		// durable records (and possibly live bindings) behind.
+		return newAPIErr(http.StatusBadGateway, "session_index_unavailable", treeErr.Error())
+	}
 	for _, id := range deleteOrder {
 		session, ok := sessionsByRun[id]
 		if !ok {
@@ -91,7 +96,7 @@ func (s *InteractiveService) sessionForDelete(runID string) (ProviderSessionStat
 	return sessionStateOf(rs), true
 }
 
-func (s *InteractiveService) collectDeleteRunTree(runID string, root ProviderSessionState) ([]string, map[string]ProviderSessionState) {
+func (s *InteractiveService) collectDeleteRunTree(runID string, root ProviderSessionState) ([]string, map[string]ProviderSessionState, error) {
 	sessionsByRun := map[string]ProviderSessionState{root.RunID: root}
 	childrenByParent := make(map[string][]string)
 	addChild := func(parentRunID, childRunID string) {
@@ -104,13 +109,17 @@ func (s *InteractiveService) collectDeleteRunTree(runID string, root ProviderSes
 	}
 
 	if indexReader, ok := s.workflowStore.(SessionIndexReader); ok {
-		if sessions, err := indexReader.ListAllProviderSessions(context.Background()); err == nil {
-			for _, session := range sessions {
-				if _, exists := sessionsByRun[session.RunID]; !exists {
-					sessionsByRun[session.RunID] = session
-				}
-				addChild(session.ParentRunID, session.RunID)
+		// BUG-491: delete walks the whole tree — a partial enumeration would
+		// orphan persisted children. Fail closed instead.
+		sessions, err := indexReader.ListAllProviderSessions(context.Background())
+		if err != nil {
+			return nil, nil, fmt.Errorf("collectDeleteRunTree: session index unreadable: %w", err)
+		}
+		for _, session := range sessions {
+			if _, exists := sessionsByRun[session.RunID]; !exists {
+				sessionsByRun[session.RunID] = session
 			}
+			addChild(session.ParentRunID, session.RunID)
 		}
 	}
 
@@ -143,7 +152,7 @@ func (s *InteractiveService) collectDeleteRunTree(runID string, root ProviderSes
 		order = append(order, id)
 	}
 	walk(runID)
-	return order, sessionsByRun
+	return order, sessionsByRun, nil
 }
 
 func (s *InteractiveService) deleteProviderFilesForSession(runID string, session ProviderSessionState) {
@@ -535,22 +544,28 @@ func flowHubHadJoinedReviewNote(st ProviderSessionState) bool {
 // sessions still have a pending approval or question on disk (BUG-288 #22).
 // Approvals/questions are keyed by the child's RunID, so parent-scoped list
 // APIs never surface them — resume must walk child sessions explicitly.
-func (s *InteractiveService) childPendingGateNodeIDs(rs *interactiveRun) []string {
+func (s *InteractiveService) childPendingGateNodeIDs(rs *interactiveRun) ([]string, error) {
 	if rs == nil || len(rs.activeFlowNodes) == 0 {
-		return nil
+		return nil, nil
 	}
 	indexReader, ok := s.workflowStore.(SessionIndexReader)
 	if !ok {
-		return nil
+		return nil, nil
 	}
 	sessions, err := indexReader.ListAllProviderSessions(context.Background())
-	if err != nil || len(sessions) == 0 {
-		return nil
+	if err != nil {
+		// BUG-491: an unreadable index must not masquerade as "no pending
+		// child gates" — resume would promote nodes whose children still
+		// wait on approval/question. Propagate so the caller fails closed.
+		return nil, fmt.Errorf("childPendingGateNodeIDs: %w", err)
+	}
+	if len(sessions) == 0 {
+		return nil, nil
 	}
 	ahr, hasAHR := s.workflowStore.(ApprovalHistoryReader)
 	qhr, hasQHR := s.workflowStore.(QuestionHistoryReader)
 	if !hasAHR && !hasQHR {
-		return nil
+		return nil, nil
 	}
 	out := make([]string, 0)
 	seen := make(map[string]bool)
@@ -582,7 +597,7 @@ func (s *InteractiveService) childPendingGateNodeIDs(rs *interactiveRun) []strin
 			out = append(out, nodeID)
 		}
 	}
-	return out
+	return out, nil
 }
 
 func matchFlowNodeForSession(nodes []agentpack.FlowNode, session ProviderSessionState) string {
@@ -682,9 +697,9 @@ func (s *InteractiveService) inferredFlowNodeByLegacyCohort(rs *interactiveRun, 
 	return out
 }
 
-func (s *InteractiveService) resumedFlowStepRows(rs *interactiveRun, st ProviderSessionState) []RuntimeWorkflowStep {
+func (s *InteractiveService) resumedFlowStepRows(rs *interactiveRun, st ProviderSessionState) ([]RuntimeWorkflowStep, error) {
 	if len(rs.activeFlowNodes) == 0 {
-		return nil
+		return nil, nil
 	}
 	// BUG-260: a flow can reach a genuinely terminal loop state ("done") even
 	// though one of its cohort members individually FAILED — CA-251/BUG-254
@@ -704,7 +719,13 @@ func (s *InteractiveService) resumedFlowStepRows(rs *interactiveRun, st Provider
 		byID[rows[i].ID] = &rows[i]
 	}
 	if indexReader, ok := s.workflowStore.(SessionIndexReader); ok {
-		if sessions, err := indexReader.ListAllProviderSessions(context.Background()); err == nil {
+		// BUG-491: cohort reconstruction from a partial index rebuilds step
+		// rows wrongly — fail closed so reconstructRun can retry/surface it.
+		sessions, err := indexReader.ListAllProviderSessions(context.Background())
+		if err != nil {
+			return nil, fmt.Errorf("resumedFlowStepRows: session index unreadable: %w", err)
+		}
+		{
 			legacyCohortNodeByRun := s.inferredFlowNodeByLegacyCohort(rs, sessions)
 			for _, session := range sessions {
 				if session.ParentRunID != rs.id {
@@ -767,7 +788,7 @@ func (s *InteractiveService) resumedFlowStepRows(rs *interactiveRun, st Provider
 			rows[i].FinishedAt = now
 		}
 	}
-	return rows
+	return rows, nil
 }
 
 // normalizeResumedStatus maps an in-flight status read back from disk to a
@@ -1245,7 +1266,10 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 		// on top of the evidence-walk (last-wins per node that has log lines;
 		// nodes never logged keep evidence-walk — legacy no-label merge rule).
 		// LoadStepTransitions is I/O and must run outside s.mu (already unlocked).
-		rows := s.resumedFlowStepRows(rs, st)
+		rows, rowsErr := s.resumedFlowStepRows(rs, st)
+		if rowsErr != nil {
+			return nil, newAPIErr(http.StatusBadGateway, "session_index_unavailable", rowsErr.Error())
+		}
 		var pendingApprovals []ProviderApprovalState
 		var pendingQuestions []ProviderQuestionState
 		if ahr, ok := s.workflowStore.(ApprovalHistoryReader); ok {
@@ -1259,7 +1283,10 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 			}
 		}
 		// BUG-288 #22 / V9-08: child gates under child RunID.
-		childWaiting := s.childPendingGateNodeIDs(rs)
+		childWaiting, childErr := s.childPendingGateNodeIDs(rs)
+		if childErr != nil {
+			return nil, newAPIErr(http.StatusBadGateway, "session_index_unavailable", childErr.Error())
+		}
 		keepWaiting := keepWaitingNodeIDsForResume(st, rs.activeFlowNodes, pendingApprovals, pendingQuestions, childWaiting...)
 		if tlog, ok := s.workflowStore.(StepTransitionLogStore); ok {
 			if lines, loadErr := tlog.LoadStepTransitions(context.Background(), rs.id); loadErr != nil {
@@ -1353,7 +1380,9 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 	// V10R3 P0: reconstruct pending/cohort children BEFORE normalize so parent
 	// is not Cancelled while children still need approval/gate/barrier.
 	if rs.parentRunID == "" && len(rs.activeFlowNodes) > 0 {
-		s.reconstructPendingChildSessions(rs.id)
+		if err := s.reconstructPendingChildSessions(rs.id); err != nil {
+			return nil, newAPIErr(http.StatusBadGateway, "session_index_unavailable", err.Error())
+		}
 	}
 	// V10R P0: normalize AFTER child reconstruct; skip cancel when children pending.
 	normalizeResumedFlowRun(s, rs, st)
@@ -2011,17 +2040,23 @@ func (s *InteractiveService) notifyTurnIdle(runID string) {
 // still need live reconstruction after parent resume: pending post-turn gate,
 // pending approval/question cards, and full reviewer cohorts (V10R / V10R3 P0).
 // Idempotent — skips children already in s.runs.
-func (s *InteractiveService) reconstructPendingChildSessions(parentRunID string) {
+func (s *InteractiveService) reconstructPendingChildSessions(parentRunID string) error {
 	if strings.TrimSpace(parentRunID) == "" {
-		return
+		return nil
 	}
 	indexReader, ok := s.workflowStore.(SessionIndexReader)
 	if !ok {
-		return
+		return nil
 	}
 	sessions, err := indexReader.ListAllProviderSessions(context.Background())
-	if err != nil || len(sessions) == 0 {
-		return
+	if err != nil {
+		// BUG-491: unreadable index must not masquerade as "no children" —
+		// the parent would normalize past pending gates/cohorts with the
+		// persisted children silently orphaned. Propagate; caller aborts.
+		return fmt.Errorf("reconstructPendingChildSessions: %w", err)
+	}
+	if len(sessions) == 0 {
+		return nil
 	}
 	ahr, hasAHR := s.workflowStore.(ApprovalHistoryReader)
 	qhr, hasQHR := s.workflowStore.(QuestionHistoryReader)
@@ -2034,7 +2069,7 @@ func (s *InteractiveService) reconstructPendingChildSessions(parentRunID string)
 		children = append(children, session)
 	}
 	if len(children) == 0 {
-		return
+		return nil
 	}
 
 	// Cohort recovery: decide liveness from PERSISTED pre-normalization state.
@@ -2221,6 +2256,7 @@ func (s *InteractiveService) reconstructPendingChildSessions(parentRunID string)
 			s.mu.Unlock()
 		}
 	}
+	return nil
 }
 
 // sessionIsCohortLivePersisted reports whether a disk session indicates the
@@ -2286,6 +2322,9 @@ func (s *InteractiveService) resumedParentAgentAnnotations(parentRunID string) [
 	}
 	sessions, err := indexReader.ListAllProviderSessions(context.Background())
 	if err != nil {
+		// BUG-491: annotation restore is best-effort enrichment, but the
+		// blind read must be visible in the log.
+		log.Printf("resumedParentAgentAnnotations: session index unreadable for parent %s: %v", parentRunID, err)
 		return nil
 	}
 	type childSession struct {
@@ -3298,7 +3337,7 @@ func (s *InteractiveService) seedTranscriptFromDisk(rs *interactiveRun) {
 		s.appendResumedParentAnnotations(rs)
 		return
 	}
-	var loader func(string) []ProviderEvent
+	var loader func(string) ([]ProviderEvent, error)
 	switch rs.providerKey {
 	case ProviderKeyClaude:
 		loader = loadClaudeTranscriptEvents
@@ -3392,7 +3431,14 @@ func (s *InteractiveService) seedTranscriptFromDisk(rs *interactiveRun) {
 	// Load events from all files.
 	var historical []ProviderEvent
 	for _, fp := range filePaths {
-		historical = append(historical, loader(fp)...)
+		ev, loadErr := loader(fp)
+		if loadErr != nil {
+			// BUG-487: replay the parsed prefix but never silently — a
+			// truncated transcript tail is surfaced so operators know the
+			// restored history is incomplete.
+			fmt.Printf("[transcript-load] partial read run=%s file=%s: %v\n", rs.id, fp, loadErr)
+		}
+		historical = append(historical, ev...)
 	}
 	if len(historical) == 0 {
 		historical = promptOnlyTurnLogEvents(rawPrompts)
@@ -4311,7 +4357,12 @@ func (s *InteractiveService) seedGrokTranscriptFromDisk(rs *interactiveRun) {
 
 	var historical []ProviderEvent
 	for _, sid := range sessionIDs {
-		historical = append(historical, loadGrokTranscriptEvents(grokChatHistoryPath(home, rs.workspaceCwd, sid))...)
+		gp := grokChatHistoryPath(home, rs.workspaceCwd, sid)
+		ev, loadErr := loadGrokTranscriptEvents(gp)
+		if loadErr != nil {
+			fmt.Printf("[transcript-load] partial read run=%s file=%s: %v\n", rs.id, gp, loadErr)
+		}
+		historical = append(historical, ev...)
 	}
 	// BUG-384: every SendTurn retry re-issues session/prompt and Grok persists
 	// each attempt as a <user_query> frame. Collapse adjacent identical user

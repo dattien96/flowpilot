@@ -36,7 +36,7 @@ func TestLoadClaudeTranscriptEvents(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	events := loadClaudeTranscriptEvents(path)
+	events, _ := loadClaudeTranscriptEvents(path)
 
 	type want struct {
 		typ    ProviderEventType
@@ -110,7 +110,7 @@ func TestLoadClaudeTranscriptEventsToolResultNotPrompt(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	events := loadClaudeTranscriptEvents(path)
+	events, _ := loadClaudeTranscriptEvents(path)
 
 	for _, e := range events {
 		if e.Type == EventTurnStarted && e.Prompt != "" {
@@ -131,7 +131,7 @@ func TestLoadClaudeTranscriptEventsToolResultNotPrompt(t *testing.T) {
 // TestLoadClaudeTranscriptEventsMissingFile returns nil for an absent file so
 // resume is never blocked by a missing transcript (parity with Codex loader).
 func TestLoadClaudeTranscriptEventsMissingFile(t *testing.T) {
-	if events := loadClaudeTranscriptEvents(filepath.Join(t.TempDir(), "nope.jsonl")); events != nil {
+	if events, _ := loadClaudeTranscriptEvents(filepath.Join(t.TempDir(), "nope.jsonl")); events != nil {
 		t.Fatalf("expected nil for missing file, got %+v", events)
 	}
 }
@@ -154,7 +154,7 @@ func TestLoadClaudeTranscriptEventsPlainStringContent(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	events := loadClaudeTranscriptEvents(path)
+	events, _ := loadClaudeTranscriptEvents(path)
 
 	var promptEvent *ProviderEvent
 	for i := range events {

@@ -151,6 +151,16 @@ func writeJsonRpcResponse(w io.Writer, id interface{}, result interface{}) error
 	return err
 }
 
+// BUG-494: scanStreamLines runs a scanner loop and surfaces scanner.Err()
+// instead of treating truncation as clean EOF. fn receives a stable copy of
+// each line (scanner.Bytes() is reused).
+func scanStreamLines(scanner *bufio.Scanner, fn func(line []byte)) error {
+	for scanner.Scan() {
+		fn(append([]byte(nil), scanner.Bytes()...))
+	}
+	return scanner.Err()
+}
+
 func readJsonRpcMessage(scanner *bufio.Scanner) (map[string]interface{}, error) {
 	if !scanner.Scan() {
 		if err := scanner.Err(); err != nil {
@@ -858,14 +868,26 @@ func (r *Runner) SendMessageWithCallback(ctx context.Context, req AiSessionMessa
 			_ = stdin.Close()
 			return PromptExecutionResult{}, fmt.Errorf("provider error: failed to start Claude print command: %w", err)
 		}
+		// BUG-494: scanner.Err() after each capture loop is captured and
+		// surfaced — a mid-stream read fault or >10MB line used to truncate
+		// stdout/stderr silently while the exit status looked clean.
+		var scanErrMu sync.Mutex
+		var scanErrs []error
+		recordScanErr := func(stream string, err error) {
+			if err == nil {
+				return
+			}
+			scanErrMu.Lock()
+			scanErrs = append(scanErrs, fmt.Errorf("%s capture: %w", stream, err))
+			scanErrMu.Unlock()
+		}
 		captureWg.Add(2)
 		go func() {
 			defer captureWg.Done()
 			scanner := bufio.NewScanner(stdoutPipe)
 			buf := make([]byte, 64*1024)
 			scanner.Buffer(buf, 10*1024*1024)
-			for scanner.Scan() {
-				line := append([]byte(nil), scanner.Bytes()...)
+			recordScanErr("stdout", scanStreamLines(scanner, func(line []byte) {
 				captureMu.Lock()
 				stdout.Write(line)
 				stdout.WriteByte('\n')
@@ -875,21 +897,20 @@ func (r *Runner) SendMessageWithCallback(ctx context.Context, req AiSessionMessa
 				} else {
 					emit(SessionStreamEvent{Type: "chunk", Stream: "stdout", Message: string(line)})
 				}
-			}
+			}))
 		}()
 		go func() {
 			defer captureWg.Done()
 			scanner := bufio.NewScanner(stderrPipe)
 			buf := make([]byte, 64*1024)
 			scanner.Buffer(buf, 10*1024*1024)
-			for scanner.Scan() {
-				line := append([]byte(nil), scanner.Bytes()...)
+			recordScanErr("stderr", scanStreamLines(scanner, func(line []byte) {
 				captureMu.Lock()
 				stderr.Write(line)
 				stderr.WriteByte('\n')
 				captureMu.Unlock()
 				emit(SessionStreamEvent{Type: "chunk", Stream: "stderr", Message: string(line)})
-			}
+			}))
 		}()
 		session.Cmd = cmd
 		if cmd.Process != nil {
@@ -949,6 +970,13 @@ func (r *Runner) SendMessageWithCallback(ctx context.Context, req AiSessionMessa
 		session.Cmd = nil
 		session.Pid = 0
 		session.Mu.Unlock()
+
+		scanErrMu.Lock()
+		streamErrs := append([]error(nil), scanErrs...)
+		scanErrMu.Unlock()
+		if len(streamErrs) > 0 {
+			return PromptExecutionResult{}, fmt.Errorf("provider error: Claude stream read failed: %w", errors.Join(streamErrs...))
+		}
 
 		if err != nil {
 			if terminationErr := sessionTerminationError(session); terminationErr != nil {

@@ -1112,7 +1112,7 @@ func TestRestoreChatRunFromDrivePreservesLocalMetadataWhenLocalAhead(t *testing.
 
 func TestResolveRestoredRunIDUsesSourceWhenUnused(t *testing.T) {
 	svc, _, _, _, _, _ := newChatSyncService(t)
-	if got := svc.resolveRestoredRunID(context.Background(), "mch-source", "run-1"); got != "run-1" {
+	if got, err := svc.resolveRestoredRunID(context.Background(), "mch-source", "run-1"); err != nil || got != "run-1" {
 		t.Fatalf("resolveRestoredRunID() = %q, want %q", got, "run-1")
 	}
 }
@@ -1134,7 +1134,7 @@ func TestResolveRestoredRunIDReusesSameSourceIdentity(t *testing.T) {
 		t.Fatalf("UpsertProviderSession: %v", err)
 	}
 	seedLocalChatRun(t, store, accountHome, workspace, "irrelevant", []byte("session-body"))
-	if got := svc.resolveRestoredRunID(context.Background(), "mch-source", "run-1"); got != "sync-existing" {
+	if got, err := svc.resolveRestoredRunID(context.Background(), "mch-source", "run-1"); err != nil || got != "sync-existing" {
 		t.Fatalf("resolveRestoredRunID() = %q, want %q", got, "sync-existing")
 	}
 }
@@ -1206,7 +1206,7 @@ func TestRestoreChatRunFromDriveRemapsChildParentRunIDOnCollision(t *testing.T) 
 		t.Fatalf("expected collision-safe run id, got %q", restored.RunID)
 	}
 
-	summaries := svc.listAgentRunSummaries(restored.RunID)
+	summaries, _ := svc.listAgentRunSummaries(restored.RunID)
 	if len(summaries) != 1 {
 		t.Fatalf("listAgentRunSummaries() = %d, want 1", len(summaries))
 	}
@@ -1386,7 +1386,7 @@ func TestRestoreParentChatRestoresChildrenAndPersistsAgentTree(t *testing.T) {
 	}
 
 	restartedService := NewInteractiveServiceWithStore(DefaultProviderRegistry(), nil, restoredStore)
-	summaries := restartedService.listAgentRunSummaries(restored.RunID)
+	summaries, _ := restartedService.listAgentRunSummaries(restored.RunID)
 	if len(summaries) != 1 || summaries[0].RunID != restoredChild.RunID || summaries[0].ParentRunID != restored.RunID {
 		t.Fatalf("agent summaries after restart = %#v", summaries)
 	}

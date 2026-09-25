@@ -50,7 +50,15 @@ func (s *InteractiveService) handleGetRunTimeline(w http.ResponseWriter, r *http
 		// persisted session row for leg identity. Transcript records are
 		// keyed by run id on disk, so they survive without residency.
 		if reader, ok := s.workflowStore.(SessionHistoryReader); ok {
-			if sess, found, err := reader.GetProviderSession(context.Background(), runID); err == nil && found {
+			sess, found, err := reader.GetProviderSession(context.Background(), runID)
+			if err != nil {
+				// BUG-493: an unreadable store must not masquerade as
+				// "run not found" — 404 wrongly tells the client the run
+				// never existed. Surface a retryable typed error instead.
+				writeInteractiveError(w, newAPIErr(http.StatusBadGateway, "run_lookup_unavailable", "run timeline lookup failed: "+err.Error()))
+				return
+			}
+			if found {
 				legs[sess.RunID] = chatLegView{
 					RunID:           sess.RunID,
 					ProviderKey:     string(sess.ProviderKey),

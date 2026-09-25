@@ -343,6 +343,11 @@ func compatProbeClaudeStreamJSON(ctx context.Context) CompatItem {
 			resultFrame = frame
 		}
 	}
+	// BUG-494: a read fault or >8MB frame truncates the stream — report the
+	// read failure, not a misleading "missing frame" diagnosis.
+	if err := scanner.Err(); err != nil {
+		return CompatItem{Name: "claude stream-json live probe", Status: "fail", Detail: fmt.Sprintf("stdout read error: %v", err)}
+	}
 
 	for _, required := range []string{"system", "result"} {
 		if !seen[required] {
@@ -402,6 +407,7 @@ func compatProbeCodexInitialize(ctx context.Context) CompatItem {
 		Error  map[string]any `json:"error"`
 	}
 	done := make(chan rpcMsg, 1)
+	scanErr := make(chan error, 1)
 	go func() {
 		scanner := bufio.NewScanner(stdout)
 		scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
@@ -415,11 +421,19 @@ func compatProbeCodexInitialize(ctx context.Context) CompatItem {
 				return
 			}
 		}
+		// BUG-494: a read fault previously ended the goroutine silently and
+		// the caller timed out with a misleading "no response" verdict.
+		scanErr <- scanner.Err()
 	}()
 
 	select {
 	case <-c.Done():
 		return CompatItem{Name: "codex app-server initialize", Status: "warn", Detail: "no initialize response; check Codex login or binary"}
+	case err := <-scanErr:
+		if err != nil {
+			return CompatItem{Name: "codex app-server initialize", Status: "fail", Detail: fmt.Sprintf("initialize read error: %v", err)}
+		}
+		return CompatItem{Name: "codex app-server initialize", Status: "warn", Detail: "initialize stream closed without a response"}
 	case msg := <-done:
 		if msg.Error != nil {
 			return CompatItem{Name: "codex app-server initialize", Status: "fail", Detail: fmt.Sprintf("initialize error: %v", msg.Error)}

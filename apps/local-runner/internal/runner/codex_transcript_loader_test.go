@@ -34,7 +34,7 @@ func TestLoadCodexTranscriptEvents(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	events := loadCodexTranscriptEvents(path)
+	events, _ := loadCodexTranscriptEvents(path)
 
 	type want struct {
 		typ    ProviderEventType
@@ -78,7 +78,7 @@ func TestLoadCodexTranscriptEvents(t *testing.T) {
 // TestLoadCodexTranscriptEventsMissingFile returns nil (best-effort) for an absent
 // rollout file so resume is never blocked by a missing transcript.
 func TestLoadCodexTranscriptEventsMissingFile(t *testing.T) {
-	if events := loadCodexTranscriptEvents(filepath.Join(t.TempDir(), "nope.jsonl")); events != nil {
+	if events, _ := loadCodexTranscriptEvents(filepath.Join(t.TempDir(), "nope.jsonl")); events != nil {
 		t.Fatalf("expected nil for missing file, got %+v", events)
 	}
 }
