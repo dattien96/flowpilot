@@ -6487,6 +6487,13 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 	if worktreeTerminal(rs.status) {
 		s.maybeEmitWorktreeMergeRequest(rs)
 	}
+	// Task-443 (CP-86 P-4): flag-gated context-pressure ladder + provider
+	// self-compaction detection. Evaluated AFTER the usage event is appended
+	// (enrichment above already filled the catalog window); pressure events
+	// are not usage events so emission cannot recurse. Default OFF.
+	if contextPressureEnabled() && ev.Type == EventTokenUsageUpdated {
+		s.evalContextPressureLocked(rs, ev)
+	}
 	// CP-84 (Task-429): every emitted event can change the run's lane
 	// projection (status flips, vibe gates, worktree_terminal arming the
 	// merge decision above, approval/question events arming records). The
@@ -9550,6 +9557,27 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 		s.mu.Unlock()
 		return "", newAPIErr(http.StatusConflict, "awaiting_user", "run has a pending approval or question; resolve it before a new turn")
 	}
+	// Task-443 (CP-86 P-4): a committed rotate_leg intent executes HERE — the
+	// turn-admission boundary — never mid-turn. The turn lands on the fresh
+	// same-binding leg. Headroom failure escalates to the routing gate (CP-87).
+	if rs.contextResetPending {
+		s.mu.Unlock()
+		if newLegID := s.consumePendingContextReset(context.Background(), runID); newLegID != "" {
+			return s.startTurn(newLegID, in, scenario, idempotencyKey)
+		}
+		s.mu.Lock()
+		rs = s.runs[runID]
+		if rs == nil {
+			s.mu.Unlock()
+			return "", newAPIErr(http.StatusNotFound, "run_not_found", "workflow run not found")
+		}
+	}
+	// Task-443: a leg the provider self-compacted is context-degraded — the
+	// next admission treats it like the ask tier and offers rotate_leg (once
+	// per leg; the card is async — the admitted turn proceeds regardless).
+	if contextPressureEnabled() {
+		s.maybeOfferContextResetAtAdmissionLocked(rs)
+	}
 	// BUG-399 (live run-3439): a first turn that launches vibe-cp-ingest must
 	// name a CP-shaped source before cp_reader drafts anything. Without this
 	// fence a bare `README.md` prompt sailed through intake → SS drafts → lock
@@ -10987,17 +11015,23 @@ func (s *InteractiveService) AnswerQuestion(questionID string, choice []string) 
 	// Task-442/443: engine-emitted decision cards route their resolved choice
 	// to a semantic handler instead of a turn reprompt.
 	var decisionTarget *interactiveRun
-	var usageBudgetChoice string
+	var usageBudgetChoice, pressureChoice string
 	if len(rec.choice) > 0 {
 		decisionTarget = s.runs[rec.runID]
-		if rec.kind == usageBudgetQuestionKind {
+		switch rec.kind {
+		case usageBudgetQuestionKind:
 			usageBudgetChoice = rec.choice[0]
+		case contextPressureQuestionKind:
+			pressureChoice = rec.choice[0]
 		}
 	}
 	s.mu.Unlock()
 
 	if decisionTarget != nil && usageBudgetChoice != "" {
 		s.applyUsageBudgetAnswer(decisionTarget, usageBudgetChoice)
+	}
+	if decisionTarget != nil && pressureChoice != "" {
+		s.applyContextPressureAnswer(decisionTarget, pressureChoice)
 	}
 
 	if resumeStepTurn {

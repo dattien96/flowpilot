@@ -211,6 +211,15 @@ func (s *InteractiveService) appendChatSwitchRecord(chatID string, from, to *int
 }
 
 func (s *InteractiveService) switchChatProvider(ctx context.Context, chatID string, req chatSwitchRequest) (chatSwitchResponse, *apiErr) {
+	return s.switchChatLeg(ctx, chatID, req, false)
+}
+
+// switchChatLeg mints a new leg for the chat from the handoff machinery.
+// allowSameProvider=false keeps the provider-switch contract (same-provider
+// continuity uses the in-place model-change path); true is the Task-443
+// context reset — a fresh provider session on the SAME binding, reseeded
+// from the durable transcript (leg lifecycle, not account routing).
+func (s *InteractiveService) switchChatLeg(ctx context.Context, chatID string, req chatSwitchRequest, allowSameProvider bool) (chatSwitchResponse, *apiErr) {
 	if chatID == "" {
 		return chatSwitchResponse{}, newAPIErr(http.StatusBadRequest, "invalid_request", "chatId is required")
 	}
@@ -257,7 +266,7 @@ func (s *InteractiveService) switchChatProvider(ctx context.Context, chatID stri
 		s.mu.Unlock()
 		return chatSwitchResponse{}, newAPIErr(http.StatusConflict, "handoff_run_busy", "a provider switch is already in flight")
 	}
-	if strings.EqualFold(string(src.providerKey), string(req.TargetProviderKey)) {
+	if strings.EqualFold(string(src.providerKey), string(req.TargetProviderKey)) && !allowSameProvider {
 		s.mu.Unlock()
 		return chatSwitchResponse{}, newAPIErr(http.StatusConflict, "handoff_same_provider", "same-provider continuity uses the in-place model-change path")
 	}
