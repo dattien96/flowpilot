@@ -4157,21 +4157,45 @@ async function consumeRunUpdatesLoop(
   }
 }
 
-/** Overlay a lane projection's status/updatedAt onto the polled history
- *  slices — the mux is fresher than the 30s poll, so the Navigator reflects
- *  waiting/terminal transitions immediately. */
+/** Overlay a lane projection onto the polled history slices — the mux is
+ *  fresher than the 30s poll, so the Navigator reflects waiting/terminal
+ *  transitions immediately. BUG-479: a lane for a run the poll has never
+ *  returned (created by another client after the last fetch) is INSERTED as
+ *  a minimal row rather than dropped — otherwise the board can't see it
+ *  until the next poll, violating the <1s lane-visibility contract. Poll
+ *  reconciliation replaces the slice wholesale by runId, so the minimal
+ *  row merges cleanly with no duplicate registry. */
 function patchHistoryLane(set: (fn: (s: AppState) => Partial<AppState>) => void, lane: RunRealtimeProjection): void {
   set((s) => {
-    const items = s.projectHistoryById[lane.projectId];
-    if (!items?.some((it) => it.runId === lane.runId)) return {};
-    const next = items.map((it) =>
-      it.runId === lane.runId ? { ...it, status: lane.status, updatedAt: lane.updatedAt } : it,
-    );
+    const items = s.projectHistoryById[lane.projectId] ?? [];
+    const next = items.some((it) => it.runId === lane.runId)
+      ? items.map((it) =>
+          it.runId === lane.runId ? { ...it, status: lane.status, updatedAt: lane.updatedAt } : it,
+        )
+      : [...items, muxLaneHistoryRow(lane)];
     return {
       projectHistoryById: { ...s.projectHistoryById, [lane.projectId]: next },
       ...(s.selectedProjectId === lane.projectId ? { runHistory: next } : {}),
     };
   });
+}
+
+/** Synthesize a bounded RunHistoryItem from projection fields only. Server-
+ *  polled metadata (lastPrompt, subMode, flowRef, worktree…) isn't carried
+ *  by the mux — the next history poll replaces this row by runId. The
+ *  providerKey fallback mirrors what board consumers already do
+ *  (`run.providerKey ?? "codex"`). */
+function muxLaneHistoryRow(lane: RunRealtimeProjection): RunHistoryItem {
+  return {
+    runId: lane.runId,
+    projectId: lane.projectId,
+    chatId: lane.chatId,
+    providerKey: lane.providerKey ?? "codex",
+    status: lane.status,
+    startedAt: lane.updatedAt,
+    updatedAt: lane.updatedAt,
+    lastMessage: lane.lastSummary,
+  };
 }
 
 /**
