@@ -85,6 +85,13 @@ const (
 	// ProviderLimit payload so clients never re-parse error text; the turn's
 	// terminal turn_failed event still follows for generic failure handling.
 	EventProviderLimitReached ProviderEventType = "provider_limit_reached"
+	// BUG-507 (live run-22241): a permission request that expired unanswered
+	// must leave a durable, broadcast trace — the model's intended action
+	// never ran and the run must not look clean. Carries ApprovalID +
+	// Details so history/audit shows exactly which effect was dropped.
+	EventApprovalExpired ProviderEventType = "approval_expired"
+	// BUG-507 twin for ask_user questions expiring unanswered.
+	EventQuestionExpired ProviderEventType = "question_expired"
 )
 
 // ProviderLimitKind is the normalized provider-limit taxonomy (Task-445 T-1).
@@ -174,6 +181,12 @@ type TokenUsageSnapshot struct {
 	// explicitly distinct from the provider-reported usage figures. Absent
 	// when no prompt is bound (rendered "—", never a fake zero).
 	EstPromptTokens *int64 `json:"estPromptTokens,omitempty"`
+	// UsageScopeQuery marks Total as a per-QUERY aggregate (e.g. Claude's
+	// result-event usage covers one print invocation, not the session) rather
+	// than the session-cumulative number Codex/Devin report. The emit seam
+	// accumulates it into the session-cumulative Total before the event is
+	// appended/persisted, then clears the flag — so it never serializes.
+	UsageScopeQuery bool `json:"-"`
 }
 
 // ContextPressurePayload rides context_pressure / provider_compacted events
@@ -429,6 +442,15 @@ type StartRunInput struct {
 	WorkingMode string `json:"workingMode,omitempty"`
 	// FlowRef is an optional pack flow id gated at start (bare or pack-prefixed).
 	FlowRef string `json:"flowRef,omitempty"`
+	// FlowRefFallback is an internal (non-user) canonical pack flow reference
+	// used ONLY as a catalog-outage resolution hint (BUG-506): spawnChildRun
+	// carries the parent's chatFlowRef here so a child whose WorkflowID is a
+	// mirror-row UUID — unresolvable while the catalog is down — can still
+	// synthesize its step view from the embedded pack. Unlike FlowRef it is
+	// never validated by enforceWorkingModeStart and never treated as a
+	// chat-mode mount request (it stamps chatFlowRef only when FlowRef is
+	// absent so deeper descendants keep the fallback).
+	FlowRefFallback string `json:"flowRefFallback,omitempty"`
 	// RunID on start is rejected (409 working_mode_pinned); live mode is immutable.
 	RunID string `json:"runId,omitempty"`
 	// Client is copied from X-Client by handleStartRun; not a JSON field.

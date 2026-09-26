@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"os"
 	"strings"
 
 	"flowpilot-runner/internal/agentpack"
@@ -14,10 +13,9 @@ import (
 // Tournament escalation fallback leg (CP-65 P-4, Task-371): when a review
 // loop hits its round cap or a vibe owner debate stalls past its retries,
 // the runner opens a tournament-harness child run with the stuck run's
-// intent and contract instead of terminating failed/stopped. Everything here
-// is flag-gated (FLOWPILOT_ENABLE_TOURNAMENT_ESCALATION, default OFF): with
-// the flag unset every hook below is a no-op and the old escalate-card /
-// parked-cap paths run byte-identical.
+// intent and contract instead of terminating failed/stopped. MVP posture:
+// always ON (TournamentEscalationEnabled) — the legacy env flag is ignored
+// and rollback is a revert commit, not a flag flip.
 //
 // The tournament child is linked via parentRunID but deliberately NOT
 // registered in the orchestrator children map: that map drives
@@ -27,9 +25,10 @@ import (
 // children map will not see the tournament child; s.runs linkage carries
 // the parent/child relation for verdict return (T-3).
 
-// TournamentEscalationEnv is the CP-65 §8 rollout/fallback flag. Unset or
-// false keeps the pre-CP-65 behavior: caps park escalate cards, stalls park
-// member_stalled, debate failures park caps — no tournament is ever opened.
+// TournamentEscalationEnv is the legacy CP-65 §8 rollout flag name. MVP
+// posture: ignored — TournamentEscalationEnabled() is always true, so caps
+// and stalls always dispatch the tournament rescue. Kept so external config
+// docs/tests that still reference the name compile.
 const TournamentEscalationEnv = "FLOWPILOT_ENABLE_TOURNAMENT_ESCALATION"
 
 // tournamentHarnessFlowID is the pack flow id opened for a rescue.
@@ -41,16 +40,12 @@ const tournamentHarnessFlowID = "tournament-harness"
 // a failure — the legacy park path must NOT run over a live tournament.
 var errTournamentEscalationExists = errors.New("tournament escalation child already exists")
 
-// TournamentEscalationEnabled reports whether the escalation leg is on.
-// Only the explicit truthy set enables it (same pattern as
-// ReproduceGateEnabled); unset keeps legacy behavior.
+// TournamentEscalationEnabled: MVP posture — always ON; the
+// FLOWPILOT_ENABLE_TOURNAMENT_ESCALATION env is ignored (same posture as
+// ReproduceGateEnabled / chatSSOTEnabled — rollback is a revert commit,
+// not a flag flip).
 func TournamentEscalationEnabled() bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv(TournamentEscalationEnv))) {
-	case "1", "true", "yes", "on", "enable", "enabled":
-		return true
-	default:
-		return false
-	}
+	return true
 }
 
 // runIsTournamentFlow reports whether runID already runs tournament-harness,
@@ -82,8 +77,9 @@ func (s *InteractiveService) runIsTournamentFlow(runID string) bool {
 }
 
 // shouldEscalateToTournament is the single choke point for every rescue
-// trigger: flag on, parent known, and not already a tournament run
-// (anti-recursion — a tournament of a tournament is forbidden).
+// trigger: escalation enabled (always on), parent known, and not already a
+// tournament run (anti-recursion — a tournament of a tournament is
+// forbidden).
 func (s *InteractiveService) shouldEscalateToTournament(parentRunID string) bool {
 	if !TournamentEscalationEnabled() || s == nil || strings.TrimSpace(parentRunID) == "" {
 		return false
@@ -105,7 +101,7 @@ func (s *InteractiveService) shouldEscalateToTournament(parentRunID string) bool
 // unit-testable). Returns the child run id.
 func (s *InteractiveService) escalateToTournament(parentRunID, reason string) (string, error) {
 	if !s.shouldEscalateToTournament(parentRunID) {
-		return "", fmt.Errorf("tournament: escalation refused for run %q (flag off, unknown run, or already a tournament)", parentRunID)
+		return "", fmt.Errorf("tournament: escalation refused for run %q (unknown run or already a tournament)", parentRunID)
 	}
 	def, err := tournamentFlowDefinition()
 	if err != nil {

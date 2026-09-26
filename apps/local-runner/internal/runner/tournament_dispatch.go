@@ -87,8 +87,8 @@ func (s *InteractiveService) tournamentCandidateWorktree(parentRunID string, nod
 // running returns false (claimed as handled; the sibling's own completion
 // re-enters this path).
 func (s *InteractiveService) tournamentJoinSatisfied(parentRunID string, edges []agentpack.FlowEdge, nodeID string) bool {
+	var pending []string
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	for _, e := range edges {
 		if !strings.EqualFold(strings.TrimSpace(e.To), nodeID) ||
 			!strings.EqualFold(strings.TrimSpace(e.When), "done") ||
@@ -108,11 +108,67 @@ func (s *InteractiveService) tournamentJoinSatisfied(parentRunID string, edges [
 			}
 		}
 		if !done {
-			log.Printf("[tournament] arbiter join waiting on sibling %q (run %q)", e.From, parentRunID)
-			return false
+			pending = append(pending, e.From)
 		}
 	}
+	s.mu.Unlock()
+	if len(pending) == 0 {
+		return true
+	}
+	// BUG-519 (live run-49109): after a runner restart a fully-finished
+	// cohort is deliberately NOT reconstructed into s.runs
+	// (reconstructPendingChildSessions only restores live/pending members),
+	// so the memory scan waits on siblings that completed pre-restart
+	// forever. The durable step-transition sidecar is the authoritative
+	// record — a predecessor whose last stamp is terminal satisfies the
+	// join exactly like a terminal in-memory child.
+	if terminal := s.tournamentTerminalNodesFromLog(parentRunID); len(terminal) > 0 {
+		kept := pending[:0]
+		for _, id := range pending {
+			if !terminal[id] {
+				kept = append(kept, id)
+			}
+		}
+		pending = kept
+	}
+	if len(pending) > 0 {
+		log.Printf("[tournament] arbiter join waiting on sibling %q (run %q)", pending[0], parentRunID)
+		return false
+	}
 	return true
+}
+
+// tournamentTerminalNodesFromLog replays the parent's durable
+// step-transition sidecar (last status per node wins) and returns the ids
+// whose final stamp is terminal. I/O runs outside s.mu; a missing store or
+// unreadable/empty log returns nil so the join falls back to the memory
+// scan — never fail-open on absent evidence.
+func (s *InteractiveService) tournamentTerminalNodesFromLog(parentRunID string) map[string]bool {
+	tlog, ok := s.workflowStore.(StepTransitionLogStore)
+	if !ok {
+		return nil
+	}
+	lines, err := tlog.LoadStepTransitions(context.Background(), parentRunID)
+	if err != nil || len(lines) == 0 {
+		return nil
+	}
+	last := map[string]RuntimeWorkflowStepStatus{}
+	for _, l := range lines {
+		id := strings.TrimSpace(l.NodeID)
+		st := RuntimeWorkflowStepStatus(strings.TrimSpace(l.Status))
+		if id == "" || st == "" {
+			continue
+		}
+		last[id] = st
+	}
+	out := map[string]bool{}
+	for id, st := range last {
+		switch st {
+		case StepStatusDone, StepStatusFailed, StepStatusCanceled, StepStatusSkipped:
+			out[id] = true
+		}
+	}
+	return out
 }
 
 // tournamentNodeConfig merges the rollout node's candidates/serial config
@@ -344,6 +400,14 @@ func (s *InteractiveService) runTournamentMergeNode(ctx context.Context, parentR
 	if patchRecorded {
 		rawArgs["patch"] = winnerPatch
 	}
+	// B-5 round 2 (deep review): re-picking a conflicted winner re-applies
+	// the same stored patch and fails identically forever (live run-3688:
+	// re-pick → no-progress → discard). An operator who resolved the
+	// conflict by hand rides the merged diff in the decision's feedback —
+	// a parsed unified diff overrides the recorded snapshot for this apply.
+	if opPatch := extractOperatorPatch(resultMessage); opPatch != "" {
+		rawArgs["patch"] = opPatch
+	}
 	out, err := behaviorTournamentMerge(ctx, BehaviorInput{
 		NodeID:       node.ID,
 		WorkspaceCwd: s.workspaceCwdFor(parentRunID),
@@ -462,6 +526,38 @@ func tournamentDecisionCard(out BehaviorOutput) map[string]any {
 	}
 }
 
+// extractOperatorPatch pulls a unified diff out of free-form decision
+// feedback — the operator's manually resolved merge (B-5/BUG-478 follow-up).
+// Detection is deliberately narrow: a `diff --git` header anywhere (git
+// format, possibly pasted after prose), or text that itself starts with a
+// `--- `/`+++ ` file header pair (plain unified diff). A trailing markdown
+// fence is stripped. Anything else returns "" and the recorded snapshot
+// stays the merge source.
+func extractOperatorPatch(feedback string) string {
+	trimmed := strings.TrimSpace(feedback)
+	if trimmed == "" {
+		return ""
+	}
+	start := strings.Index(feedback, "diff --git ")
+	if start < 0 {
+		if strings.HasPrefix(trimmed, "--- ") && strings.Contains(trimmed, "\n+++ ") {
+			start = strings.Index(feedback, "--- ")
+		} else {
+			return ""
+		}
+	}
+	// Keep the diff's raw tail: `git apply` rejects a hunk whose last line
+	// lacks the newline terminator, and TrimSpace would strip exactly that.
+	diff := feedback[start:]
+	if end := strings.LastIndex(diff, "\n```"); end > 0 {
+		diff = diff[:end+1]
+	}
+	if !strings.HasSuffix(diff, "\n") {
+		diff += "\n"
+	}
+	return diff
+}
+
 // tournamentMergeDecisionCard renders the MERGE-stage escalate as a
 // request_user_decision card (BUG-478). Unlike the arbiter card — whose
 // options come from the verdict ranking — merge-stage options are derived
@@ -484,9 +580,10 @@ func tournamentMergeDecisionCard(out BehaviorOutput, winner string, patches map[
 			label += " (picked winner — patch conflicts)"
 		}
 		options = append(options, map[string]any{
-			"id":          id,
-			"label":       label,
-			"consequence": "merge this candidate's recorded patch into the workspace",
+			"id":    id,
+			"label": label,
+			"consequence": "merge this candidate's recorded patch into the workspace" +
+				" (reply with your own resolved diff to apply that instead — re-picking re-applies the stored patch)",
 		})
 	}
 	options = append(options,

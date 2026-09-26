@@ -126,6 +126,19 @@ func gitOut(dir string, args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
+// gitOutRaw is gitOut without the trailing-whitespace trim — required for
+// NUL-separated output (`-z`), where the terminator itself is data.
+func gitOutRaw(dir string, args ...string) (string, error) {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return strings.TrimSpace(string(out)),
+			fmt.Errorf("worktree: git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+	}
+	return string(out), nil
+}
+
 // requireWorktreeScope pins a scan to the worktree's own git toplevel.
 // BUG-501 (live-found): when a managed worktree's .git file is missing or
 // corrupt, `git -C <worktree>` silently walks up to the PARENT repository —
@@ -277,8 +290,38 @@ func (Manager) Diff(_ context.Context, repoDir, ownerID, prefix string) ([]byte,
 	// exclude it from both the intent-to-add sweep and the diff or it lands
 	// in the merge patch and conflicts against the main workspace's own
 	// .flowpilot (live run-3589: winner patch conflicted on guard files).
-	if _, err := gitOut(path, "add", "-N", "--", ".", ":(exclude).flowpilot"); err != nil {
+	// BUG-518 (live run-49109): enumerate intent-to-add targets through
+	// ls-files instead of the `.` + `:(exclude).flowpilot` pathspec sweep —
+	// when a repo's ignore rules cover .flowpilot/ (the runner installs it
+	// into .git/info/exclude), the sweep names the ignored dir and exits 1
+	// before the exclude element applies, killing every candidate snapshot.
+	changed, err := gitOutRaw(path, "ls-files", "-z", "--modified", "--others", "--exclude-standard")
+	if err != nil {
 		return nil, err
+	}
+	if len(changed) > 0 {
+		// --modified output is NOT filtered by --exclude-standard: a repo
+		// that tracks files under .flowpilot/ (baseline beds do) yields
+		// them here, and `git add` rejects ignored paths outright (live
+		// run-69516: same BUG-518 kill via tracked .flowpilot metadata).
+		// .flowpilot is excluded from the patch anyway, so drop it here.
+		var b strings.Builder
+		for _, p := range strings.Split(strings.TrimRight(changed, "\x00"), "\x00") {
+			if p == ".flowpilot" || strings.HasPrefix(p, ".flowpilot/") {
+				continue
+			}
+			b.WriteString(p)
+			b.WriteByte(0)
+		}
+		changed = b.String()
+	}
+	if len(changed) > 0 {
+		cmd := exec.Command("git", "add", "-N", "--pathspec-from-file=-", "--pathspec-file-nul")
+		cmd.Dir = path
+		cmd.Stdin = strings.NewReader(changed)
+		if bout, err := cmd.CombinedOutput(); err != nil {
+			return nil, fmt.Errorf("worktree: git add -N: %w: %s", err, strings.TrimSpace(string(bout)))
+		}
 	}
 	args := []string{"diff", "--no-color"}
 	// Anchor at the recorded base commit when available: `git diff <base>`

@@ -77,6 +77,10 @@ type QuotaResolution struct {
 	// intended breadth.
 	Scope         string `json:"scope,omitempty"`
 	PolicyVersion int    `json:"policyVersion"`
+	// PendingPrompt is an in-memory carrier (BUG-517): the turn whose
+	// admission triggered routing never reached dispatch, so a flow-child
+	// respawn must seed THIS prompt — not the child's stale lastPrompt.
+	PendingPrompt string `json:"-"`
 }
 
 // hardQuotaRejects mark an account unusable — the current binding failing one
@@ -282,7 +286,7 @@ func (s *InteractiveService) commitQuotaRotation(ctx context.Context, res QuotaR
 		// Flow child: the leg is the child run — close it and respawn the same
 		// node binding on the new provider/account.
 		s.emitQuotaRouteCommitted(res, nil)
-		return s.respawnChildOnRoute(ctx, rs, sel)
+		return s.respawnChildOnRoute(ctx, rs, sel, res.PendingPrompt)
 	}
 	return fmt.Errorf("quota_gate: run %q has no leg rotation path", d.RunID)
 }
@@ -320,19 +324,34 @@ func (s *InteractiveService) emitQuotaRouteCommitted(res QuotaResolution, bindin
 		Type:       EventQuotaRouteCommitted,
 		QuotaRoute: payload,
 	})
+	// Observability: the committed repin/switch must be visible in runner
+	// logs, not only the durable event stream (Grok review round 3).
+	log.Printf("[quota] route_committed run=%s %s/%s -> %s/%s scope=%s reason=%q",
+		res.Demand.RunID, res.Demand.RequestedProvider, res.Demand.RequestedAccountID,
+		res.Selected.ProviderKey, res.Selected.AccountID, res.Scope, res.Reason)
 }
 
 // respawnChildOnRoute closes the child's exhausted leg and spawns a
 // replacement run on the committed binding — the flow engine sees a fresh
-// child for the same node label.
-func (s *InteractiveService) respawnChildOnRoute(ctx context.Context, child *interactiveRun, sel *RouteCandidate) error {
+// child for the same node label. pendingPrompt is the turn that admission
+// refused (BUG-517): it never dispatched, so the replacement must start
+// from it — falling back to the child's full prompt, never the 100-char
+// display-truncated lastPrompt.
+func (s *InteractiveService) respawnChildOnRoute(ctx context.Context, child *interactiveRun, sel *RouteCandidate, pendingPrompt string) error {
 	s.mu.Lock()
 	parentID := child.parentRunID
 	child.legState = LegStateClosed
 	child.legClosedReason = LegClosedReasonProviderSwitch
+	prompt := pendingPrompt
+	if strings.TrimSpace(prompt) == "" {
+		prompt = child.lastFullPrompt
+	}
+	if strings.TrimSpace(prompt) == "" {
+		prompt = child.lastPrompt
+	}
 	in := SpawnAgentInput{
 		Agent:             child.agentName,
-		Prompt:            child.lastPrompt,
+		Prompt:            prompt,
 		Label:             child.label,
 		Provider:          string(sel.ProviderKey),
 		Model:             sel.Model,
@@ -380,11 +399,23 @@ func (s *InteractiveService) flowNodeForRun(rs *interactiveRun) (agentpack.FlowN
 // provider_limit event, usage budget rotate answer, context-reset headroom
 // escalation). Trigger names stay machine-readable for the audit surface.
 func (s *InteractiveService) enterQuotaGate(ctx context.Context, runID, trigger string) error {
+	res, err := s.resolveQuotaGate(ctx, runID, trigger)
+	if err != nil {
+		return err
+	}
+	return s.CommitQuotaResolution(ctx, res)
+}
+
+// resolveQuotaGate is the resolve half of enterQuotaGate — it returns the
+// routing resolution without committing it so the caller can act on the
+// outcome (BUG-511 round 2: admission must distinguish gate / rotate /
+// blocked instead of collapsing every outcome into the same 409).
+func (s *InteractiveService) resolveQuotaGate(ctx context.Context, runID, trigger string) (QuotaResolution, error) {
 	s.mu.Lock()
 	rs := s.runs[runID]
 	s.mu.Unlock()
 	if rs == nil {
-		return fmt.Errorf("quota_gate: run %q not found", runID)
+		return QuotaResolution{}, fmt.Errorf("quota_gate: run %q not found", runID)
 	}
 	var node *agentpack.FlowNode
 	if n, ok := s.flowNodeForRun(rs); ok {
@@ -392,7 +423,7 @@ func (s *InteractiveService) enterQuotaGate(ctx context.Context, runID, trigger 
 	}
 	demand, err := s.ResolveExecutionDemand(ctx, runID, node)
 	if err != nil {
-		return err
+		return QuotaResolution{}, err
 	}
 	// A provider-limit trigger is live evidence about the current binding —
 	// carry it so the just-failed account hard-rejects even before telemetry
@@ -403,12 +434,56 @@ func (s *InteractiveService) enterQuotaGate(ctx context.Context, runID, trigger 
 	}
 	res, err := s.ResolveQuotaPreflight(ctx, demand)
 	if err != nil {
-		return err
+		return res, err
 	}
 	if res.Reason == "" {
 		res.Reason = trigger
 	}
-	return s.CommitQuotaResolution(ctx, res)
+	return res, nil
+}
+
+// pinnedAccountHardVeto reports a limit trigger when the run's pinned account
+// is already known-unusable — the durable block ledger first (its recorded
+// reason is a ProviderLimitKind when it came from a provider 402/403), then
+// live telemetry exhaustion that the ledger has not observed yet (BUG-511
+// round 2: a telemetry-exhausted pin must not slip through merely because
+// noteAccountBlockedLocked never ran). "" means no veto.
+func (s *InteractiveService) pinnedAccountHardVeto(ctx context.Context, rs *interactiveRun) string {
+	if s == nil || rs == nil {
+		return ""
+	}
+	s.mu.Lock()
+	acctID := strings.TrimSpace(rs.providerAccountID)
+	provider := string(rs.providerKey)
+	runID := rs.id
+	s.mu.Unlock()
+	if acctID == "" {
+		return ""
+	}
+	s.quotaMu.Lock()
+	reason := s.loadQuotaRuntimeState().accountBlockReason(acctID)
+	s.quotaMu.Unlock()
+	if reason != "" {
+		return reason
+	}
+	if s.quotaTelemetryFn == nil {
+		return ""
+	}
+	accounts, err := s.listProviderAccounts()
+	if err != nil {
+		return ""
+	}
+	for _, a := range accounts {
+		if a.ID != acctID || a.ProviderKey != provider {
+			continue
+		}
+		head := NormalizeAccountHeadroom(s.quotaTelemetryFn(ctx, a), s.quotaNow(), s.quotaSettingsForRun(runID))
+		if head.State == "exhausted" {
+			return string(ProviderLimitQuotaExhausted)
+		}
+		return ""
+	}
+	return ""
 }
 
 // emitQuotaRouteCard parks the run on a durable quota_route_required decision

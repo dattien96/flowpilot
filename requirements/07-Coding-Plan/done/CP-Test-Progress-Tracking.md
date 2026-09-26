@@ -494,3 +494,208 @@ context engine, init, TUI, test-health) continue on this branch.
   - Post-fix reprompt confirmed live: "the reproduce test failed to compile — a compile error is not a reproduction..."
   - Status: DONE
 - Remaining high-priority work: UI-only scenarios (CP-23 drift card, CP-62 M-5 decision card)
+
+---
+
+## Rerun Wave R2 — 12-CP live re-verification (2026-09-26, branch `main`, build 8c95a5bb)
+
+Runner `runner serve :19400` (REPRODUCE_GATE + CONTEXT_PRESSURE + BUDGET_PACKER +
+tournament flags). Providers: devin/swe-2-high (primary), grok-4.5 (second).
+Bed: `~/fp-beds/full` (lt-full), `gate-sandbox` (tournament). Evidence:
+`~/fp-beds/lt-evidence/full-20260925-r2/LIVE-LOG.md`.
+
+### Automated gate
+
+`go build ./...` clean. `go test ./internal/...` → reds = BUG-454 baseline
+set + 7 TempDir/shared-`~/.codex`-home parallel flakes, all passing in
+isolation → **GATE PASS** (no new regression).
+
+### Live results per CP
+
+| CP | R2 live result |
+|----|----------------|
+| CP-58 harness | ✅ run-6010 (grok): task-harness full chain `flow_control_done`. run-1 (devin): **BLOCKED at plan_synthesis — BUG-504 mech-1** (devin session mode refuses non-readOnlyHint `submit_review_outcome`; runner had allowed it `allow_once`). A-61-2 missing-verdict→escalate re-verified incidentally (honest park, `no progress since last continue` on re-continue). |
+| CP-64 reproduce-first | ✅ run-20370 (grok): seeded `strutil2/PadLeft` right-pad bug → RED repro → test locked → fix → GREEN → reviewer → synthesis → audit, all 9 nodes DONE; `go test` green; repro test unmodified. run-15708 aborted earlier: API-launch without `cwd` bound runner dir (→ **BUG-503**), froze empty `base_sha`. |
+| CP-65 tournament | ✅ run-3688: candidates devin+grok, arbiter TIE → human decision card → pick candidate-a → winner patch **conflict on apply → human-merge card** → re-pick no-progress re-escalate → discard → loop done, worktrees cleaned. Full explicit-escalation chain live. |
+| CP-51 dispatch | ✅ SIGKILL mid devin turn (run-22230/turn-22232): post-restart uncertain → resolve → `terminal_cancelled`; stale-revision resolve → `dispatch_conflict`; replay idempotent; `dispatch.ndjson` 623 contiguous seqs 0 dup/gap. ⚠️ asymmetry: completed runs → `run_not_found` post-restart while cancelled/pending rehydrate (history-list is SSOT; in-memory `s.runs` not repopulated for terminal runs — logged as observation). |
+| CP-59/58 chat SSOT | ✅ B-59 live: `switch-provider` on `cht_7395ef478aa9` grok→devin minted leg-1 `run-22625` (new pinned session, handoff `raw` incl. actionsDigest). Devin leg completed handoff turn, **delivered wordfreq package** (impl+tests, 10/10 green, FEATURE-KEYS + CA-011) — durable cross-provider handoff proven end-to-end. |
+| CP-60 vibe | ✅⚠️ V8 owner-debate verified ×2 (devin run-16950: real owner diagnoses of seeded defect; grok run-22241: owners returned thin notes). ⚠️ grok vibe chain exposed BUG-504 mech-2 + BUG-507 (expired approvals drop writes + verdict file-drop has no ingestion → run `completed` with open loop). V7 r-requirement: attempted live on devin leg turn-22913 (requirement-pivot prompt); V7/F2/F3 remain otherwise unexercised (lock state never reached — ingest writes were approval-blocked). |
+| CP-63 LSP | ⛔ env-blocked this build: `gopls not found in PATH` → diagnostics disabled. Prior live evidence (sev-1 diagnostics into reprompt, BUG-380 URI-wait) stands; no fresh leg possible. |
+| CP-66 knowledge | ⚠️ partial: `bootstrap distill failed workspace=/tmp/fp-live-2026` — workspace was runner-dir via BUG-503 mis-binding (no git/.gitnexus there) → degrade-nonfatal per design. No clean distill leg on a real bed in this session; prior Windows+macOS evidence stands. |
+| CP-71/82/84 | ✅ prior evidence stands; no new legs required this round (worktree matrix 8/8, multi-project, mux snapshot frame re-captured). |
+| CP-86 usage | ✅ NEW live leg closed: run-7443 quota-audit shows real `inputTokens:19358/outputTokens:25` vs est 18; devin `usage_update` carries `size:262000` window. Pressure-tier/cap-card legs remain fixture-only (need a real low-cap flow — never reached live). |
+| CP-87 quota | ⚠️ no live limit event obtainable: devin's sole account admitted 3 concurrent runs without `account_claimed` trip; soft `low` headroom (18% 7d) never gates by design. Real-limit legs remain fixture-covered. |
+
+### New bugs filed this wave
+
+- **BUG-503** — API-launched run without `cwd` binds runner workspace
+  (`/tmp/fp-live-2026`): contract froze empty `base_sha` → unrecoverable
+  gate; context node reported `strutil2/pad.go: not_found` under wrong
+  root; knowledge bootstrap distilled the wrong dir. Live run-15708.
+- **BUG-504** — machine-verdict tool provisioning inconsistent across
+  gated children: (1) devin `ask`/accept-edits mode refuses
+  non-readOnlyHint MCP tools despite runner `allow_once` (run-1 park);
+  (2) grok child session lacks `submit_review_outcome` registration
+  entirely (run-3688, prose-verdict carry); (3) grok vibe synthesis hub
+  also lacks it → invented `/tmp/submit_review_outcome.json` file-drop
+  with zero ingestion path (run-22241). Counter-examples: devin
+  synthesis (run-16950) + grok plan_reviewer (run-6010/7276) OK →
+  child-session-shape specific, not per-provider.
+- **BUG-505** — freeze-escalate resolution path undocumented: operator
+  feedback on the escalate card is consumed AS the preflight draft
+  (bare continue → `'c'`/"contract-planner…" consumed as draft). Worked
+  around by submitting valid draft JSON as feedback; needs a documented
+  field/UX.
+- **BUG-506** — writer spawn with no pack fallback on catalog outage
+  (Supabase slow ~7.7s) → `coder spawn failed after tdd` dead-park;
+  retry succeeded. Needs fallback/park semantics.
+- **BUG-507** — provider-side approval expiry silently drops effects:
+  `appr-22375`/`appr-22618` expired unanswered → ingest writes + verdict
+  lost, no card/attention; run surfaced `completed` while vibe loop
+  `running` round-0/5. Also: late operator answer → `409
+  question_expired` — approvals do not survive provider timeout.
+- **Observation (unfiled)** — post-restart `run_not_found` on completed
+  runs (in-memory `s.runs` not repopulated; history endpoint is SSOT):
+  intentional index asymmetry or rehydration gap — needs design answer.
+- **Observation (unfiled)** — unknown JSON field on turn POST
+  (`"text"` vs `"prompt"`) silently accepted → empty-prompt turn
+  dispatched → gate fired on a no-op. Strict-decode would have caught it.
+
+### Still open after R2
+
+- CP-60 V7 (`r-requirement` card — turn-22913 probe in flight), F2/F3
+  (mode-switch-back + exit/reopen mid-lock — need lock state first),
+  R-CP-D2 delete-demotion.
+- CP-65 parent-resume leg (escalation child resumes parent loop) —
+  still unit-only.
+- A-58-4 round-cap-3 live escalate (needs 3 real rejects — deferred).
+- BUG-503..507 need reproduce-first fixes + additive tests before any
+  live re-verify.
+
+## R3 wave — BUG-503..509 fixes + re-verification (2026-09-26, fixed build, runner :19400)
+
+All seven live-found bugs fixed under safe-fix contract (red test → prod
+fix → additive tests → CA entry). Fixes:
+
+- **BUG-503** (CA-1004): `createRun` binds registered `Project.Path` when
+  it exists; stale paths fall to runner workspace.
+- **BUG-504** (CA-1009): verdict tool offered on `verdict_only` posture /
+  verdict-flow hosts; `readOnlyHint` on the 4 runner-hosted interaction
+  tools (devin mode-filter passes them; `spawn_agent` unannotated).
+- **BUG-505** (CA-1007): freeze-escalate feedback no longer consumed as
+  planner draft unless it parses; unparseable → planner delegate retry.
+- **BUG-506** (CA-1008): internal `FlowRefFallback` on spawned children →
+  embedded-pack resolution survives catalog outage.
+- **BUG-507** (CA-1010): `approval_expired`/`question_expired` durable
+  events; `completed` withheld while flow loop open.
+- **BUG-508** (CA-1005): `runSnapshot` durable-store fallback —
+  post-restart `run_not_found` gone.
+- **BUG-509** (CA-1006): empty/unknown-only turn body → 400.
+
+Unit: 7 new additive test files, all green; focused
+`TestBug503..509` sweep green. Full `./internal/runner` suite: only
+pre-existing env failures + HEAD-confirmed TempDir flakes
+(`TestBUG462` fails 3/5 on unmodified HEAD). Two validation-time
+regressions fixed in prod (finalizer gate on fake `Project.Path` →
+existence check; hub-notify starvation → `signalChild` restored under
+the BUG-507 withhold).
+
+Live re-verify on fixed binary (runner rebuilt + restarted :19400):
+
+- BUG-503 ☑ `run-23532` bound `/Users/tiendat/fp-beds/full` (old-binary
+  sibling bound `/tmp/fp-live-2026`).
+- BUG-508 ☑ `run-6010`/`run-16950` → 200 post-restart (were
+  `run_not_found`).
+- BUG-509 ☑ `{"text":…}` and `{"stepId"}`-only bodies → `400
+  prompt is required`; valid prompt → 200.
+- BUG-504 ☑ MCP `tools/list` shows `readOnlyHint` on approve/ask_user,
+  absent on spawn_agent; grok `plan_reviewer` `run-25737` submitted
+  `submit_review_outcome` → `review_verdict_recorded` (tool offer leg
+  that was missing pre-fix).
+- BUG-505/506/507 ◑ unit-verified; organic trigger legs (freeze
+  escalate / catalog outage / real expiry) not hit in the R3 window.
+
+Runbook section "G. R3 rerun" carries the per-bug table.
+
+---
+
+## Round-5 (2026-09-26 evening) — always-on flips + BUG-518/519/520 + live re-drive
+
+Scope: user directive — all CP features always-on (no env gates); then
+re-drive the 12-CP live matrix on Devin+Grok only (no Claude/Codex/Gemini
+live accounts on this machine; those gaps are environmental, not
+implementation failures).
+
+### Always-on change (CA-1029)
+
+CP feature gates hard-enabled: `contextPressureEnabled`,
+`driftDetectorEnabled`, `tournamentEscalationEnabled`,
+`budgetPackerEnabled` (with byte-identical passthrough when nothing
+drops), plus already-on chat SSOT / reproduce gate / drive MCP.
+`codexAppServerEnabled` stays env-gated — transport implementation
+switch, always-on broke codex resume contracts and no codex binary
+exists on this machine. Pre-existing flag-off contract tests updated to
+the new always-on contract (documented, additive intent preserved);
+`drainTestService`-style drain helper added so async tournament
+escalation children can't race `TempDir` teardown.
+
+### New bugs found live this round
+
+- **BUG-518** (CA-1026): tournament arbiter patch snapshot dies when
+  `.flowpilot` is ignored — `git add -N -- . ':(exclude).flowpilot'`
+  exits 1 on the ignored pathspec. Two live vectors:
+  run-49109 (untracked runtime dir) and run-69516 (**tracked**
+  `.flowpilot` metadata — `ls-files --modified` ignores
+  `--exclude-standard`; fixed by filtering `.flowpilot/` prefixes out of
+  the enumerated intent-to-add set). Tests:
+  `TestBUG518_DiffToleratesIgnoredFlowpilotDir` +
+  `TestBUG518_DiffToleratesTrackedFlowpilotFiles`; BUG-453 fail-closed
+  untouched and green.
+- **BUG-519** (CA-1027): `tournamentJoinSatisfied` scanned only
+  in-memory `s.runs`; terminal children absent post-restart → join
+  waited forever. Fix: durable `StepTransitionLogStore` fallback
+  (DONE/FAILED/CANCELED/SKIPPED terminal). Tests:
+  `bug519_arbiter_join_restart_test.go` (terminal-recovered /
+  non-terminal blocks / failed-satisfies).
+- **BUG-520** (CA-1028): hub stall watchdog did not count a child's
+  armed `pendingGateRepromptPrompt/StepID` as activity → parked
+  `hub_stalled` mid-cohort → `parkFlowForAwaitingUser` wiped the armed
+  intent → orphaned `waiting_user_approval` child with
+  `pending_gate_code_paths` but no reprompt (durable evidence:
+  run-60174 `pending_gate_reprompt_prompt: null`). Fix: armed reprompt
+  counts as active + shields ghost classification. `pendingFlowGateSettle`
+  alone still not active (BUG-354 contract preserved). Tests:
+  `TestBug520_StallDoesNotFireOnArmedGateReprompt` (verified RED),
+  `TestBug520_TrueGhostChildStillStalls`.
+
+### Round-5 live evidence (devin/grok only)
+
+| CP / bug | Evidence |
+|----------|----------|
+| CP-51 dispatch chain | ☑ devin `turn-49070` → `terminal_completed` rev 9, full dispatch record |
+| CP-59 chat SSOT | ☑ devin→grok switch minted leg-1 (`includedTurnCount:1` handoff), grok turn completed |
+| CP-86 usage | ☑ dispatch records carry real usage fields on grok+devin turns |
+| CP-60 mode gate | ☑ `invalid_cp_source` admission probe rejected correctly |
+| CP-82 parallel | ☑ runs across 2 projects in flight simultaneously |
+| CP-84 mux | ☑ single `/client/events/stream` carried upserts from 4 runs / 2 projects |
+| CP-58 task-harness | ☑ `run-49107` completed → audit DONE (prior binary) |
+| CP-64 bug-harness | ☑ `run-61850` (grok, gate-sandbox bed): seeded `Multiply→a-b` → reproduce_test RED → implement → validate → reviewer → synthesis → audit all DONE; `Multiply` restored `a*b`, `calc_multiply_test.go` + CA-925 produced |
+| CP-65/71 tournament + BUG-518 | ☑ `run-76075`/`run-82594` on r9: arbiter `tournament_arbiter_decided` with **zero** `patch snapshot` errors (both candidate worktrees snapshotted incl. tracked-.flowpilot bed), candidates re-dispatched on tie-retry, worktrees isolated at base 045321a |
+| BUG-520 | ☑ zero `hub_stalled` across two tournament runs on r8/r9 through multiple gate-reprompt windows (r7 control: parked at 19:04 during candidate-b's armed reprompt) |
+| BUG-519 | ◑ unit-verified (durable step-log fallback); live leg = kill while parked at arbiter card → resume → join re-evaluation — in progress on run-82594 |
+
+### Round-5 residuals
+
+- **run-60145 wedge**: BUG-520 casualty — parent surfaced `completed`
+  while `candidate-b` WAITING and arbiter/merge PENDING (status-honesty
+  gap) + orphaned child (wiped reprompt, `pending_gate_code_paths`
+  armed, no re-drive path). Filed as residual follow-ups in BUG-520 doc.
+- **Kill-mid-flight → `cancelled`**: resume normalizes persisted
+  `status=running` runs to cancelled (designed crash-during-dispatch
+  semantic — uncertain delivery fails closed). BUG-519's live leg must
+  therefore kill at a *parked* state, not mid-turn.
+- **Tournament tie behavior**: three consecutive runs tie at 1.0000 on
+  trivial scoped tasks → retry up to cap → human card. Deterministic
+  arbitration working as designed.
+- Claude/Codex/Gemini live legs: **environmental gap** — no accounts on
+  this machine; unit/fixture coverage stands.

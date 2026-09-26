@@ -108,12 +108,13 @@ func TestApplyFlowControlCapSettlesHubBeforeLoopBlocked(t *testing.T) {
 		t.Fatalf("NextAction = %q, want awaiting_user", result.NextAction)
 	}
 	loop := svc.agentOrchestrator.loopStateFor(parent.RunID)
-	if loop.Status != "blocked" || loop.BlockReason != "cap" {
-		t.Fatalf("loop = %+v, want blocked/cap", loop)
+	if loop.Status != "tournament_escalation" || loop.BlockReason != "cap" {
+		t.Fatalf("loop = %+v, want tournament_escalation/cap (escalation is always on)", loop)
 	}
 	if got := flowStepStatus(t, svc, parent.RunID, "synthesis"); got != StepStatusWaitingUserApr {
 		t.Fatalf("synthesis = %q, want WAITING_USER_APPROVAL (settled with block)", got)
 	}
+	awaitTournamentChildIdle(t, svc, parent.RunID)
 }
 
 // Task-240 D-3 / I-4: blocked loop does not allow advance.

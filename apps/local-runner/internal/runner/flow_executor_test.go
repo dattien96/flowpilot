@@ -2100,8 +2100,8 @@ func TestStartResolvedFlowAppliesConfiguredCapAndExtendBy(t *testing.T) {
 	if result.NextAction != "awaiting_user" {
 		t.Fatalf("NextAction = %q, want awaiting_user — the loop should block at round 2 since Cap=2, not silently allow a 3rd round", result.NextAction)
 	}
-	if st := svc.agentOrchestrator.loopStateFor(parent.RunID); st.Status != "blocked" {
-		t.Fatalf("loop.Status = %q, want blocked", st.Status)
+	if st := svc.agentOrchestrator.loopStateFor(parent.RunID); st.Status != "tournament_escalation" {
+		t.Fatalf("loop.Status = %q, want tournament_escalation (escalation always on)", st.Status)
 	}
 
 	// extendCap must raise Cap by the flow's own ExtendBy (5), not the old
@@ -2113,6 +2113,7 @@ func TestStartResolvedFlowAppliesConfiguredCapAndExtendBy(t *testing.T) {
 	if extendResult.Cap != 7 {
 		t.Fatalf("extendCap raised Cap to %d, want 7 (2 + the flow's own ExtendBy=5, not the old hardcoded +2=4)", extendResult.Cap)
 	}
+	awaitTournamentChildIdle(t, svc, parent.RunID)
 }
 
 // TestResolveContinueBackEdgeIsSourceAware (CP-58 Task-304 T-2/T-7) pins the

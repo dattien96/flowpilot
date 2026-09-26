@@ -23,7 +23,10 @@ import (
 
 const codexAppServerEnvFlag = "FLOWPILOT_CODEX_APPSERVER"
 
-// codexAppServerEnabled reports whether the live Codex app-server path is turned on.
+// codexAppServerEnabled reports whether the live Codex app-server path is
+// turned on. Still env-gated: this is a runtime-path selector for a
+// provider that needs a real codex binary — not a CP feature flag — and
+// it cannot be live-verified on machines without codex.
 func codexAppServerEnabled() bool {
 	v := strings.TrimSpace(strings.ToLower(os.Getenv(codexAppServerEnvFlag)))
 	return v == "1" || v == "true" || v == "yes"

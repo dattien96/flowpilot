@@ -43,8 +43,8 @@ func TestRun45103CapContinueFromSubmittingHubTurnDoesNotCancelParentTurn(t *test
 		t.Fatalf("result = %+v, want blocked/awaiting_user", result)
 	}
 	loop := svc.agentOrchestrator.loopStateFor(runID)
-	if loop.Status != "blocked" || loop.BlockReason != "cap" {
-		t.Fatalf("loop = %+v, want blocked/cap", loop)
+	if loop.Status != "tournament_escalation" || loop.BlockReason != "cap" {
+		t.Fatalf("loop = %+v, want tournament_escalation/cap (escalation always on)", loop)
 	}
 	if loop.GateReason == "" {
 		t.Fatal("GateReason must describe cap reached")
@@ -63,6 +63,9 @@ func TestRun45103CapContinueFromSubmittingHubTurnDoesNotCancelParentTurn(t *test
 			rs.pendingHubReinvoke, rs.pendingGateRepromptPrompt, rs.pendingFlowGateSettle)
 	}
 	svc.mu.Unlock()
+	// Always-on escalation minted a tournament child — drain its async writes
+	// before TempDir teardown.
+	awaitTournamentChildIdle(t, svc, runID)
 }
 
 // TestRun45103CapContinueStillCancelsChildrenAndExternalHubWork ensures freeze

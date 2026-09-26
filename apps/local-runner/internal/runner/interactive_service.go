@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"flowpilot-runner/internal/agentpack"
+	"flowpilot-runner/internal/changecontract"
 	"flowpilot-runner/internal/flowgate"
 	"flowpilot-runner/internal/lifecycle"
 	"flowpilot-runner/internal/promptpacker"
@@ -736,6 +737,13 @@ type interactiveRun struct {
 	// omit it on the turn-terminal event, which would otherwise land nil and
 	// silently skip the pressure ladder on the deciding event.
 	legContextWindows map[string]int64
+	// legUsageTotals accumulates query-scoped usage (BUG-513): providers that
+	// report a per-query aggregate (Claude) rather than a session-cumulative
+	// total get their deltas summed here per provider session, so the
+	// session's emitted Total stays cumulative for the cap/compaction ledger.
+	// Seeded lazily from the last emitted Total on the session so a runner
+	// restart continues accumulating, not restart-at-zero.
+	legUsageTotals map[string]TokenUsageBreakdown
 	// Durable fail budgets keyed by generation (V10R4 P1).
 	pendingResumeFailCount       int
 	pendingResumeFailGen         int64
@@ -1121,6 +1129,31 @@ func newInteractiveService(registry *ProviderRegistry, catalog CatalogStore, wor
 	// usage-budget rotate answers and context-reset headroom escalations enter
 	// the quota routing gate through it.
 	svc.usageRouter = svc
+	// BUG-512: wire the CP-87 P-3b/P-3c headroom check in production. A
+	// same-binding reseed is only legitimate while the PINNED ACCOUNT can
+	// afford it — a ledger-blocked or telemetry-exhausted pin would mint a
+	// leg that fails on dispatch, so the routing gate takes over. The node's
+	// declared usage budget stays a second guard for capped nodes; uncapped
+	// nodes (the common case) still honor the account check. The callback
+	// runs after consumePendingContextReset released s.mu, so it re-acquires
+	// locks internally (never nested).
+	svc.contextResetHeadroomOK = func(rs *interactiveRun) bool {
+		if rs == nil {
+			return true
+		}
+		if svc.pinnedAccountHardVeto(context.Background(), rs) != "" {
+			return false
+		}
+		svc.mu.Lock()
+		used := svc.nodeUsageTokensLocked(rs)
+		est := int64(len(rs.lastPrompt)) / 4
+		svc.mu.Unlock()
+		budget := svc.nodeUsageBudgetFor(rs)
+		if budget <= 0 {
+			return true
+		}
+		return used+est < budget
+	}
 	// Seed the id counter above the highest persisted run id so a runner restart does NOT
 	// reuse ids (run-1, run-2, …). Reuse made a fresh chat collide with a previous run of
 	// the same id and inherit its persisted child agents — old sub-agents appeared in a
@@ -2598,14 +2631,40 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 	// maybeAutoReinvokeHubWithNote and faked a 5-minute synthesis turn.
 	if escalatedNodeID != "" {
 		if node, ok := findFlowNode(nodes, escalatedNodeID); ok {
-			if flowNodeInlineDispatchable(node) {
+			if canonical, ok := agentpack.NormalizeBehaviorID(node.Behavior); ok && canonical == "contract.freeze" {
+				// BUG-505 (live run-3688/run-20370): a contract.freeze escalate
+				// for a missing planner proposal had no resolution path — raw
+				// Continue feedback was fed into runContractFreezeNode as
+				// plannerResult, so prose was parse-failed verbatim
+				// ("invalid planner proposal: 'c'") and the freeze
+				// re-escalated forever. Prose (or a bare Retry) with no
+				// retrievable draft retries the planner delegate
+				// (scoutNodeID) like any failed delegate. An operator-
+				// supplied parseable draft still feeds the freeze (live
+				// escape hatch); a draft retrievable from a child event or
+				// the parent cache proceeds on its own — neither needs a
+				// scout re-run.
+				_, draftErr := changecontract.ParsePreflightDraft(feedback)
+				_, retrErr := changecontract.ParsePreflightDraft(s.findPlannerResultForFreeze(parentRunID, edges, nodes, node.ID))
+				if draftErr == nil || retrErr == nil {
+					go s.tryAdvanceFlowThroughInline(parentRunID, edges, nodes, node, feedback)
+					return snap, nil
+				}
+				if _, scoutOK := findFlowNode(nodes, scoutNodeID); scoutOK {
+					failedDelegateNodeID = scoutNodeID
+				} else {
+					go s.tryAdvanceFlowThroughInline(parentRunID, edges, nodes, node, feedback)
+					return snap, nil
+				}
+			} else if flowNodeInlineDispatchable(node) {
 				go s.tryAdvanceFlowThroughInline(parentRunID, edges, nodes, node, feedback)
 				return snap, nil
+			} else {
+				// Writer/delegate node (e.g. test_signatures run-144900, implement
+				// run-221516): retry the node's own child run via the delegate
+				// reinvoke path below — do not fall through to hub reinvoke.
+				failedDelegateNodeID = escalatedNodeID
 			}
-			// Writer/delegate node (e.g. test_signatures run-144900, implement
-			// run-221516): retry the node's own child run via the delegate
-			// reinvoke path below — do not fall through to hub reinvoke.
-			failedDelegateNodeID = escalatedNodeID
 		}
 	}
 	if failedDelegateNodeID != "" {
@@ -6222,6 +6281,34 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 		est := int64(len(rs.lastPrompt)) / 4
 		ev.TokenUsage.EstPromptTokens = &est
 	}
+	// BUG-513: a query-scoped Total is a delta, not the session figure the
+	// cap/compaction ledger expects. Accumulate it per provider session into
+	// the emitted Total before the event lands; the flag never serializes.
+	// Seed from the last emitted Total when the in-memory accumulator lost
+	// track (restart / rehydrate) so multi-turn sessions keep counting.
+	if ev.Type == EventTokenUsageUpdated && ev.TokenUsage != nil && ev.TokenUsage.UsageScopeQuery && ev.TokenUsage.Total != nil && ev.ProviderSessionID != "" {
+		if rs.legUsageTotals == nil {
+			rs.legUsageTotals = map[string]TokenUsageBreakdown{}
+		}
+		acc, tracked := rs.legUsageTotals[ev.ProviderSessionID]
+		if !tracked {
+			for i := len(rs.events) - 1; i >= 0; i-- {
+				prev := rs.events[i]
+				if prev.ProviderSessionID == ev.ProviderSessionID && prev.TokenUsage != nil && prev.TokenUsage.Total != nil {
+					acc = *prev.TokenUsage.Total
+					break
+				}
+			}
+		}
+		acc.TotalTokens += ev.TokenUsage.Total.TotalTokens
+		acc.InputTokens += ev.TokenUsage.Total.InputTokens
+		acc.OutputTokens += ev.TokenUsage.Total.OutputTokens
+		acc.CachedInputTokens += ev.TokenUsage.Total.CachedInputTokens
+		acc.ReasoningOutputTokens += ev.TokenUsage.Total.ReasoningOutputTokens
+		rs.legUsageTotals[ev.ProviderSessionID] = acc
+		ev.TokenUsage.Total = &acc
+		ev.TokenUsage.UsageScopeQuery = false
+	}
 	rs.events = append(rs.events, ev)
 	rs.lastEventType = ev.Type
 	rs.updatedAt = ev.OccurredAt
@@ -6313,6 +6400,20 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 			}
 			if hasCode {
 				_ = s.markPendingFlowGateSettleLocked(rs, finalMsg, ev.OccurredAt)
+			} else if loopSt := s.agentOrchestrator.loopStateFor(rs.id).Status; loopSt != "" && loopSt != "done" && loopSt != "stopped" {
+				// BUG-507 (live run-22241): a run hosting an open flow loop
+				// must not report completed — the loop is still driving work
+				// (scheduled hub reinvokes, parked escalations) so `completed`
+				// is a dishonest terminal: dashboards read success while the
+				// loop dead-stops. The run stays running; the loop's own
+				// seal path (settleParentRunOnFlowDone) or escalation card
+				// publishes the honest terminal later. signalChild still
+				// fires — it feeds the loop the completion that drives the
+				// next hub dispatch; withholding it dead-parks the flow.
+				rs.status = RunStatusRunning
+				rs.agentStatus = string(RunStatusRunning)
+				s.agentOrchestrator.signalChild(rs.id, finalMsg, false, "", RunStatusCompleted)
+				break
 			} else {
 				rs.status = RunStatusCompleted
 				rs.agentStatus = string(RunStatusCompleted)
@@ -6899,7 +7000,34 @@ func (b *turnBridge) AskQuestionCtx(ctx context.Context, prompt string, options 
 
 func (b *turnBridge) askQuestion(extraCtx context.Context, prompt string, options []QuestionOption, multiSelect bool) ([]string, error) {
 	s := b.svc
+	// BUG-514 (deep review B-4): a reproduce-gated child parking on ask_user
+	// is a failed reproduce episode — r-reproduce only reprompts at turn end,
+	// so questions inside the turn never touched any bound and
+	// maxFlowGateReprompts was unreachable (run-90420 parked forever). Once
+	// the episode budget is exhausted refuse the question so the turn ends
+	// and the gate's own reprompt/escalation path fires. The predicate locks
+	// internally — resolve it before taking s.mu.
+	reproduceGated := s.reproduceTurnForRun(b.rs)
 	s.mu.Lock()
+	if reproduceGated {
+		// BUG-514 round 2: bound the parked-question episodes by counting
+		// EventUserQuestionRequired on the run's OWN durable event stream —
+		// not repromptAttempts, which is the GATE's reprompt budget: two
+		// answered questions could exhaust it before the provider ever
+		// attempted the required repair (review finding). The event count
+		// is persisted and rehydrated, so the bound survives restarts and
+		// never starves the gate's own retry semantics.
+		asked := 0
+		for _, e := range b.rs.events {
+			if e.Type == EventUserQuestionRequired {
+				asked++
+			}
+		}
+		if asked >= maxFlowGateReprompts {
+			s.mu.Unlock()
+			return nil, fmt.Errorf("reproduce ask budget exhausted: conclude the report (reproduced or not reproducible) instead of asking again")
+		}
+	}
 	expiresAt := time.Now().UTC().Add(s.questionTTL).Format(time.RFC3339Nano)
 	rec := &questionRecord{
 		id:          s.nextID("q"),
@@ -7467,6 +7595,7 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 	cwd := ""
 	projectID := ""
 	workflowID := ""
+	parentFlowRef := ""
 	parentModel := ""
 	parentReasoningEffort := ""
 	parentProviderKey := ProviderKey("")
@@ -7476,6 +7605,7 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 		cwd = parentRun.workspaceCwd
 		projectID = parentRun.projectID
 		workflowID = parentRun.workflowID
+		parentFlowRef = parentRun.chatFlowRef
 		parentModel = parentRun.modelName
 		parentReasoningEffort = parentRun.reasoningEffort
 		parentProviderKey = parentRun.providerKey
@@ -7612,8 +7742,14 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 	// child's gated actions must auto-approve just like the parent's, instead of
 	// stalling the (often wait=true) parent turn on a child approval prompt.
 	startIn := StartRunInput{
-		ProjectID:         projectID,
-		WorkflowID:        workflowID,
+		ProjectID:  projectID,
+		WorkflowID: workflowID,
+		// BUG-506: carry the parent's canonical flowRef so createRun's step
+		// fallback can resolve the embedded-pack definition when the mirror
+		// UUID is unreachable (transient catalog outage dead-parked the flow).
+		// FlowRefFallback, not FlowRef — FlowRef is a user-declared mount
+		// validated by enforceWorkingModeStart (a child must not re-declare).
+		FlowRefFallback:   parentFlowRef,
 		ChatMode:          "normal_chat",
 		Cwd:               cwd,
 		ProviderKey:       providerKey,
@@ -8034,6 +8170,19 @@ func (s *InteractiveService) expireApproval(id string) {
 				touchHubProgressLocked(rs)
 			}
 		}
+		// BUG-507: the requested effect is being dropped — record it as a
+		// durable, broadcast run event so the run never looks clean while an
+		// intended action silently never ran (live run-22241: an expired write
+		// approval dropped the verdict file with zero trace).
+		if rs != nil {
+			details := rec.details
+			s.emitLocked(rs, ProviderEvent{
+				Type:       EventApprovalExpired,
+				ApprovalID: id,
+				Details:    &details,
+				Text:       "approval expired unanswered — requested action was not executed",
+			})
+		}
 		// BUG-288 P1-07: always persist the expiry transition, not only when a
 		// live rs still points its pendingApprovalID at this card — otherwise a
 		// rehydrated/orphaned card's expiry never reaches disk.
@@ -8122,6 +8271,16 @@ func (s *InteractiveService) expireQuestion(id string) {
 				}
 			}
 			s.healMirroredQuestionWaitLocked(rs, id)
+		}
+		// BUG-507: surface the dropped question as a durable run event
+		// (mirrors the approval side above).
+		if rs := s.runs[rec.runID]; rs != nil {
+			s.emitLocked(rs, ProviderEvent{
+				Type:       EventQuestionExpired,
+				QuestionID: id,
+				Prompt:     rec.prompt,
+				Text:       "question expired unanswered",
+			})
 		}
 		state := questionStateFromRecord(rec, "", rec.expiresAt)
 		snapshot = &state
@@ -8245,6 +8404,11 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	// per-face adapter tool). The bridge treats a batch-carrying continue as
 	// record-only, so the offer cannot settle the flow.
 	lockedCoderChild := rs.parentRunID != "" && rs.flowCohortId == "" && s.isSignatureLockedCoderChild(rs)
+	// BUG-504: resolved outside the turn lock — flowNodePostureFor takes s.mu
+	// itself. A child whose node posture is verdict_only exists solely to emit
+	// the machine verdict, so it must be offered the face regardless of cohort
+	// mapping (owner_debate members were missed live, run-3688/run-22241).
+	verdictOnlyChild := rs.parentRunID != "" && s.flowNodePostureFor(rs) == PostureVerdictOnly
 	s.mu.Lock()
 	// Prefer the durable real provider handle when present (Codex rollouts and
 	// Grok ACP session ids). Read under lock with lastGrokTurnSessionID fallback
@@ -8292,6 +8456,21 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	}
 	if !offerReviewOutcomeTool && lockedCoderChild {
 		offerReviewOutcomeTool = true
+	}
+	// BUG-504 (live run-3688 / run-22241): a flow that declares verdict-bearing
+	// nodes needs the machine-verdict face on every session executing it, not
+	// just the enumerated hub cohorts above. A verdict_only child (resolved
+	// above) exists solely to emit that verdict, and the parent session
+	// hosting the same flow's inline trigger/synthesis nodes must be able to
+	// submit the debate outcome too. Without this the tool was never
+	// registered and providers correctly reported it absent (grok invented a
+	// /tmp/submit_review_outcome.json file-drop nobody ingests).
+	if !offerReviewOutcomeTool {
+		if rs.parentRunID != "" {
+			offerReviewOutcomeTool = verdictOnlyChild
+		} else {
+			offerReviewOutcomeTool = flowHasVerdictOnlyNode(rs.activeFlowNodes)
+		}
 	}
 	providerPrompt = prependModePrefix(providerPrompt, rs.turnCount, rs.changeType, rs.sourceDocID)
 	// Persist the per-turn YOLO posture as the run's current default (BUG-129). The UI
@@ -9683,6 +9862,99 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 	if rs.pendingApprovalID != "" || rs.pendingQuestionID != "" {
 		s.mu.Unlock()
 		return "", newAPIErr(http.StatusConflict, "awaiting_user", "run has a pending approval or question; resolve it before a new turn")
+	}
+	// BUG-516: a closed leg is superseded — a turn aimed at it must not
+	// dispatch on the stale binding, or the committed route is silently
+	// bypassed (e.g. an operator's use_once pick minted the next leg while
+	// the client re-sent on the old run id). Chat legs relay onto the
+	// chat's active leg exactly like the cross-provider rotate relay
+	// below; a closed leg with no active successor fails honestly.
+	if rs.legState == LegStateClosed {
+		if rs.chatID != "" {
+			newLegID := ""
+			for _, leg := range s.activeChatLegsLocked(rs.chatID) {
+				if leg.legState == LegStateActive && leg.id != runID {
+					newLegID = leg.id
+				}
+			}
+			s.mu.Unlock()
+			if newLegID != "" {
+				return s.startTurn(newLegID, in, scenario, idempotencyKey)
+			}
+			return "", newAPIErr(http.StatusConflict, "leg_closed", "this run's leg was superseded; resubmit on the chat's active leg")
+		}
+		s.mu.Unlock()
+		return "", newAPIErr(http.StatusConflict, "leg_closed", "this run's leg is closed; a replacement run owns the work")
+	}
+	// BUG-511 (CP-87): consult the pinned account's quota state at admission —
+	// a run pinned to a ledger-blocked or telemetry-exhausted account enters
+	// the routing gate instead of dispatching a turn that can only fail the
+	// same way. The resolution's OUTCOME decides the response: a committed
+	// same-provider repin continues the dispatch on the healthy account, a
+	// committed cross-provider rotate relays the prompt onto the freshly
+	// minted leg (never swallowed), a gate parks on the route card, and a
+	// no-candidate block fails honestly instead of looping a card-less 409
+	// forever. Idempotent replays short-circuited above stay unaffected;
+	// unpinned runs skip the check. The veto probe may call provider
+	// telemetry — release s.mu first; every continuing path re-locks and
+	// re-reads rs.
+	if pinned := strings.TrimSpace(rs.providerAccountID) != ""; pinned {
+		chatID, isChild := rs.chatID, rs.parentRunID != ""
+		s.mu.Unlock()
+		if veto := s.pinnedAccountHardVeto(context.Background(), rs); veto != "" {
+			res, gerr := s.resolveQuotaGate(context.Background(), runID, veto)
+			if gerr != nil {
+				return "", newAPIErr(http.StatusBadGateway, "quota_gate_failed", gerr.Error())
+			}
+			switch res.Outcome {
+			case QuotaRotate:
+				// BUG-517: this turn's prompt never dispatched — carry it
+				// through the commit so a cross-provider child respawn
+				// starts from it instead of the stale prior prompt.
+				res.PendingPrompt = in.Prompt
+				if cerr := s.CommitQuotaResolution(context.Background(), res); cerr != nil {
+					return "", newAPIErr(http.StatusBadGateway, "quota_route_commit_failed", cerr.Error())
+				}
+				if res.Selected != nil && res.Selected.ProviderKey == res.Demand.RequestedProvider {
+					// Same-provider repin: the durable claim rebound THIS leg
+					// in place — the prompt still dispatches on the healthy
+					// account (falls through to the shared relock below).
+				} else if isChild {
+					// respawnChildOnRoute already owns the replacement child.
+					return "", newAPIErr(http.StatusConflict, "quota_route_committed", "pinned account rotated; the replacement child run owns the work")
+				} else {
+					// Cross-provider: commitQuotaRotation minted a fresh
+					// active leg — relay the turn onto it exactly like
+					// consumePendingContextReset does.
+					s.mu.Lock()
+					newLegID := ""
+					for _, leg := range s.activeChatLegsLocked(chatID) {
+						if leg.legState == LegStateActive && leg.id != runID {
+							newLegID = leg.id
+						}
+					}
+					s.mu.Unlock()
+					if newLegID != "" {
+						return s.startTurn(newLegID, in, scenario, idempotencyKey)
+					}
+					return "", newAPIErr(http.StatusConflict, "quota_route_committed", "pinned account rotated to a new leg; resubmit on the rotated run")
+				}
+			case QuotaGate:
+				_ = s.CommitQuotaResolution(context.Background(), res) // emits the route card
+				return "", newAPIErr(http.StatusConflict, "quota_route_required", "pinned account is unusable; resolve the quota route card")
+			case QuotaBlocked:
+				_ = s.CommitQuotaResolution(context.Background(), res) // emits quota_route_blocked
+				return "", newAPIErr(http.StatusConflict, "quota_route_blocked", "pinned account is unusable and no quota route candidate exists")
+			default:
+				// QuotaProceed — the veto raced a state change; dispatch.
+			}
+		}
+		s.mu.Lock()
+		rs = s.runs[runID]
+		if rs == nil {
+			s.mu.Unlock()
+			return "", newAPIErr(http.StatusNotFound, "run_not_found", "workflow run not found")
+		}
 	}
 	// Task-443 (CP-86 P-4): a committed rotate_leg intent executes HERE — the
 	// turn-admission boundary — never mid-turn. The turn lands on the fresh
@@ -11404,15 +11676,12 @@ func defaultModelForProvider(key ProviderKey) string {
 // byte-identical. Opt in with FLOWPILOT_ENABLE_BUDGET_PACKER=1|true|yes|on.
 const budgetPackerEnvFlag = "FLOWPILOT_ENABLE_BUDGET_PACKER"
 
-// budgetPackerEnabled reports whether the Task-334 Budget Packer should pack
-// the composed turn prompt. Default OFF (behavior-neutral rollout).
+// budgetPackerEnabled: MVP posture — always ON; the
+// FLOWPILOT_ENABLE_BUDGET_PACKER env is ignored (same posture as
+// ReproduceGateEnabled / chatSSOTEnabled — rollback is a revert commit,
+// not a flag flip).
 func budgetPackerEnabled() bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv(budgetPackerEnvFlag))) {
-	case "1", "true", "yes", "on", "enable", "enabled":
-		return true
-	default:
-		return false
-	}
+	return true
 }
 
 // defaultBudgetPackerBudget is the CP-23 Phase 1 default token budget
@@ -11473,7 +11742,11 @@ func (s *InteractiveService) applyBudgetPackerIfEnabled(rs *interactiveRun, prov
 		p, report, err := promptpacker.PackPrompt(sections, budget)
 		if err != nil {
 			log.Printf("[prompt-pack] pack failed, keeping original prompt run=%s turn=%s err=%v", rs.id, turnID, err)
-		} else {
+		} else if report.DroppedTokens > 0 || drift.narrowContext {
+			// Under-budget passthrough: when nothing needed pruning the
+			// assembled output differs from the input only by section
+			// headers the model never asked for — keep the composed prompt
+			// byte-identical instead of reformatting every turn.
 			packed = p
 			// CP-62 P-5 catalog tier: one line per pruned section, so the
 			// model keeps a cheap index of WHAT exists (metadata always,

@@ -54,9 +54,10 @@ func Test540927CohortMemberStaleGateStillStalls(t *testing.T) {
 		t.Fatal("expected member_stalled: stale gate cancel must not shield the member")
 	}
 	loop := svc.agentOrchestrator.loopStateFor(parentID)
-	if loop.Status != "blocked" || loop.BlockReason != "member_stalled" {
-		t.Fatalf("loop = %+v, want blocked/member_stalled", loop)
+	if loop.Status != "tournament_escalation" || loop.BlockReason != "member_stalled" {
+		t.Fatalf("loop = %+v, want tournament_escalation/member_stalled (escalation always on)", loop)
 	}
+	awaitTournamentChildIdle(t, svc, parentID)
 }
 
 // Near-miss: a FRESH gate cancel (legit oracle window) still shields the
@@ -194,9 +195,10 @@ func Test540927CohortMemberV9ShapeStaleGateStalls(t *testing.T) {
 		t.Fatal("expected member_stalled: V9-03 settle+turnInFlight must age out with the stale gate")
 	}
 	st := svc.agentOrchestrator.loopStateFor(parentID)
-	if st.Status != "blocked" || st.BlockReason != "member_stalled" {
-		t.Fatalf("loop = %+v, want blocked/member_stalled", st)
+	if st.Status != "tournament_escalation" || st.BlockReason != "member_stalled" {
+		t.Fatalf("loop = %+v, want tournament_escalation/member_stalled (escalation always on)", st)
 	}
+	awaitTournamentChildIdle(t, svc, parentID)
 }
 
 // Near-miss: same V9-03 shape, fresh gate — the member stays shielded.

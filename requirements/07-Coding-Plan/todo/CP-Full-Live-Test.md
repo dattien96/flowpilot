@@ -608,3 +608,182 @@ does not prove the live path.
 9. B-51/B-59 durability drills (kill -9, restart, resume) on the runs above.
 10. C-* support rows folded into the same runs (log greps).
 11. Update status column + `CP-Test-Progress-Tracking.md`; file new bugs for any ✗.
+
+## G. R2 rerun — 12-CP re-verification (2026-09-26, build 8c95a5bb, runner :19400)
+
+Gate: build clean; `go test ./internal/...` = BUG-454 baseline + 7 codex-home/TempDir flakes (all pass isolated) → PASS. Evidence: `~/fp-beds/lt-evidence/full-20260925-r2/LIVE-LOG.md`.
+
+| Row | R2 result |
+|-----|-----------|
+| A-58-1 task-harness happy | ☑ run-6010 (grok) `flow_control_done` full chain. run-1 (devin) blocked `missing machine verdict from plan_reviewer` → **BUG-504 mech-1** (provider-side mode refuses non-readOnlyHint MCP despite runner `allow_once`). |
+| A-61-2 missing verdict escalate | ☑ re-verified incidentally on run-1: `flow_control_rejected_missing_review_verdict` → `flow_control_escalate` → WAITING_USER_APPROVAL; bare continue re-parks `no progress since last continue`. |
+| A-64 bug-harness | ☑ run-20370 (grok): seeded PadLeft right-pad → RED repro (locked) → implement → GREEN → reviewer → synthesis → audit, 9/9 nodes; `go test` green. Abortive run-15708: no-`cwd` launch bound runner dir → **BUG-503**; freeze accepted empty `base_sha` → unrecoverable gate. |
+| A-43-3 contract amend | ☑ run-3688 (tournament bed): drift detected (planner declared `stringutil2/`, writer used existing `strutil2/`) → amend minted contract v2 → flow advanced. |
+| A-65 tournament | ☑ run-3688: devin+grok candidates → arbiter TIE → decision card → pick a → **patch conflict → human-merge card** → re-pick = no-progress re-escalate → discard → done, worktrees cleaned. |
+| A-60-1 mode gate | ☑ (prior run-46461/46463 stands) + R2: vibe `chat` run on grok mounted `vibe-ingest`; dev-mode arm of vibe-sprint still rejected. |
+| A-60 V8 owner-debate | ☑ ×2 — devin run-16950 (`action=block rules=[r-task r-tests r-reg]` → `vibe-gate start vibe-owner-debate`, 2 owner children, real diagnosis of seeded pad.go); grok run-22241 (same route; grok owners thin notes → see BUG-504-3). |
+| A-60 V7 r-requirement | ◑ probe launched turn-22913 on devin leg (requirement-pivot prompt); prior to R2 never exercised. |
+| B-51 kill/restart | ☑ SIGKILL mid devin turn run-22230: re-drive send_started → `uncertain` → resolve `terminal_cancelled`; stale-rev → `dispatch_conflict`; replay idempotent; 623 contiguous seqs, 0 dup/gap. ⚠️ post-restart `run_not_found` on completed runs (in-memory `s.runs` only) — observation, history endpoint is SSOT. |
+| B-59 cross-provider leg | ☑ `switch-provider` grok→devin on `cht_7395ef478aa9` → `run-22625` legSeq=1, handoff `raw`+actionsDigest, pinned new session; devin leg delivered `wordfreq/` (impl+tests 10/10, FEATURE-KEYS, CA-011). |
+| CP-86 usage telemetry | ☑ NEW live evidence: run-7443 quota-audit `inputTokens:19358/outputTokens:25` vs est 18; devin `usage_update` `size:262000` + used. Pressure-tier/cap-card legs remain fixture-only. |
+| CP-87 quota | ⚠️ unobtainable live: 3 concurrent devin runs admitted without `account_claimed`; soft `low` (18% 7d) never gates per design. Fixture coverage stands. |
+| CP-63 LSP | ☑ R3 re-verified on fixed binary (gopls installed): devin turn-1865524 wrote `snake/probe_windows.go` (`//go:build windows` + unused `fmt`) gate-clean (`violations=0`) → `[lsp] lsp.start binary="gopls" root="/Users/tiendat/fp-beds/full"` → sev-1 surfaced verbatim into reprompt turn-1865606: `probe_windows.go:5:8 error: "fmt" imported and not used [windows,amd64]` (cross-GOOS diagnostic invisible to darwin oracle). LSP unit suites green: `internal/lsp` + runner LSP tests. |
+| CP-66 knowledge | ⚠️ distill failures only on `/tmp/fp-live-2026` (BUG-503 wrong-binding collateral, degrade non-fatal per design). No clean bed leg this session. |
+
+### New bugs filed in R2
+
+| Bug | Summary |
+|-----|---------|
+| BUG-503 | No-`cwd` API run binds runner workspace → empty `base_sha` contract, wrong-root context/knowledge. |
+| BUG-504 | Machine-verdict tool exposure inconsistent across gated children: devin mode-filter refusal (run-1) + grok session missing tool registration ×2 (run-3688, run-22241 incl. invented `/tmp/submit_review_outcome.json` drop with no ingestion). |
+| BUG-505 | Freeze-escalate resolution undocumented: operator feedback consumed AS preflight draft. |
+| BUG-506 | Writer spawn no pack fallback on catalog outage → `coder spawn failed after tdd` dead-park. |
+| BUG-507 | Provider approval expiry silently drops effects (writes + verdict) → run `completed` with open loop; late answer → `question_expired`. |
+| obs | Post-restart `run_not_found` asymmetry (completed runs history-only vs cancelled rehydrated). |
+| obs | Unknown JSON field on turn POST (`text` vs `prompt`) silently accepted → empty-prompt no-op turn dispatched. |
+
+### R2 residual open items
+
+- V7 r-requirement, F2/F3 (vibe dev-switch + exit/reopen mid-lock), R-CP-D2 — need a locked vibe state that BUG-504/507 currently make hard to reach.
+- A-58-4 round-cap-3 live escalate — still deferred (needs 3 real rejects).
+- CP-65 parent-resume leg — unit-only.
+- BUG-503..507 fixes pending; re-verify on next build.
+
+## G. R3 rerun — BUG-503..509 fixes + live re-verification (2026-09-26, fixed build, runner :19400)
+
+Gate: `go build ./...` clean. `go test -count=1 ./internal/runner/` → only
+pre-existing env failures (Supabase-less beds: `TestCatalogStoreForFallsBackToFake`,
+`TestFlowDefinitionStoreForUnconfiguredRunnerYieldsNil`, `TestResolveGoogleDriveMcpProviderStatuses_AllNotStarted`,
+`TestFirebaseToolsMcpAdapterFetchEndToEnd`, `TestCleanupSessionsTearsDownProviderPools`,
+`TestDetectProvidersPopulatesInventoryShape` — env drift, `got 6 providers`) +
+pre-existing TempDir-teardown flakes (`TestBUG462/463`, `TestContractFreeze_ContinueFlowUsesChildPlannerResult`,
+`TestRun201295InTurnSubmitFlowControlDispatchesFreeze`, `TestSendMessageClaudeRespawnsPrintCommandPerTurnAndResumesSession`)
+— **all confirmed flaky on clean HEAD** (stash-verified: `TestBUG462` fails 3/5
+on unmodified HEAD; every suspect passes isolated). No regression attributable
+to the fix set. Evidence class: stash-compare, isolated reruns.
+
+Two in-flight regressions found and fixed during validation (both production-side,
+no test edits): post-turn gate fail-closed on nonexistent `Project.Path`
+(fixture `/Users/dev/acme-web` bound for real once BUG-503 preferred it →
+existence check added to CA-1004) and hub-notify starvation when BUG-507's
+withhold `break`ed before `signalChild` (signal restored, status stays honest).
+
+| Bug | Fix | Unit | Live re-verify (fixed build) |
+|-----|-----|------|------------------------------|
+| BUG-503 | `createRun` cwd order: explicit `cwd` → existing registered `Project.Path` → runner workspace (CA-1004) | `bug503_project_cwd_resolution_test.go` (4t ☑) | ☑ `run-23532` (no `cwd`, projectId bound) → durable `working_directory=/Users/tiendat/fp-beds/full`; pre-fix sibling `run-23515` on old binary bound `/tmp/fp-live-2026`. |
+| BUG-504 | verdict tool offered on `verdict_only` posture OR parent hosting verdict-flow; `readOnlyHint:true` on `approve`/`ask_user`/`submit_review_outcome`/`vibe-requirement-outcome` (CA-1009) | `bug504_verdict_tool_exposure_test.go` (3t ☑) | ☑ MCP `tools/list` live: `readOnlyHint` present on approve/ask_user, absent on `spawn_agent`. ☑ grok `plan_reviewer` `run-25737` called `submit_review_outcome` → `review_verdict_recorded` (previously grok sessions lacked the tool entirely). ☑ **devin `plan_reviewer` `run-31709` (round-2 binary)**: `appr-31867` `submit_review_outcome` resolved/approve → plan advanced — the original run-1 failure path now passes end-to-end. |
+| BUG-505 | freeze-escalate feedback: parseable draft / retrievable child result → freeze direct; else retry `preflight_contract_plan` delegate (CA-1007) | `bug505_freeze_feedback_retry_test.go` ☑ | ◑ unit-verified; live leg needs a freeze-escalate event (not hit in R3 window). |
+| BUG-506 | `spawnChildRun` passes `FlowRefFallback` (internal, non-mode-validated); `createRun` fallback resolves embedded pack on catalog outage (CA-1008) | `bug506_spawn_catalog_outage_test.go` (3t ☑) | ◑ unit-verified; live outage can't be injected without destabilizing the shared runner. |
+| BUG-507 | `approval_expired`/`question_expired` durable+broadcast events; `completed` withheld while flow loop open; `signalChild` preserved (CA-1010) | `bug507_approval_expiry_test.go` (4t ☑) | ◑ unit-verified; expiry requires an unanswered real approval inside TTL. `run-23536` devin vibe turn → clean `completed` with no open loop = consistent. |
+| BUG-508 | `runSnapshot` falls back to durable `SessionHistoryReader` projection on cache miss (CA-1005) | `bug508_snapshot_rehydrate_test.go` ☑ | ☑ post-restart `GET run-6010` + `GET run-16950` → 200 (both returned `run_not_found` pre-fix while durable rows existed). |
+| BUG-509 | `handleStartTurn` rejects no-actionable-content body → `400 invalid_request "prompt is required"` (CA-1006) | `bug509_empty_turn_body_test.go` ☑ | ☑ live `POST …/turns {"text":…}` → `400 prompt is required`; `{"stepId":…}` alone → `400`; valid body still 200. |
+
+### R4 — Grok deep-review follow-up fixes (round 2, build 2026-09-26 14:xx)
+
+Six gaps from the second review pass, all fixed + unit-tested + live-probed
+where the trigger was stageable on this machine.
+
+| Bug | Fix (CA) | Unit | Live on :19400 round-2 binary |
+|-----|----------|------|-------------------------------|
+| BUG-510 | steps-runtime fallback copies `sess.ModelName`/`sess.Yolo` into envelope (CA-1020) | +`TestBug510_StepsRuntimeHydratesModelAndYolo` ☑ | ☑ `GET run-6010/steps-runtime` post-restart → 200 `{provider:grok, model:grok-4.5, yoloMode:true}`; `run-23534` full step rows |
+| BUG-511 | `pinnedAccountHardVeto` (ledger OR telemetry-exhausted) + `resolveQuotaGate` outcome-aware: rotate→repin+continue / gate→card / blocked→honest (CA-1016) | +3 ☑ | ☑ **manual**: devin `run-30802` blocked pin → 409 `quota_route_required` + card w/ real `trigger:quota_exhausted` + live telemetry (`devin low 18%`, 9 candidates scored); `use_once` resolve → grok leg `run-31122` minted (`leg_seq:1`) + `run-30802` durably closed — pre-fix re-sent turn ran trên leg ĐÃ ĐÓNG (`PONG-511` on devin, grok leg idle) → exposed **BUG-516**; round-3 binary re-verified: turn re-sent tới `run-30802` relayed sang `run-31122` → `PONG-516` on grok ☑. ☑ **auto**: grok `run-30810` blocked pin `506659bef` → durable repin `→32a2460d` → turn dispatched → `PONG-511auto` completed — prompt NOT swallowed (same-provider arm only; cross-provider child prompt swallow = BUG-517, unit-fixed CA-1023) |
+| BUG-512 | `contextResetHeadroomOK` = account headroom veto THEN node budget (CA-1017) | +3 ☑ | ◑ same account-state data path as the BUG-511 veto (live telemetry wired); reset-seam leg needs organic context-pressure — unit-verified |
+| BUG-513 | round-4 (CA-1025): query-scoped legs are fully blind to `provider_compacted` — `Last` is per-query usage, not session fullness, and no window gate can fix that; detection only on cumulative legs; `Total` accumulation for caps unchanged (CA-1018, CA-1024 superseded) | +8 ☑ | ◑ no connected claude account on this machine (`no_connected_account` in live quota candidates) — unit-verified only |
+| BUG-516 | `startTurn` leg guard: closed chat leg relays to active leg / 409 `leg_closed` (CA-1022) | +4 ☑ | ☑ **live-verified round-3 binary**: `POST /turns` on closed `run-30802` → `turn-44192` dispatched on minted grok leg `run-31122` (`[turn-params] run=run-31122 provider=grok`) → `PONG-516` settled on grok — closed leg no longer steals the turn; the use_once card-resolve arm is now proven end-to-end |
+| BUG-517 | `QuotaResolution.PendingPrompt` → `respawnChildOnRoute` seeds refused turn's prompt, fallback full `lastFullPrompt` not 100-char title (CA-1023); round-4 added admission-path test through `startTurn` — verified RED when the assignment is removed (CA-1025) | +3 ☑ | ◑ needs organic child cross-provider route — unit-verified incl. real admission path |
+| BUG-514 | reproduce ask bound counts durable `EventUserQuestionRequired` — gate `repromptAttempts` untouched, restart-safe (CA-1019) | +2 ☑ (incl. rehydrate) | ◑ needs organic reproduce-park (run-90420 pattern) — unit-verified |
+| BUG-515 | `extractOperatorPatch(feedback)` — resolved unified diff overrides stored candidate patch; prose keeps stored path; trailing-newline preserved for `git apply` (CA-1021) | +2 ☑ | ◑ needs organic tournament conflict; run-3688 old-behavior evidence stands |
+
+### R4 residual
+
+- `quota_route_blocked` (no candidates at all) is unit-verified — this machine
+  always has ≥1 alternate provider so the honest no-card arm can't be staged
+  without removing accounts.
+- run-30824 devin task-harness on this binary: **all 13 STEPS terminal**
+  — plan_reviewer child `run-31709` called `submit_review_outcome` →
+  `appr-31867` resolved/approve (BUG-504 devin leg verified: the
+  provider-side mode filter that blocked run-1 pre-fix now passes it) →
+  freeze → test_signatures → implement → validate → reviewer (grok) →
+  synthesis → synthesis_negotiation SKIPPED (clean) → audit DONE.
+  Run-level `status` vẫn `running` — designed parked state per BUG-302
+  (loop `done` ≠ run sealed; composer stays usable for follow-up chat).
+  Supersedes cancelled run-23534/run-26952.
+- run-23534/run-26952 task-harnesses terminalized `cancelled` by restart
+  recovery — correct contract; superseded by run-30824.
+
+### R3 in-flight
+
+- `run-23534` task-harness (grok): answered plan-writer scope question →
+  `plan_reviewer` (grok, `run-25737`) submitted `submit_review_outcome`
+  → `review_verdict_recorded` (BUG-504 offer leg live) → `plan_approval`
+  gate → approved → doc-writer round 2 → re-approved → chain continuing.
+- `run-26952` task-harness (devin, `model: devin/swe-2-high`): launched to
+  exercise the devin verdict_only child end-to-end; doc-writer child
+  running on devin. Live MCP `tools/list` on the devin session:
+  `readOnlyHint:true` on approve/ask_user — the provider-side mode filter
+  that refused run-1's verdict now passes.
+- Related gap noted (BUG-508 adjacent): `run-1` is `blocked` with a live
+  loop but predates restart — `agent-loop/continue` → `run "run-1" not
+  found`. Snapshot fallback (BUG-508) covers reads; mutation/continue
+  paths still require the in-memory object. Design question: should a
+  durable-blocked loop rehydrate on continue?
+
+### R3 residual
+
+- BUG-505/506/507 end-to-end live legs — need organic trigger conditions
+  (freeze escalate, catalog outage, real approval expiry); unit coverage
+  is the contract here.
+- Devin verdict_only child end-to-end — needs a devin reviewer child;
+  readOnlyHint leg verified at MCP boundary (the provider-side refusal
+  mechanism it fixes).
+
+## G. R5 rerun — always-on flips + BUG-518/519/520 + devin/grok live matrix (2026-09-26, builds r5→r9, runner :19400)
+
+**Posture change:** per operator directive all CP features are always-on —
+`contextPressureEnabled`, `driftDetectorEnabled`,
+`tournamentEscalationEnabled`, `budgetPackerEnabled` (passthrough when
+nothing drops) are hard-enabled; provider-agent gates and DispatchV2 keep
+documented opt-outs; `codexAppServerEnabled` stays env-gated (transport
+switch; always-on broke codex resume contracts — verified). Flag-off
+contract tests updated to lock the new contract (additive intent); async
+tournament-escalation drain added to shared fixtures to stop TempDir
+teardown races.
+
+**Provider scope:** Devin + Grok only — no Claude/Codex/Gemini accounts
+on this machine. Missing-provider legs are environmental gaps, not
+implementation failures.
+
+| Row | R5 result |
+|-----|-----------|
+| CP-51 dispatch + CP-59 chat SSOT + CP-86 usage | ☑ devin `turn-49070` `terminal_completed` (rev 9, full dispatch record, `devin_session` pinned); devin→grok switch minted legSeq=1 with `includedTurnCount:1` handoff, grok turn completed; dispatch records carry real usage fields |
+| CP-60 mode gate | ☑ admission probes: cp-ingest `invalid_cp_source` rejected; dev/vibe posture fences hold |
+| CP-82 parallel + CP-84 mux | ☑ one `/client/events/stream` carried upserts from 4 runs across 2 projects concurrently |
+| CP-58 task-harness | ☑ run-49107 → audit DONE (prior binary, before r5) |
+| CP-64 bug-harness | ☑ run-61850 (grok, gate-sandbox): seeded `Multiply→a-b` bug → reproduce_test wrote `TestMultiply_ProductMatrix` RED → implement → validate → reviewer → synthesis → audit, all DONE; `Multiply` restored, CA-925 audit note produced |
+| CP-65 tournament + CP-71 isolation | ☑ r9 `run-76075`+`run-82594`: candidates on grok-4.5 + devin/swe-2-high in isolated worktrees (base 045321a); arbiter verdicts routed with **zero** `patch snapshot` errors; tie → distilled-brief retry → round 2/3 (deterministic arbitration, loop_cap=3) |
+| BUG-518 arbiter snapshot | ☑ found live (run-49109) → fixed (CA-1026) → **re-fired live on run-69516 via second vector** (tracked `.flowpilot` files — `ls-files --modified` bypasses `--exclude-standard`) → re-fixed (filter `.flowpilot` from enumerated set) → verified live on r9 (arbiter snapshots clean). Tests: `TestBUG518_DiffToleratesIgnoredFlowpilotDir`, `TestBUG518_DiffToleratesTrackedFlowpilotFiles`; `TestBug453SnapshotFailureFailsClosed` unchanged + green |
+| BUG-519 arbiter join after restart | ☑ fixed (CA-1027) + live leg on run-82594: kill -9 while parked at `merge_and_audit` card → resume → `blocked` (not cancelled — parked state survives restart) → decision card + `tournament_patches` rehydrated from durable record with all children absent from memory → `continue candidate-b` → conflict card → `continue` with operator-resolved diff → **merge landed** (`mathx/` in main tree) → `merge_and_audit` DONE → run `completed` (honest terminal this time). Unit tests carry the join-fallback contract itself (terminal-recovered / non-terminal-blocks / failed-satisfies) |
+| BUG-515 operator-resolved patch | ☑ **live-verified** on run-82594: `extractOperatorPatch` — the `continue` body carrying a hand-resolved unified diff (FEATURE-KEYS hunk rebased onto diverged tail) overrode the stored candidate-b patch and merged cleanly |
+| BUG-520 stall watchdog orphans gate-reprompt child | ☑ found live on run-60145 (armed `pendingGateRepromptPrompt` counted as ghost → `hub_stalled` → park wiped intent → orphan). Fixed (CA-1028): armed reprompt counts active; `pendingFlowGateSettle` alone still excluded (BUG-354 contract). Tests verified RED→GREEN. Live: **zero `hub_stalled`** on r8/r9 across all gate-reprompt windows (r7 control parked mid-cohort at 19:04) |
+
+### R5 residuals
+
+- **run-60145 dishonest terminal**: BUG-520's park left the parent
+  reporting `completed` while `candidate-b` WAITING_USER_APPROVAL and
+  `tournament_arbiter`/`merge_and_audit` PENDING. Filed under BUG-520
+  residuals: (a) orphan-cure — parked children with wiped reprompt
+  intents have no re-drive on unpark; (b) status-honesty — outer run
+  status must not claim `completed` while required nodes remain pending
+  or a child remains actionable.
+- **Kill-mid-flight → `cancelled`** (run-76075): resume normalizes a
+  persisted `status=running` run to cancelled — designed
+  uncertain-delivery fail-closed, not a bug; it means BUG-519's restart
+  leg must kill at a *parked* (blocked/card) state.
+- **Deterministic ties**: all three R5 tournaments tied at total 1.0000
+  on the trivial scoped task → retry ×cap → human card. Working as
+  designed; the human-decision leg is exercised by the same card path.
+- CP-63 LSP leg: gopls in PATH on r8/r9 (was missing in earlier rounds);
+  R3 cross-GOOS diagnostic evidence stands — no new regression leg this
+  round.
+- CP-66 knowledge: distill artifacts on the state root carry
+  BUG-503-collateral paths; no clean-bed leg — unchanged from R2.

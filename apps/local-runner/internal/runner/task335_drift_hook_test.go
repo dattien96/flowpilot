@@ -46,54 +46,46 @@ func readDriftEvents(t *testing.T, path string) []driftdetect.DriftEvent {
 	return events
 }
 
-// Task-335 behavior neutrality: with FLOWPILOT_ENABLE_DRIFT_DETECTOR unset
-// (default OFF) the drift hook is a full no-op — no drift event file is ever
-// written even for blatantly drifting turns, and the prompt seam stays
-// byte-identical (the Task-334 flag-OFF contract still holds).
+// MVP posture: the drift detector is always ON — the env flag is ignored.
+// The under-budget prompt seam still passes through byte-identical, and a
+// blatantly drifting pair of turns persists drift events even with the
+// legacy env explicitly cleared.
 func TestTask335_DriftHookDisabled_NoEventWritten_PromptByteIdentical(t *testing.T) {
-	t.Setenv(driftDetectorEnvFlag, "")
-	if driftDetectorEnabled() {
-		t.Fatalf("drift detector must default OFF when FLOWPILOT_ENABLE_DRIFT_DETECTOR is unset")
-	}
+	t.Setenv(driftDetectorEnvFlag, "0") // env no longer gates — must be ignored
 	prompt := "---\n\nDo the task in scope."
 
 	cwd := t.TempDir()
 	s := &InteractiveService{}
 	rs := &interactiveRun{id: "run-335-off", workspaceCwd: cwd}
 
-	// The prompt seam must be byte-identical with both flags OFF.
+	// Under-budget prompts stay byte-identical (packer passthrough).
 	if got := s.applyBudgetPackerIfEnabled(rs, prompt, "turn-0"); got != prompt {
-		t.Fatalf("flag OFF must return the prompt byte-identical (got %d bytes, want %d)", len(got), len(prompt))
+		t.Fatalf("under-budget prompt must pass through byte-identical (got %d bytes, want %d)", len(got), len(prompt))
 	}
 
 	// Two blatantly drifting turns through the REAL hook: a repeated apology
 	// (≥2 consecutive turns) plus an out-of-scope edit and a repeated test
-	// failure would score ≥ 60 with the flag ON — with the flag OFF nothing
-	// may be observed, stashed or persisted.
+	// failure. The detector is always on now — the event file IS written.
 	apology := "Tôi rất xin lỗi, tôi sẽ thử lại cách khác."
 	tr1 := &flowgate.TurnResult{
 		FinalMessage:         apology,
 		ChangedPaths:         []string{"config/secret.go"},
 		ScopeOutOfScopePaths: []string{"config/secret.go"},
 		Tests:                flowgate.TestOutcome{Failed: []string{"TestCalc_Add_Fails"}},
+		WorkspaceCwd:         cwd,
 	}
 	tr2 := &flowgate.TurnResult{
 		FinalMessage:         apology,
 		ChangedPaths:         []string{"config/secret.go"},
 		ScopeOutOfScopePaths: []string{"config/secret.go"},
 		Tests:                flowgate.TestOutcome{Failed: []string{"TestCalc_Add_Fails"}},
+		WorkspaceCwd:         cwd,
 	}
 	s.recordDriftTelemetry(rs, "turn-1", tr1)
 	s.recordDriftTelemetry(rs, "turn-2", tr2)
 
-	if _, err := os.Stat(driftEventsPath(cwd)); !os.IsNotExist(err) {
-		t.Fatalf("flag OFF must not write any drift event file, stat err: %v", err)
-	}
-
-	// And the seam still returns the prompt byte-identical afterwards (no
-	// pending ladder action can exist with the flag OFF).
-	if got := s.applyBudgetPackerIfEnabled(rs, prompt, "turn-3"); got != prompt {
-		t.Fatalf("flag OFF must keep the prompt byte-identical after drift hooks (got %d bytes)", len(got))
+	if _, err := os.Stat(driftEventsPath(cwd)); os.IsNotExist(err) {
+		t.Fatal("drift detector is always on — the event file must be written")
 	}
 }
 

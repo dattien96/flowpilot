@@ -2018,17 +2018,27 @@ func TestDetectProvidersPopulatesInventoryShape(t *testing.T) {
 		},
 	}
 
-	// CP-46/Task-210 added a grok providerSpec; this test doesn't mock a grok
-	// binary (out of scope for this fixture), so it must appear as a fourth,
-	// not-installed entry rather than changing the expectations for the three
-	// providers this test does mock.
-	if len(payload.Providers) != len(cases)+1 {
-		t.Fatalf("expected %d providers in inventory, got %d", len(cases)+1, len(payload.Providers))
+	// CP-46/Task-210 added a grok providerSpec; opencode and devin joined the
+	// roster later. This test doesn't mock their binaries (out of scope for
+	// this fixture), so all three appear as not-installed entries rather than
+	// changing the expectations for the three providers this test does mock.
+	if len(payload.Providers) != len(cases)+3 {
+		t.Fatalf("expected %d providers in inventory, got %d", len(cases)+3, len(payload.Providers))
 	}
-	if grok := findProviderJSON(payload.Providers, "grok"); grok == nil {
-		t.Fatal("expected a grok entry in the provider inventory")
-	} else if grok["install_status"] == "INSTALLED" {
-		t.Fatalf("expected grok to be not-installed (no mock binary on PATH), got %#v", grok["install_status"])
+	for _, unmocked := range []string{"grok", "opencode"} {
+		entry := findProviderJSON(payload.Providers, unmocked)
+		if entry == nil {
+			t.Fatalf("expected a %s entry in the provider inventory", unmocked)
+		}
+		if entry["install_status"] == "INSTALLED" {
+			t.Fatalf("expected %s to be not-installed (no mock binary on PATH), got %#v", unmocked, entry["install_status"])
+		}
+	}
+	// devin resolves via resolveDevinBinaryPath (a non-PATH install location),
+	// so on machines that have it installed it reports INSTALLED even with a
+	// bare PATH — presence of the entry is the only portable assertion.
+	if findProviderJSON(payload.Providers, "devin") == nil {
+		t.Fatal("expected a devin entry in the provider inventory")
 	}
 
 	for _, want := range cases {

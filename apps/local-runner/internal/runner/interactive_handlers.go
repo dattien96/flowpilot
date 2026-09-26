@@ -493,6 +493,20 @@ func (s *InteractiveService) handleStartTurn(w http.ResponseWriter, r *http.Requ
 		writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "invalid_request", "invalid request body"))
 		return
 	}
+	// BUG-509 (live run-22241 probe): a body whose only content field was
+	// misspelled/unknown ({"text": "…"}) decoded cleanly into turnBody with
+	// Prompt empty and silently dispatched a no-op provider turn — the
+	// post-turn gate then fired on zero output. Fail closed when the body
+	// carries nothing actionable: no prompt, no attachments, and no
+	// flow/selector fields. Strict DisallowUnknownFields is not viable —
+	// clients legitimately send runId/idempotencyKey the server doesn't
+	// model — so the content check is the guard.
+	if strings.TrimSpace(body.Prompt) == "" && len(body.Attachments) == 0 &&
+		strings.TrimSpace(body.FlowRef) == "" && strings.TrimSpace(body.SubMode) == "" &&
+		strings.TrimSpace(body.SourceDocID) == "" && strings.TrimSpace(body.ChangeType) == "" {
+		writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "invalid_request", "prompt is required"))
+		return
+	}
 	if !workingmode.SkipChatOrchestrationCheck(body.FlowRef) {
 		if err := validateChatOrchestrationSelection(body.SubMode, body.FlowRef); err != nil {
 			writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "invalid_flow_ref", err.Error()))
@@ -921,6 +935,26 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 	// handoff, gate hooks) then sees no workspace — validate escalates
 	// skipped_no_command forever and Continue can never clear the park.
 	// Explicit in.Cwd stays authoritative; runner workspace is only a default.
+	//
+	// BUG-503 (live run-15708): the runner-workspace default is wrong when the
+	// bound project resolves — the run must bind the project's registered
+	// Path, not the runner process's cwd (an API-launched bug-harness froze a
+	// contract against /tmp/fp-live-2026: no base_sha, every declared path
+	// not_found, children polluting the runner home). Preference order:
+	// explicit cwd > project.Path > runner workspace; an unresolvable project
+	// keeps the BUG-455 default so a catalog outage never blocks creation.
+	// The path must exist on disk — binding a stale/deleted registration is
+	// worse than the default: the post-turn gate's turn-scoped diff fails
+	// closed on a non-directory cwd and blocks every turn forever.
+	if strings.TrimSpace(in.Cwd) == "" {
+		if project, ok := s.lookupProject(in.ProjectID); ok {
+			if path := strings.TrimSpace(project.Path); path != "" {
+				if st, err := os.Stat(path); err == nil && st.IsDir() {
+					in.Cwd = path
+				}
+			}
+		}
+	}
 	if strings.TrimSpace(in.Cwd) == "" && s.runner != nil {
 		in.Cwd = strings.TrimSpace(s.runner.workspace)
 	}
@@ -961,6 +995,22 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 			// catalog view from the resolved flow's nodes; a workflow that
 			// is not a flow at all still fails closed below.
 			flowSteps, ok := s.flowStepsFromDefinition(context.Background(), in.WorkflowID)
+			if !ok {
+				// BUG-506 (live run-15708): a spawned flow child inherits the
+				// parent's workflowID — the built-in mirror row's UUID — whose
+				// identity lives only in the store. During a catalog outage
+				// the UUID resolves to nothing (no embedded def.ID matches a
+				// UUID), so the child failed catalog_unavailable and the flow
+				// dead-parked. The caller carries the canonical flowRef
+				// (spawnChildRun passes the parent's chatFlowRef as
+				// FlowRefFallback — internal-only, never mode-validated), which
+				// resolves from the embedded pack with no store — retry the
+				// synthesis against it. A ref that is itself the UUID or
+				// absent changes nothing.
+				if ref := strings.TrimSpace(in.FlowRefFallback); ref != "" && !strings.EqualFold(ref, strings.TrimSpace(in.WorkflowID)) {
+					flowSteps, ok = s.flowStepsFromDefinition(context.Background(), ref)
+				}
+			}
 			if !ok {
 				if err != nil {
 					return RunHandle{}, newAPIErr(http.StatusBadGateway, "catalog_unavailable", err.Error())
@@ -1188,6 +1238,11 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 			rs.vibeAwaitingLock = true
 			rs.vibeSprintBudget = defaultVibeSprintBudget
 		}
+	} else if ref := strings.TrimSpace(in.FlowRefFallback); ref != "" {
+		// BUG-506: the canonical ref still stamps chatFlowRef so the child's own
+		// descendants inherit the same outage-proof fallback — but the vibe
+		// mount markers above stay FlowRef-only (a fallback is not a mount).
+		rs.chatFlowRef = ref
 	}
 	if chatID != "" {
 		rs.chatID = chatID
@@ -1675,11 +1730,12 @@ func hasBuiltInAgentPromptPrefix(prompt string) bool {
 
 func (s *InteractiveService) runSnapshot(runID string) (runSnapshotView, *apiErr) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	rs := s.runs[runID]
 	if rs == nil {
-		return runSnapshotView{}, newAPIErr(http.StatusNotFound, "run_not_found", "workflow run not found")
+		s.mu.Unlock()
+		return s.durableRunSnapshot(runID)
 	}
+	defer s.mu.Unlock()
 	view := runSnapshotView{
 		RunID:             rs.id,
 		ProviderSessionID: rs.providerSessionID,
@@ -1708,6 +1764,33 @@ func (s *InteractiveService) runSnapshot(runID string) (runSnapshotView, *apiErr
 		}
 	}
 	return view, nil
+}
+
+// durableRunSnapshot is the read-side of BUG-060's store-is-SSOT rule, applied
+// to the single-run endpoint (BUG-508): s.runs is a write-through cache that is
+// empty on a new service instance, so a run the boot reconciler did not
+// rehydrate (terminal rows in particular) must still resolve through its
+// persisted session row. The projected view is read-only and carries only what
+// the durable record proves — no live gate/approval state exists to surface.
+func (s *InteractiveService) durableRunSnapshot(runID string) (runSnapshotView, *apiErr) {
+	reader, ok := s.workflowStore.(SessionHistoryReader)
+	if !ok {
+		return runSnapshotView{}, newAPIErr(http.StatusNotFound, "run_not_found", "workflow run not found")
+	}
+	sess, found, err := reader.GetProviderSession(context.Background(), runID)
+	if err != nil {
+		return runSnapshotView{}, newAPIErr(http.StatusBadGateway, "store_unavailable", err.Error())
+	}
+	if !found {
+		return runSnapshotView{}, newAPIErr(http.StatusNotFound, "run_not_found", "workflow run not found")
+	}
+	return runSnapshotView{
+		RunID:             sess.RunID,
+		ProviderSessionID: sess.ProviderSessionID,
+		ProviderKey:       sess.ProviderKey,
+		Status:            sess.Status,
+		WorkingDirectory:  sess.WorkingDirectory,
+	}, nil
 }
 
 // workflowStepRuntimeView is the client-facing DTO for BUG-153: it projects Go's
@@ -1765,7 +1848,26 @@ func (s *InteractiveService) workflowStepsRuntime(ctx context.Context, runID str
 	}
 	s.mu.Unlock()
 	if !exists {
-		return workflowStepsRuntimeSnapshot{}, newAPIErr(http.StatusNotFound, "run_not_found", "workflow run not found")
+		// BUG-510: steps are durable (LoadRunSteps) — a run the boot
+		// reconciler did not rehydrate must still resolve through its
+		// persisted session row, same as runSnapshot's BUG-508 fallback.
+		reader, ok := s.workflowStore.(SessionHistoryReader)
+		if !ok {
+			return workflowStepsRuntimeSnapshot{}, newAPIErr(http.StatusNotFound, "run_not_found", "workflow run not found")
+		}
+		sess, found, err := reader.GetProviderSession(ctx, runID)
+		if err != nil {
+			return workflowStepsRuntimeSnapshot{}, newAPIErr(http.StatusBadGateway, "store_unavailable", err.Error())
+		}
+		if !found {
+			return workflowStepsRuntimeSnapshot{}, newAPIErr(http.StatusNotFound, "run_not_found", "workflow run not found")
+		}
+		// BUG-510 round 2: the durable session row also carries the run's
+		// model/yolo — hydrate the envelope, not just the provider key, so a
+		// restarted runner reports the same binding the live run did.
+		runProvider = string(sess.ProviderKey)
+		runModel = sess.ModelName
+		runYolo = sess.Yolo
 	}
 	steps, err := s.workflowStore.LoadRunSteps(ctx, runID)
 	if err != nil {

@@ -107,16 +107,28 @@ func (s *InteractiveService) hasActiveFlowChild(parentRunID string) bool {
 		// the hub from hub_stalled forever. Stale settle mirrors the hub-level
 		// H-C contract (run-1618): pendingFlowGateSettle only counts busy when
 		// the gate cancel is still live (gateLive).
+		// BUG-520 (live run-60145): an armed gate-reprompt intent IS work owed
+		// to this child — the reprompt turn has not dispatched yet but will.
+		// Without it the watchdog read the child as a ghost between gate-eval
+		// and reprompt dispatch, parked the hub, and parkFlowForAwaitingUser
+		// wiped the armed intent — orphaned waiting_user_approval child,
+		// blocked tournament. (pendingFlowGateSettle deliberately still does
+		// NOT count alone — BUG-354 contract: stale settle without a live gate
+		// cancel must not shield the hub.)
+		repromptArmed := child.pendingGateRepromptPrompt != "" ||
+			child.pendingGateRepromptStepID != ""
 		ghost := child.status == RunStatusRunning &&
 			!turnBusy &&
 			child.pendingTurnPrompt == "" &&
 			child.pendingApprovalID == "" &&
 			child.pendingQuestionID == "" &&
+			!repromptArmed &&
 			!gateLive
 		active := turnBusy ||
 			child.pendingTurnPrompt != "" ||
 			child.pendingApprovalID != "" ||
 			child.pendingQuestionID != "" ||
+			repromptArmed ||
 			gateLive ||
 			child.status == RunStatusStarting ||
 			child.status == RunStatusWaitingApproval ||
