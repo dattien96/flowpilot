@@ -251,3 +251,65 @@ func TestBug530_CodexDifferentScopesDoNotTearDownEachOther(t *testing.T) {
 		t.Fatal("starting account B tore down account A's live app-server")
 	}
 }
+
+// BUG-534 (live run-1269): the quota-route commit closed the child's leg
+// BEFORE the replacement spawn was known to succeed — the parent loop was
+// blocked on the arbiter card, spawnChildRun refused (BUG-432), and the run
+// ended with a committed route + durably closed leg + no successor that
+// nothing retried. A refused respawn must leave the leg open so the veto
+// refires on the next admission, and emit no route_committed record.
+func TestBug534_RefusedRespawnKeepsLegOpen(t *testing.T) {
+	reg := newProviderRegistry()
+	for _, key := range []ProviderKey{ProviderKeyGrok, ProviderKeyDevin} {
+		key := key
+		reg.register(ProviderRegistration{Key: key, Status: ProviderStatusAvailable, newAdapter: func() ProviderRuntimeAdapter {
+			return fakeAdapterFunc(func(_ context.Context, _ TurnRequest, b TurnBridge) error {
+				b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "ok"})
+				return nil
+			})
+		}})
+	}
+	svc, _ := newTestServerWith(t, reg, newInteractiveCatalog(), newFakeWorkflowStore())
+	parent, aerr := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyGrok, Cwd: t.TempDir()})
+	if aerr != nil {
+		t.Fatal(aerr)
+	}
+	child, aerr := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyGrok, Cwd: t.TempDir()})
+	if aerr != nil {
+		t.Fatal(aerr)
+	}
+	svc.mu.Lock()
+	cr := svc.runs[child.RunID]
+	cr.parentRunID = parent.RunID
+	cr.label = "candidate-a"
+	cr.agentName = "coder"
+	cr.flowCohortId = "attempt-1"
+	cr.lastFullPrompt = "finish candidate"
+	svc.mu.Unlock()
+	// Parent parked on a decision card — spawnChildRun refuses (BUG-432).
+	svc.agentOrchestrator.setLoop(parent.RunID, AgentLoopState{Status: "blocked", BlockReason: "escalate"})
+
+	err := svc.commitQuotaRotation(context.Background(), QuotaResolution{
+		Demand:   ExecutionDemand{RunID: child.RunID, RequestedProvider: ProviderKeyGrok},
+		Selected: &RouteCandidate{ProviderKey: ProviderKeyDevin, Model: "devin/swe-2-high", AccountID: "devin-1"},
+	})
+	if err == nil {
+		t.Fatal("respawn under a blocked parent loop must surface the refusal")
+	}
+
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	if cr.legState == LegStateClosed {
+		t.Fatal("refused respawn closed the leg — committed route left no successor")
+	}
+	for _, e := range cr.events {
+		if e.Type == EventQuotaRouteCommitted {
+			t.Fatal("route_committed emitted for a respawn that never happened")
+		}
+	}
+	for _, run := range svc.runs {
+		if run.id != child.RunID && run.parentRunID == parent.RunID && run.label == "candidate-a" {
+			t.Fatalf("unexpected replacement spawned under blocked parent: %q", run.id)
+		}
+	}
+}

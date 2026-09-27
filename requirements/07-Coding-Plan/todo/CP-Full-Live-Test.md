@@ -813,10 +813,10 @@ absent on this machine).
 
 ### R6 residuals
 
-- **Respawn-ordering**: a committed `route_committed` repin for a parked
-  quota-vetoed child does not re-attempt respawn after the parent's
-  decision card is resolved — needs a follow-up look (fail-closed, but
-  the repin is stranded).
+- ~~**Respawn-ordering**~~ — **resolved as BUG-534 (CA-1042)**: a committed
+  `route_committed` repin for a parked quota-vetoed child did not
+  re-attempt respawn. Fixed to spawn-first ordering; refusal leaves the
+  leg open so the next admission re-enters the gate. Live-verified in R8.
 - **Re-bind loop**: retry attempts re-bound `grok-4.5` for candidate-a
   each round because binding only sees connectivity, not the durable
   quota block → one veto card per attempt. Consider excluding
@@ -851,3 +851,30 @@ only (grok ledger-blocked, claude/codex absent).
 - Environment-blocked set unchanged: Drive/Supabase/Desktop legs,
   Claude-quota legs, multi-leg mid-turn restart (needs 2 usable
   providers; grok is ledger-blocked).
+
+## H. R8 — deep-review fixes BUG-533/534 live drill (2026-09-27, build post-d66f9c8e, runner :4319, workspace /tmp/fp-live3)
+
+**Scope:** the two defects found by the deep review of BUG-522..530 —
+tournament spawn-abort orphan worktrees + quota respawn ordering.
+Provider scope: grok (veto leg, ledger-blocked `billing_required`) +
+devin/swe-2-high (successor). Tournament mounted via run-level `flowRef`
+`flowpilot-core-flow-pack/tournament-harness` (flows-pack ref resolves to
+nothing → plain chat; noted for future drills).
+
+| Row | R8 result |
+|-----|-----------|
+| BUG-533 stale-dir sweep | ☑ LIVE run-2634: planted `candidate-candidate-a/` (marker file, not a git worktree) before rollout → spawn swept via `os.RemoveAll` fallback → real registered worktree created → candidate ran. Second sweep observed for the attempt-1 retry cohort |
+| BUG-533 orphan cleanup | ☑ covered by the same run — candidate spawn loop completed without leaking `candidate-*` dirs; unit tests cover provider-check/account-check/spawn-fail aborts |
+| BUG-534 refusal path | ☑ LIVE 2×: run-1408 (parent parked by manual `flow-control escalate`) and run-3107 (parent `blocked` organically — gate reprompt cap on candidate-b). Answering the quota card with `use_for_run|devin|…` returned `quota_gate: respawn child: parent run "run-2634" loop is blocked (escalate)`; leg stayed `active`, **zero** `quota_route_committed`, no successor spawned |
+| BUG-534 re-admission | ☑ LIVE: new turn on the still-open run-3107 leg re-entered admission → veto refired → fresh card `q-4146` — the open leg is retryable, not stranded |
+| BUG-534 success ordering | ☑ LIVE: answering `q-4146` while the parent ran → successor `run-4150` spawned (devin/swe-2-high, label `candidate-a`, cohort `flow-auto-parallel_rollout-attempt-0`, worktree `candidate-candidate-a`) → run-3107 closed (`leg_state=closed`, `leg_closed_reason=provider_switch`) → `quota_route_committed` evt-4155 seq 3 emitted only after the successor existed |
+| createRun id-bump | unit-covered via `TestBug517_AdmissionCarriesInflightPromptToRespawnedChild` (collision surfaced under spawn-first ordering; fixed by bumping past resident ids) |
+
+### R8 residuals
+
+- `quota_route_committed` is not in `isFlowSidecarEventType` — pre-existing;
+  repin durability rides on session rows, not the event file.
+- Re-bind loop (R6) still open: a ledger-blocked account can be re-bound
+  and vetoed once per attempt — fail-closed but wasteful.
+- Broad runner suite env-baselines unchanged (missing provider binaries,
+  MCP network) — see CA-1042 verification note.

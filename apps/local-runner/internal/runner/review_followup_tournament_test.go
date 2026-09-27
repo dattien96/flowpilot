@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"flowpilot-runner/internal/agentpack"
+	"flowpilot-runner/internal/tournament"
 )
 
 func TestBug522_TournamentWorktreeCreateFailureDoesNotSpawnInMainWorkspace(t *testing.T) {
@@ -108,4 +109,80 @@ func TestBug525_AutomaticMergeIgnoresDiffInAgentResultMessage(t *testing.T) {
 	if _, err := os.Stat(injectedPath); !os.IsNotExist(err) {
 		t.Fatalf("agent result diff overrode the recorded winner patch: err=%v", err)
 	}
+}
+
+// BUG-533: candidate-a's worktree is created, then candidate-b fails the
+// provider-selectability check — the abort escalates but must also sweep the
+// already-created worktree. Pre-fix it orphaned; every later retry wedged on
+// "worktree already exists" (live run-1 needed manual `git worktree remove`).
+func TestBug533_ProviderCheckAbortCleansEarlierWorktree(t *testing.T) {
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{Key: ProviderKeyCodex, Status: ProviderStatusAvailable, newAdapter: func() ProviderRuntimeAdapter {
+		return fakeAdapterFunc(func(_ context.Context, _ TurnRequest, b TurnBridge) error {
+			b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "ok"})
+			return nil
+		})
+	}})
+	// grok deliberately unregistered — Selectable fails for candidate-b.
+	svc, _ := newTestServerWith(t, reg, newInteractiveCatalog(), newFakeWorkflowStore())
+	repo := tournamentE2EGreenRepo(t)
+	parent, aerr := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex, Cwd: repo})
+	if aerr != nil {
+		t.Fatal(aerr)
+	}
+	svc.agentOrchestrator.setLoop(parent.RunID, AgentLoopState{Status: "running", Cap: 3, RoundCap: 3})
+	candidates := []agentpack.FlowNode{
+		{ID: "candidate-a", Run: "delegate", Behavior: "agent.delegate", Agent: "agents/coder.md", Cohort: "tournament", Model: "gpt-5.4-mini"},
+		{ID: "candidate-b", Run: "delegate", Behavior: "agent.delegate", Agent: "agents/coder.md", Cohort: "tournament", Model: "grok-4.5"},
+	}
+	svc.spawnTournamentCandidates(parent.RunID, agentpack.FlowNode{ID: "parallel_rollout"}, candidates, "solve")
+
+	if _, err := os.Stat(tournament.WorktreePath(repo, "candidate-a")); !os.IsNotExist(err) {
+		t.Fatalf("candidate-a worktree orphaned after provider-check abort: stat err=%v", err)
+	}
+}
+
+// BUG-533 wedge case: a stale dir from a previously aborted spawn makes
+// Create fail "already exists". The failure path must sweep the stale dir
+// (no live child owns it) and retry once — self-healing the spawn instead of
+// wedging the escalate/continue cycle on "already exists" forever.
+func TestBug533_StaleWorktreeSweptOnCreateFailure(t *testing.T) {
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{Key: ProviderKeyCodex, Status: ProviderStatusAvailable, newAdapter: func() ProviderRuntimeAdapter {
+		return fakeAdapterFunc(func(_ context.Context, _ TurnRequest, b TurnBridge) error {
+			b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "ok"})
+			return nil
+		})
+	}})
+	svc, _ := newTestServerWith(t, reg, newInteractiveCatalog(), newFakeWorkflowStore())
+	repo := tournamentE2EGreenRepo(t)
+	parent, aerr := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex, Cwd: repo})
+	if aerr != nil {
+		t.Fatal(aerr)
+	}
+	svc.agentOrchestrator.setLoop(parent.RunID, AgentLoopState{Status: "running", Cap: 3, RoundCap: 3})
+	// Stale dir from an earlier aborted attempt — no live child owns it.
+	var mgr tournament.WorktreeManager
+	if _, err := mgr.Create(repo, "HEAD", "candidate-a"); err != nil {
+		t.Fatalf("seed stale worktree: %v", err)
+	}
+	candidates := []agentpack.FlowNode{
+		{ID: "candidate-a", Run: "delegate", Behavior: "agent.delegate", Agent: "agents/coder.md", Cohort: "tournament", Model: "gpt-5.4-mini"},
+	}
+	svc.spawnTournamentCandidates(parent.RunID, agentpack.FlowNode{ID: "parallel_rollout"}, candidates, "solve")
+
+	// The stale dir is swept, recreated, and the child actually spawned into
+	// it — pre-fix the abort escalated before any spawn and the stale dir
+	// stayed behind to wedge every retry.
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	for _, child := range svc.runs {
+		if child.parentRunID == parent.RunID && child.label == "candidate-a" {
+			if child.workspaceCwd != tournament.WorktreePath(repo, "candidate-a") {
+				t.Fatalf("candidate child cwd=%q want worktree %q", child.workspaceCwd, tournament.WorktreePath(repo, "candidate-a"))
+			}
+			return
+		}
+	}
+	t.Fatal("stale worktree wedged the spawn — no candidate child created")
 }

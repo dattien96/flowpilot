@@ -362,6 +362,32 @@ func (s *InteractiveService) spawnTournamentCandidates(parentRunID string, rollo
 		worktree string
 	}
 	spawns := make([]candidateSpawn, 0, len(candidates))
+	var mgr tournament.WorktreeManager
+	// BUG-533: every abort path must sweep the worktrees this call already
+	// created — an orphaned candidate dir wedges the next spawn with
+	// "worktree already exists" (live run-1 needed manual `git worktree
+	// remove`). Create stays fail-closed; cleanup is what makes it retryable.
+	cleanupCreated := func() {
+		ids := make([]string, 0, len(spawns))
+		for _, spawn := range spawns {
+			ids = append(ids, spawn.node.ID)
+		}
+		_ = mgr.Cleanup(cwd, ids)
+	}
+	// liveChild reports whether a current-attempt child already owns the
+	// candidate's worktree — its dir is claimed, never swept as stale.
+	liveChild := func(candidateID string) bool {
+		attemptSuffix := fmt.Sprintf("attempt-%d", attempt)
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		for _, c := range s.runs {
+			if c.parentRunID == parentRunID && c.label == candidateID &&
+				strings.HasSuffix(c.flowCohortId, attemptSuffix) && !worktreeTerminal(c.status) {
+				return true
+			}
+		}
+		return false
+	}
 	for _, node := range candidates {
 		model := s.delegateSpawnModel(context.Background(), parentRunID, node)
 		provider, ok := providerKeyFromModel(model)
@@ -373,6 +399,7 @@ func (s *InteractiveService) spawnTournamentCandidates(parentRunID string, rollo
 			s.mu.Unlock()
 		}
 		if _, err := s.registry.Selectable(provider); err != nil {
+			cleanupCreated()
 			s.flowDiagLog(parentRunID, "tournament_candidate_provider_unavailable", "candidate provider unavailable", "node_id", node.ID, "provider", provider, "error", err.Error())
 			_, _ = s.applyFlowControl(parentRunID, FlowControlInput{Status: "escalate", Summary: err.Error()})
 			return
@@ -389,6 +416,7 @@ func (s *InteractiveService) spawnTournamentCandidates(parentRunID string, rollo
 				}
 			}
 			if !connected {
+				cleanupCreated()
 				err := fmt.Errorf("tournament: candidate %q provider %q has no connected account", node.ID, provider)
 				s.flowDiagLog(parentRunID, "tournament_candidate_provider_unavailable", "candidate provider unavailable", "node_id", node.ID, "provider", provider, "error", err.Error())
 				_, _ = s.applyFlowControl(parentRunID, FlowControlInput{Status: "escalate", Summary: err.Error()})
@@ -396,19 +424,23 @@ func (s *InteractiveService) spawnTournamentCandidates(parentRunID string, rollo
 			}
 		}
 		worktree, err := s.tournamentCandidateWorktree(parentRunID, node)
+		if err != nil && !liveChild(node.ID) {
+			// BUG-533: an "already exists" failure on a dir no live child
+			// owns is a stale orphan from an earlier aborted attempt —
+			// sweep it and retry once so the spawn self-heals instead of
+			// parking on a dir nothing will ever claim.
+			_ = mgr.Cleanup(cwd, []string{node.ID})
+			worktree, err = s.tournamentCandidateWorktree(parentRunID, node)
+		}
 		if err != nil {
-			var mgr tournament.WorktreeManager
-			ids := make([]string, 0, len(spawns))
-			for _, spawn := range spawns {
-				ids = append(ids, spawn.node.ID)
-			}
-			_ = mgr.Cleanup(cwd, ids)
+			cleanupCreated()
 			s.flowDiagLog(parentRunID, "tournament_candidate_worktree_failed", "candidate worktree creation failed", "node_id", node.ID, "error", err.Error())
 			_, _ = s.applyFlowControl(parentRunID, FlowControlInput{Status: "escalate", Summary: err.Error()})
 			return
 		}
 		spawns = append(spawns, candidateSpawn{node: node, worktree: worktree})
 	}
+	spawned := map[string]bool{}
 	for i, spawn := range spawns {
 		if !s.loopIsAdvancing(parentRunID) {
 			break
@@ -439,10 +471,23 @@ func (s *InteractiveService) spawnTournamentCandidates(parentRunID string, rollo
 				"candidate spawn failed", "node_id", node.ID, "error", err.Error())
 			continue
 		}
+		spawned[node.ID] = true
 		if s.isFlowEngineDriven(parentRunID) {
 			s.setFlowStepStatus(context.Background(), parentRunID, node.ID, StepStatusRunning)
 			s.stampFlowNodePosture(context.Background(), parentRunID, node)
 		}
+	}
+	// BUG-533: sweep worktrees whose spawn never completed — agentless
+	// nodes, refused/failed spawns, and the unspawned tail after
+	// loopIsAdvancing broke all leave orphans that wedge the next attempt.
+	var orphans []string
+	for _, spawn := range spawns {
+		if !spawned[spawn.node.ID] {
+			orphans = append(orphans, spawn.node.ID)
+		}
+	}
+	if len(orphans) > 0 {
+		_ = mgr.Cleanup(cwd, orphans)
 	}
 }
 

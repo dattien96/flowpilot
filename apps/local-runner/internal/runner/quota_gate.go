@@ -283,10 +283,17 @@ func (s *InteractiveService) commitQuotaRotation(ctx context.Context, res QuotaR
 		return nil
 	}
 	if rs.parentRunID != "" {
-		// Flow child: the leg is the child run — close it and respawn the same
-		// node binding on the new provider/account.
+		// Flow child: respawn the same node binding on the new
+		// provider/account, then close the old leg. The committed notice
+		// lands only after the successor exists — a refused spawn (parent
+		// loop blocked, BUG-432) leaves no committed record and the vetoed
+		// leg stays alive so the next admission re-enters the gate
+		// (BUG-534, live run-1269).
+		if err := s.respawnChildOnRoute(ctx, rs, sel, res.PendingPrompt); err != nil {
+			return err
+		}
 		s.emitQuotaRouteCommitted(res, nil)
-		return s.respawnChildOnRoute(ctx, rs, sel, res.PendingPrompt)
+		return nil
 	}
 	return fmt.Errorf("quota_gate: run %q has no leg rotation path", d.RunID)
 }
@@ -340,8 +347,6 @@ func (s *InteractiveService) emitQuotaRouteCommitted(res QuotaResolution, bindin
 func (s *InteractiveService) respawnChildOnRoute(ctx context.Context, child *interactiveRun, sel *RouteCandidate, pendingPrompt string) error {
 	s.mu.Lock()
 	parentID := child.parentRunID
-	child.legState = LegStateClosed
-	child.legClosedReason = LegClosedReasonProviderSwitch
 	prompt := pendingPrompt
 	if strings.TrimSpace(prompt) == "" {
 		prompt = child.lastFullPrompt
@@ -360,11 +365,21 @@ func (s *InteractiveService) respawnChildOnRoute(ctx context.Context, child *int
 		FlowCohortID:      child.flowCohortId,
 	}
 	s.mu.Unlock()
-	if err := s.persistProviderSession(sessionStateOf(child)); err != nil {
-		return fmt.Errorf("quota_gate: close leg: %w", err)
-	}
+	// BUG-534: spawn the successor BEFORE closing this leg — a refused spawn
+	// (e.g. the parent loop parked on a decision card, BUG-432) must leave
+	// the vetoed leg untouched so admission re-enters the gate instead of
+	// stranding a closed leg with no replacement (live run-1269: committed
+	// route + closed leg + no successor, never retried). The old leg is
+	// veto-pinned so it cannot dispatch during the gap.
 	if _, err := s.spawnChildRun(ctx, parentID, in); err != nil {
 		return fmt.Errorf("quota_gate: respawn child: %w", err)
+	}
+	s.mu.Lock()
+	child.legState = LegStateClosed
+	child.legClosedReason = LegClosedReasonProviderSwitch
+	s.mu.Unlock()
+	if err := s.persistProviderSession(sessionStateOf(child)); err != nil {
+		return fmt.Errorf("quota_gate: close leg: %w", err)
 	}
 	return nil
 }

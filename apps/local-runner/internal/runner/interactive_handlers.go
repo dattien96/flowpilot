@@ -1190,6 +1190,13 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	runID := s.nextID("run")
+	// Run ids must never overwrite a resident run (BUG-534): the counter is
+	// shared across id prefixes, and a row inserted without minting (fixture,
+	// legacy restore path) leaves the counter behind — the next minted run
+	// would silently take over the existing entry's map slot and durable id.
+	for s.runs[runID] != nil {
+		runID = s.nextID("run")
+	}
 	sessionID := s.nextID("thread")
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 
