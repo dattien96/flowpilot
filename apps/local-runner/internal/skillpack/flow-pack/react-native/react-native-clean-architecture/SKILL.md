@@ -8,6 +8,8 @@ version: 6
 
 Tài liệu hướng dẫn phân định ranh giới kiến trúc bằng **Ý nghĩa của quyết định**, không phân chia cảm tính theo vị trí class hay tên file.
 
+> **Cấu trúc folder cụ thể:** Ba ranh giới dưới đây được hiện thực thành contract 5 phân lớp `src/{api, domain, data, datasource, presentation}` trong mỗi thin-client app — xem `react-native-appstart-architecture` (Data & Infrastructure ở đây tách thành `data/` điều phối + `datasource/` driver).
+
 ---
 
 ## 1. BA RANH GIỚI BẮT BUỘC (ARCHITECTURAL BOUNDARIES)

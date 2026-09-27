@@ -56,13 +56,19 @@ Tài liệu quy chuẩn dành cho FlowPilot Runner và AI Agent khi thực thi l
         ├── tsconfig.json
         ├── app.json
         ├── app.config.ts                      # Dynamic Expo config (CNG)
-        └── app/
-            ├── _layout.tsx                    # Root Layout (SafeArea, Context, ErrorBoundary)
-            ├── +not-found.tsx
-            ├── modal.tsx
-            └── (tabs)/
-                ├── _layout.tsx                # Bottom Tab Bar
-                └── index.tsx                  # Home Screen mẫu
+        ├── app/                               # expo-router file-based routes (THIN ENTRIES ONLY)
+        │   ├── _layout.tsx                    # Root Layout (SafeArea, Context, ErrorBoundary)
+        │   ├── +not-found.tsx
+        │   ├── modal.tsx
+        │   └── (tabs)/
+        │       ├── _layout.tsx                # Bottom Tab Bar
+        │       └── index.tsx                  # Route mỏng delegate vào src/presentation/screens/
+        └── src/                               # APPSTART 5-LAYER SKELETON (xem react-native-appstart-architecture)
+            ├── api/                           # Public UseCase interfaces + public models
+            ├── domain/                        # Pure TS: domain models, gateway interfaces, usecase impl
+            ├── data/                          # Repository impl + datasource interfaces
+            ├── datasource/                    # SQLite/MMKV drivers + DbMappers
+            └── presentation/                  # Zustand micro-stores + UiModels + dumb screens
 ```
 
 ---
@@ -217,6 +223,7 @@ App template là khuôn mẫu cho mọi app tương lai trong studio:
     ```
 * **Composition Root (`app/_layout.tsx`):**
   * Tích hợp sẵn `SafeAreaProvider`, `ErrorBoundary`, và Theme Context.
+* **5-Layer Contract:** Route files trong `app/` chỉ là thin entries — render screen từ `src/presentation/screens/`, không chứa state/logic. Mọi app production `apps/<name>/` clone từ template này đều giữ đủ skeleton 5 tầng `src/{api,domain,data,datasource,presentation}` theo `react-native-appstart-architecture`.
 
 ---
 

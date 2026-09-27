@@ -65,8 +65,8 @@ func TestScaffoldStatus_CapablePlatformReportsRecipe(t *testing.T) {
 	if out.Recipe == nil {
 		t.Fatal("Recipe = nil, want the react-native recipe")
 	}
-	if len(out.Recipe.ScaffoldSkills) != 4 {
-		t.Fatalf("recipe skills = %v, want 4", out.Recipe.ScaffoldSkills)
+	if len(out.Recipe.ScaffoldSkills) != 5 {
+		t.Fatalf("recipe skills = %v, want 5", out.Recipe.ScaffoldSkills)
 	}
 	if !strings.Contains(out.VerificationCommand, "pnpm tsc --noEmit") {
 		t.Fatalf("VerificationCommand = %q", out.VerificationCommand)
@@ -172,8 +172,8 @@ func TestScaffoldDispatch_CapablePlatformRunsTurnAndReportsDone(t *testing.T) {
 	if out.Status != ScaffoldStatusDone {
 		t.Fatalf("Status = %q (%s), want done", out.Status, out.Message)
 	}
-	if len(out.SkillsAttached) != 4 {
-		t.Fatalf("SkillsAttached = %v, want 4 blueprint skills", out.SkillsAttached)
+	if len(out.SkillsAttached) != 5 {
+		t.Fatalf("SkillsAttached = %v, want 5 blueprint skills", out.SkillsAttached)
 	}
 	if out.ProviderKey != "claude" {
 		t.Fatalf("ProviderKey = %q, want the caller's explicit choice", out.ProviderKey)
@@ -242,8 +242,8 @@ func TestCreateProject_AutoTriggersScaffoldForCapablePlatform(t *testing.T) {
 	if turn.WorkingDirectory != dir {
 		t.Fatalf("turn workspace = %q, want the created project dir %q", turn.WorkingDirectory, dir)
 	}
-	if len(turn.SkillIds) != 4 {
-		t.Fatalf("SkillIds = %v, want the 4 declared blueprint skills", turn.SkillIds)
+	if len(turn.SkillIds) != 5 {
+		t.Fatalf("SkillIds = %v, want the 5 declared blueprint skills", turn.SkillIds)
 	}
 	if _, ok := LoadScaffoldStatusFile(dir); !ok {
 		t.Fatal("expected scaffold-status.json after the auto-trigger")

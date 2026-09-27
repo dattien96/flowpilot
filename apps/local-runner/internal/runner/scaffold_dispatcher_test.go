@@ -134,8 +134,8 @@ func TestScaffoldDispatcher_CapablePlatformDispatchesTurnWithBlueprintSkills(t *
 	if !strings.Contains(result.Message, "compiler gate PASS") {
 		t.Fatalf("Message = %q, want a gate PASS note", result.Message)
 	}
-	if len(result.SkillsAttached) != 4 {
-		t.Fatalf("SkillsAttached = %v, want the 4 declared blueprint skills", result.SkillsAttached)
+	if len(result.SkillsAttached) != 5 {
+		t.Fatalf("SkillsAttached = %v, want the 5 declared blueprint skills", result.SkillsAttached)
 	}
 	if result.Attempts != 1 {
 		t.Fatalf("Attempts = %d, want 1 (clean first pass)", result.Attempts)

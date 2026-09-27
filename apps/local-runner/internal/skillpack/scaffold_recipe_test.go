@@ -6,9 +6,11 @@ import (
 )
 
 // reactNativeScaffoldSkills is the exact declared set in
-// flow-pack/react-native/scaffold.yaml (4 skills, CP-68 P-1).
+// flow-pack/react-native/scaffold.yaml (5 skills — CP-68 P-1 set plus
+// react-native-appstart-architecture for the 5-layer app contract).
 var reactNativeScaffoldSkills = []string{
 	"react-native-scaffold-bootstrap",
+	"react-native-appstart-architecture",
 	"react-native-mobile-plumbing",
 	"react-native-core-ui-tokens",
 	"react-native-screen-archetypes",
@@ -152,14 +154,14 @@ func TestScaffoldYAMLIsNotTreatedAsSkill(t *testing.T) {
 	// Regression guard (Task-383 constraint): scaffold.yaml lives inside the
 	// platform group directory, and skillsForPlatform reads directory entries —
 	// only directories may become skills, so the manifest must never be installed
-	// as a skill folder. Count updated 23 → 25 after CA-903 / Task-412 added
-	// flow-harness-contract + vibe-lanes to common (15 common + 10 platform).
+	// as a skill folder. Count updated 25 → 26 after react-native added
+	// react-native-appstart-architecture (15 common + 11 platform).
 	names, err := SkillNames("react-native")
 	if err != nil {
 		t.Fatalf("SkillNames(react-native) error = %v", err)
 	}
-	if len(names) != 25 {
-		t.Fatalf("react-native skills = %d (%v), want 25 (15 common + 10 platform)", len(names), names)
+	if len(names) != 26 {
+		t.Fatalf("react-native skills = %d (%v), want 26 (15 common + 11 platform)", len(names), names)
 	}
 	for _, name := range names {
 		if strings.Contains(name, "scaffold.yaml") {

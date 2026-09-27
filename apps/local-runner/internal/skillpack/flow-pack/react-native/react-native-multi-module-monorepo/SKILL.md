@@ -17,19 +17,23 @@ flowpilot-mobile-studio/
 ├── packages/                                  # REUSABLE CORE PACKAGES (DÙNG CHUNG)
 │   ├── core-ui/                               # Tương đương :foundation:ui (Design System, Tokens, Tailwind)
 │   ├── core-billing/                          # Tương đương :core:billing (RevenueCat Adapter & Paywall)
+│   ├── core-ads/                              # Tương đương :core:ads (AdMob Manager, Frequency Capping)
 │   ├── core-storage/                          # Tương đương :core:database (SQLite / MMKV Repository abstraction)
 │   ├── core-pdf/                              # Tương đương :core:document (HTML-to-PDF Engine qua expo-print)
 │   ├── core-security/                         # Tương đương :foundation:security (Disclaimer, Sanitization)
 │   └── core-common/                           # Tương đương :foundation:common (Date utils, Currency, Types)
 │
-└── apps/                                      # CÁC ỨNG DỤNG ĐỘC LẬP (ENTRY POINTS)
-    ├── proquote/                              # Báo giá thợ sửa chữa
-    ├── shiftsync/                             # Lịch ca kíp
-    ├── stepflow/                              # Timer ADHD
-    ├── pawvault/                              # Sổ tiêm thú cưng
-    ├── zipclip/                               # Nén video phần cứng
-    └── focuszen/                              # Minimalist launcher / blocker
+└── apps/                                      # 7 THIN CLIENT APPS (CHỈ CHỨA DOMAIN & UI ĐẶC THÙ)
+    ├── towsafe/                               # App #1: Cân tải trọng xe bán tải & RV (IAP $14.99) — PHÁT SÚNG MỞ MÀN
+    ├── cutcraft/                              # App #2: Tối ưu cắt ván gỗ 2D (IAP $14.99)
+    ├── proquote/                              # App #3: Báo giá thợ sửa chữa (IAP $49.99)
+    ├── sparkycalc/                            # App #4: Tính ống gen & dây điện NEC (IAP $19.99)
+    ├── shiftsync/                             # App #5: Lịch ca kíp & tính giờ làm (Sub $14.99/yr)
+    ├── flipcalc/                              # App #6: Tính lãi buôn đồ cũ eBay/Poshmark (IAP $19.99)
+    └── docuscan/                              # App #7: Quét hóa đơn sang PDF (AdMob cày traffic)
 ```
+
+**Build order bất biến (theo blueprint):** `towsafe` ➔ `cutcraft` ➔ `proquote` ➔ `sparkycalc` ➔ `shiftsync` ➔ `flipcalc` ➔ `docuscan`. TowSafe là app mở màn vì nó dựng toàn bộ 7 `packages/core-*` để các app sau tái sử dụng ~90%.
 
 ---
 
@@ -78,6 +82,8 @@ features/quotes/
   // ❌ VI PHẠM ĐÓNG GÓI:
   import { SQLiteQuoteDataSource } from '@/features/quotes/internal/data/SQLiteQuoteDataSource';
   ```
+
+* **Ánh xạ sang Thin Client App:** Trong phạm vi một app dưới `apps/`, Public API Surface tương ứng thư mục `src/api/` (UseCase interface + public model), còn implementation ẩn trong `src/{domain,data,datasource,presentation}` theo contract 5 phân lớp — xem `react-native-appstart-architecture`.
 
 ---
 
