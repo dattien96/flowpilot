@@ -252,6 +252,15 @@ func IsDocOrAuditFile(path string) bool {
 		strings.HasSuffix(path, ".md") {
 		return true
 	}
+	// BUG-532: plain-text doc/data suffixes are not production code — a
+	// notes.txt write used to trip r-tests ("you changed production code")
+	// and r-scope. Deliberately conservative: json/yaml stay code-adjacent.
+	lower := strings.ToLower(path)
+	for _, ext := range []string{".txt", ".csv", ".tsv", ".log", ".rst", ".adoc", ".pdf"} {
+		if strings.HasSuffix(lower, ext) {
+			return true
+		}
+	}
 	return IsBinaryOrBuildArtifact(path)
 }
 
