@@ -2761,10 +2761,20 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 	// decision, not the park.
 	s.mu.Lock()
 	var orphanIDs []string
+	var resumeIDs []string
 	orphanNodes := nodes
 	for _, cid := range s.agentOrchestrator.listChildren(parentRunID) {
 		c := s.runs[cid]
-		if c == nil || c.status != RunStatusWaitingUserApr ||
+		if c == nil {
+			continue
+		}
+		// BUG-538: a spawned successor refused at first dispatch parks on a
+		// durable resume intent — unblock flushes it through the claiming path.
+		if strings.TrimSpace(c.pendingResumePrompt) != "" &&
+			strings.TrimSpace(c.pendingResumeStepID) != "" {
+			resumeIDs = append(resumeIDs, cid)
+		}
+		if c.status != RunStatusWaitingUserApr ||
 			c.pendingApprovalID != "" || c.pendingQuestionID != "" ||
 			len(c.pendingGateCodePaths) == 0 {
 			continue
@@ -2775,6 +2785,9 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 		}
 	}
 	s.mu.Unlock()
+	for _, id := range resumeIDs {
+		go s.flushDurableTurnIntents(id)
+	}
 	orphanRedrived := false
 	for _, orphanID := range orphanIDs {
 		label := ""
@@ -3074,9 +3087,15 @@ func (s *InteractiveService) parkFlowForAwaitingUser(parentRunID string, opts ..
 		child.pendingGateRepromptPrompt = ""
 		child.pendingGateRepromptStepID = ""
 		child.pendingGateRepromptGen = 0
-		child.pendingResumePrompt = ""
-		child.pendingResumeStepID = ""
-		child.pendingResumeGen = 0
+		// BUG-538: a never-dispatched child's durable resume intent is its
+		// FIRST turn (spawned successor refused by this very park), not a stale
+		// continuation — wiping it re-strands the leg claim forever. Dispatch
+		// gates still fence it while blocked.
+		if child.turnCount > 0 {
+			child.pendingResumePrompt = ""
+			child.pendingResumeStepID = ""
+			child.pendingResumeGen = 0
+		}
 		child.pendingFlowGateSettle = false
 		child.pendingFlowGateFinalMsg = ""
 		child.pendingFlowGateOccurredAt = ""
@@ -3180,9 +3199,14 @@ func (s *InteractiveService) parkFlowForAwaitingUserLocked(parentRunID string) {
 		child.pendingGateRepromptPrompt = ""
 		child.pendingGateRepromptStepID = ""
 		child.pendingGateRepromptGen = 0
-		child.pendingResumePrompt = ""
-		child.pendingResumeStepID = ""
-		child.pendingResumeGen = 0
+		// BUG-538: same never-dispatched carve-out as the unlocked park —
+		// the parked successor's resume intent is its first turn, not a
+		// stale auto-continuation.
+		if child.turnCount > 0 {
+			child.pendingResumePrompt = ""
+			child.pendingResumeStepID = ""
+			child.pendingResumeGen = 0
+		}
 		child.pendingFlowGateSettle = false
 		child.pendingFlowGateFinalMsg = ""
 		child.pendingFlowGateOccurredAt = ""
@@ -3346,6 +3370,44 @@ func (s *InteractiveService) notifyHubOfFlowChildFailureLocked(child *interactiv
 	go s.maybeAutoReinvokeHubWithNote(parentRunID, capturedFailNote)
 }
 
+// handleSpawnedChildTurnFailure routes a freshly spawned child's first-turn
+// dispatch failure. flow_awaiting_user is a RETRYABLE admission refusal — the
+// parent loop re-blocked between spawnChildRun's guard and this async dispatch
+// (live run-1651: a vetoed sibling's escalate landed in between). Failing the
+// child strands a spawned leg holding an active worktree claim with no turn
+// and no re-drive; instead park it on a DURABLE resume intent —
+// resumePendingLoopWork/flushDurableTurnIntents re-drive on unblock, and
+// reconstructPendingChildSessions catches the persisted intent after restart.
+// Anything else fails honestly via handleChildStartTurnFailure.
+func (s *InteractiveService) handleSpawnedChildTurnFailure(childRunID, parentRunID, prompt, stepID string, turnErr *apiErr) {
+	if turnErr == nil {
+		return
+	}
+	if turnErr.code == "flow_awaiting_user" {
+		s.mu.Lock()
+		child := s.runs[childRunID]
+		if child != nil && child.legState != LegStateClosed &&
+			child.status != RunStatusFailed && child.status != RunStatusCancelled {
+			child.pendingResumePrompt = prompt
+			child.pendingResumeStepID = stepID
+			child.pendingResumeGen++
+			child.status = RunStatusWaitingUserApr
+			child.agentStatus = string(RunStatusWaitingUserApr)
+			snap := sessionStateOf(child)
+			s.mu.Unlock()
+			if err := s.persistProviderSession(snap); err != nil {
+				log.Printf("[agent-spawn] persist deferred dispatch intent failed child=%s: %v", childRunID, err)
+			}
+			s.flowDiagLog(parentRunID, "spawned_child_dispatch_parked",
+				"spawned child's first turn refused by re-blocked parent loop; parked on durable resume intent",
+				"child_run_id", childRunID)
+			return
+		}
+		s.mu.Unlock()
+	}
+	s.handleChildStartTurnFailure(childRunID, parentRunID, turnErr.msg)
+}
+
 // handleChildStartTurnFailure is the spawnChildRun async startTurn error path:
 // pre-adapter failure never emits EventTurnFailed, so cohort join / non-cohort
 // hub reinvoke must be driven here (BUG-289 H2/F-2 + H-A residual).
@@ -3356,12 +3418,21 @@ func (s *InteractiveService) handleChildStartTurnFailure(childRunID, parentRunID
 	cohortID := ""
 	label := ""
 	provider := ""
+	var failedSnap ProviderSessionState
 	if child != nil {
 		cohortID = child.flowCohortId
 		label = child.label
 		provider = string(child.providerKey)
 		child.status = RunStatusFailed
 		child.agentStatus = string(RunStatusFailed)
+		// BUG-538: a leg that never dispatched must not hold its worktree claim
+		// forever — close the durable claim so future spawns are not parked on a
+		// dead leg (live run-1651: leg_state=active outlived the failed run).
+		if child.legState == LegStateActive {
+			child.legState = LegStateClosed
+			child.legClosedReason = LegClosedReasonDispatchFailed
+		}
+		failedSnap = sessionStateOf(child)
 		// run-43831: stamp hub progress under s.mu before unlock / cohort join /
 		// async reinvoke so pre-adapter start failures do not leave a stale
 		// hubLastProgressAt gap (Codex review of residual F-0).
@@ -3374,6 +3445,13 @@ func (s *InteractiveService) handleChildStartTurnFailure(childRunID, parentRunID
 	}
 	if cohortID != "" {
 		s.mu.Unlock()
+		// BUG-538: persist the failed+leg-closed snapshot — the durable row
+		// must not keep reading idle/active after an in-memory failure.
+		if failedSnap.RunID != "" {
+			if err := s.persistProviderSession(failedSnap); err != nil {
+				log.Printf("[agent-spawn] persist failed child leg close child=%s: %v", childRunID, err)
+			}
+		}
 		// BUG-289 H2/F-2: pre-flight failure never hit appendCohortResult
 		// (only turn-completed/failed handlers do). Stall sweep skips
 		// members with last.IsZero() && !inFlight, so the barrier hung
@@ -3452,6 +3530,12 @@ func (s *InteractiveService) handleChildStartTurnFailure(childRunID, parentRunID
 		s.emitAgentGraphLocked(parentRunID, s.agentOrchestrator.transition(parentRunID, "rejected"))
 	}
 	s.mu.Unlock()
+	// BUG-538: non-cohort tail — same durable persist as the cohort path.
+	if failedSnap.RunID != "" {
+		if err := s.persistProviderSession(failedSnap); err != nil {
+			log.Printf("[agent-spawn] persist failed child leg close child=%s: %v", childRunID, err)
+		}
+	}
 }
 
 // notifyHubOfFlowEntrySpawnFailure is H-B: every flow entry spawn failed before
@@ -4333,6 +4417,7 @@ func (s *InteractiveService) resumePendingLoopWork(parentRunID string) {
 	}
 
 	var next *pendingTurn
+	var resumeIDs []string
 	s.mu.Lock()
 	if !s.loopAllowsNextTurnLocked(parentRunID) {
 		s.mu.Unlock()
@@ -4340,15 +4425,27 @@ func (s *InteractiveService) resumePendingLoopWork(parentRunID string) {
 	}
 	for _, childID := range s.agentOrchestrator.listChildren(parentRunID) {
 		child := s.runs[childID]
-		if child == nil || child.pendingTurnPrompt == "" || child.turnInFlight || !s.dependenciesSatisfiedLocked(child) {
+		if child == nil {
 			continue
 		}
-		next = &pendingTurn{runID: child.id, stepID: child.stepID, prompt: child.pendingTurnPrompt}
-		child.pendingTurnPrompt = ""
-		child.agentStatus = string(RunStatusRunning)
-		break
+		// BUG-538: a spawned successor whose first dispatch was refused by the
+		// re-blocked loop parks on a DURABLE resume intent — it never enters the
+		// in-memory pendingTurnPrompt queue, so unblock must flush it through
+		// the claiming path (gen CAS + clear-on-accept), not a bare startTurn.
+		if strings.TrimSpace(child.pendingResumePrompt) != "" &&
+			strings.TrimSpace(child.pendingResumeStepID) != "" {
+			resumeIDs = append(resumeIDs, childID)
+		}
+		if next == nil && child.pendingTurnPrompt != "" && !child.turnInFlight && s.dependenciesSatisfiedLocked(child) {
+			next = &pendingTurn{runID: child.id, stepID: child.stepID, prompt: child.pendingTurnPrompt}
+			child.pendingTurnPrompt = ""
+			child.agentStatus = string(RunStatusRunning)
+		}
 	}
 	s.mu.Unlock()
+	for _, id := range resumeIDs {
+		go s.flushDurableTurnIntents(id)
+	}
 	if next != nil {
 		prompt, queued := s.takeQueuedFeedbackPrompt(parentRunID, next.runID, next.prompt)
 		if queued != nil {
@@ -8073,8 +8170,10 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 			}, "", "")
 			if turnErr != nil {
 				// startTurn failed before the adapter ran — signal waiter + settle
-				// flow/cohort (H-A non-cohort + BUG-289 H2/F-2 cohort).
-				s.handleChildStartTurnFailure(handle.RunID, parentRunID, turnErr.msg)
+				// flow/cohort (H-A non-cohort + BUG-289 H2/F-2 cohort). BUG-538:
+				// a retryable parent-park refusal parks the leg on a durable
+				// intent instead of stranding it.
+				s.handleSpawnedChildTurnFailure(handle.RunID, parentRunID, firstPrompt, handle.StepID, turnErr)
 			}
 		}()
 	}

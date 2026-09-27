@@ -359,3 +359,65 @@ func tournamentFlowDefinitionMust(t *testing.T) agentpack.FlowDefinition {
 	}
 	return def
 }
+
+// BUG-538 residue class (live run-1651): a stranded leg belonged to a run
+// that normalized to failed on restart and never reloaded into s.runs — its
+// durable session row kept leg_state=active on the candidate worktree, so
+// closeLegsBoundToWorktree (which only scanned memory) left the claim alive
+// forever. The sweep must close durable-only active legs on the dir too.
+func TestBug538_WorktreeSweepClosesDurableOnlyLegClaim(t *testing.T) {
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{Key: ProviderKeyCodex, Status: ProviderStatusAvailable, newAdapter: func() ProviderRuntimeAdapter {
+		return fakeAdapterFunc(func(_ context.Context, _ TurnRequest, b TurnBridge) error {
+			b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "ok"})
+			return nil
+		})
+	}})
+	store := newFakeWorkflowStore()
+	svc, _ := newTestServerWith(t, reg, newInteractiveCatalog(), store)
+	repo := tournamentE2EGreenRepo(t)
+	parent, aerr := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex, Cwd: repo})
+	if aerr != nil {
+		t.Fatal(aerr)
+	}
+	svc.agentOrchestrator.setLoop(parent.RunID, AgentLoopState{Status: "running", Cap: 3, RoundCap: 3})
+	var mgr tournament.WorktreeManager
+	if _, err := mgr.Create(repo, "HEAD", "candidate-a"); err != nil {
+		t.Fatalf("seed claimed worktree: %v", err)
+	}
+	dir := tournament.WorktreePath(repo, "candidate-a")
+	// Durable-only residue: failed run row with an active leg on the dir and
+	// NO in-memory interactiveRun — exactly what run-1651 left behind.
+	if err := store.UpsertProviderSession(context.Background(), ProviderSessionState{
+		RunID:            "run-1651-dead",
+		ProjectID:        "proj",
+		WorkingDirectory: dir,
+		Status:           RunStatusFailed,
+		AgentStatus:      "failed",
+		LegState:         LegStateActive,
+		ParentRunID:      parent.RunID,
+		FlowCohortID:     "flow-auto-parallel_rollout-attempt-0",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	svc.spawnTournamentCandidates(parent.RunID, agentpack.FlowNode{ID: "parallel_rollout"}, []agentpack.FlowNode{
+		{ID: "candidate-a", Run: "delegate", Behavior: "agent.delegate", Agent: "agents/coder.md", Cohort: "tournament", Model: "gpt-5.4-mini"},
+	}, "solve")
+
+	sess, ok, err := store.GetProviderSession(context.Background(), "run-1651-dead")
+	if err != nil || !ok {
+		t.Fatalf("GetProviderSession: ok=%v err=%v", ok, err)
+	}
+	if sess.LegState != LegStateClosed || sess.LegClosedReason != LegClosedReasonWorktreeSwept {
+		t.Fatalf("durable-only leg claim survives the sweep: state=%q reason=%q", sess.LegState, sess.LegClosedReason)
+	}
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	for _, child := range svc.runs {
+		if child.parentRunID == parent.RunID && child.label == "candidate-a" {
+			return
+		}
+	}
+	t.Fatal("dead-run durable claim wedged the spawn — no candidate child created")
+}

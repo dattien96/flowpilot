@@ -35,6 +35,14 @@ const (
 	// removed by a tournament cleanup (retry/discard/abort/stale-sweep) — the
 	// durable claim must not outlive the directory it points at.
 	LegClosedReasonWorktreeSwept = "worktree_swept"
+	// LegClosedReasonDispatchFailed (BUG-538): the spawned leg's first turn
+	// failed admission/dispatch before any provider work — the claim dies with
+	// the leg instead of holding a worktree it never used.
+	LegClosedReasonDispatchFailed = "dispatch_failed"
+	// LegClosedReasonFlowDone (BUG-538): the flow settled while this leg was
+	// still open (e.g. a successor parked on a resume intent the final verdict
+	// made moot) — the worktree claim must not outlive the flow that owned it.
+	LegClosedReasonFlowDone = "flow_done"
 )
 
 // Chat transcript record types (SD-26 §6.1, SD26-E-1..E-9). The record

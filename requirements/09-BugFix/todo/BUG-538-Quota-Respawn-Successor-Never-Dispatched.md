@@ -1,6 +1,6 @@
 # BUG-538 — Quota-route successor leg spawned but never dispatched; parent wedges
 
-Status: **OPEN** (captured from live run; not yet fixed)
+Status: **FIXED** (CA-1045; regression-tested + live-verified)
 Severity: Important — wedges a tournament parent run and strands an `active` leg claim forever.
 
 ## Symptom (live, `/tmp/fp-live4`, run-551)
@@ -21,39 +21,89 @@ Severity: Important — wedges a tournament parent run and strands an `active` l
    `loop_state.status: done`) — yet `run-551.status` stays `running` because a
    child leg is still `active` (BUG-521-withheld completion is firing correctly
    on a stranded leg). Nobody ever dispatches or closes `run-1651`.
+7. Post-restart residue: `run-1651` normalized to `failed` but kept
+   `leg_state: active` — a durable claim on `candidate-candidate-a` that no
+   in-memory sweep could ever reach (the run is never reloaded).
 
-## Root cause hypothesis
+## Root cause (confirmed)
 
-`respawnChildOnRoute` spawns the successor and queues the handoff, but the leg's
-first-turn dispatch is normally driven by the step executor. Here the step had
-already resolved `FAILED` from the vetoed leg (`run-945`) — so nothing owns the
-dispatch of `run-1651`. The successor is neither bound to the step nor
-terminalized: a durable leak + permanent worktree claim.
+`spawnChildRun` checks the parent loop is runnable, then dispatches the child's
+first turn on an async goroutine (`go s.startTurn`). Between the guard and the
+dispatch, the parent loop re-blocked (the quota veto's escalate landed in the
+same window). `startTurn` returned `flow_awaiting_user` —
+"parent flow is waiting for your decision; resolve the form before a child
+turn" — which `handleChildStartTurnFailure` treated like any start failure:
+child → `failed`, step → FAILED, cohort result appended. The leg stayed
+`leg_state=active` and the worktree claim durable → stranded successor, exactly
+the "spawned but never dispatched" wedge.
 
-Two contract options, either would fix:
+## Fix (CA-1045)
 
-- **A** — respawn during `WAITING_USER_APPROVAL` re-binds the step to the
-  successor leg (step → RUNNING on the new run), matching what an external
-  observer would expect from "use_for_run".
-- **B** — if the step already consumed the leg outcome, refuse the respawn /
-  terminalize the successor immediately (fail-closed) instead of leaving a
-  spawned orphan.
+`internal/runner/interactive_service.go`:
 
-## Evidence
+- New `handleSpawnedChildTurnFailure` on the spawned-child async dispatch path:
+  `flow_awaiting_user` (a retryable refusal — the parent re-blocked mid-race)
+  now **parks** the child instead of failing it: durable intent armed
+  (`pendingResumePrompt`/`pendingResumeStepID`/`pendingResumeGen`++), honest
+  `waiting_user_approval` status, session persisted immediately, leg stays
+  `active`. Non-retryable failures flow to `handleChildStartTurnFailure`.
+- `handleChildStartTurnFailure` now closes the failed leg
+  (`LegClosedReasonDispatchFailed`) and persists the failed snapshot — a
+  hard-failed child can no longer strand an `active` claim.
+- `resumePendingLoopWork` and `resumeFlowWithFeedback` scan children for armed
+  `pendingResumePrompt` and flush via `flushDurableTurnIntents` (the durable
+  claim/generation/idempotency path) on every unblock entry — including
+  `agent-loop/continue`.
+- `parkFlowForAwaitingUser` (both variants) preserves a **never-dispatched**
+  child's `pendingResume*` (turnCount==0 — that intent IS the first turn, not
+  a stale continuation), so a re-park cannot re-strand it.
+- `reconcileChildRunsOnFlowDone` now closes settled children's legs
+  (`LegClosedReasonFlowDone`), clears their resume intents, and persists.
 
-- `sessions.ndjson` (`/tmp/fp-live4/.flowpilot/chats/`):
-  - `run-945`: `leg_state: closed`, `leg_closed_reason: provider_switch`,
-    `status: waiting_user_approval`, stale `pending_resume_*` fields.
-  - `run-1651`: `leg_state: active`, `agent_status: spawned`, `status: idle`,
-    `provider_key: devin`, `working_directory: …/candidate-candidate-a`.
-- Step transitions: `candidate-a` `WAITING_USER_APPROVAL` (14:41:10) → `FAILED`
-  (14:43:39, same ts as `route_committed`).
-- Log: `[quota] route_committed run=run-945 grok/… -> devin/… scope=run` +
-  `[agent-spawn] child created … child="run-1651"` — then silence; next
-  activity only after a manual `agent-loop/continue` nudge.
-- Related: BUG-534 (spawn-first ordering — worked), BUG-535 (dir-claim guard —
-  a future candidate-a spawn on this workspace would correctly park on
-  run-1651's live claim, i.e. fail-closed but permanently parked).
+`internal/runner/tournament_dispatch.go`:
+
+- `closeLegsBoundToWorktree` additionally sweeps the durable session index:
+  an `active`-leg row on the swept dir belonging to a run not resident in
+  memory is dead residue (the run-1651 case — failed run, never reloaded) and
+  is closed with `worktree_swept`. Live in-memory claimants are untouched.
+
+`internal/runner/chat_ssot.go`: new leg-closure reasons
+`dispatch_failed`, `flow_done`.
+
+`flow_awaiting_user` stays classified retryable by `isPermanentStartTurnError`
+— a re-flush on a still-blocked parent keeps the intent, not a burn.
+
+## Tests (all RED→GREEN)
+
+`bug538_spawned_successor_stranded_test.go`:
+
+- `TestBug538_SpawnedChildBlockedDispatchParksDurableIntent`: forced
+  `flow_awaiting_user` on a spawned child's first turn → child not failed,
+  leg stays active, durable intent persisted, `pendingResumeGen != 0`; unblock
+  → real turn dispatched exactly once (`turnCount==1`).
+- `TestBug538_ParkedSuccessorFlushedOnFlowResume`: `resumeFlowWithFeedback`
+  (the `agent-loop/continue` path) flushes the parked child's intent.
+- `TestBug538_ParkedSuccessorLegClosedOnFlowDone`: flow-done settle → child
+  completed, leg closed `flow_done`, intent cleared.
+- `TestBug538_SpawnedChildHardFailureClosesLeg`: non-retryable failure →
+  child failed, leg closed `dispatch_failed`, no active claim.
+
+`review_followup_tournament_test.go`:
+
+- `TestBug538_WorktreeSweepClosesDurableOnlyLegClaim`: a `failed`+`active`-leg
+  session row with NO resident run (run-1651 residue) is closed
+  `worktree_swept` by the sweep; spawn proceeds on the reclaimed dir.
+
+## Live verification (`/tmp/fp-live4`, fixed binary)
+
+- Pre-existing residue `run-1651` (`failed`, `leg: active` on
+  `candidate-candidate-a`): a fresh tournament's candidate spawn swept the
+  dir; the durable row now reads `leg: closed, reason: worktree_swept` —
+  closed through the real spawn→sweep entry.
+- `run-3240` tournament parked honestly on the contested dir while a live
+  leg (run-1663's `run-2830`) claimed it — BUG-535 live-claimant guard.
+- Binding with grok ledger-blocked produced devin×2 candidates (BUG-536
+  re-verified live).
 
 ## Residual (cosmetic)
 

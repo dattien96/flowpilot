@@ -559,6 +559,7 @@ func (s *InteractiveService) settleParentRunOnFlowDone(parentRunID string) {
 // clear immediately instead of waiting for an event that will never come.
 func (s *InteractiveService) reconcileChildRunsOnFlowDone(parentRunID string) {
 	changed := false
+	var settledSnaps []ProviderSessionState
 	s.mu.Lock()
 	for _, childID := range s.agentOrchestrator.listChildren(parentRunID) {
 		child := s.runs[childID]
@@ -575,9 +576,25 @@ func (s *InteractiveService) reconcileChildRunsOnFlowDone(parentRunID string) {
 		}
 		child.status = RunStatusCompleted
 		child.agentStatus = string(RunStatusCompleted)
+		// BUG-538: a settled child must not keep its durable leg/worktree
+		// claim — live run-1651 stayed leg_state=active forever after the
+		// flow verdict made its parked successor moot. Drop its armed resume
+		// intent too: reconstructPendingChildSessions loads any row with
+		// PendingResumePrompt and would re-drive a completed run.
+		if child.legState == LegStateActive {
+			child.legState = LegStateClosed
+			child.legClosedReason = LegClosedReasonFlowDone
+		}
+		clearIntentFieldsLocked(child, "resume")
+		settledSnaps = append(settledSnaps, sessionStateOf(child))
 		changed = true
 	}
 	s.mu.Unlock()
+	for _, snap := range settledSnaps {
+		if err := s.persistProviderSession(snap); err != nil {
+			log.Printf("[flow-step] persist settled child leg close run=%s: %v", snap.RunID, err)
+		}
+	}
 	if !changed {
 		return
 	}

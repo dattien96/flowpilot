@@ -528,6 +528,34 @@ func (s *InteractiveService) closeLegsBoundToWorktree(dir string) {
 			log.Printf("[tournament] persist swept leg %q: %v", c.id, err)
 		}
 	}
+	// BUG-538 residue class: a leg stranded before this fix (live run-1651)
+	// belongs to a dead run that never reloads into s.runs — its durable row
+	// still reads leg_state=active and would hold the claim forever. Sweep the
+	// index too; any active-leg row not resident in memory is dead residue.
+	idx, ok := s.workflowStore.(SessionIndexReader)
+	if !ok {
+		return
+	}
+	sessions, err := idx.ListAllProviderSessions(context.Background())
+	if err != nil {
+		return
+	}
+	for _, sess := range sessions {
+		if sess.LegState != LegStateActive || sess.WorkingDirectory != dir {
+			continue
+		}
+		s.mu.Lock()
+		resident := s.runs[sess.RunID] != nil
+		s.mu.Unlock()
+		if resident {
+			continue // live runs were handled by the in-memory sweep above
+		}
+		sess.LegState = LegStateClosed
+		sess.LegClosedReason = LegClosedReasonWorktreeSwept
+		if err := s.persistProviderSession(sess); err != nil {
+			log.Printf("[tournament] persist swept durable leg %q: %v", sess.RunID, err)
+		}
+	}
 }
 
 // runTournamentMergeNode dispatches merge_and_audit: lands the winner patch
