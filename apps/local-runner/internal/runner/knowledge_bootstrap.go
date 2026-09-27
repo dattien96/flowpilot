@@ -148,7 +148,11 @@ func (s *InteractiveService) ensureKnowledgeBaseForWorkspace(workspace string) {
 // node completes. Always background, always best-effort.
 func (s *InteractiveService) updateKnowledgeForAudit(workspace string, changedPaths []string) {
 	workspace = strings.TrimSpace(workspace)
-	if workspace == "" {
+	if workspace == "" || isRunnerManagedWorktreePath(workspace) {
+		// Runner-managed worktrees are ephemeral scratch (BUG-460 class):
+		// never write the pending ledger or fire Distill into them — those
+		// files land in the candidate's captured diff. Merge-back on the
+		// main workspace updates knowledge through the normal audit path.
 		return
 	}
 	redistill := func(ctx context.Context) (*knowledge.KnowledgeBase, error) {
