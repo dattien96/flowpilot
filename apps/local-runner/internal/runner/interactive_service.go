@@ -2774,6 +2774,15 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 			strings.TrimSpace(c.pendingResumeStepID) != "" {
 			resumeIDs = append(resumeIDs, cid)
 		}
+		// BUG-539: an armed gate reprompt is queued remediation the durable
+		// flush owns — the reprompt channel preserves repromptAttempts so the
+		// cap stays reachable. Minting a fresh Resume turn for it below would
+		// reset the counter every cycle (live run-2830: unbounded gate loop).
+		if strings.TrimSpace(c.pendingGateRepromptPrompt) != "" &&
+			strings.TrimSpace(c.pendingGateRepromptStepID) != "" {
+			resumeIDs = append(resumeIDs, cid)
+			continue
+		}
 		if c.status != RunStatusWaitingUserApr ||
 			c.pendingApprovalID != "" || c.pendingQuestionID != "" ||
 			len(c.pendingGateCodePaths) == 0 {
@@ -5668,6 +5677,13 @@ func (s *InteractiveService) resumePendingFlowGate(runID string) {
 	}
 	// P1-06: single-flight claim — only one resumePendingFlowGate evaluates.
 	if rs.gateClaimID != "" {
+		s.mu.Unlock()
+		return
+	}
+	// BUG-540: a live post-turn gate eval (finishTurn's inline window or a
+	// claimed resume mid-eval) owns the disposition — do not run a second
+	// concurrent eval. Stale windows are released by the sweep's unstick.
+	if gateCancelLive(rs.postTurnGateStartedAt, rs.postTurnGateCancel) {
 		s.mu.Unlock()
 		return
 	}
@@ -10523,7 +10539,12 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 	// logged reprompt showed attempt=0 and loops ran forever: runs 169/442/
 	// 4014). A reprompt-delivery turn carries the counter; any fresh turn
 	// (user prompt, decision follow-up, resume) resets it.
-	if scenario != scenarioGateReprompt {
+	// BUG-539: a run that still owes gate re-check (pendingGateCodePaths) is
+	// mid-remediation regardless of which channel re-drove it — an orphan-cure
+	// Resume mint resetting the counter here made the cap unreachable live
+	// (run-2830 cycled attempt=0 forever). The gate clears codePaths on pass,
+	// which releases the counter to reset on the next non-remediation turn.
+	if scenario != scenarioGateReprompt && len(rs.pendingGateCodePaths) == 0 {
 		rs.repromptAttempts = 0
 	}
 	touchHubProgressLocked(rs)
@@ -11707,7 +11728,9 @@ func (s *InteractiveService) AnswerQuestion(questionID string, choice []string) 
 		s.applyContextPressureAnswer(decisionTarget, pressureChoice)
 	}
 	if decisionTarget != nil && quotaRouteChoice != "" {
-		s.applyQuotaRouteAnswer(decisionTarget, questionID, quotaRouteChoice)
+		if aerr := s.applyQuotaRouteAnswer(decisionTarget, questionID, quotaRouteChoice); aerr != nil {
+			return s.restorePendingQuotaQuestion(questionID, aerr)
+		}
 	}
 
 	if resumeStepTurn {
@@ -11724,6 +11747,59 @@ func (s *InteractiveService) AnswerQuestion(questionID string, choice []string) 
 		go s.startTurnClearingIntent(restartRunID, restartStepID, restartPrompt, "resume", restartGen)
 	}
 	return nil
+}
+
+// restorePendingQuotaQuestion rolls a consumed quota_route_required card back
+// to pending when the apply failed after the record was already resolved
+// (BUG-541, live run-12520: "use_for_run" returned 200 while
+// respawnChildOnRoute refused on a blocked parent — the card vanished and the
+// candidate was stranded). The card re-surfaces pending so the operator can
+// re-answer once the refusal clears; the same choice retries cleanly.
+func (s *InteractiveService) restorePendingQuotaQuestion(questionID string, aerr *apiErr) *apiErr {
+	var pendingSnap *ProviderQuestionState
+	var owner *interactiveRun
+	s.mu.Lock()
+	rec := s.questions[questionID]
+	if rec != nil && rec.status == "resolved" {
+		rec.status = "pending"
+		rec.revision++
+		rec.choice = nil
+		rec.resolvingSnapshot = nil
+		rec.resolvingSession = nil
+		if rs := s.runs[rec.runID]; rs != nil {
+			rs.pendingQuestionID = rec.id
+			rs.status = RunStatusWaitingQuestion
+			rs.agentStatus = string(RunStatusWaitingQuestion)
+			owner = rs
+			// Re-raise the card on the owner + mirror root — heals the
+			// waiting_question stamp the resolve path just cleared.
+			ev := ProviderEvent{
+				Type:          EventUserQuestionRequired,
+				QuestionID:    rec.id,
+				Prompt:        rec.prompt,
+				Options:       rec.options,
+				QuotaDecision: rec.quotaDecision,
+			}
+			s.emitLocked(rs, ev)
+			if rootID := s.flowRootIDLocked(rs); rootID != "" && rootID != rs.id {
+				if root := s.runs[rootID]; root != nil {
+					s.emitLocked(root, ev)
+				}
+			}
+		}
+		st := questionStateFromRecord(rec, "", rec.expiresAt)
+		pendingSnap = &st
+	}
+	s.mu.Unlock()
+	if pendingSnap != nil {
+		if err := s.persistQuestion(*pendingSnap); err != nil {
+			log.Printf("[gate] persist quota card rollback %s: %v", questionID, err)
+		}
+	}
+	if owner != nil {
+		s.persistParentSession(owner.id)
+	}
+	return aerr
 }
 
 // AskWorkflowQuestion is the deterministic, workflow-driven question path (04-04

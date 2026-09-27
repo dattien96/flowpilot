@@ -762,6 +762,18 @@ func (s *InteractiveService) drivePendingSettlesOnBoot(ctx context.Context) erro
 		log.Printf("[dispatch-settle] boot list recoverable: %v", err)
 		return err
 	}
+	n := s.driveOwedSettleRecords(ctx, list)
+	if n > 0 {
+		log.Printf("[dispatch-settle] boot drive: %d terminal+settle_owed queued", n)
+	}
+	return nil
+}
+
+// driveOwedSettleRecords walks terminal+settle_owed records and re-drives
+// their settle: gate-pending turns go to resumePendingFlowGate; others to
+// scheduleSettleDrive. Shared by the boot pass and the in-session sweep
+// (BUG-540 — an owed settle must not require a restart to converge).
+func (s *InteractiveService) driveOwedSettleRecords(ctx context.Context, list []DispatchRecord) int {
 	n := 0
 	for _, rec := range list {
 		if !rec.State.IsTerminal() || !rec.SettleOwed || rec.SettlePhase.IsSettleFinal() {
@@ -774,26 +786,69 @@ func (s *InteractiveService) drivePendingSettlesOnBoot(ctx context.Context) erro
 		s.mu.Unlock()
 		if !live {
 			if _, apiErr := s.loadPersistedRun(rec.RunID); apiErr != nil {
-				log.Printf("[dispatch-settle] boot reconstruct run=%s: %v (will still attempt settle)", rec.RunID, apiErr)
+				log.Printf("[dispatch-settle] reconstruct run=%s: %v (will still attempt settle)", rec.RunID, apiErr)
 			}
 		}
-		s.mu.Lock()
+		var rs *interactiveRun
+		var snap ProviderSessionState
+		released := false
 		pendingGate := false
-		if rs := s.runs[rec.RunID]; rs != nil {
+		gateBusy := false
+		s.mu.Lock()
+		rs = s.runs[rec.RunID]
+		if rs != nil {
+			// BUG-540: the settle-pending turn is already terminal in the
+			// ledger — a gate-eval window past postTurnGateBusyBound or a
+			// turnInFlight still pinned on this turn is finalize-tail residue
+			// (live run-1663/turn-6304: gate eval wedged ~37min, turnInFlight
+			// refused every reinvoke). Release it so the settle can progress.
+			released = unstickSettleResidueLocked(rs, rec.TurnID)
 			pendingGate = rs.pendingFlowGateSettle
+			gateBusy = gateCancelLive(rs.postTurnGateStartedAt, rs.postTurnGateCancel)
+			if released {
+				snap = sessionStateOf(rs)
+				if rs.parentRunID == "" {
+					snap.LoopState = s.agentOrchestrator.loopStateFor(rs.id)
+				}
+			}
 		}
 		s.mu.Unlock()
+		if released {
+			if err := s.persistProviderSession(snap); err != nil {
+				log.Printf("[settle] persist unstuck residue run=%s turn=%s: %v", rec.RunID, rec.TurnID, err)
+			}
+			s.flowDiagLog(rec.RunID, "settle_residue_unstuck",
+				"wedged gate/turn residue released for owed settle",
+				"turn_id", rec.TurnID)
+			s.notifyTurnIdle(rec.RunID)
+		}
 		if pendingGate {
-			log.Printf("[dispatch-settle] boot resume gate first run=%s turn=%s", rec.RunID, rec.TurnID)
+			// A live gate eval owns the disposition — do not double-eval.
+			if gateBusy {
+				continue
+			}
 			go s.resumePendingFlowGate(rec.RunID)
 			continue
 		}
 		s.scheduleSettleDrive(rec.RunID, rec.TurnID)
 	}
-	if n > 0 {
-		log.Printf("[dispatch-settle] boot drive: %d terminal+settle_owed queued", n)
+	return n
+}
+
+// driveOwedSettles is the in-session sweep entry (BUG-540): same enumeration
+// as the boot pass, callable on an interval so an owed settle whose in-session
+// driver was lost (backoff exhausted, wedged gate eval, blocked-loop defer)
+// converges without a restart.
+func (s *InteractiveService) driveOwedSettles(ctx context.Context) {
+	if s == nil || s.dispatchStore == nil {
+		return
 	}
-	return nil
+	list, err := s.dispatchStore.ListRecoverable(ctx, "")
+	if err != nil {
+		log.Printf("[dispatch-settle] sweep list recoverable: %v", err)
+		return
+	}
+	s.driveOwedSettleRecords(ctx, list)
 }
 
 // ensureLiveAndRedispatch reconstructs runID into RAM if it is not already

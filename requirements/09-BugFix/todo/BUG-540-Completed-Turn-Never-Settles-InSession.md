@@ -1,6 +1,6 @@
 # BUG-540 — Completed provider turn never settles in-session; wedged hub recoverable only by restart
 
-Status: **CAPTURED — live reproduction, not yet fixed**
+Status: **FIXED — regression tests green; live re-verify pending**
 Severity: Critical-adjacent — a turn that is durably `terminal_completed` and
 has `turn_completed` persisted in the event stream never runs its
 settle/finalize tail in-session. `turnInFlight` stays held, every re-drive
@@ -84,3 +84,25 @@ refuse → only boot `settle_owed` re-drive clears it.
 - A `turn_completed` event with no settle within a bound should trip the
   stall watchdogs as `explicitly-uncertain` rather than reading `busy`
   forever.
+
+## Fix applied (CA-633)
+
+- `dispatch_settle_wire.go`: boot settle walk extracted into `driveOwedSettles`
+  — shared by `drivePendingSettlesOnBoot` and the new in-session sweep.
+- `StartSettleSweep(ctx)`: 30s ticker (`settleSweepInterval`, mutable for
+  tests) re-enumerates terminal `settle_owed` records and re-drives them
+  in-session. Wired at server bootstrap next to `ScanDispatchRecoveryOnBoot`.
+- `unstickSettleResidueLocked`: a settled turn whose gate eval exceeded
+  `postTurnGateBusyBound` (or never ran: `gateCtxStart == 0`) releases the
+  stale cancel/claim and `turnInFlight` before re-driving — ends the silent
+  wedge where every watchdog read `busy` forever.
+- `errSettleGatePending` sentinel: a genuinely pending gate defers without
+  treating the record as exhausted; the deferred run re-drives
+  `resumePendingFlowGate` which respects the blocked-loop contract.
+- `surfaceSettleDriveExhausted`: `RetrySettleWithBackoff` exhaustion now
+  stamps a durable `intentBlockedKind` diagnostic (operator-visible) instead
+  of log-and-drop.
+
+Tests: `bug540_settle_sweep_test.go` (3 tests — sweep settles a wedged owed
+record, sweep unsticks a wedged gate eval and releases claims, live gate eval
+left alone). All green.

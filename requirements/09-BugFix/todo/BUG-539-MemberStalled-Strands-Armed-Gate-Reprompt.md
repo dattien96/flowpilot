@@ -1,6 +1,6 @@
 # BUG-539 — Armed child gate reprompts have no drive path; orphan-cure resets the reprompt cap (unbounded cycle)
 
-Status: **CAPTURED — live reproduction, not yet fixed**
+Status: **FIXED — regression tests green; live re-verify pending**
 Severity: Important — a queued child gate reprompt is undriven for tens of
 minutes and, when recovered via the orphan-cure path, the reprompt-attempt
 counter resets so `maxFlowGateReprompts` can never engage — an unbounded
@@ -92,3 +92,31 @@ reprompt cycle on an unsatisfiable gate.
 - Self-drive the armed reprompt when the parent loop unblocks even if the
   child step still reads `WAITING_USER_APPROVAL` — today the only recovery
   is an operator `continue` firing the orphan scan.
+
+## Fix applied (CA-632)
+
+- `cohort_stall.go checkAndBlockStalledMembers`: armed durable intents
+  (`pendingGateRepromptPrompt`/`pendingResumePrompt`) now count as queued
+  activity — mirrors the existing hub_stall.go shield. A member can no longer
+  stall-fire while remediation is armed.
+- `interactive_service.go resumeFlowWithFeedback`: orphan-cure now routes
+  children with an armed reprompt through `resumeIDs` →
+  `flushDurableTurnIntents` (reprompt channel, cap preserved) instead of the
+  generic Resume mint. `resumeIDs` consults armed intents, not just parked
+  status.
+- `interactive_service.go startTurn`: `repromptAttempts` resets only when the
+  `pendingGateCodePaths` debt is cleared (`scenario != scenarioGateReprompt
+  && len(pendingGateCodePaths) == 0`). The orphan-cure Resume mint for a
+  code-paths-owed child now preserves the counter → cap reachable.
+- `handleMemberAction`: `skip` clears reprompt/resume/pending-turn intents and
+  closes the active leg (`LegClosedReasonMemberSkipped`); `retry` clears the
+  same stale intents before the fresh retry turn.
+- The park wipe (`parkFlowForAwaitingUser`) and blocked-loop clear
+  (`resumePendingFlowGate`) were kept per the deliberate BUG-354/run63960
+  freeze contract — parked/blocked flows hold no live auto-intents, and
+  `pendingGateCodePaths` carries the re-check obligation through orphan-cure.
+  BUG-520/BUG-327/run-63960 tests all still pass unchanged.
+
+Tests: `bug539_member_stall_reprompt_strand_test.go` (5 regression tests —
+stall shield, no double-drive + counter preserved, skip clears+leg close,
+retry clears, counter guard). All green.

@@ -43,6 +43,11 @@ const (
 	// still open (e.g. a successor parked on a resume intent the final verdict
 	// made moot) — the worktree claim must not outlive the flow that owned it.
 	LegClosedReasonFlowDone = "flow_done"
+	// LegClosedReasonMemberSkipped (BUG-539): the member was skipped by an
+	// explicit member_action decision — a failed member's leg must not keep
+	// an active worktree claim (live run-2830 kept leg_state=active + an
+	// orphaned approval after skip).
+	LegClosedReasonMemberSkipped = "member_skipped"
 )
 
 // Chat transcript record types (SD-26 §6.1, SD26-E-1..E-9). The record

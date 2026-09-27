@@ -191,12 +191,19 @@ func (s *InteractiveService) checkAndBlockStalledMembers(parentRunID string) boo
 		// forever — those are real user-visible forms (T-11(a)).
 		gateLive := gateCancelLive(child.postTurnGateStartedAt, child.postTurnGateCancel)
 		hasGate := child.pendingApprovalID != "" || child.pendingQuestionID != "" || gateLive
+		// BUG-539 (live run-2830): an armed gate-reprompt/resume intent is
+		// queued remediation, not silence — dispatch is fenced while the loop
+		// is blocked, so counting the member as stalled parks the flow and the
+		// park wipe destroys the intent (orphaned member + cap counter reset).
+		// Mirrors the BUG-520 repromptArmed shield in hasActiveFlowChild.
+		intentArmed := strings.TrimSpace(child.pendingGateRepromptPrompt) != "" ||
+			strings.TrimSpace(child.pendingResumePrompt) != ""
 		last := child.lastProviderEventAt
 		label := child.label
 		status := child.status
 		inFlight := child.turnInFlight
 		s.mu.Unlock()
-		if hasGate {
+		if hasGate || intentArmed {
 			continue
 		}
 		// Terminal members should already be buffered; skip.
@@ -328,6 +335,17 @@ func (s *InteractiveService) handleMemberAction(parentRunID string, action Membe
 			child.turnInFlight = false
 			child.status = RunStatusFailed
 			child.agentStatus = string(RunStatusFailed)
+			// BUG-539 (live run-2830): a skipped member's armed reprompt/resume
+			// intents and leg claim must die with it — the durable row kept
+			// leg_state=active and the armed reprompt after skip. Drop intents
+			// (gen high-water preserved for idempotency) and close the leg.
+			clearIntentFieldsLocked(child, "reprompt")
+			clearIntentFieldsLocked(child, "resume")
+			child.pendingTurnPrompt = ""
+			if child.legState == LegStateActive {
+				child.legState = LegStateClosed
+				child.legClosedReason = LegClosedReasonMemberSkipped
+			}
 			// V9-25: mark synthetic skip so late provider TurnFailed cannot re-append.
 			child.cohortSkipConsumed = true
 			// BUG-288 P1-14/P1-19 + R14-01: only set stalledSkipCause when a
@@ -410,6 +428,12 @@ func (s *InteractiveService) handleMemberAction(parentRunID string, action Membe
 			prompt := fmt.Sprintf("[flow-engine] Retry: member %q was stalled; continue your work.", nodeID)
 			s.mu.Lock()
 			child.lastProviderEventAt = time.Now().UTC()
+			// BUG-539: the retry turn supersedes any armed reprompt/resume —
+			// otherwise the unblock flush double-drives remediation on top of
+			// the fresh turn. Gen high-water preserved for idempotency.
+			clearIntentFieldsLocked(child, "reprompt")
+			clearIntentFieldsLocked(child, "resume")
+			child.pendingTurnPrompt = ""
 			runID := child.id
 			stepID := child.stepID
 			if stepID == "" {

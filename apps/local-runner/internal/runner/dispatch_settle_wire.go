@@ -2,10 +2,12 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Task-251 T-1/T-3: production SettleDriver wiring on InteractiveService.
@@ -17,6 +19,92 @@ var (
 	settleRetryMu     sync.Mutex
 	settleRetryQueued = map[string]bool{}
 )
+
+// errSettleGatePending marks the normal "gate still pending" defer — the gate
+// eval owns the disposition and the periodic sweep re-drives. It is NOT an
+// exhaustion surface: wedged drivers (CAS/store failures, unknown phases) are.
+var errSettleGatePending = fmt.Errorf("settle: gate still pending")
+
+// unstickSettleResidueLocked releases finalize-tail residue on a run whose
+// settle-pending turn is already terminal in the dispatch ledger (BUG-540,
+// live run-1663/turn-6304):
+//   - a post-turn gate eval held past postTurnGateBusyBound is wedged — bump
+//     gateEpoch so any late return discards its side effects, drop the cancel,
+//     and release the resumePendingFlowGate claim so a fresh eval can take it.
+//   - turnInFlight still pinned on the terminal turn (no live gate) is residue
+//     — it refuses every reinvoke/flush with turn_in_progress.
+//
+// Caller holds s.mu and persists the returned snapshot if true.
+func unstickSettleResidueLocked(rs *interactiveRun, turnID string) bool {
+	if rs == nil {
+		return false
+	}
+	released := false
+	gateBusy := gateCancelLive(rs.postTurnGateStartedAt, rs.postTurnGateCancel)
+	if rs.postTurnGateCancel != nil && !gateBusy {
+		// Stale gate window — the eval goroutine never returned (or died).
+		rs.gateEpoch++
+		rs.postTurnGateCancel = nil
+		released = true
+	}
+	if rs.gateClaimID != "" && !gateBusy {
+		// A claim held with no live eval is a wedged resumePendingFlowGate
+		// (crash between claim and postTurnGateCancel stamp). Clearing the
+		// claim is self-correcting: the holder re-validates claimID before it
+		// evaluates and aborts itself on mismatch.
+		rs.gateClaimID = ""
+		released = true
+	}
+	if !gateBusy && rs.turnInFlight &&
+		(rs.currentTurnID == turnID || (rs.currentTurnID == "" && rs.lastTurnID == turnID)) {
+		rs.turnInFlight = false
+		released = true
+	}
+	return released
+}
+
+// surfaceSettleDriveExhausted records a settle-driver exhaustion durably —
+// BUG-540 requires operator-visible surfacing, not log-and-drop. The
+// settle_pending record stays in ListAttention either way; the diag entry
+// names the turn so the wedge is attributable.
+func (s *InteractiveService) surfaceSettleDriveExhausted(runID, turnID string, err error) {
+	parent := runID
+	s.mu.Lock()
+	if rs := s.runs[runID]; rs != nil && rs.parentRunID != "" {
+		parent = rs.parentRunID
+	}
+	s.mu.Unlock()
+	s.flowDiagLog(parent, "settle_backoff_exhausted",
+		"settle driver backoff exhausted; in-session sweep will re-drive",
+		"run_id", runID, "turn_id", turnID, "error", err.Error())
+}
+
+// settleSweepInterval bounds how long a terminal+settle_owed record can sit
+// without an in-session driver. Var (not const) so tests can shrink it.
+var settleSweepInterval = 30 * time.Second
+
+// StartSettleSweep is the in-session counterpart of the boot settle drive
+// (BUG-540): before this, an owed settle whose driver was lost — backoff
+// exhausted, wedged gate eval, blocked-loop defer with no re-kick — sat
+// silently until process restart. The sweep re-walks recoverable settles on
+// an interval and converges them through the same driveOwedSettleRecords path.
+func (s *InteractiveService) StartSettleSweep(ctx context.Context) {
+	if s == nil || s.dispatchStore == nil {
+		return
+	}
+	go func() {
+		t := time.NewTicker(settleSweepInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				s.driveOwedSettles(ctx)
+			}
+		}
+	}()
+}
 
 // newSettleDriver builds a production-wired SettleDriver (EvaluateGate required).
 func (s *InteractiveService) newSettleDriver() *SettleDriver {
@@ -78,7 +166,7 @@ func (s *InteractiveService) evaluateSettleGate(ctx context.Context, runID, turn
 		loopDone := s.flowLoopDone(runID)
 		if rs.pendingFlowGateSettle && !loopDone {
 			go s.resumePendingFlowGate(runID)
-			return false, false, fmt.Errorf("settle: gate still pending run=%s turn=%s (resume scheduled)", runID, turnID)
+			return false, false, fmt.Errorf("%w run=%s turn=%s (resume scheduled)", errSettleGatePending, runID, turnID)
 		}
 		if strings.TrimSpace(rs.pendingGateRepromptPrompt) != "" {
 			return false, true, nil
@@ -136,7 +224,13 @@ func (s *InteractiveService) scheduleSettleDrive(runID, turnID string) {
 		}
 		ctx := context.Background()
 		if err := d.RetrySettleWithBackoff(ctx, runID, turnID, 5); err != nil {
+			if errors.Is(err, errSettleGatePending) {
+				// Gate genuinely owns the disposition — the sweep re-drives.
+				log.Printf("[settle] gate still pending run=%s turn=%s (deferring to gate/sweep)", runID, turnID)
+				return
+			}
 			log.Printf("[settle] RetrySettleWithBackoff exhausted run=%s turn=%s: %v", runID, turnID, err)
+			s.surfaceSettleDriveExhausted(runID, turnID, err)
 		}
 	}()
 }

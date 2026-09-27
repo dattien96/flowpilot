@@ -1,6 +1,6 @@
 # BUG-541 — Quota-route answer consumed at the API layer but apply fails on blocked parent; candidate permanently stranded
 
-Status: **CAPTURED — live reproduction, not yet fixed**
+Status: **FIXED — regression tests green; live re-verify pending**
 Severity: High — a one-shot operator decision is destroyed on a transient
 failure. The question is consumed (removed from the pending list, cannot be
 re-answered), the respawn never happens, and the candidate is silently lost
@@ -74,3 +74,15 @@ boundary: the single decision input is lost on a transient refusal.
   answer-apply seam.
 - The stranded child (run-14292) should settle to a terminal status
   (`failed`) rather than `running` once its leg is closed.
+
+## Fix applied (CA-631)
+
+- `quota_gate.go applyQuotaRouteAnswer` now returns `*apiErr` instead of
+  swallowing failures.
+- `AnswerQuestion`: on apply failure the durable question rolls back to
+  `pending` and is re-mirrored — the card stays answerable, the candidate
+  is not lost, and the caller can see the failure instead of a false 200
+  resolved.
+
+Tests: `bug541_quota_answer_apply_failed_test.go` (2 tests — card survives a
+blocked-parent respawn refusal; apply error surfaces). All green.

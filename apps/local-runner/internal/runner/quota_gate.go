@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -726,8 +727,12 @@ func (s *InteractiveService) ResumeQuotaGate(ctx context.Context, runID, decisio
 
 // applyQuotaRouteAnswer is the AnswerQuestion routing shim — keeps the kind
 // switch in interactive_service.go a one-liner like its siblings.
-func (s *InteractiveService) applyQuotaRouteAnswer(rs *interactiveRun, questionID, optionID string) {
+// BUG-541: the error is returned, not swallowed — a refused respawn (parent
+// loop blocked, worktree contested) must roll the card back to pending in
+// AnswerQuestion instead of consuming the operator's decision.
+func (s *InteractiveService) applyQuotaRouteAnswer(rs *interactiveRun, questionID, optionID string) *apiErr {
 	if err := s.ResumeQuotaGate(context.Background(), rs.id, questionID, optionID); err != nil {
-		log.Printf("[quota-gate] answer apply failed run=%s err=%v", rs.id, err)
+		return newAPIErr(http.StatusConflict, "quota_route_apply_failed", err.Error())
 	}
+	return nil
 }
