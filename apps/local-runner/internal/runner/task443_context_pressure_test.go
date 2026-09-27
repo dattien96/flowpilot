@@ -69,15 +69,12 @@ func TestTask443_FlagOff_NoPressureEvents(t *testing.T) {
 	svc, rs := task443NewHubRun(t)
 	svc.mu.Lock()
 	defer svc.mu.Unlock()
-	// Flag off must be byte-identical: nothing evaluated, nothing emitted.
-	// (t.Setenv inside task443NewHubRun turned it on — clear it here.)
-	t.Setenv(contextPressureEnvFlag, "")
+	// MVP posture: the feature is always on and the env flag is ignored —
+	// even an explicit "0" must not silence the ladder.
+	t.Setenv(contextPressureEnvFlag, "0")
 	svc.emitLocked(rs, task443UsageEvent(200000, 195000, 195000))
-	if got := task443EventsOfType(rs, EventContextPressure); len(got) != 0 {
-		t.Fatalf("flag off emitted %d context_pressure events", len(got))
-	}
-	if got := task443EventsOfType(rs, EventProviderCompacted); len(got) != 0 {
-		t.Fatalf("flag off emitted %d provider_compacted events", len(got))
+	if got := task443EventsOfType(rs, EventContextPressure); len(got) == 0 {
+		t.Fatal("context pressure is always on — the ≥80% read must emit an awareness event even with the legacy env cleared")
 	}
 }
 
