@@ -124,9 +124,11 @@ func TestReattachFirstTurnIncludesPriorHistory(t *testing.T) {
 
 func jsonRaw(s string) []byte { return []byte(s) }
 
-// Table for provider-agnostic proof: same logic for grok/codex/claude
+// Table for provider-agnostic proof: same logic for every provider — the
+// reattach envelope is provider-agnostic glue (CP-58 review: devin was the
+// only provider missing from the table).
 func TestReattachEnvelopeProviderAgnostic(t *testing.T) {
-	for _, pk := range []ProviderKey{ProviderKeyOpencode, ProviderKeyGrok, ProviderKeyCodex, ProviderKeyClaude} {
+	for _, pk := range []ProviderKey{ProviderKeyOpencode, ProviderKeyGrok, ProviderKeyCodex, ProviderKeyClaude, ProviderKeyDevin} {
 		t.Run(string(pk), func(t *testing.T) {
 			t.Setenv("FLOWPILOT_CHAT_STORE_DIR", t.TempDir())
 			svc, _ := newTestServer(t)

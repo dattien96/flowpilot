@@ -1510,7 +1510,11 @@ func sessionRecordFrom(s ProviderSessionState) ndjsonSessionRecord {
 }
 
 func loopStatePtrIfSet(st AgentLoopState) *AgentLoopState {
-	if st.Mode == "" && st.Round == 0 && st.Cap == 0 && st.RoundCap == 0 &&
+	// run-25: Status alone is still durable evidence — a loop recorded with
+	// only Status set (e.g. a terminal stamp) must not serialize as absent,
+	// or last-wins replay reads it as "no loop" and recovery misclassifies
+	// the run. Check Status like every other field.
+	if st.Status == "" && st.Mode == "" && st.Round == 0 && st.Cap == 0 && st.RoundCap == 0 &&
 		st.ActiveNode == "" && st.ExtendCount == 0 && st.GateReason == "" {
 		return nil
 	}
