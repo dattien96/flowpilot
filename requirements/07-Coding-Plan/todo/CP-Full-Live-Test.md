@@ -488,7 +488,7 @@ marked `UI` — backend evidence still required where noted.
 | B-59-2 | Same-provider switch | `handoff_same_provider` 409 → in-place | unit | ☑ live cht_10a27db90766: switch codex→codex → `{"code":"handoff_same_provider"}`, active leg untouched |
 | B-59-3 | Timeline | legs sorted, records deduped, dividers positioned | unit | ☑ live: 4 legs sorted by legSeq (0-3); E-9 dividers at leg boundaries (seqs 7/13/15); same-turn echo deduped (seq 17 collapsed), cross-turn identical text preserved (seq 19 — BUG-465 fix) |
 | B-59-4 | Detached reattach | first prompt reattaches (no `chat_no_active_leg` — BUG-405 legState restore, re-verify post-restart) | `bug405` refs | ◑ unit green (TestReattach*/bug405/detached suite). Live leg BLOCKED-ENV: `closed/restored` legs are only stamped by Drive manifest apply (`restoreChatRunFromDrive` → real Drive API) — same blocker as B-59-6. legState restore itself re-verified live: post-restart legs kept correct active/closed states (B-59-5 drill) |
-| B-59-5 | Restart mid-multi-leg | kill+restart → timeline identical (chatSeq stable, E-9 idempotent) | unit | ☑ live: 2 graceful restarts (b464→b465→b466 binary) mid-chat with 3-4 legs → chatSeq continued monotonically 1→19, exactly one E-9 per toRunId (no heal-path dupes), timeline identical. Restart was at idle boundary — mid-*turn* restart on multi-leg chat not yet drilled |
+| B-59-5 | Restart mid-multi-leg | kill+restart → timeline identical (chatSeq stable, E-9 idempotent) | unit | ☑ live: 2 graceful restarts (b464→b465→b466 binary) mid-chat with 3-4 legs → chatSeq continued monotonically 1→19, exactly one E-9 per toRunId (no heal-path dupes), timeline identical. Restart was at idle boundary — mid-*turn* restart on multi-leg chat not yet drilled. R7 addendum: mid-turn `kill -9` on single-leg chat (run-4429) with pending `permission_required` → restart → card re-surfaced → approve → run `completed` |
 | B-59-6 | Drive sync G1-G7 | — | — | ☐ BLOCKED-ENV (no Drive creds) |
 
 ---
@@ -690,9 +690,9 @@ where the trigger was stageable on this machine.
 | BUG-512 | `contextResetHeadroomOK` = account headroom veto THEN node budget (CA-1017) | +3 ☑ | ◑ same account-state data path as the BUG-511 veto (live telemetry wired); reset-seam leg needs organic context-pressure — unit-verified |
 | BUG-513 | round-4 (CA-1025): query-scoped legs are fully blind to `provider_compacted` — `Last` is per-query usage, not session fullness, and no window gate can fix that; detection only on cumulative legs; `Total` accumulation for caps unchanged (CA-1018, CA-1024 superseded) | +8 ☑ | ◑ no connected claude account on this machine (`no_connected_account` in live quota candidates) — unit-verified only |
 | BUG-516 | `startTurn` leg guard: closed chat leg relays to active leg / 409 `leg_closed` (CA-1022) | +4 ☑ | ☑ **live-verified round-3 binary**: `POST /turns` on closed `run-30802` → `turn-44192` dispatched on minted grok leg `run-31122` (`[turn-params] run=run-31122 provider=grok`) → `PONG-516` settled on grok — closed leg no longer steals the turn; the use_once card-resolve arm is now proven end-to-end |
-| BUG-517 | `QuotaResolution.PendingPrompt` → `respawnChildOnRoute` seeds refused turn's prompt, fallback full `lastFullPrompt` not 100-char title (CA-1023); round-4 added admission-path test through `startTurn` — verified RED when the assignment is removed (CA-1025) | +3 ☑ | ◑ needs organic child cross-provider route — unit-verified incl. real admission path |
-| BUG-514 | reproduce ask bound counts durable `EventUserQuestionRequired` — gate `repromptAttempts` untouched, restart-safe (CA-1019) | +2 ☑ (incl. rehydrate) | ◑ needs organic reproduce-park (run-90420 pattern) — unit-verified |
-| BUG-515 | `extractOperatorPatch(feedback)` — resolved unified diff overrides stored candidate patch; prose keeps stored path; trailing-newline preserved for `git apply` (CA-1021) | +2 ☑ | ◑ needs organic tournament conflict; run-3688 old-behavior evidence stands |
+| BUG-517 | `QuotaResolution.PendingPrompt` → `respawnChildOnRoute` seeds refused turn's prompt, fallback full `lastFullPrompt` not 100-char title (CA-1023); round-4 added admission-path test through `startTurn` — verified RED when the assignment is removed (CA-1025) | +3 ☑ | ◑ R6 run-1269: veto→card→`route_committed` live on real admission path; respawn itself blocked by parent arbiter park (R6 residual — ordering gap); preserve-prompt leg unit-verified |
+| BUG-514 | reproduce ask bound counts durable `EventUserQuestionRequired` — gate `repromptAttempts` untouched, restart-safe (CA-1019) | +2 ☑ (incl. rehydrate) | ☑ LIVE R7 run-1481: organic green-on-arrival park (q-2014) — one durable question per park, answer routed to child, retry passed gate post-BUG-531 fix |
+| BUG-515 | `extractOperatorPatch(feedback)` — resolved unified diff overrides stored candidate patch; prose keeps stored path; trailing-newline preserved for `git apply` (CA-1021) | +2 ☑ | ☑ LIVE run-82594 (R5) + run-1269 (R6): merge-escalate card → continue `candidate-b\n<diff>` → operator patch landed verbatim |
 
 ### R4 residual
 
@@ -787,3 +787,67 @@ implementation failures.
   round.
 - CP-66 knowledge: distill artifacts on the state root carry
   BUG-503-collateral paths; no clean-bed leg — unchanged from R2.
+
+## G. R6 rerun — BUG-522..530 review batch + Devin-only drill (2026-09-27, runner :4318, workspace /tmp/fp-live-devin)
+
+**Scope:** post-review fixes BUG-522..530 (CA-1039) — tournament worktree
+isolation, quota respawn cohort preservation, retry-join staleness,
+winner-patch provenance, available-provider binding, durable snapshot
+projection, corrupt-ledger fail-closed, escalation child durability,
+codex per-scope app-server. Provider scope: **Devin only** (grok account
+quota-exhausted → seeded `billing_required` ledger block; claude/codex
+absent on this machine).
+
+| Row | R6 result |
+|-----|-----------|
+| BUG-522 worktree failure fail-closed | ☑ LIVE run-1: stale `candidate-candidate-a` worktree from cancelled run → spawn refused `worktree for owner "candidate-a" already exists` → `escalate` — **no main-workspace fallback** |
+| BUG-526 available-provider binding | ☑ LIVE run-1269: with grok connected-but-blocked + devin connected, candidates bound `grok-4.5`(a)/`devin/swe-2-high`(b) — binding follows connectivity, quota veto handles the blocked arm. Single-provider duplicate arm unit-verified (`TestBug526_SingleConnectedProviderBindsBothCandidates`) |
+| Quota veto on blocked binding (BUG-511/517 family) | ☑ LIVE: every grok-bound candidate dispatch vetoed at admission — 3 durable `quota_route_required` cards (q-1851/q-2199/q-2729) with `use_for_run|devin|134e…|devin/swe-2-high` options; **zero grok provider calls**. `use_for_run` answers committed `route_committed grok→devin` twice; `respawnChildOnRoute` refused while parent parked on arbiter card (`parent loop is blocked (escalate)`) — **new ordering observation**: committed repin does not retry once the parent unblocks |
+| BUG-523 respawn preserves worktree/cohort | ◑ veto + card + route_commit verified live; the respawn leg itself was blocked by the parent-park ordering above — preserve-contract remains unit-verified |
+| BUG-515 operator diff via continue (option+diff) | ☑ LIVE run-1269 (supersedes stale R4 row): winner pick `candidate-b` → winner patch conflicts with planted main-workspace `thing.go` → merge-escalate card `candidate-b (picked winner — patch conflicts)` → `{"feedback":"candidate-b\n<unified diff>"}` → `extractOperatorPatch` applied the hand diff — `thing.go` = `x + x + x` + operator marker (neither candidate's version), `go test ./...` green |
+| Tournament end-to-end | ☑ run-1269 `completed`: scout → rollout → arbiter tie card → winner pick → merge conflict → operator diff → merge_and_audit DONE |
+| BUG-527 durable snapshot projection | ☑ kill -9 + restart → `GET run-1269` returns `completed`; candidate child GET exposes worktree `workingDirectory` |
+| BUG-524 join staleness | unit-verified incl. stale-sidecar-vs-live-child race; live cohort attempts-0/1/2 children tracked separately in `sessions.ndjson` |
+| BUG-528 corrupt ledger | unit-verified; seeded `billing_required` ledger loaded correctly across restart (veto proves durable read path) |
+| BUG-529/530 | unit-verified (durability ordering; per-scope codex handles — codex binary absent on this machine) |
+
+### R6 residuals
+
+- **Respawn-ordering**: a committed `route_committed` repin for a parked
+  quota-vetoed child does not re-attempt respawn after the parent's
+  decision card is resolved — needs a follow-up look (fail-closed, but
+  the repin is stranded).
+- **Re-bind loop**: retry attempts re-bound `grok-4.5` for candidate-a
+  each round because binding only sees connectivity, not the durable
+  quota block → one veto card per attempt. Consider excluding
+  ledger-blocked accounts at binding time.
+- **`agent-loop/continue` contract**: the option capture reads
+  `feedback` only — a `{"text":...}` body is silently ignored as
+  feedback and the loop re-escalates `(no progress since last
+  continue)`. Same wrong-surface class noted at BUG-462 observation (a).
+
+## H. R7 — deferred-case drill, Devin/swe-2-high only (2026-09-27, workspace /tmp/fp-live2)
+
+**Scope:** bug-harness E2E + chat mid-turn restart. Provider scope: Devin
+only (grok ledger-blocked, claude/codex absent).
+
+| Row | R7 result |
+|-----|-----------|
+| BUG-514 organic reproduce-park | ☑ LIVE run-1481/run-1562: green-on-arrival → durable `user_question_required` (q-2014) with honest options incl. "re-seed fixture"; exactly one event per park (bound holds); also seen on run-134 (q-750). Answer → `POST /client/questions/{qid}/answer` routed to the parked child and the reproduce turn resumed |
+| **BUG-531 found live, fixed, live-verified** | ☑ New defect: r-reproduce reprompted "the suite passed" while its own oracle saw `go test` exit 1 — a real bug that also fails a baseline-green test leaves `tr.Tests.Failed` empty (failures classified as Regressed). Pre-fix live evidence: run-134 burned 2 reprompts → `max reprompts exceeded` escalate. Fix in `gate_hook.go` (both paths): reproduce turns read `oracle.Failed` in full. Post-fix live: run-1481 reproduce retry PASSED the gate; CA-1040 |
+| bug-harness E2E | ☑ run-1481 `completed`: plan → freeze (operator-supplied draft via continue) → context → reproduce (question → re-seed → red pass) → implement → validate → reviewer → synthesis → audit. `go test ./...` green; repro test locked read-only as evidence |
+| BUG-505 freeze-escalate leg | ◑ Partial live: freeze escalated on unparseable planner draft (absolute `declared_paths` rejected fail-closed); prose continue re-escalated, operator parseable draft advanced — the escape hatch works, but no option card surfaced (operator path discoverable only from logs — documented in CA-1040 follow-ups) |
+| B-59-5 / B-51 mid-turn kill | ☑ run-4429: `kill -9` mid-turn while `permission_required` pending → restart → durable approval card re-surfaced (evt `permission_required` post-restart via session reattach) → approve → turn resumed → run `completed`; completed runs unaffected |
+| **BUG-532 found live, fixed** | ☑ New defect: `notes.txt` write in normal_chat fired r-tests reprompt "you changed production code…" — `IsDocOrAuditFile` missed `.txt`/doc-data suffixes. Fix extends the exemption (conservative: json/yaml still code-adjacent). CA-1041 |
+
+### R7 residuals
+
+- A-58-4 round-cap-3 live escalate still deferred — `review-loop` is not
+  startable (`selectableIn: []`); cap-3 lives inside harness flows and
+  needs 3 organic reviewer rejects (long drill, unforced).
+- Audit `blocked_missing_feature_key` gate behaved fail-closed; operator
+  unblocked by adding `change-audit/FEATURE-KEYS.md` — by design, but the
+  requirement is invisible until the audit step (docs gap).
+- Environment-blocked set unchanged: Drive/Supabase/Desktop legs,
+  Claude-quota legs, multi-leg mid-turn restart (needs 2 usable
+  providers; grok is ledger-blocked).
