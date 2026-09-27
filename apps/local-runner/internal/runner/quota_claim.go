@@ -24,6 +24,7 @@ const quotaMaxAutoSwitchesPerRun = 2
 
 // QuotaCooldownReason is the only reason code a same-provider switch publishes.
 const QuotaCooldownReason = "same_provider_ip_safety"
+const quotaStateCorruptReason = "quota_state_corrupt"
 
 const (
 	quotaClaimStatusActive     = "active"
@@ -90,6 +91,7 @@ type quotaRoutingRuntimeState struct {
 	Switches []quotaSwitchRecord   `json:"switches,omitempty"`
 	Claims   []QuotaClaim          `json:"claims,omitempty"`
 	Blocked  []quotaBlockedAccount `json:"blockedAccounts,omitempty"`
+	loadErr  error
 }
 
 func (st *quotaRoutingRuntimeState) accountBlocked(accountID string) bool {
@@ -100,6 +102,9 @@ func (st *quotaRoutingRuntimeState) accountBlocked(accountID string) bool {
 // credits_exhausted / quota_exhausted) or "" — the candidate table maps it to
 // the matching typed rejection reason instead of flattening to billing.
 func (st *quotaRoutingRuntimeState) accountBlockReason(accountID string) string {
+	if st != nil && st.loadErr != nil {
+		return quotaStateCorruptReason
+	}
 	for _, b := range st.Blocked {
 		if b.AccountID == accountID {
 			return b.Reason
@@ -224,9 +229,8 @@ func (s *InteractiveService) quotaRuntimeStatePath() string {
 	return ""
 }
 
-// loadQuotaRuntimeState reads the durable ledger; a missing/corrupt file is a
-// zero ledger (fail-open reads — claims still validate through the store),
-// while writes are serialized under quotaMu.
+// loadQuotaRuntimeState reads the durable ledger. Missing files start empty;
+// malformed state carries a repair-required error and cannot route or claim.
 func (s *InteractiveService) loadQuotaRuntimeState() *quotaRoutingRuntimeState {
 	state := &quotaRoutingRuntimeState{}
 	path := s.quotaRuntimeStatePath()
@@ -234,7 +238,23 @@ func (s *InteractiveService) loadQuotaRuntimeState() *quotaRoutingRuntimeState {
 		return state
 	}
 	if raw, err := os.ReadFile(path); err == nil {
-		_ = json.Unmarshal(raw, state) // corrupt state degrades to empty, never crashes routing
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &fields); err == nil {
+			for _, key := range []string{"switches", "claims", "blockedAccounts"} {
+				if string(fields[key]) == "{}" {
+					fields[key] = json.RawMessage("[]")
+				}
+			}
+			raw, err = json.Marshal(fields)
+		}
+		if err == nil {
+			err = json.Unmarshal(raw, state)
+		}
+		if err != nil {
+			state.loadErr = err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		state.loadErr = err
 	}
 	return state
 }
@@ -279,6 +299,10 @@ func (s *InteractiveService) claimAccountForLeg(ctx context.Context, demand Exec
 	s.quotaMu.Lock()
 	now := s.quotaNow()
 	state := s.loadQuotaRuntimeState()
+	if state.loadErr != nil {
+		s.quotaMu.Unlock()
+		return LegBinding{}, fmt.Errorf("quota state repair required: %w", state.loadErr)
+	}
 
 	switching := cand.AccountID != "" && cand.AccountID != demand.RequestedAccountID
 	var sw quotaSwitchRecord
@@ -287,7 +311,8 @@ func (s *InteractiveService) claimAccountForLeg(ctx context.Context, demand Exec
 			s.quotaMu.Unlock()
 			return LegBinding{}, &quotaCooldownError{until: cd.Until, reason: cd.Reason}
 		}
-		if reason := state.accountBlockReason(cand.AccountID); reason != "" {
+		if reason := state.accountBlockReason(cand.AccountID); reason != "" &&
+			!quotaBlockLiftedOnHeadroom(reason, cand.Headroom) {
 			s.quotaMu.Unlock()
 			return LegBinding{}, fmt.Errorf("quota_preflight: account %q is blocked (%s)", cand.AccountID, quotaBlockRejectionReason(reason))
 		}
@@ -365,6 +390,22 @@ func (s *InteractiveService) claimAccountForLeg(ctx context.Context, demand Exec
 	}, nil
 }
 
+func (s *InteractiveService) activeQuotaClaimForRun(runID string, provider ProviderKey) (QuotaClaim, bool) {
+	s.quotaMu.Lock()
+	defer s.quotaMu.Unlock()
+	state := s.loadQuotaRuntimeState()
+	if state.loadErr != nil {
+		return QuotaClaim{}, false
+	}
+	for i := len(state.Claims) - 1; i >= 0; i-- {
+		claim := state.Claims[i]
+		if claim.RunID == runID && claim.ProviderKey == string(provider) && claim.Status == quotaClaimStatusActive {
+			return claim, true
+		}
+	}
+	return QuotaClaim{}, false
+}
+
 // pinRunAccount stamps the claim onto the resident run and persists the
 // session snapshot so the pin survives restart. Never called mid-turn —
 // claims mint only at admission boundaries (gate answer, spawn, leg mint).
@@ -411,6 +452,13 @@ func (s *InteractiveService) noteAccountBlockedLocked(providerKey, accountID, re
 	s.quotaMu.Lock()
 	defer s.quotaMu.Unlock()
 	state := s.loadQuotaRuntimeState()
+	if state.loadErr != nil {
+		// BUG-528: never overwrite a corrupt ledger with a partial state —
+		// that would erase the corruption evidence, clear the fail-closed
+		// veto, and drop any prior claims. The corrupt veto already blocks
+		// every admission, so dropping this observation loses nothing.
+		return
+	}
 	for _, b := range state.Blocked {
 		if b.AccountID == accountID {
 			return // already recorded — keep the first observation
