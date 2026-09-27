@@ -919,3 +919,24 @@ Provider scope: grok (real quota, exhausted mid-run — genuine HTTP 402)
   correctly on the stranded leg. Options in the bug doc.
 - Cosmetic: `run-945` keeps `status=waiting_user_approval` +
   `pending_resume_*` after its leg closed `provider_switch`.
+
+## J. R10 — BUG-538 fix live drill (2026-09-27, build post-1ced80a2, runner :4321, workspace /tmp/fp-live4)
+
+**Scope:** verify the BUG-538 fix + durable-residue sweep on the same
+workspace that produced run-1651. Grok ledger block cleared pre-drill;
+fresh tournaments mounted via run-level `flowRef`.
+
+| Row | R10 result |
+|-----|-----------|
+| BUG-538 durable residue | ☑ LIVE: `run-1651` (`failed`, `leg_state=active` on `candidate-candidate-a`, run never reloadable) was closed `worktree_swept` by a real `spawnTournamentCandidates` sweep — `closeLegsBoundToWorktree` now scans the durable session index, not only `s.runs` |
+| BUG-535 live-claimant park | ☑ LIVE: `run-3240`'s tournament tried `candidate-a` while `run-1663`'s leg `run-2830` still claimed it → spawn refused, loop parked `blocked/escalate` honestly — no sweep of a live claim |
+| BUG-536 binding skip (live again) | ☑ `run-1663` bound devin×2 while grok was ledger-blocked |
+| BUG-538 parked-successor path | ◐ unit-verified end-to-end (park → durable intent → `continue`-path flush → exactly-once dispatch); organic live repro needs a quota-veto→respawn window — grok cleared for the drill but `run-3240` was still park-blocked at drill end |
+
+### R10 residuals
+
+- `run-945`'s cosmetic stale `waiting_user_approval` + `pending_resume_*`
+  fields after `provider_switch` leg close (pre-existing, noted in the
+  BUG-538 doc).
+- Parked-on-contested-dir flows wait for the rival leg to release the
+  claim — by design; a `continue` after release retries the spawn.
