@@ -1,6 +1,9 @@
 # BUG-521 — Outer run status `completed` while flow nodes remain WAITING/PENDING
 
-Status: OPEN (live-found, root cause recorded; fix not yet applied)
+Status: FIXED (dd50718b — `flowHubCompletionWithheldLocked` withholds
+`completed` on a flow-engine root whose loop is not sealed; applied on
+both the live post-gate settle path and the restart-resume gate path.
+Tests: `TestBug521_*` in bug521_hub_completed_while_flow_nodes_open_test.go)
 Filed: 2026-09-26 (round-5 live test, run-60145)
 Related: BUG-520 (the wedge that produced the state), BUG-507
 (`completed` withheld while flow loop open — this is a sibling seam)

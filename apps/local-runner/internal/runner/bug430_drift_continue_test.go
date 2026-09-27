@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"time"
 	"testing"
 )
 
@@ -125,6 +126,49 @@ func TestBug430_ContinueRouteDispatchesDriftParkedChatTurn(t *testing.T) {
 	svc.mu.Unlock()
 	if !inflight {
 		t.Fatal("/continue route on a drift-parked chat run dispatched no turn — composer soft-locks")
+	}
+}
+
+// R6 residual: the option-capture contract only decoded `feedback` — a
+// {"text":"..."} body was silently dropped, so the loop resumed with empty
+// feedback and re-escalated ("no progress since last continue"). `text`
+// must alias `feedback`; an explicit `feedback` still wins when both are
+// sent.
+func TestContinueFlowTextFieldAliasesFeedback(t *testing.T) {
+	promptCh := make(chan string, 1)
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key: ProviderKeyCodex, Status: ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true},
+		newAdapter: func() ProviderRuntimeAdapter {
+			return fakeAdapterFunc(func(_ context.Context, req TurnRequest, b TurnBridge) error {
+				select {
+				case promptCh <- req.Prompt:
+				default:
+				}
+				b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "continued"})
+				return nil
+			})
+		},
+	})
+	svc, srv := newTestServerWith(t, reg, newInteractiveCatalog(), newFakeWorkflowStore())
+	runID := bug430ParkedChat(t, svc)
+
+	resp, err := http.Post(srv.URL+"/client/workflow-runs/"+runID+"/agent-loop/continue", "application/json", strings.NewReader(`{"text":"marker-via-text-field"}`))
+	if err != nil {
+		t.Fatalf("continue POST: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("continue POST status=%d", resp.StatusCode)
+	}
+	select {
+	case prompt := <-promptCh:
+		if !strings.Contains(prompt, "marker-via-text-field") {
+			t.Fatalf("resumed turn prompt does not carry text-field feedback: %q", prompt)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no turn dispatched after continue")
 	}
 }
 

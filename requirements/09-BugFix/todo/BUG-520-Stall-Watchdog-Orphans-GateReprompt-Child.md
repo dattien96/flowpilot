@@ -60,13 +60,15 @@ lease/fail-budget machinery.
 Regression: hub-stall battery (`Run333`, `Run43831`, BUG-354 watchdog,
 park-active-child, shouldParkHubWriteTurn) all green.
 
-## Residual observations (not fixed here — follow-ups)
+## Residual observations — RESOLVED (dd50718b)
 
-- **Orphan cure**: children already parked with wiped intents
-  (`pending_gate_code_paths` armed, no reprompt prompt) have no re-drive
-  path on parent unpark — needs a re-arm/re-dispatch sweep on resume.
-- **False-terminal surface**: `continue` on a `hub_stalled` run let a
-  plain hub turn settle `status=completed` while flow steps remained
-  WAITING/PENDING — status honesty gap worth its own record.
-- **Park clears child reprompt intents**: by design ("no turns behind
-  the form") but there is no re-arm on unpark — see orphan cure.
+- **Orphan cure**: FIXED — `resumeFlowWithFeedback` sweeps children
+  parked `waiting_user_approval` with `pending_gate_code_paths` armed
+  and no reprompt prompt, re-driving them via `reinvokeMatchingFlowChild`
+  (children with their own pending approval/question are excluded).
+  Test: `TestBug520_ContinueReDrivesParkedOrphanChild`.
+- **False-terminal surface**: FIXED as BUG-521 —
+  `flowHubCompletionWithheldLocked` withholds `completed` while the flow
+  loop is open (both live settle and restart-resume gate paths).
+- **Park clears child reprompt intents**: unchanged design ("no turns
+  behind the form"); the orphan-cure sweep above is the re-arm path.

@@ -817,14 +817,16 @@ absent on this machine).
   `route_committed` repin for a parked quota-vetoed child did not
   re-attempt respawn. Fixed to spawn-first ordering; refusal leaves the
   leg open so the next admission re-enters the gate. Live-verified in R8.
-- **Re-bind loop**: retry attempts re-bound `grok-4.5` for candidate-a
-  each round because binding only sees connectivity, not the durable
-  quota block → one veto card per attempt. Consider excluding
-  ledger-blocked accounts at binding time.
-- **`agent-loop/continue` contract**: the option capture reads
-  `feedback` only — a `{"text":...}` body is silently ignored as
-  feedback and the loop re-escalates `(no progress since last
-  continue)`. Same wrong-surface class noted at BUG-462 observation (a).
+- ~~**Re-bind loop**~~ — **resolved as BUG-536 (CA-1044)**: binding now
+  skips providers whose active account carries a durable hard block
+  (`billing_required`/`credits_exhausted`/corrupt-ledger); soft
+  `quota_exhausted` stays telemetry-admissible. Both candidates bind the
+  surviving provider instead of re-binding the blocked one per attempt.
+- ~~**`agent-loop/continue` contract**~~ — **resolved as BUG-537
+  (CA-1044)**: `{"text":...}` now aliases `feedback` (explicit
+  `feedback` still wins); both the decision-choice capture and the
+  resume consume the resolved value. Same wrong-surface class noted at
+  BUG-462 observation (a).
 
 ## H. R7 — deferred-case drill, Devin/swe-2-high only (2026-09-27, workspace /tmp/fp-live2)
 
@@ -874,8 +876,9 @@ nothing → plain chat; noted for future drills).
 
 - `quota_route_committed` is not in `isFlowSidecarEventType` — pre-existing;
   repin durability rides on session rows, not the event file.
-- Re-bind loop (R6) still open: a ledger-blocked account can be re-bound
-  and vetoed once per attempt — fail-closed but wasteful.
+- ~~Re-bind loop (R6)~~ — fixed as BUG-536 (CA-1044): binding consults
+  the durable quota ledger; ledger-blocked providers are skipped at
+  candidate binding.
 - Broad runner suite env-baselines unchanged (missing provider binaries,
   MCP network) — see CA-1042 verification note.
 

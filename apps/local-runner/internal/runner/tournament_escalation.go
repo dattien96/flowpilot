@@ -220,6 +220,20 @@ func (s *InteractiveService) bindTournamentCandidatesToAvailableProviders(def ag
 		if len(connected) > 0 && !connected[reg.Key] {
 			continue
 		}
+		// A provider whose active account carries a durable hard block
+		// (billing_required / credits_exhausted / corrupt ledger) can only
+		// produce a candidate that vetoes on admission — binding it re-fires
+		// the same quota card every retry round (live R6: grok re-bound to
+		// candidate-a each attempt). Soft quota_exhausted defers to
+		// telemetry at admission, same as the pin veto.
+		if acctID := s.activeAccountForProvider(reg.Key); acctID != "" {
+			s.quotaMu.Lock()
+			reason := s.loadQuotaRuntimeState().accountBlockReason(acctID)
+			s.quotaMu.Unlock()
+			if reason != "" && reason != string(ProviderLimitQuotaExhausted) {
+				continue
+			}
+		}
 		available = append(available, reg.Key)
 		if len(available) == 2 {
 			break

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -290,4 +291,71 @@ func TestBug535_LiveClaimantBlocksSweep(t *testing.T) {
 	if loop := svc.agentOrchestrator.loopStateFor(parent.RunID); loop.Status != "blocked" {
 		t.Fatalf("contested worktree should park the flow, loop=%q", loop.Status)
 	}
+}
+
+// BUG-536 (R6 residual): binding picked providers by connectivity only —
+// a ledger-blocked account (billing_required) was re-bound every retry
+// round, so each cohort's candidate vetoed on admission and re-fired the
+// same quota card. Binding must skip providers whose resolved active
+// account is durably hard-blocked.
+func TestBug536_BindingSkipsLedgerBlockedProviderAccount(t *testing.T) {
+	root := t.TempDir()
+	grokHome := filepath.Join(root, "grok-home")
+	devinHome := filepath.Join(root, "devin-home")
+	for _, dir := range []string{grokHome, devinHome} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeLinesToPath083(t, filepath.Join(grokHome, "auth.json"), []string{`{"refresh_token":"r","email":"a@b.c"}`})
+	writeLinesToPath083(t, filepath.Join(devinHome, "credentials.toml"), []string{`api_key = "k"`})
+	writeProviderAccountsConfig083(t, root, []ProviderAccount{
+		{ID: "grok-blocked", ProviderKey: "grok", IsActive: true, AuthStatus: "connected", HomePath: grokHome},
+		{ID: "devin-live", ProviderKey: "devin", IsActive: true, AuthStatus: "connected", HomePath: devinHome},
+	})
+	reg := newProviderRegistry()
+	for _, key := range []ProviderKey{ProviderKeyGrok, ProviderKeyDevin} {
+		key := key
+		reg.register(ProviderRegistration{Key: key, Status: ProviderStatusAvailable, newAdapter: func() ProviderRuntimeAdapter {
+			return fakeAdapterFunc(func(_ context.Context, _ TurnRequest, b TurnBridge) error {
+				b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "ok"})
+				return nil
+			})
+		}})
+	}
+	svc, _ := newTestServerWith(t, reg, newInteractiveCatalog(), newFakeWorkflowStore())
+	svc.quotaRuntimePath = filepath.Join(t.TempDir(), "quota.json")
+	svc.noteAccountBlockedLocked("grok", "grok-blocked", "billing_required")
+
+	def, err := svc.bindTournamentCandidatesToAvailableProviders(tournamentFlowDefinitionMust(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range def.Nodes {
+		if !strings.EqualFold(strings.TrimSpace(n.Cohort), "tournament") {
+			continue
+		}
+		if strings.Contains(n.Model, "grok") {
+			t.Fatalf("candidate %q bound to ledger-blocked grok account (model=%q)", n.ID, n.Model)
+		}
+	}
+	// Both candidates must land on the single unblocked provider.
+	bound := 0
+	for _, n := range def.Nodes {
+		if strings.EqualFold(strings.TrimSpace(n.Cohort), "tournament") && strings.Contains(n.Model, "devin") {
+			bound++
+		}
+	}
+	if bound != 2 {
+		t.Fatalf("expected both candidates on devin, got %d", bound)
+	}
+}
+
+func tournamentFlowDefinitionMust(t *testing.T) agentpack.FlowDefinition {
+	t.Helper()
+	def, err := tournamentFlowDefinition()
+	if err != nil {
+		t.Fatalf("load tournament-harness: %v", err)
+	}
+	return def
 }

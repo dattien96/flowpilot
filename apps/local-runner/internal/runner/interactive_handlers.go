@@ -2177,7 +2177,8 @@ func (s *InteractiveService) handleExtendCap(w http.ResponseWriter, r *http.Requ
 }
 
 // handleContinueFlow handles POST /client/workflow-runs/{runId}/agent-loop/continue.
-// Body: {"feedback": "...", "memberAction": {"action":"retry|skip","node":"..."}} (both optional).
+// Body: {"feedback": "..."| "text": "...", "memberAction": {"action":"retry|skip","node":"..."}}
+// (all optional; `text` aliases `feedback` for option-card callers).
 // BUG-231's unified "Continue" action: resumes a blocked/awaiting-user loop.
 // Task-241: when blockReason=member_stalled, memberAction selects Retry/Skip.
 // Returns an AgentGraphSnapshot so the caller can update without a separate
@@ -2186,6 +2187,7 @@ func (s *InteractiveService) handleContinueFlow(w http.ResponseWriter, r *http.R
 	runID := r.PathValue("runId")
 	var body struct {
 		Feedback     string       `json:"feedback"`
+		Text         string       `json:"text"`
 		MemberAction MemberAction `json:"memberAction"`
 	}
 	if r.ContentLength != 0 {
@@ -2193,6 +2195,12 @@ func (s *InteractiveService) handleContinueFlow(w http.ResponseWriter, r *http.R
 			writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "invalid_request", "invalid request body"))
 			return
 		}
+	}
+	// Option-card callers post {"text":"..."}; it aliases `feedback` (an
+	// explicit feedback field still wins when both are sent).
+	feedback := body.Feedback
+	if strings.TrimSpace(feedback) == "" {
+		feedback = body.Text
 	}
 	if strings.TrimSpace(body.MemberAction.Action) != "" {
 		snap, handled, err := s.handleMemberAction(runID, body.MemberAction)
@@ -2209,8 +2217,8 @@ func (s *InteractiveService) handleContinueFlow(w http.ResponseWriter, r *http.R
 	_ = s.checkAndBlockStalledMembers(runID)
 	// Task-346: record the human's decision-card choice (option id/label
 	// match) before the feedback resumes the run.
-	s.captureDecisionChoice(runID, body.Feedback)
-	snap, err := s.resumeFlowWithFeedback(runID, body.Feedback)
+	s.captureDecisionChoice(runID, feedback)
+	snap, err := s.resumeFlowWithFeedback(runID, feedback)
 	if err != nil {
 		// BUG-480: a typed apiErr (e.g. pending_gate_decision 409) keeps its
 		// status/code so the client can route to the canonical surface
