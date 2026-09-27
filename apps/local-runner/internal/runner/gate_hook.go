@@ -3276,15 +3276,12 @@ func (s *InteractiveService) ensureBaselineReadyContext(ctx context.Context, cwd
 // FLOWPILOT_ENABLE_DRIFT_DETECTOR=1|true|yes|on (Task-334 env-flag pattern).
 const driftDetectorEnvFlag = "FLOWPILOT_ENABLE_DRIFT_DETECTOR"
 
-// driftDetectorEnabled reports whether the Task-335 drift hook should record
-// telemetry. Default OFF (behavior-neutral rollout).
+// driftDetectorEnabled: MVP posture — always ON; the
+// FLOWPILOT_ENABLE_DRIFT_DETECTOR env is ignored (same posture as
+// ReproduceGateEnabled / chatSSOTEnabled — rollback is a revert commit,
+// not a flag flip).
 func driftDetectorEnabled() bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv(driftDetectorEnvFlag))) {
-	case "1", "true", "yes", "on", "enable", "enabled":
-		return true
-	default:
-		return false
-	}
+	return true
 }
 
 // driftEventsFileName is the CP-23 §5 workspace artifact: drift events are

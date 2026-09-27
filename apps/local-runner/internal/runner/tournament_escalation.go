@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"os"
 	"strings"
 
 	"flowpilot-runner/internal/agentpack"
@@ -14,10 +13,9 @@ import (
 // Tournament escalation fallback leg (CP-65 P-4, Task-371): when a review
 // loop hits its round cap or a vibe owner debate stalls past its retries,
 // the runner opens a tournament-harness child run with the stuck run's
-// intent and contract instead of terminating failed/stopped. Everything here
-// is flag-gated (FLOWPILOT_ENABLE_TOURNAMENT_ESCALATION, default OFF): with
-// the flag unset every hook below is a no-op and the old escalate-card /
-// parked-cap paths run byte-identical.
+// intent and contract instead of terminating failed/stopped. MVP posture:
+// always ON (TournamentEscalationEnabled) — the legacy env flag is ignored
+// and rollback is a revert commit, not a flag flip.
 //
 // The tournament child is linked via parentRunID but deliberately NOT
 // registered in the orchestrator children map: that map drives
@@ -27,9 +25,10 @@ import (
 // children map will not see the tournament child; s.runs linkage carries
 // the parent/child relation for verdict return (T-3).
 
-// TournamentEscalationEnv is the CP-65 §8 rollout/fallback flag. Unset or
-// false keeps the pre-CP-65 behavior: caps park escalate cards, stalls park
-// member_stalled, debate failures park caps — no tournament is ever opened.
+// TournamentEscalationEnv is the legacy CP-65 §8 rollout flag name. MVP
+// posture: ignored — TournamentEscalationEnabled() is always true, so caps
+// and stalls always dispatch the tournament rescue. Kept so external config
+// docs/tests that still reference the name compile.
 const TournamentEscalationEnv = "FLOWPILOT_ENABLE_TOURNAMENT_ESCALATION"
 
 // tournamentHarnessFlowID is the pack flow id opened for a rescue.
@@ -41,16 +40,12 @@ const tournamentHarnessFlowID = "tournament-harness"
 // a failure — the legacy park path must NOT run over a live tournament.
 var errTournamentEscalationExists = errors.New("tournament escalation child already exists")
 
-// TournamentEscalationEnabled reports whether the escalation leg is on.
-// Only the explicit truthy set enables it (same pattern as
-// ReproduceGateEnabled); unset keeps legacy behavior.
+// TournamentEscalationEnabled: MVP posture — always ON; the
+// FLOWPILOT_ENABLE_TOURNAMENT_ESCALATION env is ignored (same posture as
+// ReproduceGateEnabled / chatSSOTEnabled — rollback is a revert commit,
+// not a flag flip).
 func TournamentEscalationEnabled() bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv(TournamentEscalationEnv))) {
-	case "1", "true", "yes", "on", "enable", "enabled":
-		return true
-	default:
-		return false
-	}
+	return true
 }
 
 // runIsTournamentFlow reports whether runID already runs tournament-harness,
@@ -82,8 +77,9 @@ func (s *InteractiveService) runIsTournamentFlow(runID string) bool {
 }
 
 // shouldEscalateToTournament is the single choke point for every rescue
-// trigger: flag on, parent known, and not already a tournament run
-// (anti-recursion — a tournament of a tournament is forbidden).
+// trigger: escalation enabled (always on), parent known, and not already a
+// tournament run (anti-recursion — a tournament of a tournament is
+// forbidden).
 func (s *InteractiveService) shouldEscalateToTournament(parentRunID string) bool {
 	if !TournamentEscalationEnabled() || s == nil || strings.TrimSpace(parentRunID) == "" {
 		return false
@@ -105,9 +101,13 @@ func (s *InteractiveService) shouldEscalateToTournament(parentRunID string) bool
 // unit-testable). Returns the child run id.
 func (s *InteractiveService) escalateToTournament(parentRunID, reason string) (string, error) {
 	if !s.shouldEscalateToTournament(parentRunID) {
-		return "", fmt.Errorf("tournament: escalation refused for run %q (flag off, unknown run, or already a tournament)", parentRunID)
+		return "", fmt.Errorf("tournament: escalation refused for run %q (unknown run or already a tournament)", parentRunID)
 	}
 	def, err := tournamentFlowDefinition()
+	if err != nil {
+		return "", err
+	}
+	def, err = s.bindTournamentCandidatesToAvailableProviders(def)
 	if err != nil {
 		return "", err
 	}
@@ -166,6 +166,12 @@ func (s *InteractiveService) escalateToTournament(parentRunID, reason string) (s
 	}
 	s.runs[childID] = child
 	s.mu.Unlock()
+	if err := s.persistProviderSession(sessionStateOf(child)); err != nil {
+		s.mu.Lock()
+		delete(s.runs, childID)
+		s.mu.Unlock()
+		return "", fmt.Errorf("tournament: persist child before dispatch: %w", err)
+	}
 
 	s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
 		st.Status = LoopStatusTournamentEscalation
@@ -195,6 +201,74 @@ func (s *InteractiveService) escalateToTournament(parentRunID, reason string) (s
 		}
 	}()
 	return childID, nil
+}
+
+func (s *InteractiveService) bindTournamentCandidatesToAvailableProviders(def agentpack.FlowDefinition) (agentpack.FlowDefinition, error) {
+	connected := map[ProviderKey]bool{}
+	if accounts, err := s.listProviderAccounts(); err == nil {
+		for _, account := range accounts {
+			if account.AuthStatus == "connected" {
+				connected[ProviderKey(account.ProviderKey)] = true
+			}
+		}
+	}
+	available := make([]ProviderKey, 0, 2)
+	for _, reg := range s.registry.List() {
+		if _, err := s.registry.Selectable(reg.Key); err != nil {
+			continue
+		}
+		if len(connected) > 0 && !connected[reg.Key] {
+			continue
+		}
+		available = append(available, reg.Key)
+		if len(available) == 2 {
+			break
+		}
+	}
+	if len(available) == 0 {
+		return def, nil
+	}
+	// BUG-526: provider diversity is preferred, not required — with a single
+	// connected provider (the other account out of quota, or only one
+	// configured) both candidates bind to it rather than silently keeping the
+	// pack's unavailable claude/codex defaults.
+	for len(available) < 2 {
+		available = append(available, available[0])
+	}
+	models := make([]string, len(available))
+	for i, provider := range available {
+		models[i] = defaultModelForProvider(provider)
+		if _, ok := providerKeyFromModel(models[i]); !ok {
+			models[i] = string(provider) + "/" + models[i]
+		}
+	}
+	candidateIndex := 0
+	for i := range def.Nodes {
+		if strings.EqualFold(strings.TrimSpace(def.Nodes[i].Cohort), "tournament") {
+			if candidateIndex >= len(available) {
+				break
+			}
+			def.Nodes[i].Model = models[candidateIndex]
+			candidateIndex++
+		}
+	}
+	if candidateIndex < 2 {
+		return agentpack.FlowDefinition{}, fmt.Errorf("tournament: flow has only %d candidate nodes", candidateIndex)
+	}
+	for i := range def.Nodes {
+		if def.Nodes[i].ID != "parallel_rollout" {
+			continue
+		}
+		if def.Nodes[i].Config == nil {
+			def.Nodes[i].Config = map[string]any{}
+		}
+		def.Nodes[i].Config["candidates"] = []any{
+			map[string]any{"candidate_id": "candidate-a", "provider": string(available[0]), "model": models[0]},
+			map[string]any{"candidate_id": "candidate-b", "provider": string(available[1]), "model": models[1]},
+		}
+		break
+	}
+	return def, nil
 }
 
 // tournamentFlowDefinition loads the tournament-harness definition from the

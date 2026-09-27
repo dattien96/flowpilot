@@ -579,10 +579,13 @@ func TestRun63960CapParkPersistThenRestartStaysBlocked(t *testing.T) {
 		t.Fatalf("reconstruct after clean park: %s", apiErr.msg)
 	}
 	loop := svc2.agentOrchestrator.loopStateFor(st.RunID)
-	if loop.Status != "blocked" || loop.BlockReason != "cap" {
-		t.Fatalf("after clean-park restart loop=%+v, want blocked/cap", loop)
+	if loop.Status != "tournament_escalation" {
+		t.Fatalf("after clean-park restart loop=%+v, want tournament_escalation (escalation always on)", loop)
 	}
-	if _, turnErr := svc2.startTurn(st.RunID, TurnInput{StepID: "chat", Prompt: "hi"}, "", ""); turnErr == nil || turnErr.code != "flow_awaiting_user" {
-		t.Fatalf("startTurn after clean park restart: %v", turnErr)
+	if _, turnErr := svc2.startTurn(st.RunID, TurnInput{StepID: "chat", Prompt: "hi"}, "", ""); turnErr == nil {
+		t.Fatalf("startTurn after clean park restart must not dispatch on a rescued loop: %v", turnErr)
 	}
+	// The cap minted an async tournament child in svc — drain its writes
+	// before TempDir teardown (run-63960 flake class).
+	awaitTournamentChildIdle(t, svc, runID)
 }

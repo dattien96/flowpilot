@@ -596,7 +596,8 @@ func TestE2EReviewLoopCoderReentryIncrementsActivationSeqAndEmitsSpawnEvent(t *t
 }
 
 // TestE2EReviewLoopCapHitBlocked verifies that applyFlowControl("continue")
-// when Round == Cap transitions the loop to blocked and returns NextAction=awaiting_user.
+// when Round == Cap parks the loop into tournament_escalation (always-on
+// rescue) and still returns NextAction=awaiting_user.
 func TestE2EReviewLoopCapHitBlocked(t *testing.T) {
 	svc, runID := newFlowTestRun(t)
 	// Place the loop exactly at the cap.
@@ -611,11 +612,12 @@ func TestE2EReviewLoopCapHitBlocked(t *testing.T) {
 	}
 
 	st := svc.agentOrchestrator.loopStateFor(runID)
-	if st.Status != "blocked" {
-		t.Errorf("loop.Status = %q, want blocked", st.Status)
+	if st.Status != "tournament_escalation" {
+		t.Errorf("loop.Status = %q, want tournament_escalation (escalation always on)", st.Status)
 	}
 	// Cap path may leave hub WAITING (not RUNNING) — no stuck RUNNING nodes.
 	assertNoStepStuckRunning(t, svc, runID)
+	awaitTournamentChildIdle(t, svc, runID)
 }
 
 // TestE2EReviewLoopEscalatePath verifies that applyFlowControl("escalate")

@@ -310,15 +310,29 @@ func (s *claudeMCPServer) dispatchCtx(ctx context.Context, method string, msg ma
 	return nil, map[string]any{"code": -32601, "message": "method not found: " + method}
 }
 
+// interactionOnlyAnnotations marks FlowPilot-hosted tools that never mutate
+// the session environment — they carry a permission answer, a question, or a
+// verdict into the runner's orchestration ledger only. Per the MCP spec
+// readOnlyHint means "the tool does not modify its environment"; these tools
+// satisfy that from the provider's view (zero filesystem/exec effects —
+// SubmitFlowControl enforces the verdict server-side). Providers whose
+// session modes refuse non-readOnlyHint MCP calls (devin ask/accept-edits —
+// BUG-504, live run-1) must not wall them off upstream of the runner bridge;
+// the runner's own posture gate already approves the verdict face under
+// read_only for the same reason. spawn_agent is deliberately excluded — it
+// has a real side effect (creates and dispatches a child run).
+var interactionOnlyAnnotations = map[string]any{"readOnlyHint": true}
+
 func claudeMCPToolDefs(allowReviewOutcome bool) []any {
 	defs := []any{
-		map[string]any{"name": "approve", "description": "FlowPilot permission prompt: approve or deny a tool use.", "inputSchema": map[string]any{"type": "object"}},
+		map[string]any{"name": "approve", "description": "FlowPilot permission prompt: approve or deny a tool use.", "inputSchema": map[string]any{"type": "object"}, "annotations": interactionOnlyAnnotations},
 		// ask_user MUST advertise its parameter schema (prompt/options/multiSelect) so the model
 		// knows how to call it and prefers it over its disabled built-in AskUserQuestion. Mirrors
 		// the Codex registration (codexAskUserMcpServer) for cross-provider parity.
 		map[string]any{
 			"name":        "ask_user",
 			"description": "Ask the user a structured question and wait for their answer before continuing. Use when you need a decision or clarification instead of guessing.",
+			"annotations": interactionOnlyAnnotations,
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -353,6 +367,7 @@ func claudeMCPToolDefs(allowReviewOutcome bool) []any {
 		defs = append(defs, map[string]any{
 			"name":        "submit_review_outcome",
 			"description": "Submit a code-review or coder outcome. Reviewer cohort members: approved|changes_requested|blocked plus a verdicts row per AC. Signature-locked coder: renegotiate_signatures plus batch_signature_requests, or blocked to escalate. This is the only flow-control tool — do not use flow_control directly.",
+			"annotations": interactionOnlyAnnotations,
 			"inputSchema": sharedReviewOutcomeSchema(),
 		})
 	}
@@ -365,6 +380,7 @@ func claudeMCPToolDefsWithVibe(allowReviewOutcome, allowVibe bool) []any {
 		defs = append(defs, map[string]any{
 			"name":        "vibe-requirement-outcome",
 			"description": "Vibe sprint requirement-gate verdict after validate. aligned=done, drift_fixable=continue to coder, requirement_change=escalate to the user.",
+			"annotations": interactionOnlyAnnotations,
 			"inputSchema": map[string]any{
 				"type":     "object",
 				"required": []any{"verdict"},
