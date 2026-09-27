@@ -58,6 +58,14 @@ func (s *InteractiveService) startResolvedFlowFromNode(ctx context.Context, pare
 		)
 		return
 	}
+	if workingmode.BareFlowID(record.FlowRef) == tournamentHarnessFlowID {
+		if bound, bindErr := s.bindTournamentCandidatesToAvailableProviders(record.Definition); bindErr == nil {
+			record.Definition = bound
+		} else {
+			s.flowDiagLog(parentRunID, "tournament_provider_binding_failed", "tournament provider binding failed", "error", bindErr.Error())
+			return
+		}
+	}
 	s.flowDiagLog(parentRunID, "flow_start_resolved", "flow resolved",
 		"flow_ref", record.FlowRef,
 		"node_count", len(record.Definition.Nodes),
@@ -360,12 +368,23 @@ func (s *InteractiveService) resolveWorkflowFlowRef(ctx context.Context, runID s
 		log.Printf("[flow-ref-resolve] run %q: bailing, restored run (restoredFrom=%q) never re-starts its flow on a follow-up", runID, restoredFrom)
 		return "", false
 	}
-	if strings.TrimSpace(rs.workflowID) == "" {
+	// A run created with an explicit FlowRef stamps it on chatFlowRef
+	// (createRun) — workflowID is a different selection channel and stays
+	// empty for flowRef launches, so without this fallback the mounted flow
+	// silently never starts and the first turn degrades to a plain chat turn
+	// (review finding: creation-time flowRef never engaged the flow engine).
+	// Root runs only: a child's chatFlowRef comes from FlowRefFallback
+	// (BUG-506 propagation), which is explicitly not a mount.
+	flowRefSource := strings.TrimSpace(rs.workflowID)
+	if flowRefSource == "" && rs.parentRunID == "" {
+		flowRefSource = strings.TrimSpace(rs.chatFlowRef)
+	}
+	if flowRefSource == "" {
 		s.mu.Unlock()
-		log.Printf("[flow-ref-resolve] run %q: bailing, no workflowID set on this run", runID)
+		log.Printf("[flow-ref-resolve] run %q: bailing, no workflowID/chatFlowRef set on this run", runID)
 		return "", false
 	}
-	workflowID := rs.workflowID
+	workflowID := flowRefSource
 	store := s.flowDefinitionStore
 	s.mu.Unlock()
 

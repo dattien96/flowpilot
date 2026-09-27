@@ -128,10 +128,11 @@ type Runner struct {
 	sessionsMu  sync.Mutex
 	sessions    map[string]*LiveSession
 
-	// codexAppServer is the single shared `codex app-server` process (04-03/04-06),
-	// bound to the active provider account scope. nil until first ensure.
+	// codexAppServers owns one `codex app-server` process per account scope.
+	// codexAppServer aliases the most recently selected handle for compatibility.
 	codexAppServerMu sync.Mutex
 	codexAppServer   *codexAppServerHandle
+	codexAppServers  map[string]*codexAppServerHandle
 
 	// claudePool owns the per-(account,cwd,session) `claude` CLI processes (07 plan).
 	// Claude has no shared multi-thread process like Codex app-server, so the Go runner

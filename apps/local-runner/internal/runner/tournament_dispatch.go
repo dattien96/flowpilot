@@ -51,13 +51,13 @@ func tournamentRolloutPassthrough(node agentpack.FlowNode, edges []agentpack.Flo
 // tournament) to its isolated worktree, creating it lazily when the rollout
 // spawns the candidate for the first time. The base commit is the flow's
 // captured start HEAD so every candidate diffs against the same baseline.
-func (s *InteractiveService) tournamentCandidateWorktree(parentRunID string, node agentpack.FlowNode) string {
+func (s *InteractiveService) tournamentCandidateWorktree(parentRunID string, node agentpack.FlowNode) (string, error) {
 	if !strings.EqualFold(strings.TrimSpace(node.Cohort), "tournament") {
-		return ""
+		return "", fmt.Errorf("tournament: node %q is not a tournament candidate", node.ID)
 	}
 	cwd := s.workspaceCwdFor(parentRunID)
 	if strings.TrimSpace(cwd) == "" {
-		return ""
+		return "", fmt.Errorf("tournament: run %q has no workspace", parentRunID)
 	}
 	s.mu.Lock()
 	base := ""
@@ -75,10 +75,9 @@ func (s *InteractiveService) tournamentCandidateWorktree(parentRunID string, nod
 	var mgr tournament.WorktreeManager
 	path, err := mgr.Create(cwd, base, node.ID)
 	if err != nil {
-		log.Printf("[tournament] worktree create for %q failed: %v — candidate runs in main workspace", node.ID, err)
-		return ""
+		return "", fmt.Errorf("tournament: create worktree for %q: %w", node.ID, err)
 	}
-	return path
+	return path, nil
 }
 
 // tournamentJoinSatisfied enforces the arbiter node's declared join:all —
@@ -87,32 +86,99 @@ func (s *InteractiveService) tournamentCandidateWorktree(parentRunID string, nod
 // running returns false (claimed as handled; the sibling's own completion
 // re-enters this path).
 func (s *InteractiveService) tournamentJoinSatisfied(parentRunID string, edges []agentpack.FlowEdge, nodeID string) bool {
+	var pending []string
+	livePending := map[string]bool{}
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	attempt := 0
+	if parent := s.runs[parentRunID]; parent != nil {
+		attempt = parent.tournamentAttempt
+	}
+	attemptSuffix := fmt.Sprintf("attempt-%d", attempt)
 	for _, e := range edges {
 		if !strings.EqualFold(strings.TrimSpace(e.To), nodeID) ||
 			!strings.EqualFold(strings.TrimSpace(e.When), "done") ||
 			!strings.EqualFold(strings.TrimSpace(e.Kind), "forward") {
 			continue
 		}
-		// join:all collects every terminal outcome — a failed/cancelled
-		// candidate is still a finished member; the arbiter scores its
-		// (empty) worktree rather than vetoing the whole cohort. Live
-		// run-1890: candidate-a's provider failure left this gate false
-		// forever, silently discarding candidate-b's patch.
-		done := false
+		done, live := false, false
 		for _, c := range s.runs {
-			if c.parentRunID == parentRunID && c.label == e.From && worktreeTerminal(c.status) {
+			if c.parentRunID != parentRunID || c.label != e.From ||
+				(attempt != 0 && !strings.HasSuffix(c.flowCohortId, attemptSuffix)) {
+				continue
+			}
+			if worktreeTerminal(c.status) {
 				done = true
 				break
 			}
+			live = true
 		}
 		if !done {
-			log.Printf("[tournament] arbiter join waiting on sibling %q (run %q)", e.From, parentRunID)
-			return false
+			pending = append(pending, e.From)
+			livePending[e.From] = live
 		}
 	}
+	s.mu.Unlock()
+	if len(pending) == 0 {
+		return true
+	}
+	// BUG-519 (live run-49109): after a runner restart a fully-finished
+	// cohort is deliberately NOT reconstructed into s.runs
+	// (reconstructPendingChildSessions only restores live/pending members),
+	// so the memory scan waits on siblings that completed pre-restart
+	// forever. The durable step-transition sidecar is the authoritative
+	// record — a predecessor whose last stamp is terminal satisfies the
+	// join exactly like a terminal in-memory child. BUG-524 residual: the
+	// sidecar never outranks a live current-attempt child — a kill landing
+	// between the retry spawn and its RUNNING stamp leaves the prior
+	// round's DONE as the last durable record, which must not satisfy the
+	// join while that child is still running.
+	if terminal := s.tournamentTerminalNodesFromLog(parentRunID); len(terminal) > 0 {
+		kept := pending[:0]
+		for _, id := range pending {
+			if livePending[id] || !terminal[id] {
+				kept = append(kept, id)
+			}
+		}
+		pending = kept
+	}
+	if len(pending) > 0 {
+		log.Printf("[tournament] arbiter join waiting on sibling %q (run %q)", pending[0], parentRunID)
+		return false
+	}
 	return true
+}
+
+// tournamentTerminalNodesFromLog replays the parent's durable
+// step-transition sidecar (last status per node wins) and returns the ids
+// whose final stamp is terminal. I/O runs outside s.mu; a missing store or
+// unreadable/empty log returns nil so the join falls back to the memory
+// scan — never fail-open on absent evidence.
+func (s *InteractiveService) tournamentTerminalNodesFromLog(parentRunID string) map[string]bool {
+	tlog, ok := s.workflowStore.(StepTransitionLogStore)
+	if !ok {
+		return nil
+	}
+	lines, err := tlog.LoadStepTransitions(context.Background(), parentRunID)
+	if err != nil || len(lines) == 0 {
+		return nil
+	}
+	last := map[string]RuntimeWorkflowStepStatus{}
+	for _, l := range lines {
+		id := strings.TrimSpace(l.NodeID)
+		st := RuntimeWorkflowStepStatus(strings.TrimSpace(l.Status))
+		if id == "" || st == "" {
+			continue
+		}
+		last[id] = st
+	}
+	out := map[string]bool{}
+	for id, st := range last {
+		switch st {
+		case StepStatusDone, StepStatusFailed, StepStatusCanceled, StepStatusSkipped:
+			out[id] = true
+		}
+	}
+	return out
 }
 
 // tournamentNodeConfig merges the rollout node's candidates/serial config
@@ -284,19 +350,109 @@ func (s *InteractiveService) retryTournamentRollout(parentRunID string, edges []
 // its isolated worktree.
 func (s *InteractiveService) spawnTournamentCandidates(parentRunID string, rollout agentpack.FlowNode, candidates []agentpack.FlowNode, brief string) {
 	cwd := s.workspaceCwdFor(parentRunID)
-	round := s.agentOrchestrator.loopStateFor(parentRunID).Round
-	cohortID := fmt.Sprintf("flow-auto-%s-round-%d", rollout.ID, round)
-	for i, node := range candidates {
+	s.mu.Lock()
+	attempt := 0
+	if parent := s.runs[parentRunID]; parent != nil {
+		attempt = parent.tournamentAttempt
+	}
+	s.mu.Unlock()
+	cohortID := fmt.Sprintf("flow-auto-%s-attempt-%d", rollout.ID, attempt)
+	type candidateSpawn struct {
+		node     agentpack.FlowNode
+		worktree string
+	}
+	spawns := make([]candidateSpawn, 0, len(candidates))
+	// BUG-533: every abort path must sweep the worktrees this call already
+	// created — an orphaned candidate dir wedges the next spawn with
+	// "worktree already exists" (live run-1 needed manual `git worktree
+	// remove`). Create stays fail-closed; cleanup is what makes it retryable.
+	cleanupCreated := func() {
+		ids := make([]string, 0, len(spawns))
+		for _, spawn := range spawns {
+			ids = append(ids, spawn.node.ID)
+		}
+		s.sweepCandidateWorktrees(cwd, ids)
+	}
+	// liveClaim reports whether any non-terminal leg — any run, any cohort —
+	// still claims the dir. Never sweep under a live claimant (BUG-535): a
+	// foreign run's mid-turn candidate or a same-attempt vetoed leg would
+	// lose its workspace. Terminal-run residue is stale claim data, not a
+	// live claimant — the sweep closes it.
+	liveClaim := func(dir string) bool {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		for _, c := range s.runs {
+			if c.workspaceCwd == dir && c.legState == LegStateActive && !worktreeTerminal(c.status) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, node := range candidates {
+		model := s.delegateSpawnModel(context.Background(), parentRunID, node)
+		provider, ok := providerKeyFromModel(model)
+		if !ok {
+			s.mu.Lock()
+			if parent := s.runs[parentRunID]; parent != nil {
+				provider = parent.providerKey
+			}
+			s.mu.Unlock()
+		}
+		if _, err := s.registry.Selectable(provider); err != nil {
+			cleanupCreated()
+			s.flowDiagLog(parentRunID, "tournament_candidate_provider_unavailable", "candidate provider unavailable", "node_id", node.ID, "provider", provider, "error", err.Error())
+			_, _ = s.applyFlowControl(parentRunID, FlowControlInput{Status: "escalate", Summary: err.Error()})
+			return
+		}
+		if s.runner != nil {
+			accounts, err := s.listProviderAccounts()
+			connected := false
+			if err == nil {
+				for _, account := range accounts {
+					if account.ProviderKey == string(provider) && account.AuthStatus == "connected" {
+						connected = true
+						break
+					}
+				}
+			}
+			if !connected {
+				cleanupCreated()
+				err := fmt.Errorf("tournament: candidate %q provider %q has no connected account", node.ID, provider)
+				s.flowDiagLog(parentRunID, "tournament_candidate_provider_unavailable", "candidate provider unavailable", "node_id", node.ID, "provider", provider, "error", err.Error())
+				_, _ = s.applyFlowControl(parentRunID, FlowControlInput{Status: "escalate", Summary: err.Error()})
+				return
+			}
+		}
+		worktree, err := s.tournamentCandidateWorktree(parentRunID, node)
+		if err != nil && !liveClaim(tournament.WorktreePath(cwd, node.ID)) {
+			// BUG-533: an "already exists" failure on a dir no live leg
+			// claims is a stale orphan from an earlier aborted attempt —
+			// sweep it and retry once so the spawn self-heals instead of
+			// parking on a dir nothing will ever claim.
+			s.sweepCandidateWorktrees(cwd, []string{node.ID})
+			worktree, err = s.tournamentCandidateWorktree(parentRunID, node)
+		}
+		if err != nil {
+			cleanupCreated()
+			s.flowDiagLog(parentRunID, "tournament_candidate_worktree_failed", "candidate worktree creation failed", "node_id", node.ID, "error", err.Error())
+			_, _ = s.applyFlowControl(parentRunID, FlowControlInput{Status: "escalate", Summary: err.Error()})
+			return
+		}
+		spawns = append(spawns, candidateSpawn{node: node, worktree: worktree})
+	}
+	spawned := map[string]bool{}
+	for i, spawn := range spawns {
 		if !s.loopIsAdvancing(parentRunID) {
 			break
 		}
+		node := spawn.node
 		agentName := flowNodeAgentName(node)
 		if agentName == "" {
 			continue
 		}
 		prompt := buildFlowReviewHandoffPrompt(rollout.ID, brief, node)
-		prompt = composeFlowNodeAgentPrompt(cwd, prompt, node)
-		prompt = appendChangeContractIfAnyWithSecret(cwd, parentRunID, prompt, s.markerSecret)
+		prompt = composeFlowNodeAgentPrompt(spawn.worktree, prompt, node)
+		prompt = appendChangeContractIfAnyWithSecret(spawn.worktree, parentRunID, prompt, s.markerSecret)
 		agentDef, _ := resolvePackAgentDefinition(agentName)
 		if _, err := s.spawnChildRun(context.Background(), parentRunID, SpawnAgentInput{
 			Agent:            agentName,
@@ -308,16 +464,68 @@ func (s *InteractiveService) spawnTournamentCandidates(parentRunID string, rollo
 			AutoOrchestrate:  i == 0,
 			AgentDefOverride: agentDef,
 			Model:            s.delegateSpawnModel(context.Background(), parentRunID, node),
-			WorkspaceCwd:     s.tournamentCandidateWorktree(parentRunID, node),
+			WorkspaceCwd:     spawn.worktree,
 		}); err != nil {
 			log.Printf("[tournament] candidate spawn %q failed: %v", node.ID, err)
 			s.flowDiagLog(parentRunID, "tournament_candidate_spawn_failed",
 				"candidate spawn failed", "node_id", node.ID, "error", err.Error())
 			continue
 		}
+		spawned[node.ID] = true
 		if s.isFlowEngineDriven(parentRunID) {
 			s.setFlowStepStatus(context.Background(), parentRunID, node.ID, StepStatusRunning)
 			s.stampFlowNodePosture(context.Background(), parentRunID, node)
+		}
+	}
+	// BUG-533: sweep worktrees whose spawn never completed — agentless
+	// nodes, refused/failed spawns, and the unspawned tail after
+	// loopIsAdvancing broke all leave orphans that wedge the next attempt.
+	var orphans []string
+	for _, spawn := range spawns {
+		if !spawned[spawn.node.ID] {
+			orphans = append(orphans, spawn.node.ID)
+		}
+	}
+	if len(orphans) > 0 {
+		s.sweepCandidateWorktrees(cwd, orphans)
+	}
+}
+
+// sweepCandidateWorktrees removes candidate worktrees AND closes every leg
+// still durably claiming their dirs (BUG-535, live /tmp/fp-live3: three
+// active legs on one candidate dir). A vetoed leg or dead-run residue
+// otherwise keeps leg_state=active on the path forever — letting a later
+// cohort, another run in the same workspace, or a quota successor inherit
+// a dir a live leg still owns. Idempotent like Cleanup itself.
+func (s *InteractiveService) sweepCandidateWorktrees(cwd string, candidateIDs []string) {
+	var mgr tournament.WorktreeManager
+	_ = mgr.Cleanup(cwd, candidateIDs)
+	for _, id := range candidateIDs {
+		s.closeLegsBoundToWorktree(tournament.WorktreePath(cwd, id))
+	}
+}
+
+// closeLegsBoundToWorktree closes every leg whose session row still claims
+// dir — regardless of run status: a cancelled run's active leg is exactly
+// the stale residue this exists to erase. Claim comparison uses the exact
+// path the manager hands out, so a run's own cwd never matches.
+func (s *InteractiveService) closeLegsBoundToWorktree(dir string) {
+	if dir == "" {
+		return
+	}
+	s.mu.Lock()
+	var swept []*interactiveRun
+	for _, c := range s.runs {
+		if c.legState == LegStateActive && c.workspaceCwd == dir {
+			c.legState = LegStateClosed
+			c.legClosedReason = LegClosedReasonWorktreeSwept
+			swept = append(swept, c)
+		}
+	}
+	s.mu.Unlock()
+	for _, c := range swept {
+		if err := s.persistProviderSession(sessionStateOf(c)); err != nil {
+			log.Printf("[tournament] persist swept leg %q: %v", c.id, err)
 		}
 	}
 }
@@ -325,7 +533,11 @@ func (s *InteractiveService) spawnTournamentCandidates(parentRunID string, rollo
 // runTournamentMergeNode dispatches merge_and_audit: lands the winner patch
 // in the main workspace, then advances the declared forward edge — "done"
 // terminalizes the flow and (for an escalation child) resumes the parent.
-func (s *InteractiveService) runTournamentMergeNode(ctx context.Context, parentRunID string, edges []agentpack.FlowEdge, nodes []agentpack.FlowNode, node agentpack.FlowNode, resultMessage string) bool {
+func (s *InteractiveService) runTournamentMergeNode(ctx context.Context, parentRunID string, edges []agentpack.FlowEdge, nodes []agentpack.FlowNode, node agentpack.FlowNode, _ string) bool {
+	return s.runTournamentMergeNodeWithOperatorPatch(ctx, parentRunID, edges, nodes, node, "")
+}
+
+func (s *InteractiveService) runTournamentMergeNodeWithOperatorPatch(ctx context.Context, parentRunID string, edges []agentpack.FlowEdge, nodes []agentpack.FlowNode, node agentpack.FlowNode, operatorPatch string) bool {
 	if s.flowRunTerminalLocked(parentRunID) {
 		return true
 	}
@@ -343,6 +555,9 @@ func (s *InteractiveService) runTournamentMergeNode(ctx context.Context, parentR
 	rawArgs := map[string]any{"winner": winner}
 	if patchRecorded {
 		rawArgs["patch"] = winnerPatch
+	}
+	if operatorPatch != "" {
+		rawArgs["patch"] = operatorPatch
 	}
 	out, err := behaviorTournamentMerge(ctx, BehaviorInput{
 		NodeID:       node.ID,
@@ -371,14 +586,13 @@ func (s *InteractiveService) runTournamentMergeNode(ctx context.Context, parentR
 		// Sweep loser worktrees. The arbiter-merge path already cleaned them
 		// at verdict time (idempotent no-op here); the human-pick path
 		// (escalate keeps all candidates mergeable) needs it here.
-		var mgr tournament.WorktreeManager
 		var losers []string
 		for _, n := range nodes {
 			if strings.EqualFold(strings.TrimSpace(n.Cohort), "tournament") && n.ID != winner {
 				losers = append(losers, n.ID)
 			}
 		}
-		_ = mgr.Cleanup(s.workspaceCwdFor(parentRunID), losers)
+		s.sweepCandidateWorktrees(s.workspaceCwdFor(parentRunID), losers)
 		s.finishTournamentRun(parentRunID, winner, out.Summary)
 		return true
 	}
@@ -462,6 +676,38 @@ func tournamentDecisionCard(out BehaviorOutput) map[string]any {
 	}
 }
 
+// extractOperatorPatch pulls a unified diff out of free-form decision
+// feedback — the operator's manually resolved merge (B-5/BUG-478 follow-up).
+// Detection is deliberately narrow: a `diff --git` header anywhere (git
+// format, possibly pasted after prose), or text that itself starts with a
+// `--- `/`+++ ` file header pair (plain unified diff). A trailing markdown
+// fence is stripped. Anything else returns "" and the recorded snapshot
+// stays the merge source.
+func extractOperatorPatch(feedback string) string {
+	trimmed := strings.TrimSpace(feedback)
+	if trimmed == "" {
+		return ""
+	}
+	start := strings.Index(feedback, "diff --git ")
+	if start < 0 {
+		if strings.HasPrefix(trimmed, "--- ") && strings.Contains(trimmed, "\n+++ ") {
+			start = strings.Index(feedback, "--- ")
+		} else {
+			return ""
+		}
+	}
+	// Keep the diff's raw tail: `git apply` rejects a hunk whose last line
+	// lacks the newline terminator, and TrimSpace would strip exactly that.
+	diff := feedback[start:]
+	if end := strings.LastIndex(diff, "\n```"); end > 0 {
+		diff = diff[:end+1]
+	}
+	if !strings.HasSuffix(diff, "\n") {
+		diff += "\n"
+	}
+	return diff
+}
+
 // tournamentMergeDecisionCard renders the MERGE-stage escalate as a
 // request_user_decision card (BUG-478). Unlike the arbiter card — whose
 // options come from the verdict ranking — merge-stage options are derived
@@ -484,9 +730,10 @@ func tournamentMergeDecisionCard(out BehaviorOutput, winner string, patches map[
 			label += " (picked winner — patch conflicts)"
 		}
 		options = append(options, map[string]any{
-			"id":          id,
-			"label":       label,
-			"consequence": "merge this candidate's recorded patch into the workspace",
+			"id":    id,
+			"label": label,
+			"consequence": "merge this candidate's recorded patch into the workspace" +
+				" (reply with your own resolved diff to apply that instead — re-picking re-applies the stored patch)",
 		})
 	}
 	options = append(options,
@@ -606,7 +853,7 @@ func (s *InteractiveService) resumeTournamentChoice(runID, chosen, feedback stri
 		if !ok {
 			return s.agentGraphSnapshot(runID), fmt.Errorf("tournament: no merge node in flow topology")
 		}
-		s.runTournamentMergeNode(context.Background(), runID, edges, nodes, mergeNode, feedback)
+		s.runTournamentMergeNodeWithOperatorPatch(context.Background(), runID, edges, nodes, mergeNode, extractOperatorPatch(feedback))
 		return s.agentGraphSnapshot(runID), nil
 	case chosen == "retry":
 		s.agentOrchestrator.mutateLoop(runID, func(st AgentLoopState) AgentLoopState {
@@ -638,12 +885,14 @@ func (s *InteractiveService) resumeTournamentChoice(runID, chosen, feedback stri
 		// The escalate park keeps candidate worktrees alive for a human pick;
 		// a retry must clean that stale ground first or Create fails
 		// "already exists" and the fresh round runs in the main workspace.
-		var mgr tournament.WorktreeManager
+		// BUG-535: sweeping also closes the superseded legs' claims — a
+		// vetoed/parked leg from the prior cohort must not keep claiming a
+		// dir the new cohort is about to own.
 		ids := make([]string, 0, len(candidates))
 		for _, c := range candidates {
 			ids = append(ids, c.ID)
 		}
-		_ = mgr.Cleanup(s.workspaceCwdFor(runID), ids)
+		s.sweepCandidateWorktrees(s.workspaceCwdFor(runID), ids)
 		go s.spawnTournamentCandidates(runID, rollout, candidates, feedback)
 		return s.agentGraphSnapshot(runID), nil
 	case chosen == "discard":
@@ -666,14 +915,13 @@ func (s *InteractiveService) resumeTournamentChoice(runID, chosen, feedback stri
 // that did not happen. Idempotent: Cleanup and the state clearing are no-ops
 // on replay, and the consumed decision card stays cleared.
 func (s *InteractiveService) discardTournamentMerge(runID string, nodes []agentpack.FlowNode, feedback string) {
-	var mgr tournament.WorktreeManager
 	ids := make([]string, 0, len(nodes))
 	for _, n := range nodes {
 		if strings.EqualFold(strings.TrimSpace(n.Cohort), "tournament") {
 			ids = append(ids, n.ID)
 		}
 	}
-	_ = mgr.Cleanup(s.workspaceCwdFor(runID), ids)
+	s.sweepCandidateWorktrees(s.workspaceCwdFor(runID), ids)
 	summary := "tournament discarded — no patch merged"
 	if note := strings.TrimSpace(feedback); note != "" {
 		summary += " (" + note + ")"

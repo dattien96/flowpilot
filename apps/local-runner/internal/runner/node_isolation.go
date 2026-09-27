@@ -2,6 +2,8 @@ package runner
 
 import (
 	"strings"
+
+	"flowpilot-runner/internal/agentpack"
 )
 
 // Task-340 (CP-62 P-4): per-node read-only enforcement. A node whose
@@ -56,6 +58,21 @@ func (s *InteractiveService) flowNodePostureFor(rs *interactiveRun) string {
 		}
 	}
 	return ""
+}
+
+// flowHasVerdictOnlyNode reports whether the resolved node set declares any
+// verdict_only posture node (BUG-504). A flow that declares one needs the
+// machine-verdict face offered on the sessions executing it — the
+// verdict_only children themselves AND the host run's inline hub nodes that
+// consume and seal the debate (owner-debate's debate_trigger /
+// debate_synthesis run on the parent session).
+func flowHasVerdictOnlyNode(nodes []agentpack.FlowNode) bool {
+	for _, n := range nodes {
+		if strings.TrimSpace(n.Posture) == PostureVerdictOnly {
+			return true
+		}
+	}
+	return false
 }
 
 // evaluateFlowNodeApproval is the posture→decision matrix (Task-340 §11).

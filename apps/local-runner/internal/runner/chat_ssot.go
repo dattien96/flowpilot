@@ -31,6 +31,10 @@ const (
 	// a same-binding context reset — nothing was rerouted, so provider_switch
 	// would mislabel the ledger.
 	LegClosedReasonContextReset = "context_reset"
+	// LegClosedReasonWorktreeSwept (BUG-535): the leg's dedicated worktree was
+	// removed by a tournament cleanup (retry/discard/abort/stale-sweep) — the
+	// durable claim must not outlive the directory it points at.
+	LegClosedReasonWorktreeSwept = "worktree_swept"
 )
 
 // Chat transcript record types (SD-26 §6.1, SD26-E-1..E-9). The record

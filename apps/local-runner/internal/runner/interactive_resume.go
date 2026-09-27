@@ -1092,6 +1092,13 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 		lastFailedDelegateNodeID:  st.LastFailedDelegateNodeID,
 		lastEscalatedInlineNodeID: st.LastEscalatedInlineNodeID,
 	}
+	if !rs.accountPinned {
+		if claim, ok := s.activeQuotaClaimForRun(rs.id, rs.providerKey); ok {
+			rs.providerAccountID = claim.AccountID
+			rs.accountPinned = true
+			rs.quotaClaimID = claim.ClaimID
+		}
+	}
 	if rs.idempotency == nil {
 		rs.idempotency = map[string]string{}
 	}

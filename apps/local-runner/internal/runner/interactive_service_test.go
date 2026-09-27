@@ -2245,13 +2245,14 @@ func TestApplyFlowControlContinueBlocksAtCap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("applyFlowControl(continue at cap): %v", err)
 	}
-	if result.Status != "blocked" || result.NextAction != "awaiting_user" {
-		t.Errorf("result = %+v, want Status=blocked NextAction=awaiting_user", result)
+	if result.NextAction != "awaiting_user" {
+		t.Errorf("result = %+v, want NextAction=awaiting_user", result)
 	}
 	snap := svc.agentGraphSnapshot(runID)
-	if snap.LoopState.Status != "blocked" {
-		t.Errorf("loop status = %q, want blocked", snap.LoopState.Status)
+	if snap.LoopState.Status != "tournament_escalation" {
+		t.Errorf("loop status = %q, want tournament_escalation (escalation always on)", snap.LoopState.Status)
 	}
+	awaitTournamentChildIdle(t, svc, runID)
 }
 
 func TestApplyFlowControlEscalateBlocks(t *testing.T) {

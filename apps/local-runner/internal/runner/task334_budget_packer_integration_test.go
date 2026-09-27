@@ -30,18 +30,17 @@ func task334ComposedPrompt(excerptLines int) string {
 	return sb.String()
 }
 
-// Task-334 DOD: with enable_budget_packer OFF (default) the runner's prompt
-// output must be byte-identical to the pre-Task-334 behavior.
+// MVP posture: the packer is always ON and the env flag is ignored —
+// but a prompt that fits the budget passes through byte-identical (no
+// gratuitous reformatting), so the pre-Task-334 contract still holds for
+// every under-budget turn.
 func TestTask334_BudgetPackerDisabled_PromptByteIdentical(t *testing.T) {
-	t.Setenv(budgetPackerEnvFlag, "") // force the default
-	if budgetPackerEnabled() {
-		t.Fatalf("budget packer must default OFF when FLOWPILOT_ENABLE_BUDGET_PACKER is unset")
-	}
+	t.Setenv(budgetPackerEnvFlag, "0") // env no longer gates — must be ignored
 	prompt := task334ComposedPrompt(20)
 	s := &InteractiveService{}
 	got := s.applyBudgetPackerIfEnabled(nil, prompt, "turn-1")
 	if !bytes.Equal([]byte(got), []byte(prompt)) {
-		t.Fatalf("flag OFF must return the prompt byte-identical (got %d bytes, want %d)", len(got), len(prompt))
+		t.Fatalf("under-budget prompt must pass through byte-identical (got %d bytes, want %d)", len(got), len(prompt))
 	}
 }
 

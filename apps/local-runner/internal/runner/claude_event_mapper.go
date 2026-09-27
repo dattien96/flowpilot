@@ -123,7 +123,12 @@ func mapClaudeResult(raw map[string]any) []ProviderEvent {
 	isError, _ := raw["is_error"].(bool)
 	var out []ProviderEvent
 	if usage := claudeTokenUsage(raw["usage"]); usage != nil {
-		out = append(out, ProviderEvent{Type: EventTokenUsageUpdated, TokenUsage: &TokenUsageSnapshot{Last: usage}})
+		// BUG-513: a result frame's usage is the aggregate for this query
+		// (one print invocation = one turn), not session-cumulative like
+		// Codex/Devin totals. Mark it query-scoped — the emit seam
+		// accumulates it into the session-cumulative Total so the usage
+		// cap and compaction detectors stop being blind to Claude.
+		out = append(out, ProviderEvent{Type: EventTokenUsageUpdated, TokenUsage: &TokenUsageSnapshot{Last: usage, Total: usage, UsageScopeQuery: true}})
 	}
 	if isError || (subtype != "" && subtype != "success") {
 		// Task-445: a limit-shaped result emits the typed classification event

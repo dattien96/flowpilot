@@ -3,7 +3,6 @@ package runner
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 )
@@ -45,13 +44,12 @@ const (
 	compactionDropRatio       = 0.30 // >30% TotalTokens drop within one leg
 )
 
+// MVP: always ON — the flag path no longer exists as a runtime option;
+// FLOWPILOT_CONTEXT_PRESSURE is ignored. Rollback for a bad rollout is a
+// revert commit, not a flag flip (same posture as chatSSOTEnabled and
+// ReproduceGateEnabled).
 func contextPressureEnabled() bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv(contextPressureEnvFlag))) {
-	case "1", "true", "yes", "on", "enable", "enabled":
-		return true
-	default:
-		return false
-	}
+	return true
 }
 
 // pressureTier maps a usage/window ratio onto the ladder tier.
@@ -86,10 +84,26 @@ func (s *InteractiveService) evalContextPressureLocked(rs *interactiveRun, ev Pr
 	}
 	legID := ev.ProviderSessionID
 
+	// BUG-513: query-scoped legs (Claude `print` respawns emit per-query
+	// usage frames) have NO trustworthy session-context signal — Total is
+	// the seam's monotonic accumulator (cap accounting only, can never
+	// drop) and Last is the single query's token aggregate, not session
+	// occupancy. A long query followed by a short one satisfies every
+	// drop-based heuristic — including the round-3 "previous read ≥80%
+	// of window" gate — without the provider compacting anything.
+	// Compaction detection therefore stays limited to cumulative legs
+	// whose Total genuinely tracks the session; query-scoped legs keep
+	// accumulating Total for caps but never emit provider_compacted.
+	// Same for the pressure ladder below: a single query near the window
+	// is a prompt-size fact, not session fullness — a "session is at 90%"
+	// card on a leg whose provider session resets per query is a false
+	// claim, and rotate_leg there is a no-op reset. Blind, not guessed.
+	_, queryScoped := rs.legUsageTotals[legID]
+
 	// --- Compaction detection (T-3): sharp TotalTokens drop, same leg. ---
 	if snap.Total != nil {
 		cur := snap.Total.TotalTokens
-		if legID == rs.lastUsageSessionID && isProviderCompaction(rs.lastUsageTotalTokens, cur) {
+		if !queryScoped && legID == rs.lastUsageSessionID && isProviderCompaction(rs.lastUsageTotalTokens, cur) {
 			s.emitLocked(rs, ProviderEvent{
 				Type: EventProviderCompacted,
 				ContextPressure: &ContextPressurePayload{
@@ -110,6 +124,9 @@ func (s *InteractiveService) evalContextPressureLocked(rs *interactiveRun, ev Pr
 	}
 
 	// --- Pressure ladder (T-1/T-2): Last/window ratio, deduped per leg. ---
+	if queryScoped {
+		return // Last is per-query usage, not session occupancy (BUG-513)
+	}
 	if snap.Last == nil || snap.ModelContextWindow == nil || *snap.ModelContextWindow <= 0 {
 		return // unknown window → evaluate nothing (never guess)
 	}

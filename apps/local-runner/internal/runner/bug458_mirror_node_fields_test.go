@@ -160,6 +160,37 @@ func TestRecordFromWorkflowRowBuiltinMirrorRestoresContextProfiles(t *testing.T)
 	}
 }
 
+// TestRecordFromWorkflowRowBuiltinMirrorRestoresPostureAndContextProfile pins
+// the remaining no-column fields BUG-458 restored: `posture` and node-level
+// `context_profile` (CP-62 P-4 / Task-340: reviewer/scout postures are
+// structural gates, not prompts). vibe-sprint's preflight_contract_plan
+// declares posture: read_only + contextProfile: scout in the embedded pack —
+// neither has a step_definitions column, so a builtin mirror that drops them
+// re-opens the read-only posture gap BUG-458 fixed.
+func TestRecordFromWorkflowRowBuiltinMirrorRestoresPostureAndContextProfile(t *testing.T) {
+	packID, packFlowID := "flowpilot-core-flow-pack", "vibe-sprint"
+	planID, planBehavior, planLifecycle := "preflight_contract_plan", "agent.delegate", "once"
+	row := dbWorkflowRow{
+		ID: "wf-vibe-posture", Name: "Vibe Sprint",
+		IsBuiltin: true, PackID: &packID, PackFlowID: &packFlowID,
+		WorkflowSteps: []dbWorkflowStepRow{
+			{StepType: "x_plan", OrderIndex: 0, StepDefinition: dbStepDefinitionRow{
+				StepType: "x_plan", NodeID: &planID, BehaviorID: &planBehavior, NodeLifecycle: &planLifecycle}},
+		},
+	}
+	rec := recordFromWorkflowRow(row)
+	if len(rec.Definition.Nodes) != 1 {
+		t.Fatalf("node count = %d, want 1", len(rec.Definition.Nodes))
+	}
+	node := rec.Definition.Nodes[0]
+	if node.Posture != "read_only" {
+		t.Fatalf("preflight_contract_plan.Posture = %q, want %q restored from the embedded pack (no column exists)", node.Posture, "read_only")
+	}
+	if node.ContextProfile != "scout" {
+		t.Fatalf("preflight_contract_plan.ContextProfile = %q, want %q restored from the embedded pack", node.ContextProfile, "scout")
+	}
+}
+
 // TestRecordFromWorkflowRowDerivesRunForUserRows covers non-builtin rows
 // (cloned/user-authored flows): no embedded counterpart exists, so `run`
 // must be derived from the node's behavior — agent.* spawns a child

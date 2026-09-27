@@ -285,6 +285,7 @@ func TestMemberStallBlocksHub(t *testing.T) {
 	if got := flowStepStatus(t, svc, parent.RunID, "synthesis"); got != StepStatusWaitingUserApr {
 		t.Fatalf("hub = %q, want WAITING", got)
 	}
+	awaitTournamentChildIdle(t, svc, parent.RunID)
 }
 
 func TestMemberActionSkipJoinsCohort(t *testing.T) {

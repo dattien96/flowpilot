@@ -198,9 +198,21 @@ func (s *InteractiveService) setTamperedTestPaths(rs *interactiveRun, paths []st
 // (Task-346): continue feedback matching an option id or label
 // (case-insensitive) stamps the choice for the sprint handoff; prose answers
 // leave the choice empty — the fallback never guesses.
+//
+// The pick is matched against the first line of the feedback, not only the
+// whole body: a single decision submit may carry the option AND a free-form
+// payload (BUG-515 — "candidate-a" plus the operator's hand-resolved merge
+// diff over /agent-loop/continue). The remainder still flows verbatim to the
+// resume path, where extractOperatorPatch finds the `diff --git` header. A
+// prose first line matches nothing, so the no-guess fallback is preserved.
 func (s *InteractiveService) captureDecisionChoice(runID, feedback string) {
 	feedback = strings.TrimSpace(feedback)
 	if feedback == "" {
+		return
+	}
+	firstLine, _, _ := strings.Cut(feedback, "\n")
+	firstLine = strings.TrimSpace(firstLine)
+	if firstLine == "" {
 		return
 	}
 	s.mu.Lock()
@@ -210,7 +222,7 @@ func (s *InteractiveService) captureDecisionChoice(runID, feedback string) {
 		return
 	}
 	for _, opt := range rs.decisionCard.Options {
-		if strings.EqualFold(feedback, strings.TrimSpace(opt.ID)) || strings.EqualFold(feedback, strings.TrimSpace(opt.Label)) {
+		if strings.EqualFold(firstLine, strings.TrimSpace(opt.ID)) || strings.EqualFold(firstLine, strings.TrimSpace(opt.Label)) {
 			rs.decisionCardChosen = strings.TrimSpace(opt.ID)
 			return
 		}

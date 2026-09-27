@@ -130,7 +130,11 @@ func (s *InteractiveService) CrossProviderCandidates(ctx context.Context, demand
 			cand.Headroom = NormalizeAccountHeadroom(summary, now, settings)
 			// Hard exclusions — unusable accounts are Rejected outright.
 			hard := false
-			if reason := state.accountBlockReason(acct.ID); reason != "" {
+			// quota_exhausted blocks lift on fresh exact headroom — the
+			// window refilled while the durable row still stands;
+			// billing/credits blocks veto until the operator resolves it.
+			if reason := state.accountBlockReason(acct.ID); reason != "" &&
+				!quotaBlockLiftedOnHeadroom(reason, cand.Headroom) {
 				cand.RejectionReasons = append(cand.RejectionReasons, quotaBlockRejectionReason(reason))
 				hard = true
 			}

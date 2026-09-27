@@ -1179,10 +1179,19 @@ func (r *Runner) CleanupSessions() {
 		r.claudePool.closeAll()
 	}
 	r.codexAppServerMu.Lock()
-	if h := r.codexAppServer; h != nil {
-		r.codexAppServer = nil
+	closed := map[*codexAppServerHandle]bool{}
+	for scope, handle := range r.codexAppServers {
+		if handle != nil && !closed[handle] {
+			handle.close()
+			closed[handle] = true
+		}
+		delete(r.codexAppServers, scope)
+	}
+	if h := r.codexAppServer; h != nil && !closed[h] {
 		h.close()
 	}
+	r.codexAppServer = nil
+	r.codexAppServers = nil
 	r.codexAppServerMu.Unlock()
 }
 

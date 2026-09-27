@@ -81,10 +81,11 @@ func TestV9MatrixContinueCapSettlesWaitingBeforeBlocked(t *testing.T) {
 	if got := flowStepStatus(t, svc, runID, hubID); got != StepStatusWaitingUserApr {
 		t.Fatalf("hub = %q, want WAITING_USER_APPROVAL", got)
 	}
-	if got := svc.agentOrchestrator.loopStateFor(runID).Status; got != "blocked" {
-		t.Fatalf("loop = %q, want blocked", got)
+	if got := svc.agentOrchestrator.loopStateFor(runID).Status; got != "tournament_escalation" {
+		t.Fatalf("loop = %q, want tournament_escalation (escalation always on)", got)
 	}
 	assertNoStepStuckRunning(t, svc, runID)
+	awaitTournamentChildIdle(t, svc, runID)
 }
 
 func TestV9MatrixContractRenderOrderAndNoDoubleInject(t *testing.T) {

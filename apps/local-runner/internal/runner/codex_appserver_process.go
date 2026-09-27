@@ -23,7 +23,10 @@ import (
 
 const codexAppServerEnvFlag = "FLOWPILOT_CODEX_APPSERVER"
 
-// codexAppServerEnabled reports whether the live Codex app-server path is turned on.
+// codexAppServerEnabled reports whether the live Codex app-server path is
+// turned on. Still env-gated: this is a runtime-path selector for a
+// provider that needs a real codex binary — not a CP feature flag — and
+// it cannot be live-verified on machines without codex.
 func codexAppServerEnabled() bool {
 	v := strings.TrimSpace(strings.ToLower(os.Getenv(codexAppServerEnvFlag)))
 	return v == "1" || v == "true" || v == "yes"
@@ -77,22 +80,45 @@ func (h *codexAppServerHandle) close() {
 	}
 }
 
-// ensureCodexAppServer returns the shared app-server handle for a scope, spawning a
-// fresh `codex app-server` (and tearing down any handle bound to a different scope —
-// the account-switch recreate, 04-06) when needed. Reuses a live handle for the same
-// scope. The dispatcher/adapter wiring is identical to the pipe-tested path; only
-// the transport is a real subprocess here.
+// ensureCodexAppServer returns the app-server handle for a scope, spawning a
+// fresh process when needed and retaining live handles for other account scopes.
+// The dispatcher/adapter wiring is identical to the pipe-tested path; only the
+// transport is a real subprocess here.
 func (r *Runner) ensureCodexAppServer(ctx context.Context, scopeKey, cwd string, extraEnv map[string]string) (*codexAppServerHandle, error) {
 	r.codexAppServerMu.Lock()
 	defer r.codexAppServerMu.Unlock()
 
-	if r.codexAppServer != nil && r.codexAppServer.scopeKey == scopeKey && !r.codexAppServer.dispatcher.isClosed() {
-		return r.codexAppServer, nil
+	if r.codexAppServers == nil {
+		r.codexAppServers = map[string]*codexAppServerHandle{}
+		if r.codexAppServer != nil {
+			r.codexAppServers[r.codexAppServer.scopeKey] = r.codexAppServer
+		}
 	}
-	// Different scope or dead process → tear down and recreate.
-	if r.codexAppServer != nil {
-		r.codexAppServer.close()
-		r.codexAppServer = nil
+	if handle := r.codexAppServers[scopeKey]; handle != nil {
+		if !handle.dispatcher.isClosed() {
+			r.codexAppServer = handle
+			return handle, nil
+		}
+		handle.close()
+		delete(r.codexAppServers, scopeKey)
+		if r.codexAppServer == handle {
+			r.codexAppServer = nil
+		}
+	}
+	for key, handle := range r.codexAppServers {
+		if key == scopeKey || handle == nil {
+			continue
+		}
+		handle.dispatcher.mu.Lock()
+		busy := len(handle.dispatcher.waiters) > 0 || len(handle.dispatcher.threadSubs) > 0
+		handle.dispatcher.mu.Unlock()
+		if !busy {
+			handle.close()
+			delete(r.codexAppServers, key)
+			if r.codexAppServer == handle {
+				r.codexAppServer = nil
+			}
+		}
 	}
 
 	cmd := commandContextFn(ctx, codexBinaryName(), "app-server", "--listen", "stdio://")
@@ -143,6 +169,7 @@ func (r *Runner) ensureCodexAppServer(ctx context.Context, scopeKey, cwd string,
 	}
 
 	h := &codexAppServerHandle{scopeKey: scopeKey, dispatcher: dispatcher, adapter: adapter, caps: caps, kill: kill}
+	r.codexAppServers[scopeKey] = h
 	r.codexAppServer = h
 	return h, nil
 }
@@ -156,10 +183,18 @@ func (r *Runner) ensureCodexAppServer(ctx context.Context, scopeKey, cwd string,
 func (r *Runner) resetCodexAppServer() {
 	r.codexAppServerMu.Lock()
 	defer r.codexAppServerMu.Unlock()
-	if r.codexAppServer != nil {
-		r.codexAppServer.close()
-		r.codexAppServer = nil
+	closed := map[*codexAppServerHandle]bool{}
+	for _, handle := range r.codexAppServers {
+		if handle != nil && !closed[handle] {
+			handle.close()
+			closed[handle] = true
+		}
 	}
+	if r.codexAppServer != nil && !closed[r.codexAppServer] {
+		r.codexAppServer.close()
+	}
+	r.codexAppServers = nil
+	r.codexAppServer = nil
 }
 
 // errorAdapter is returned by the live registry when the app-server cannot be

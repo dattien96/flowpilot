@@ -47,8 +47,10 @@ type ExecutionDemand struct {
 	MinContextTokens int64 `json:"minContextTokens,omitempty"`
 	// ObservedLimit carries a provider-limit kind just observed live on the
 	// requested binding (Task-449 gate entry): fresher than telemetry or the
-	// ledger, it hard-rejects the current account for THIS decision without
-	// persisting a durable block (quota_exhausted self-heals on reset).
+	// ledger, it hard-rejects the current account for THIS decision.
+	// Durable persistence lives on the emit path (finishTurn →
+	// noteAccountBlockedLocked); quota_exhausted blocks later lift on
+	// fresh exact telemetry since the window self-heals.
 	ObservedLimit ProviderLimitKind `json:"observedLimit,omitempty"`
 }
 
@@ -176,7 +178,10 @@ func (s *InteractiveService) SameProviderCandidates(ctx context.Context, demand 
 			summary = s.quotaTelemetryFn(ctx, acct)
 		}
 		cand.Headroom = NormalizeAccountHeadroom(summary, now, settings)
-		if reason := state.accountBlockReason(acct.ID); reason != "" {
+		// quota_exhausted blocks lift on fresh exact headroom (the window
+		// refilled); billing/credits blocks veto until the operator acts.
+		if reason := state.accountBlockReason(acct.ID); reason != "" &&
+			!quotaBlockLiftedOnHeadroom(reason, cand.Headroom) {
 			cand.RejectionReasons = append(cand.RejectionReasons, quotaBlockRejectionReason(reason))
 		}
 		// Task-449: a live-observed hard limit on the demanded account is
@@ -301,4 +306,17 @@ func (s *InteractiveService) listProviderAccounts() ([]ProviderAccount, error) {
 		return s.runner.ListProviderAccounts()
 	}
 	return (&Runner{}).ListProviderAccounts()
+}
+
+// quotaBlockLiftedOnHeadroom reports whether a recorded quota_exhausted
+// block is contradicted by fresh exact telemetry — healthy/low headroom
+// means the provider window refilled since the block was written, so the
+// stale row must not veto a recovered account. billing_required and
+// credits_exhausted never lift on telemetry: only the operator resolving
+// the account clears them. Stale/unknown telemetry keeps the block —
+// fail closed on the last hard observation.
+func quotaBlockLiftedOnHeadroom(reason string, head AccountHeadroom) bool {
+	return reason == string(ProviderLimitQuotaExhausted) &&
+		head.Confidence == "exact" &&
+		(head.State == "healthy" || head.State == "low")
 }
