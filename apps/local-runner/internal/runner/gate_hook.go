@@ -383,6 +383,20 @@ func (s *InteractiveService) runFlowGateAtEpoch(
 		}
 		tr.ReproduceExpected = true
 		tr.ReproduceCompileFailed = flowgate.ClassifySuiteOutput(baselineTestCmd, oracle.Output)
+		// BUG-531: for a reproduce turn Failed must mean "tests that failed
+		// this run", not only the non-regression split — a real bug also
+		// fails baseline-green tests (HasRegression), which used to leave
+		// Failed empty and made the gate reprompt "the suite passed" on a
+		// red suite (live run-134). r-tests/r-reg are suppressed for this
+		// turn, so widening Failed cannot double-fire elsewhere.
+		if oracle.EnvError == "" && !oracle.SuitePassed {
+			tr.Tests.Failed = tr.Tests.Failed[:0]
+			for _, tn := range oracle.Failed {
+				if !flowgate.IsOverridden(overrides, tn) {
+					tr.Tests.Failed = append(tr.Tests.Failed, tn)
+				}
+			}
+		}
 		// BUG-389: verify the RED actually exercises the reported scope.
 		if len(tr.Tests.Failed) > 0 {
 			checked, hit := s.reproduceFailuresExerciseTarget(cwd, reproduceLockRunID, tr.Tests.Failed, tr.WrittenPaths)
@@ -1358,6 +1372,17 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 		}
 		if baseline != nil {
 			baselineTestCmd = baseline.TestCmd
+		}
+		// BUG-531: same repopulation as the root hook — a reproduce turn's
+		// Failed list must include regression-classified failures so a real
+		// bug (which fails baseline-green tests too) satisfies r-reproduce.
+		if reproduceTurn && oracle.EnvError == "" && !oracle.SuitePassed {
+			tr.Tests.Failed = tr.Tests.Failed[:0]
+			for _, tn := range oracle.Failed {
+				if !flowgate.IsOverridden(overrides, tn) {
+					tr.Tests.Failed = append(tr.Tests.Failed, tn)
+				}
+			}
 		}
 		// CP-64 P-1: the compile/assertion split the (pure) r-reproduce rule
 		// consumes — a compile error is never a successful reproduction.
