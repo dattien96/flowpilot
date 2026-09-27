@@ -892,3 +892,30 @@ any non-terminal leg owns (cross-run safe), and quota respawn refuses a
 dir that is live-claimed or already swept. Unit-covered by
 `TestBug535_*` ×4; residual: a superseded vetoed leg's pending quota card
 still answers but refuses honestly (cosmetic).
+
+## I. R9 — BUG-535 sweep + quota respawn live drill (2026-09-27, build post-e43ad38d, runner :4321, workspace /tmp/fp-live4)
+
+**Scope:** re-run the tournament on a build carrying BUG-535/536/537.
+Provider scope: grok (real quota, exhausted mid-run — genuine HTTP 402)
++ devin/swe-2-high. Tournament mounted via run-level `flowRef`.
+
+| Row | R9 result |
+|-----|-----------|
+| A-67-1 second-provider leg | ☑ LIVE: run-551 spawned run-945 (grok-4.5) + run-950 (devin) — both legs ran real provider turns; run-950 completed with verified deliverable (`odd.go`/`odd_test.go`, `go test` green in `candidate-candidate-b`) |
+| B-59-5 multi-leg mid-turn kill | ☑ LIVE: `kill -9` during concurrent grok+devin turns → restart → parent run-11 honestly `cancelled`; dead legs run-531/run-536 kept `active` claims until the next spawn — then BUG-535 sweep closed both `worktree_swept` and reclaimed both worktrees (run-945/950 spawned on them) |
+| BUG-535 sweep (live) | ☑ as above — stale leg claims closed on sweep, durable state converged |
+| Real quota exhaustion | ☑ LIVE: grok hit 1% headroom (exact telemetry) then HTTP 402 → ledger `credits_exhausted` persisted → card `q-1059` raised on leg + mirrored on parent |
+| `stop` quota answer | ☑ LIVE: `quota_route_stopped` emitted, parent escalated; `agent-loop/continue` unblocked it; arbiter (devin) joined `candidate-a: failed(402)` + `candidate-b: done`, issued `changes_requested` with verdicts |
+| BUG-534 respawn ordering (2nd live proof) | ☑ answer `use_for_run|devin` on retry card `q-1441` → `run-1651` spawned (devin, same cohort/worktree) → run-945 `leg_state=closed/provider_switch` → `route_committed` emitted |
+| BUG-536 re-bind (live) | ◐ partial: initial binding path verified by unit test; live retry reuses the pinned leg → re-veto → card (by design: leg re-route goes through quota routing, not re-binding) |
+
+### R9 residuals — BUG-538 captured (OPEN)
+
+- **BUG-538**: quota-route successor `run-1651` spawned + handoff delivered
+  but **never dispatched** — step `candidate-a` consumed the old leg's FAILED
+  outcome at the same instant as `route_committed`; successor sits
+  `idle`/`spawned` with `leg_state=active` forever. Parent `run-551` stays
+  `running` with `loop_state=done` — BUG-521's withheld-completion is firing
+  correctly on the stranded leg. Options in the bug doc.
+- Cosmetic: `run-945` keeps `status=waiting_user_approval` +
+  `pending_resume_*` after its leg closed `provider_switch`.
