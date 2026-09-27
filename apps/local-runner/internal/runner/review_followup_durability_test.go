@@ -313,3 +313,128 @@ func TestBug534_RefusedRespawnKeepsLegOpen(t *testing.T) {
 		}
 	}
 }
+
+// BUG-535: the vetoed leg's workspace can be re-owned by a newer cohort
+// (or another run in the same workspace) between the veto and the card
+// answer — live /tmp/fp-live3 ended with three active legs on
+// candidate-candidate-a. The successor must never share a dir another
+// live leg owns, and must refuse onto a dir that no longer exists.
+func TestBug535_RespawnRefusesDirClaimedByLiveLeg(t *testing.T) {
+	reg := newProviderRegistry()
+	for _, key := range []ProviderKey{ProviderKeyGrok, ProviderKeyDevin} {
+		key := key
+		reg.register(ProviderRegistration{Key: key, Status: ProviderStatusAvailable, newAdapter: func() ProviderRuntimeAdapter {
+			return fakeAdapterFunc(func(_ context.Context, _ TurnRequest, b TurnBridge) error {
+				b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "ok"})
+				return nil
+			})
+		}})
+	}
+	svc, _ := newTestServerWith(t, reg, newInteractiveCatalog(), newFakeWorkflowStore())
+	parent, aerr := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyGrok, Cwd: t.TempDir()})
+	if aerr != nil {
+		t.Fatal(aerr)
+	}
+	dir := t.TempDir()
+	child, aerr := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyGrok, Cwd: dir})
+	if aerr != nil {
+		t.Fatal(aerr)
+	}
+	rival, aerr := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyDevin, Cwd: dir})
+	if aerr != nil {
+		t.Fatal(aerr)
+	}
+	svc.mu.Lock()
+	cr := svc.runs[child.RunID]
+	cr.parentRunID = parent.RunID
+	cr.label = "candidate-a"
+	cr.agentName = "coder"
+	cr.flowCohortId = "attempt-1"
+	cr.lastFullPrompt = "finish candidate"
+	cr.workspaceCwd = dir
+	rr := svc.runs[rival.RunID]
+	rr.status = RunStatusRunning
+	rr.legState = LegStateActive
+	rr.workspaceCwd = dir
+	svc.mu.Unlock()
+	// Parent is RUNNING — only the shared-dir claim may refuse the spawn.
+	svc.agentOrchestrator.setLoop(parent.RunID, AgentLoopState{Status: "running", Cap: 3, RoundCap: 3})
+
+	err := svc.commitQuotaRotation(context.Background(), QuotaResolution{
+		Demand:   ExecutionDemand{RunID: child.RunID, RequestedProvider: ProviderKeyGrok},
+		Selected: &RouteCandidate{ProviderKey: ProviderKeyDevin, Model: "devin/swe-2-high", AccountID: "devin-1"},
+	})
+	if err == nil {
+		t.Fatal("respawn onto a worktree another live leg owns must refuse")
+	}
+
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	if cr.legState != LegStateActive {
+		t.Fatalf("claim-refused respawn must keep the leg open, got %q", cr.legState)
+	}
+	for _, e := range cr.events {
+		if e.Type == EventQuotaRouteCommitted {
+			t.Fatal("route_committed emitted for a respawn that never happened")
+		}
+	}
+	for _, run := range svc.runs {
+		if run.id != child.RunID && run.id != rival.RunID && run.parentRunID == parent.RunID && run.label == "candidate-a" {
+			t.Fatalf("successor spawned onto a claimed worktree: %q", run.id)
+		}
+	}
+}
+
+// BUG-535: a quota card answered after the leg's worktree was swept
+// (arbiter retry/discard removed it) must refuse honestly instead of
+// spawning the successor into a directory that no longer exists.
+func TestBug535_RespawnRefusesSweptWorktree(t *testing.T) {
+	reg := newProviderRegistry()
+	for _, key := range []ProviderKey{ProviderKeyGrok, ProviderKeyDevin} {
+		key := key
+		reg.register(ProviderRegistration{Key: key, Status: ProviderStatusAvailable, newAdapter: func() ProviderRuntimeAdapter {
+			return fakeAdapterFunc(func(_ context.Context, _ TurnRequest, b TurnBridge) error {
+				b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "ok"})
+				return nil
+			})
+		}})
+	}
+	svc, _ := newTestServerWith(t, reg, newInteractiveCatalog(), newFakeWorkflowStore())
+	parent, aerr := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyGrok, Cwd: t.TempDir()})
+	if aerr != nil {
+		t.Fatal(aerr)
+	}
+	child, aerr := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyGrok, Cwd: t.TempDir()})
+	if aerr != nil {
+		t.Fatal(aerr)
+	}
+	gone := filepath.Join(t.TempDir(), "swept-candidate")
+	svc.mu.Lock()
+	cr := svc.runs[child.RunID]
+	cr.parentRunID = parent.RunID
+	cr.label = "candidate-a"
+	cr.agentName = "coder"
+	cr.lastFullPrompt = "finish candidate"
+	cr.workspaceCwd = gone // the dir an earlier sweep already removed
+	svc.mu.Unlock()
+	svc.agentOrchestrator.setLoop(parent.RunID, AgentLoopState{Status: "running", Cap: 3, RoundCap: 3})
+
+	err := svc.commitQuotaRotation(context.Background(), QuotaResolution{
+		Demand:   ExecutionDemand{RunID: child.RunID, RequestedProvider: ProviderKeyGrok},
+		Selected: &RouteCandidate{ProviderKey: ProviderKeyDevin, Model: "devin/swe-2-high", AccountID: "devin-1"},
+	})
+	if err == nil {
+		t.Fatal("respawn onto a swept worktree must refuse")
+	}
+
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	if cr.legState != LegStateActive {
+		t.Fatalf("swept-dir respawn must keep the leg open, got %q", cr.legState)
+	}
+	for _, e := range cr.events {
+		if e.Type == EventQuotaRouteCommitted {
+			t.Fatal("route_committed emitted for a respawn that never happened")
+		}
+	}
+}

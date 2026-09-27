@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"time"
 
@@ -364,7 +365,38 @@ func (s *InteractiveService) respawnChildOnRoute(ctx context.Context, child *int
 		WorkspaceCwd:      child.workspaceCwd,
 		FlowCohortID:      child.flowCohortId,
 	}
+	// BUG-535: a dedicated worktree binding must still be this leg's to give
+	// away. A sibling/parent-shared main cwd is not a dedicated binding —
+	// those legitimately overlap. Between the veto and the card answer the
+	// dir may have been swept (retry/discard) or re-owned by a newer cohort
+	// or another run; landing the successor there would either crash it on
+	// a missing dir or share a dir with a live leg (live /tmp/fp-live3:
+	// three active legs claimed candidate-candidate-a).
+	dedicatedDir := ""
+	if parent := s.runs[parentID]; parent != nil {
+		if d := strings.TrimSpace(in.WorkspaceCwd); d != "" && d != parent.workspaceCwd {
+			dedicatedDir = d
+		}
+	}
+	claimant := ""
+	if dedicatedDir != "" {
+		for _, c := range s.runs {
+			if c.id != child.id && c.legState == LegStateActive &&
+				!worktreeTerminal(c.status) && c.workspaceCwd == dedicatedDir {
+				claimant = c.id
+				break
+			}
+		}
+	}
 	s.mu.Unlock()
+	if claimant != "" {
+		return fmt.Errorf("quota_gate: respawn child: worktree %q already claimed by live leg %q — refusing to share", dedicatedDir, claimant)
+	}
+	if dedicatedDir != "" {
+		if _, err := os.Stat(dedicatedDir); err != nil {
+			return fmt.Errorf("quota_gate: respawn child: worktree %q no longer exists (swept): %w", dedicatedDir, err)
+		}
+	}
 	// BUG-534: spawn the successor BEFORE closing this leg — a refused spawn
 	// (e.g. the parent loop parked on a decision card, BUG-432) must leave
 	// the vetoed leg untouched so admission re-enters the gate instead of

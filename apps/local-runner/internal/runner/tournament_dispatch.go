@@ -362,7 +362,6 @@ func (s *InteractiveService) spawnTournamentCandidates(parentRunID string, rollo
 		worktree string
 	}
 	spawns := make([]candidateSpawn, 0, len(candidates))
-	var mgr tournament.WorktreeManager
 	// BUG-533: every abort path must sweep the worktrees this call already
 	// created — an orphaned candidate dir wedges the next spawn with
 	// "worktree already exists" (live run-1 needed manual `git worktree
@@ -372,17 +371,18 @@ func (s *InteractiveService) spawnTournamentCandidates(parentRunID string, rollo
 		for _, spawn := range spawns {
 			ids = append(ids, spawn.node.ID)
 		}
-		_ = mgr.Cleanup(cwd, ids)
+		s.sweepCandidateWorktrees(cwd, ids)
 	}
-	// liveChild reports whether a current-attempt child already owns the
-	// candidate's worktree — its dir is claimed, never swept as stale.
-	liveChild := func(candidateID string) bool {
-		attemptSuffix := fmt.Sprintf("attempt-%d", attempt)
+	// liveClaim reports whether any non-terminal leg — any run, any cohort —
+	// still claims the dir. Never sweep under a live claimant (BUG-535): a
+	// foreign run's mid-turn candidate or a same-attempt vetoed leg would
+	// lose its workspace. Terminal-run residue is stale claim data, not a
+	// live claimant — the sweep closes it.
+	liveClaim := func(dir string) bool {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		for _, c := range s.runs {
-			if c.parentRunID == parentRunID && c.label == candidateID &&
-				strings.HasSuffix(c.flowCohortId, attemptSuffix) && !worktreeTerminal(c.status) {
+			if c.workspaceCwd == dir && c.legState == LegStateActive && !worktreeTerminal(c.status) {
 				return true
 			}
 		}
@@ -424,12 +424,12 @@ func (s *InteractiveService) spawnTournamentCandidates(parentRunID string, rollo
 			}
 		}
 		worktree, err := s.tournamentCandidateWorktree(parentRunID, node)
-		if err != nil && !liveChild(node.ID) {
-			// BUG-533: an "already exists" failure on a dir no live child
-			// owns is a stale orphan from an earlier aborted attempt —
+		if err != nil && !liveClaim(tournament.WorktreePath(cwd, node.ID)) {
+			// BUG-533: an "already exists" failure on a dir no live leg
+			// claims is a stale orphan from an earlier aborted attempt —
 			// sweep it and retry once so the spawn self-heals instead of
 			// parking on a dir nothing will ever claim.
-			_ = mgr.Cleanup(cwd, []string{node.ID})
+			s.sweepCandidateWorktrees(cwd, []string{node.ID})
 			worktree, err = s.tournamentCandidateWorktree(parentRunID, node)
 		}
 		if err != nil {
@@ -487,7 +487,46 @@ func (s *InteractiveService) spawnTournamentCandidates(parentRunID string, rollo
 		}
 	}
 	if len(orphans) > 0 {
-		_ = mgr.Cleanup(cwd, orphans)
+		s.sweepCandidateWorktrees(cwd, orphans)
+	}
+}
+
+// sweepCandidateWorktrees removes candidate worktrees AND closes every leg
+// still durably claiming their dirs (BUG-535, live /tmp/fp-live3: three
+// active legs on one candidate dir). A vetoed leg or dead-run residue
+// otherwise keeps leg_state=active on the path forever — letting a later
+// cohort, another run in the same workspace, or a quota successor inherit
+// a dir a live leg still owns. Idempotent like Cleanup itself.
+func (s *InteractiveService) sweepCandidateWorktrees(cwd string, candidateIDs []string) {
+	var mgr tournament.WorktreeManager
+	_ = mgr.Cleanup(cwd, candidateIDs)
+	for _, id := range candidateIDs {
+		s.closeLegsBoundToWorktree(tournament.WorktreePath(cwd, id))
+	}
+}
+
+// closeLegsBoundToWorktree closes every leg whose session row still claims
+// dir — regardless of run status: a cancelled run's active leg is exactly
+// the stale residue this exists to erase. Claim comparison uses the exact
+// path the manager hands out, so a run's own cwd never matches.
+func (s *InteractiveService) closeLegsBoundToWorktree(dir string) {
+	if dir == "" {
+		return
+	}
+	s.mu.Lock()
+	var swept []*interactiveRun
+	for _, c := range s.runs {
+		if c.legState == LegStateActive && c.workspaceCwd == dir {
+			c.legState = LegStateClosed
+			c.legClosedReason = LegClosedReasonWorktreeSwept
+			swept = append(swept, c)
+		}
+	}
+	s.mu.Unlock()
+	for _, c := range swept {
+		if err := s.persistProviderSession(sessionStateOf(c)); err != nil {
+			log.Printf("[tournament] persist swept leg %q: %v", c.id, err)
+		}
 	}
 }
 
@@ -547,14 +586,13 @@ func (s *InteractiveService) runTournamentMergeNodeWithOperatorPatch(ctx context
 		// Sweep loser worktrees. The arbiter-merge path already cleaned them
 		// at verdict time (idempotent no-op here); the human-pick path
 		// (escalate keeps all candidates mergeable) needs it here.
-		var mgr tournament.WorktreeManager
 		var losers []string
 		for _, n := range nodes {
 			if strings.EqualFold(strings.TrimSpace(n.Cohort), "tournament") && n.ID != winner {
 				losers = append(losers, n.ID)
 			}
 		}
-		_ = mgr.Cleanup(s.workspaceCwdFor(parentRunID), losers)
+		s.sweepCandidateWorktrees(s.workspaceCwdFor(parentRunID), losers)
 		s.finishTournamentRun(parentRunID, winner, out.Summary)
 		return true
 	}
@@ -847,12 +885,14 @@ func (s *InteractiveService) resumeTournamentChoice(runID, chosen, feedback stri
 		// The escalate park keeps candidate worktrees alive for a human pick;
 		// a retry must clean that stale ground first or Create fails
 		// "already exists" and the fresh round runs in the main workspace.
-		var mgr tournament.WorktreeManager
+		// BUG-535: sweeping also closes the superseded legs' claims — a
+		// vetoed/parked leg from the prior cohort must not keep claiming a
+		// dir the new cohort is about to own.
 		ids := make([]string, 0, len(candidates))
 		for _, c := range candidates {
 			ids = append(ids, c.ID)
 		}
-		_ = mgr.Cleanup(s.workspaceCwdFor(runID), ids)
+		s.sweepCandidateWorktrees(s.workspaceCwdFor(runID), ids)
 		go s.spawnTournamentCandidates(runID, rollout, candidates, feedback)
 		return s.agentGraphSnapshot(runID), nil
 	case chosen == "discard":
@@ -875,14 +915,13 @@ func (s *InteractiveService) resumeTournamentChoice(runID, chosen, feedback stri
 // that did not happen. Idempotent: Cleanup and the state clearing are no-ops
 // on replay, and the consumed decision card stays cleared.
 func (s *InteractiveService) discardTournamentMerge(runID string, nodes []agentpack.FlowNode, feedback string) {
-	var mgr tournament.WorktreeManager
 	ids := make([]string, 0, len(nodes))
 	for _, n := range nodes {
 		if strings.EqualFold(strings.TrimSpace(n.Cohort), "tournament") {
 			ids = append(ids, n.ID)
 		}
 	}
-	_ = mgr.Cleanup(s.workspaceCwdFor(runID), ids)
+	s.sweepCandidateWorktrees(s.workspaceCwdFor(runID), ids)
 	summary := "tournament discarded — no patch merged"
 	if note := strings.TrimSpace(feedback); note != "" {
 		summary += " (" + note + ")"

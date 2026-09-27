@@ -186,3 +186,108 @@ func TestBug533_StaleWorktreeSweptOnCreateFailure(t *testing.T) {
 	}
 	t.Fatal("stale worktree wedged the spawn — no candidate child created")
 }
+
+// BUG-535: a cancelled run's leg keeps leg_state=active on the candidate
+// worktree forever (live /tmp/fp-live3: three active legs on
+// candidate-candidate-a). When the spawn path sweeps a stale dir it must
+// also close those residue claims so no durable claim outlives the dir.
+func TestBug535_WorktreeSweepClosesStaleLegClaims(t *testing.T) {
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{Key: ProviderKeyCodex, Status: ProviderStatusAvailable, newAdapter: func() ProviderRuntimeAdapter {
+		return fakeAdapterFunc(func(_ context.Context, _ TurnRequest, b TurnBridge) error {
+			b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "ok"})
+			return nil
+		})
+	}})
+	svc, _ := newTestServerWith(t, reg, newInteractiveCatalog(), newFakeWorkflowStore())
+	repo := tournamentE2EGreenRepo(t)
+	parent, aerr := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex, Cwd: repo})
+	if aerr != nil {
+		t.Fatal(aerr)
+	}
+	svc.agentOrchestrator.setLoop(parent.RunID, AgentLoopState{Status: "running", Cap: 3, RoundCap: 3})
+	// Dead-run residue: the old run is terminal but its leg still claims
+	// the worktree dir (exactly what a kill/restart leaves behind).
+	stale, aerr := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex, Cwd: repo})
+	if aerr != nil {
+		t.Fatal(aerr)
+	}
+	var mgr tournament.WorktreeManager
+	if _, err := mgr.Create(repo, "HEAD", "candidate-a"); err != nil {
+		t.Fatalf("seed claimed worktree: %v", err)
+	}
+	svc.mu.Lock()
+	sr := svc.runs[stale.RunID]
+	sr.status = RunStatusCancelled
+	sr.legState = LegStateActive
+	sr.workspaceCwd = tournament.WorktreePath(repo, "candidate-a")
+	svc.mu.Unlock()
+
+	svc.spawnTournamentCandidates(parent.RunID, agentpack.FlowNode{ID: "parallel_rollout"}, []agentpack.FlowNode{
+		{ID: "candidate-a", Run: "delegate", Behavior: "agent.delegate", Agent: "agents/coder.md", Cohort: "tournament", Model: "gpt-5.4-mini"},
+	}, "solve")
+
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	if sr.legState != LegStateClosed || sr.legClosedReason != LegClosedReasonWorktreeSwept {
+		t.Fatalf("stale leg claim survives the sweep: state=%q reason=%q", sr.legState, sr.legClosedReason)
+	}
+	for _, child := range svc.runs {
+		if child.parentRunID == parent.RunID && child.label == "candidate-a" {
+			return
+		}
+	}
+	t.Fatal("claimed-by-dead-run worktree wedged the spawn — no candidate child created")
+}
+
+// BUG-535 cross-run guard: the dir is claimed by a DIFFERENT run's live
+// leg — never sweep an actively-claimed worktree out from under it
+// (pre-fix liveChild only guarded same-attempt children of this parent).
+func TestBug535_LiveClaimantBlocksSweep(t *testing.T) {
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{Key: ProviderKeyCodex, Status: ProviderStatusAvailable, newAdapter: func() ProviderRuntimeAdapter {
+		return fakeAdapterFunc(func(_ context.Context, _ TurnRequest, b TurnBridge) error {
+			b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "ok"})
+			return nil
+		})
+	}})
+	svc, _ := newTestServerWith(t, reg, newInteractiveCatalog(), newFakeWorkflowStore())
+	repo := tournamentE2EGreenRepo(t)
+	parent, aerr := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex, Cwd: repo})
+	if aerr != nil {
+		t.Fatal(aerr)
+	}
+	svc.agentOrchestrator.setLoop(parent.RunID, AgentLoopState{Status: "running", Cap: 3, RoundCap: 3})
+	// A different (still-running) run's leg owns the dir.
+	rival, aerr := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex, Cwd: repo})
+	if aerr != nil {
+		t.Fatal(aerr)
+	}
+	var mgr tournament.WorktreeManager
+	if _, err := mgr.Create(repo, "HEAD", "candidate-a"); err != nil {
+		t.Fatalf("seed claimed worktree: %v", err)
+	}
+	dir := tournament.WorktreePath(repo, "candidate-a")
+	svc.mu.Lock()
+	rr := svc.runs[rival.RunID]
+	rr.status = RunStatusRunning
+	rr.legState = LegStateActive
+	rr.workspaceCwd = dir
+	svc.mu.Unlock()
+
+	svc.spawnTournamentCandidates(parent.RunID, agentpack.FlowNode{ID: "parallel_rollout"}, []agentpack.FlowNode{
+		{ID: "candidate-a", Run: "delegate", Behavior: "agent.delegate", Agent: "agents/coder.md", Cohort: "tournament", Model: "gpt-5.4-mini"},
+	}, "solve")
+
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatalf("live claimant's worktree was swept: %v", err)
+	}
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	if rr.legState != LegStateActive {
+		t.Fatalf("live claimant leg closed by another run's spawn: %q", rr.legState)
+	}
+	if loop := svc.agentOrchestrator.loopStateFor(parent.RunID); loop.Status != "blocked" {
+		t.Fatalf("contested worktree should park the flow, loop=%q", loop.Status)
+	}
+}

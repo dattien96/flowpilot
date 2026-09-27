@@ -878,3 +878,14 @@ nothing → plain chat; noted for future drills).
   and vetoed once per attempt — fail-closed but wasteful.
 - Broad runner suite env-baselines unchanged (missing provider binaries,
   MCP network) — see CA-1042 verification note.
+
+### R8 post-review — BUG-535 found live in durable state, fixed (CA-1043)
+
+`sessions.ndjson` showed three `leg_state=active` rows claiming the same
+`candidate-candidate-a` dir (vetoed leg run-799, dead-run residue
+run-1408, successor run-4150). Fix: sweeps now close claiming legs
+(`worktree_swept`), the Create-failure self-heal refuses to sweep dirs
+any non-terminal leg owns (cross-run safe), and quota respawn refuses a
+dir that is live-claimed or already swept. Unit-covered by
+`TestBug535_*` ×4; residual: a superseded vetoed leg's pending quota card
+still answers but refuses honestly (cosmetic).
