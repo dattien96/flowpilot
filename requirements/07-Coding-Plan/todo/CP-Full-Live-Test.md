@@ -940,3 +940,44 @@ fresh tournaments mounted via run-level `flowRef`.
   BUG-538 doc).
 - Parked-on-contested-dir flows wait for the rival leg to release the
   claim — by design; a `continue` after release retries the spawn.
+
+## K. R11 — full-campaign sweep (2026-09-28, runners :4321 + :4322, workspaces /tmp/fp-live4 + /tmp/fp-live5)
+
+**Scope:** drive every live-stageable entry point on this machine (devin +
+grok only — claude/codex/agy/opencode binaries absent). Second runner on
+:4322 with isolated workspace for parallel drills.
+
+| Row | R11 result |
+|-----|-----------|
+| `quota_route_blocked` (no candidate) | ☑ LIVE: pinned-devin run against fully-blocked ledger → 409 fail-closed + durable `quota_route_blocked` event (`run-?`, :4322 drill) |
+| BUG-507 approval expiry | ☑ LIVE: non-yolo devin run left `appr-9` unanswered past 10-min TTL → `approval_expired` persisted (seq 6), devin continued without the denied exec, run closed `completed` honestly (run-2, :4322) |
+| Organic quota veto + card | ☑ LIVE: run-14292 bound grok → real 402 (`quota_exhausted`, 0% headroom) → `user_question_required` `q-14305` with per-candidate diagnostics (`exhausted_quota`, `missing_model_binding`, `no_connected_account`); leg closed on veto (run-12520, :4322) |
+| Reprompt cap → escalate → extend-cap → memberAction retry | ☑ LIVE: run-14297 hit `maxFlowGateReprompts` (attempts 0,1 → cap 2) → `applyFlowControl(escalate)` → loop `blocked(escalate)`; `extend-cap` 3→5 (`extendCount:1`); `memberAction=retry` dispatched turn-16427; gate re-blocked honestly → re-escalate. Bounded loop verified end-to-end (run-12520, :4322) |
+| BUG-505 freeze fail-closed | ☑ LIVE: `preflight_contract_freeze` → `blocked/escalate` "invalid planner proposal: preflight draft requires at least one concrete declared path" — freeze refused an invalid proposal, escalated instead of freezing garbage (run-12062, :4322) |
+| Task-harness plan-freeze question | ☑ LIVE: real clarifying card `q-14577` (Slugify punctuation semantics) surfaced pre-freeze; answered plan-default A; flow continued (run-12062) |
+| cp-harness audit fail-closed | ☑ LIVE: `audit` → `blocked/escalate` "feature key missing or unverified; cannot finalize" — degraded catalog input handled honestly, no silent pass (run-332, :4322); reviewer loop bounded 3 rounds → approved → task_splitter → audit |
+| F3 vibe lock durability | ☑ LIVE: `vibe_awaiting_lock`, `vibe_lock_node_id=ss_lock`, `vibe_sprint_budget=8`, `working_mode=vibe` all survived a :4322 restart; `continue` re-drove the lock; owner-debate cohort (`owner_1`/`owner_2`) spawned + completed post-restart (run-11) |
+| Drift detector | ☑ LIVE: `zero_delta_progress` fired score 40 with corrective prompt on run-11's re-drive |
+| Escalate→continue resolution | ☑ LIVE: `continue` on `blocked/escalate` flips loop→running and re-drives active node with feedback (run-12520) |
+
+### R11 new findings (captured, not fixed per review-only scope)
+
+| Bug | Finding |
+|-----|---------|
+| **BUG-539** | Armed gate reprompt stranded: `checkAndBlockStalledMembers` doesn't shield armed reprompts → `member_stalled` fires on a queued reprompt → park/continue paths leave it undriven ~46min; orphan-cure re-drive resets `reprompt_attempts` (cap unreachable); `pending_gate_reprompt_prompt` never persisted (restart loses it). run-2830/run-1663, :4321 |
+| **BUG-540** | Completed turn never settles in-session: `turn_completed` + `terminal_completed` durable but no `gate_eval`/finalize → `turnInFlight` stuck → all re-drives refuse → wedge invisible to watchdogs; only boot `settle_owed` re-drive clears it (turn-6304 on run-1663, turn-4521 on run-2830 — owed 37–90min) |
+| **BUG-541** | Quota answer consumed but apply fails: `POST /client/questions/q-14305/answer` returned `200 accepted` while `respawnChildOnRoute` failed `loop is blocked (escalate)` — question destroyed, respawn never ran, candidate-a permanently lost; run-14292 zombie (`running` + `leg:closed`) |
+
+### R11 skipped / environment-blocked
+
+- **A-58-4 organic 3×reject cap**: run-332's reviewer approved on round 3 — cap not reached organically; cap→escalate machinery is live-verified via the reprompt path (attempt 2 → escalate) and unit-covered for reviewer rounds.
+- **A-65-4 nested parent-resume**: no nested tournament staged on this box; parent-resume seams exercised via continue/retry paths instead.
+- **BUG-512 context-pressure reset veto**: needs organic token exhaustion — not stageable in reasonable provider credit/time.
+- **F2 dev-mode switch mid-lock**: no HTTP mode-switch endpoint exists (Desktop/TUI-only surface) — blocked entry, documented.
+- **Claude/Codex/agy/opencode paths**: provider binaries absent on this machine — unit coverage only.
+
+### R11 residual state
+
+- :4321 runs (`run-1663`, `run-2830`, `run-3240`) normalized `cancelled` on the BUG-540 restart probe; legs remain `active` until a sweep reclaims the worktrees (bookkeeping design).
+- :4322 runs still cycling: `run-332` audit re-drive, `run-12062` freeze escalate (honest — planner can't declare paths without catalog), `run-12520` candidate-b gate-block re-escalate, `run-11` vibe debate `hub_stalled` watchdog.
+- `appr-6602` orphaned pending approval on skipped run-2830 (skip path doesn't resolve pending approvals — folded into BUG-539 notes).
