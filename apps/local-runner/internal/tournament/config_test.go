@@ -49,7 +49,7 @@ func TestParseTournamentConfigRejectsBadInput(t *testing.T) {
 			map[string]any{"candidate_id": "c", "provider": "grok", "model": "m"},
 			map[string]any{"candidate_id": "d", "provider": "grok", "model": "m"},
 		}},
-		{"candidates": []any{map[string]any{"candidate_id": "a", "provider": "gemini", "model": "m"}}},
+		{"candidates": []any{map[string]any{"candidate_id": "a", "provider": "ollama", "model": "m"}}},
 		{"candidates": []any{
 			map[string]any{"candidate_id": "a", "provider": "claude", "model": "m"},
 			map[string]any{"candidate_id": "a", "provider": "codex", "model": "m"},

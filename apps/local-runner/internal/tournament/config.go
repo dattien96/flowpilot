@@ -12,12 +12,13 @@ import (
 // config and derives the arbiter node's next action. Pure Go, no git, no
 // providers — provider names are validated labels only, never dispatch keys.
 
-// Known tournament providers (Task-370 Case-3 per-provider surface: the
-// config may name Claude/Codex/Grok; default runs 2 per R-1).
-var tournamentProviders = map[string]bool{"claude": true, "codex": true, "grok": true}
+// Known tournament providers (Task-370 Case-3 per-provider surface).
+var tournamentProviders = map[string]bool{
+	"claude": true, "codex": true, "devin": true,
+	"gemini": true, "grok": true, "opencode": true,
+}
 
-// Default candidates (CP-65 §9 R-1): Claude + Codex. A third (Grok) is
-// accepted by config; live 3-way rollout expansion is a P-5 follow-up.
+// Default candidates (CP-65 §9 R-1): Claude + Codex.
 var defaultCandidates = []TournamentCandidateConfig{
 	{CandidateID: "candidate-a", Provider: "claude", Model: "claude-sonnet"},
 	{CandidateID: "candidate-b", Provider: "codex", Model: "gpt-5.4-mini"},
@@ -105,7 +106,7 @@ func ParseTournamentConfig(raw map[string]any) (TournamentNodeConfig, error) {
 			return cfg, fmt.Errorf("tournament: candidates[%d] needs candidate_id, provider and model", i)
 		}
 		if !tournamentProviders[c.Provider] {
-			return cfg, fmt.Errorf("tournament: candidates[%d] unknown provider %q (want claude/codex/grok)", i, c.Provider)
+			return cfg, fmt.Errorf("tournament: candidates[%d] unknown provider %q", i, c.Provider)
 		}
 		if seen[c.CandidateID] {
 			return cfg, fmt.Errorf("tournament: duplicate candidate_id %q", c.CandidateID)
