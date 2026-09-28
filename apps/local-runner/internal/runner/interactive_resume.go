@@ -1104,10 +1104,46 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 	// CP-89 Task-451: a pending run reconstructs as chat — the pin stays but
 	// vibe start markers stay off (pin ≠ arm). A legacy/corrupt row carrying
 	// both pending AND armed markers normalizes toward the latch, which is
-	// authoritative (markers are derived state, the latch is the contract).
+	// authoritative (markers are derived state, the latch is the contract):
+	// every vibe arm/park field is cleared — a pending run can never have
+	// legitimately progressed to a lock, checkpoint, or parked sprint.
 	if restoredFlowArm == FlowArmPending {
 		rs.vibeAwaitingLock = false
+		rs.vibeTaskPlan = nil
+		rs.vibeRequirementFromNode = ""
+		rs.vibeSprintIndex = 0
 		rs.vibeSprintBudget = 0
+		rs.vibeSprintBoundaryDeclined = false
+		rs.vibeLockedCP = ""
+		rs.vibeLockedSS = ""
+		rs.vibeLockNodeID = ""
+		rs.vibeLockPath = ""
+		rs.vibeCheckpointNode = ""
+		rs.vibeCheckpointArtifacts = nil
+		rs.vibeTaskIndex = 0
+		rs.vibeTaskTotal = 0
+		rs.vibeTaskName = ""
+		rs.vibeSSSealed = false
+		rs.vibeCPSealed = false
+		rs.vibeParkedNodes = nil
+		rs.vibeParkedEdges = nil
+		rs.vibeParkedAcceptance = nil
+		rs.vibeParkedFlowRef = ""
+		rs.vibeSprintBoundaryPending = false
+		rs.vibeResumeConfirm = false
+		rs.vibeResumeFromNode = ""
+		rs.vibeOwnerFailRetries = 0
+		rs.vibeOwnerSettleInFlight = false
+		rs.vibeCoderResumeInFlight = false
+		// A pending run never launched its flow — any flow-engine residue
+		// (active nodes, engine-driven flag, a deferred post-turn gate) on the
+		// row is corrupt and must not leak into the reconstructed chat run.
+		rs.activeFlowNodes = nil
+		rs.flowEngineDriven = false
+		rs.pendingFlowGateSettle = false
+		rs.pendingFlowGateFinalMsg = ""
+		rs.pendingFlowGateOccurredAt = ""
+		rs.pendingFlowGateTurnID = ""
 	}
 	if !rs.accountPinned {
 		if claim, ok := s.activeQuotaClaimForRun(rs.id, rs.providerKey); ok {
@@ -1124,7 +1160,12 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 	if len(rs.activeFlowNodes) > 0 {
 		rs.flowEngineDriven = true
 	}
-	applyVibeCheckpointFromDisk(rs)
+	// CP-89 Task-451: skip checkpoint rehydration on a pending run — demote
+	// rescans the workspace when the cleared marker is empty and would re-arm
+	// a checkpoint a not-yet-started run could never have legitimately made.
+	if rs.flowArm != FlowArmPending {
+		applyVibeCheckpointFromDisk(rs)
+	}
 	// BUG-299 residual (run-35329): sessionStateOf historically omitted yolo, so
 	// rehydrate always left rs.yolo=false. Force Flow/Workflow/flow-engine runs
 	// back to true independent of the stored zero value; chat keeps st.Yolo.
@@ -1450,7 +1491,11 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 	if !rs.suppressAutoGateResume {
 		s.flushDurableTurnIntents(rs.id)
 	}
-	if rs.parentRunID == "" && !rs.suppressAutoGateResume {
+	// CP-89 Task-451: a pending run is chat — the vibe reopen sweep (boundary
+	// repark, missing-artifact restarts, resume-confirm parks) re-derives parks
+	// from workspace files and would re-arm markers on a run that never ran
+	// its flow. Skip the whole sweep until an explicit forwardFlow starts it.
+	if rs.parentRunID == "" && !rs.suppressAutoGateResume && rs.flowArm != FlowArmPending {
 		go s.maybeSettleVibeOwnerDebate(rs.id)
 		s.healVibeFailedForReopenPark(rs.id)
 		// Boundary first: it owns the next decision when a sprint just

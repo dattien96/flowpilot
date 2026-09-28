@@ -89,3 +89,60 @@ reverted to `immediate` on a real process restart. Caught by
 `NewLocalFileSessionStore` file reload, red→green). Fix: `flow_arm` on
 the durable record + both mappers + `FlowArm: string(rs.flowArm)` in
 `createRun`'s persisted literal. L-9/L-10 now prove it end-to-end.
+
+## Addendum 2 — full-diff review findings (post-commit e13c5509)
+
+A production-diff review pass found and fixed four more real issues:
+
+1. **Supabase runtime blob dropped `flow_arm`.** `dbProviderSessionRow` /
+   `sessionRuntimeBlob` carried `chat_flow_ref` but no `flow_arm` — on the
+   Supabase backend the latch survived only in RAM and a restart silently
+   reverted a pending run to `immediate` (auto-start on next turn), violating
+   the durable-state contract. Fix: `flow_arm` jsonb field on
+   `sessionRuntimeBlob` + both `sessionRuntimeFromState` /
+   `applySessionRuntimeBlob` mappings. Red test:
+   `TestTask451_FlowArmSurvivesSupabaseRuntimeBlob`.
+
+2. **`started` was forgeable through `switchFromRunId`.**
+   `parseFlowArm`'s `internal` gate accepted `SwitchFromRunID != ""` — but
+   that field is a client-writable JSON input (chat reattach), so any client
+   could mint an internal `started` latch. Tightened to
+   `in.SpawnedInternally` only (`json:"-"`, unforgeable over HTTP). Server
+   leg-mints (switchChatLeg, spawnChildRun) all set SpawnedInternally.
+
+3. **Pending reconstruct normalized too little.** The first cut cleared two
+   vibe fields; a corrupt pending row could still leak `vibeLockedCP`,
+   checkpoint/park/resume markers, `activeFlowNodes`, `flowEngineDriven`, and
+   `pendingFlowGateSettle` into the chat run. Fix: the pending branch now
+   clears the complete persisted derived set — a pending run never ran, so
+   any arm/park/gate residue is corrupt by definition. AND two ordering
+   fixes the initial edit missed:
+
+   - `applyVibeCheckpointFromDisk` runs after the clear and `demote`
+     rescans workspace files on an empty marker — it would re-arm a
+     checkpoint on a not-yet-started run. Now skipped for pending.
+   - The vibe reopen sweep (boundary repark / missing-artifact restarts /
+     resume-confirm parks) re-derives parks from workspace files — same
+     class of leak. Now gated `flowArm != FlowArmPending`.
+
+   Red test: `TestTask451_PendingReconstructClearsStaleVibeMarkers`
+   (corrupt pending row + armed markers → reconstruct clean).
+
+4. **Pin resolution order diverged from baseline.** The forward resolver
+   preferred `chatFlowRef` over `workflowID`; the baseline mount path
+   (`resolveWorkflowFlowRef`) prefers `workflowID` first, `chatFlowRef`
+   second (root-only, since a child's fallback pin is not a mount). Aligned
+   — a forward now launches the same pin the first-turn path would.
+
+### Documented residuals (not fixed — fail-closed, recoverable)
+
+- **Prepared-relaunch forward loss.** A `forwardFlow` turn that is durably
+  prepared then crash-relaunched skips the forward block
+  (`isPreparedRelaunch`) and replays as an ordinary provider turn. The latch
+  stays `pending` and the user can re-forward — losing the intent is
+  preferred over a possible double flow launch.
+- **Flip-vs-persist crash window.** `flowArm: started` is persisted at the
+  flowStartOnly snapshot after the spawn goroutine launches; a kill in that
+  window leaves the durable row `pending` while an entry child exists —
+  identical exposure class as the baseline immediate flow-start
+  (`flowEngineDriven`/`turnCount` window), not a new defect.

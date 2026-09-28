@@ -87,6 +87,10 @@ type sessionRuntimeBlob struct {
 	ActiveFlowNodes                    []agentpack.FlowNode `json:"active_flow_nodes,omitempty"`
 	ChatSubMode                        string               `json:"chat_sub_mode,omitempty"`
 	ChatFlowRef                        string               `json:"chat_flow_ref,omitempty"`
+	// CP-89 Task-451: the run-scoped flow-arm latch rides the runtime blob so
+	// a pending/started run keeps its latch across restart on the Supabase
+	// backend — same contract as sessions.ndjson and Drive manifests.
+	FlowArm string `json:"flow_arm,omitempty"`
 	PendingFlowGateSettle              bool                 `json:"pending_flow_gate_settle,omitempty"`
 	PendingFlowGateFinalMsg            string               `json:"pending_flow_gate_final_msg,omitempty"`
 	PendingFlowGateOccurredAt          string               `json:"pending_flow_gate_occurred_at,omitempty"`
@@ -145,7 +149,7 @@ func sessionRuntimeFromState(s ProviderSessionState) sessionRuntimeBlob {
 		PendingAgentContext: s.PendingAgentContext, LoopState: s.LoopState,
 		AutoOrchestrate: s.AutoOrchestrate, FlowCohortID: s.FlowCohortID,
 		ActiveFlowEdges: s.ActiveFlowEdges, ActiveFlowNodes: s.ActiveFlowNodes,
-		ChatSubMode: s.ChatSubMode, ChatFlowRef: s.ChatFlowRef,
+		ChatSubMode: s.ChatSubMode, ChatFlowRef: s.ChatFlowRef, FlowArm: s.FlowArm,
 		PendingFlowGateSettle: s.PendingFlowGateSettle, PendingFlowGateFinalMsg: s.PendingFlowGateFinalMsg,
 		PendingFlowGateOccurredAt: s.PendingFlowGateOccurredAt, PendingFlowGateTurnID: s.PendingFlowGateTurnID,
 		TurnStartGitHead: s.TurnStartGitHead, TurnStartWorktree: s.TurnStartWorktree,
@@ -273,6 +277,7 @@ func applySessionRuntimeBlob(sess *ProviderSessionState, b sessionRuntimeBlob) {
 	sess.ActiveFlowNodes = b.ActiveFlowNodes
 	sess.ChatSubMode = b.ChatSubMode
 	sess.ChatFlowRef = b.ChatFlowRef
+	sess.FlowArm = b.FlowArm
 	sess.PendingFlowGateSettle = b.PendingFlowGateSettle
 	sess.PendingFlowGateFinalMsg = b.PendingFlowGateFinalMsg
 	sess.PendingFlowGateOccurredAt = b.PendingFlowGateOccurredAt

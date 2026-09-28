@@ -10115,15 +10115,18 @@ func clearDurableRecoveryStateLocked(rs *interactiveRun) {
 // ---- CP-89 Task-452 forward seam -------------------------------------------
 
 // resolvePinnedFlowRefForForward finds the run's pinned flow for a forward
-// turn. Order: the chat-mode pin (chatFlowRef) first, then a workflowID-
-// mounted pin (a pending workflow run's mount). No pin → 422
-// forward_requires_flow_pin — a forward on a plain chat run is meaningless.
+// turn. Order mirrors resolveWorkflowFlowRef's mount semantics: the
+// workflowID pin first, then a root run's chat-mode pin (chatFlowRef). No pin
+// → 422 forward_requires_flow_pin — a forward on a plain chat run is
+// meaningless.
 func resolvePinnedFlowRefForForward(rs *interactiveRun) (string, *apiErr) {
-	if ref := strings.TrimSpace(rs.chatFlowRef); ref != "" {
-		return ref, nil
-	}
 	if id := strings.TrimSpace(rs.workflowID); id != "" {
 		return id, nil
+	}
+	if rs.parentRunID == "" {
+		if ref := strings.TrimSpace(rs.chatFlowRef); ref != "" {
+			return ref, nil
+		}
 	}
 	return "", newAPIErr(http.StatusUnprocessableEntity, "forward_requires_flow_pin",
 		"forwardFlow requires a pinned flow — create the run with flowRef or workflowID")

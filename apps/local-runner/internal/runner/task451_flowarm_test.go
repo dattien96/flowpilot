@@ -2,6 +2,8 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
+	"flowpilot-runner/internal/agentpack"
 	"strings"
 	"testing"
 )
@@ -272,5 +274,111 @@ func TestTask451_FlowArmSurvivesSessionsNDJSONRoundTrip(t *testing.T) {
 	}
 	if st.ChatFlowRef == "" {
 		t.Fatal("chatFlowRef pin did not survive the file reload")
+	}
+}
+
+// Corrupt row: pending latch + armed vibe/flow markers must normalize toward
+// the latch — a pending run can never have legitimately locked, checkpointed,
+// parked a sprint, or accumulated flow-engine state. Every persisted derived
+// field is cleared so the reconstructed run is plain chat with the pin kept.
+func TestTask451_PendingReconstructClearsStaleVibeMarkers(t *testing.T) {
+	svc := task451Service(t)
+	rs, err := svc.reconstructRun(ProviderSessionState{
+		RunID: "run-bad1", ProjectID: "proj", RunKind: "chat",
+		ProviderKey: ProviderKeyCodex, Status: RunStatusIdle,
+		WorkingMode: "vibe",
+		ChatFlowRef: "flowpilot-core-flow-pack/vibe-cp-ingest",
+		FlowArm:     "pending", TurnCount: 2,
+		VibeAwaitingLock:           true,
+		VibeTaskPlan:               []string{"task-1"},
+		VibeRequirementFromNode:    "tdd",
+		VibeSprintIndex:            2,
+		VibeSprintBudget:           7,
+		VibeSprintBoundaryDeclined: true,
+		VibeLockedCP:               "CP-09",
+		VibeLockedSS:               "SS-09",
+		VibeLockNodeID:             "cp_lock",
+		VibeLockPath:               "docs/CP-09.md",
+		VibeCheckpointNode:         "cp",
+		VibeCheckpointArtifacts:    []string{"docs/CP-09.md"},
+		VibeTaskIndex:              3, VibeTaskTotal: 5, VibeTaskName: "t",
+		VibeParkedFlowRef:       "flowpilot-core-flow-pack/vibe-sprint",
+		VibeParkedAcceptance:    []string{"a"},
+		PendingFlowGateSettle:   true,
+		PendingFlowGateTurnID:   "turn-9",
+		PendingFlowGateFinalMsg: "stale",
+		ActiveFlowNodes:         []agentpack.FlowNode{{ID: "n1"}},
+	})
+	if err != nil {
+		t.Fatalf("reconstructRun: %v", err)
+	}
+	if rs.flowArm != FlowArmPending {
+		t.Fatalf("flowArm = %q, want pending", rs.flowArm)
+	}
+	if rs.chatFlowRef == "" {
+		t.Fatal("pin must be retained")
+	}
+	bad := []struct {
+		name string
+		got  bool
+	}{
+		{"vibeAwaitingLock", rs.vibeAwaitingLock},
+		{"vibeTaskPlan", len(rs.vibeTaskPlan) > 0},
+		{"vibeRequirementFromNode", rs.vibeRequirementFromNode != ""},
+		{"vibeSprintIndex", rs.vibeSprintIndex != 0},
+		{"vibeSprintBudget", rs.vibeSprintBudget != 0},
+		{"vibeSprintBoundaryDeclined", rs.vibeSprintBoundaryDeclined},
+		{"vibeLockedCP", rs.vibeLockedCP != ""},
+		{"vibeLockedSS", rs.vibeLockedSS != ""},
+		{"vibeLockNodeID", rs.vibeLockNodeID != ""},
+		{"vibeLockPath", rs.vibeLockPath != ""},
+		{"vibeCheckpointNode", rs.vibeCheckpointNode != ""},
+		{"vibeCheckpointArtifacts", len(rs.vibeCheckpointArtifacts) > 0},
+		{"vibeTaskIndex", rs.vibeTaskIndex != 0},
+		{"vibeTaskTotal", rs.vibeTaskTotal != 0},
+		{"vibeTaskName", rs.vibeTaskName != ""},
+		{"vibeSSSealed", rs.vibeSSSealed},
+		{"vibeCPSealed", rs.vibeCPSealed},
+		{"vibeParkedNodes", len(rs.vibeParkedNodes) > 0},
+		{"vibeParkedEdges", len(rs.vibeParkedEdges) > 0},
+		{"vibeParkedAcceptance", len(rs.vibeParkedAcceptance) > 0},
+		{"vibeParkedFlowRef", rs.vibeParkedFlowRef != ""},
+		{"vibeSprintBoundaryPending", rs.vibeSprintBoundaryPending},
+		{"vibeResumeConfirm", rs.vibeResumeConfirm},
+		{"vibeResumeFromNode", rs.vibeResumeFromNode != ""},
+		{"activeFlowNodes", len(rs.activeFlowNodes) > 0},
+		{"flowEngineDriven", rs.flowEngineDriven},
+		{"pendingFlowGateSettle", rs.pendingFlowGateSettle},
+		{"pendingFlowGateTurnID", rs.pendingFlowGateTurnID != ""},
+		{"pendingFlowGateFinalMsg", rs.pendingFlowGateFinalMsg != ""},
+	}
+	for _, b := range bad {
+		if b.got {
+			t.Fatalf("corrupt pending row leaked stale %s", b.name)
+		}
+	}
+}
+
+// The Supabase session_runtime JSONB blob is a production persistence surface
+// (durable-state contract: the latch must survive restart on EVERY backend —
+// BUG-500 series). FlowArm must ride the blob both directions; a run stored
+// through Supabase that drops the latch would reconstruct as immediate and
+// auto-start a flow the user pinned but never forwarded.
+func TestTask451_FlowArmSurvivesSupabaseRuntimeBlob(t *testing.T) {
+	raw, err := json.Marshal(sessionRuntimeFromState(ProviderSessionState{
+		RunID: "run-sb1", ProjectID: "proj", RunKind: "chat",
+		ProviderKey: ProviderKeyCodex, Status: RunStatusIdle,
+		ChatFlowRef: "task-harness",
+		FlowArm:     "pending", TurnCount: 1,
+	}))
+	if err != nil {
+		t.Fatalf("marshal runtime blob: %v", err)
+	}
+	sess := ProviderSessionState{RunID: "run-sb1"}
+	if err := applySessionRuntimeV2(context.Background(), nil, &sess, raw); err != nil {
+		t.Fatalf("applySessionRuntimeV2: %v", err)
+	}
+	if sess.FlowArm != "pending" {
+		t.Fatalf("flowArm lost through supabase runtime blob: got %q, want pending", sess.FlowArm)
 	}
 }

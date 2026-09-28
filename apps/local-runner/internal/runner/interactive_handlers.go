@@ -985,8 +985,10 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 	hasFlowPin := strings.TrimSpace(in.FlowRef) != "" ||
 		strings.TrimSpace(in.FlowRefFallback) != "" ||
 		strings.TrimSpace(in.WorkflowID) != ""
-	flowArm, armErr := parseFlowArm(in.FlowArm, hasFlowPin,
-		in.SpawnedInternally || strings.TrimSpace(in.SwitchFromRunID) != "")
+	// `internal` is SpawnedInternally ONLY — it is json:"-" and therefore
+	// cannot be forged by an HTTP client (SwitchFromRunID IS a client field
+	// for chat reattach and must not unlock the internal "started" value).
+	flowArm, armErr := parseFlowArm(in.FlowArm, hasFlowPin, in.SpawnedInternally)
 	if armErr != nil {
 		return RunHandle{}, armErr
 	}
