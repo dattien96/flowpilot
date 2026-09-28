@@ -1,5 +1,9 @@
 # BUG-523 — Quota respawn drops a tournament candidate's worktree
 
+## Status
+
+FIXED — unit + live verified 2026-09-28 (R14, tournament `run-26036`).
+
 ## Severity
 
 High — provider routing can break tournament isolation.
@@ -24,6 +28,16 @@ Create a tournament candidate in a managed worktree, trigger quota rotation befo
 - the pending prompt,
 - and zero writes to the main workspace.
 
-## Scope
+## Fix + live verify (2026-09-28)
 
-Capture only. No fix applied during the 2026-09-27 branch review.
+`respawnChildOnRoute` now carries `WorkspaceCwd`, label and cohort identity
+into the successor's `SpawnAgentInput`; dedicated-worktree bindings are
+checked for existence and competing live claims before handoff (missing or
+claimed → fail-closed, card stays pending). The old leg closes only after
+the successor is provisioned.
+
+Live (R14, `run-26036`): candidate-a `run-27175` grok-vetoed → card
+`q-27188` → answered `use_for_run|devin` → successor `run-28790` spawned
+with the SAME `candidate-candidate-a` worktree + `candidate-a` label +
+cohort seat, old leg closed `provider_switch` after the successor minted.
+Blocked-parent answer fails closed (`quota_route_apply_failed`).

@@ -1,7 +1,8 @@
 # BUG-505 — `preflight_contract_freeze` escalate resolves by treating operator continue-feedback AS the planner draft; undocumented and brittle
 
 ## Status
-FIXED — unit-verified, 2026-09-26, fixed build.
+FIXED — unit + live-verified, 2026-09-26 fix; live legs re-verified
+2026-09-28 on `run-47114`/`run-49726` (devin, `context-coding-review-synthesis`).
 
 - Fix (CA-1007): in `resumeFlowWithFeedback`, a `contract.freeze`
   escalated node no longer feeds raw Continue feedback into
@@ -11,6 +12,13 @@ FIXED — unit-verified, 2026-09-26, fixed build.
   draft retrievable from a child event/parent cache still feeds the
   freeze directly — the live escape hatch is preserved.
 - Unit: `bug505_freeze_feedback_retry_test.go` (green).
+- Live (R15): `run-47114` planner emitted a parseable-but-invalid draft
+  (no concrete `declared_paths`) → freeze escalate. Two unparseable
+  continues re-froze the cached planner draft and re-escalated with the
+  semantic reason (`requires at least one concrete declared path`) instead
+  of the pre-fix verbatim parse error; a third continue carrying a raw
+  JSON draft froze the contract and the flow ran to `done`. Same shape
+  re-verified on `run-49726`.
 
 ## Live-found during
 `run-15708` (bug-harness, grok planner), 2026-09-26, build 8c95a5bb.

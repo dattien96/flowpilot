@@ -896,6 +896,92 @@ func (s *InteractiveService) reconstructRun(st ProviderSessionState) (*interacti
 	return s.reconstructRunInternal(st, false)
 }
 
+// flowEntryChildExists reports whether the durable record (or the live run
+// table) still carries a child of runID whose label matches a persisted flow
+// node id — the proof a flow launch actually produced work. Child rows are
+// never pruned, so absence means the spawn never ran. When the session index
+// is unreadable the result fails closed to "exists" — a false heal would
+// double-launch the flow, strictly worse than keeping a wedge a retry can
+// still surface.
+func (s *InteractiveService) flowEntryChildExists(runID string, nodes []agentpack.FlowNode) bool {
+	wanted := make(map[string]struct{}, len(nodes))
+	for _, n := range nodes {
+		if id := strings.TrimSpace(n.ID); id != "" {
+			wanted[id] = struct{}{}
+		}
+	}
+	if len(wanted) == 0 {
+		return false
+	}
+	indexRead := false
+	if indexReader, ok := s.workflowStore.(SessionIndexReader); ok {
+		if sessions, err := indexReader.ListAllProviderSessions(context.Background()); err == nil {
+			indexRead = true
+			for _, sess := range sessions {
+				if strings.TrimSpace(sess.ParentRunID) != runID {
+					continue
+				}
+				if _, hit := wanted[strings.TrimSpace(sess.Label)]; hit {
+					return true
+				}
+			}
+		}
+	}
+	s.mu.Lock()
+	found := false
+	for _, c := range s.runs {
+		if c == nil || strings.TrimSpace(c.parentRunID) != runID {
+			continue
+		}
+		if _, hit := wanted[strings.TrimSpace(c.label)]; hit {
+			found = true
+			break
+		}
+	}
+	s.mu.Unlock()
+	if found {
+		return true
+	}
+	// R5-5: a child row is not the only launch evidence. The executor writes a
+	// durable step-transition line the moment it reaches a node (entry status
+	// RUNNING before the spawn commit, node DONE inside inline-entry chains
+	// before the delegate spawn). A started row whose transition log shows the
+	// executor progressed — even without a surviving child row — is mid-flight
+	// flow work owned by the resume machinery, not a never-launched crash row.
+	// Reseeded PENDING step rows are deliberately NOT evidence: reseed runs at
+	// executor start AND at resume, so they cannot distinguish.
+	if tlog, ok := s.workflowStore.(StepTransitionLogStore); ok {
+		lines, lerr := tlog.LoadStepTransitions(context.Background(), runID)
+		if lerr != nil {
+			// Evidence unreadable — same fail-closed contract as an unreadable
+			// session index: keep started rather than risk a duplicate launch.
+			return true
+		}
+		for _, l := range lines {
+			if _, hit := wanted[strings.TrimSpace(l.NodeID)]; hit {
+				return true
+			}
+		}
+	}
+	if steps, serr := s.workflowStore.LoadRunSteps(context.Background(), runID); serr == nil {
+		for _, step := range steps {
+			if _, hit := wanted[strings.TrimSpace(step.ID)]; !hit {
+				continue
+			}
+			if (step.Status != "" && step.Status != StepStatusPending) || strings.TrimSpace(step.StartedAt) != "" {
+				return true
+			}
+		}
+	}
+	// Neither the durable index nor live memory shows a launched child. When
+	// the index itself was never readable, stay fail-closed: claim the launch
+	// happened rather than risk a duplicate.
+	if !indexRead {
+		return true
+	}
+	return false
+}
+
 // reconstructRunDeferred loads a child without auto-scheduling pending gates /
 // durable intents so the parent can finish cohortExpected + sibling buffers
 // first (V10R4 P0 atomic cohort recovery).
@@ -931,6 +1017,47 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 	restoredWorkspaceCwd := strings.TrimSpace(st.WorkingDirectory)
 	if restoredWorkspaceCwd == "" && s.runner != nil {
 		restoredWorkspaceCwd = strings.TrimSpace(s.runner.workspace)
+	}
+	// CP-89 Task-451: restore the run-scoped flowArm latch. Empty (legacy row)
+	// resolves immediate; pending restores as a chat run — the pin stays but
+	// no flow machinery arms; started must not re-arm. A corrupt value fails
+	// closed — never a zero-value resume.
+	restoredFlowArm, armErr := parsePersistedFlowArm(st.FlowArm)
+	if armErr != nil {
+		return nil, armErr
+	}
+	// CP-89 review (residual heal): a durable `started` latch with no flow
+	// topology means the flip committed but the launch never stamped
+	// activeFlowNodes — the flow never durably established. The startTurn
+	// forward path now persists arm+topology before any child spawn, so this
+	// state is only reachable from a pre-fix crash row or torn write; heal to
+	// pending so an explicit forwardFlow retries cleanly. A flow that really
+	// launched always keeps its topology (activeFlowNodes is never cleared).
+	// A switched leg carries arm=started by inheritance but owns no topology
+	// (the flow runs attach to the ORIGIN leg's run id) — healing that to
+	// pending would let a retry forward launch the same flow a second time.
+	// Only heal first-leg rows: started + no topology + no switch marker.
+	//
+	// CP-89 review R4-2: started + topology only proves the durable flip
+	// committed — NOT that the launch ran. The launch's durable proof is the
+	// flow's child row (parent_run_id=run, label=node id); non-terminal
+	// records are never pruned, so its absence means the process died between
+	// commit and spawn. Healing to pending lets the retry forward relaunch
+	// cleanly instead of wedging on flow_already_started with a flow that
+	// never ran. An unreadable session index fails closed toward keeping
+	// started — a wrong heal would double-launch.
+	if restoredFlowArm == FlowArmStarted && strings.TrimSpace(st.SwitchFromRunID) == "" &&
+		(len(st.ActiveFlowNodes) == 0 || !s.flowEntryChildExists(st.RunID, st.ActiveFlowNodes)) {
+		restoredFlowArm = FlowArmPending
+	}
+	// Topology only restores when the latch still says the flow launched — a
+	// healed-to-pending row's orphan nodes must not feed the pack-ref
+	// inference either (the pin lives on ChatFlowRef for a pending run).
+	restoredFlowNodes := st.ActiveFlowNodes
+	restoredFlowEdges := st.ActiveFlowEdges
+	if restoredFlowArm == FlowArmPending {
+		restoredFlowNodes = nil
+		restoredFlowEdges = nil
 	}
 	rs := &interactiveRun{
 		id:                     st.RunID,
@@ -1035,10 +1162,11 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 		suppressAutoGateResume:          deferGate,
 		autoOrchestrate:                 st.AutoOrchestrate,
 		flowCohortId:                    st.FlowCohortID,
-		activeFlowEdges:                 append([]agentpack.FlowEdge(nil), st.ActiveFlowEdges...),
-		activeFlowNodes:                 append([]agentpack.FlowNode(nil), st.ActiveFlowNodes...),
+		activeFlowEdges:                 append([]agentpack.FlowEdge(nil), restoredFlowEdges...),
+		activeFlowNodes:                 append([]agentpack.FlowNode(nil), restoredFlowNodes...),
 		chatSubMode:                     st.ChatSubMode,
-		chatFlowRef:                     inferPackFlowRefFromNodes(st.ActiveFlowNodes, st.ChatFlowRef),
+		chatFlowRef:                     inferPackFlowRefFromNodes(restoredFlowNodes, st.ChatFlowRef),
+		flowArm:                         restoredFlowArm,
 		workingMode:                     st.WorkingMode,
 		vibeAwaitingLock:                st.VibeAwaitingLock,
 		vibeTaskPlan:                    append([]string(nil), st.VibeTaskPlan...),
@@ -1092,6 +1220,51 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 		lastFailedDelegateNodeID:  st.LastFailedDelegateNodeID,
 		lastEscalatedInlineNodeID: st.LastEscalatedInlineNodeID,
 	}
+	// CP-89 Task-451: a pending run reconstructs as chat — the pin stays but
+	// vibe start markers stay off (pin ≠ arm). A legacy/corrupt row carrying
+	// both pending AND armed markers normalizes toward the latch, which is
+	// authoritative (markers are derived state, the latch is the contract):
+	// every vibe arm/park field is cleared — a pending run can never have
+	// legitimately progressed to a lock, checkpoint, or parked sprint.
+	if restoredFlowArm == FlowArmPending {
+		rs.vibeAwaitingLock = false
+		rs.vibeTaskPlan = nil
+		rs.vibeRequirementFromNode = ""
+		rs.vibeSprintIndex = 0
+		rs.vibeSprintBudget = 0
+		rs.vibeSprintBoundaryDeclined = false
+		rs.vibeLockedCP = ""
+		rs.vibeLockedSS = ""
+		rs.vibeLockNodeID = ""
+		rs.vibeLockPath = ""
+		rs.vibeCheckpointNode = ""
+		rs.vibeCheckpointArtifacts = nil
+		rs.vibeTaskIndex = 0
+		rs.vibeTaskTotal = 0
+		rs.vibeTaskName = ""
+		rs.vibeSSSealed = false
+		rs.vibeCPSealed = false
+		rs.vibeParkedNodes = nil
+		rs.vibeParkedEdges = nil
+		rs.vibeParkedAcceptance = nil
+		rs.vibeParkedFlowRef = ""
+		rs.vibeSprintBoundaryPending = false
+		rs.vibeResumeConfirm = false
+		rs.vibeResumeFromNode = ""
+		rs.vibeOwnerFailRetries = 0
+		rs.vibeOwnerSettleInFlight = false
+		rs.vibeCoderResumeInFlight = false
+		// A pending run never launched its flow — any flow-engine residue
+		// (active nodes, engine-driven flag, a deferred post-turn gate) on the
+		// row is corrupt and must not leak into the reconstructed chat run.
+		rs.activeFlowNodes = nil
+		rs.activeFlowEdges = nil
+		rs.flowEngineDriven = false
+		rs.pendingFlowGateSettle = false
+		rs.pendingFlowGateFinalMsg = ""
+		rs.pendingFlowGateOccurredAt = ""
+		rs.pendingFlowGateTurnID = ""
+	}
 	if !rs.accountPinned {
 		if claim, ok := s.activeQuotaClaimForRun(rs.id, rs.providerKey); ok {
 			rs.providerAccountID = claim.AccountID
@@ -1107,7 +1280,12 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 	if len(rs.activeFlowNodes) > 0 {
 		rs.flowEngineDriven = true
 	}
-	applyVibeCheckpointFromDisk(rs)
+	// CP-89 Task-451: skip checkpoint rehydration on a pending run — demote
+	// rescans the workspace when the cleared marker is empty and would re-arm
+	// a checkpoint a not-yet-started run could never have legitimately made.
+	if rs.flowArm != FlowArmPending {
+		applyVibeCheckpointFromDisk(rs)
+	}
 	// BUG-299 residual (run-35329): sessionStateOf historically omitted yolo, so
 	// rehydrate always left rs.yolo=false. Force Flow/Workflow/flow-engine runs
 	// back to true independent of the stored zero value; chat keeps st.Yolo.
@@ -1433,7 +1611,11 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 	if !rs.suppressAutoGateResume {
 		s.flushDurableTurnIntents(rs.id)
 	}
-	if rs.parentRunID == "" && !rs.suppressAutoGateResume {
+	// CP-89 Task-451: a pending run is chat — the vibe reopen sweep (boundary
+	// repark, missing-artifact restarts, resume-confirm parks) re-derives parks
+	// from workspace files and would re-arm markers on a run that never ran
+	// its flow. Skip the whole sweep until an explicit forwardFlow starts it.
+	if rs.parentRunID == "" && !rs.suppressAutoGateResume && rs.flowArm != FlowArmPending {
 		go s.maybeSettleVibeOwnerDebate(rs.id)
 		s.healVibeFailedForReopenPark(rs.id)
 		// Boundary first: it owns the next decision when a sprint just
@@ -1451,10 +1633,14 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 		clamped := reconcileVibeSprintCursor(rs)
 		s.mu.Unlock()
 		if clamped {
+			// Lock-order (CP-89 review): mutateLoop holds o.mu across the
+			// closure, so taking s.mu inside it inverts the documented
+			// s.mu→o.mu order (persistProviderSession is safe under s.mu).
+			// Hoist the map read — the closure only needs the pointer.
+			s.mu.Lock()
+			r := s.runs[rs.id]
+			s.mu.Unlock()
 			s.agentOrchestrator.mutateLoop(rs.id, func(st AgentLoopState) AgentLoopState {
-				s.mu.Lock()
-				r := s.runs[rs.id]
-				s.mu.Unlock()
 				return attachVibeTaskProgressLocked(r, st)
 			})
 			go s.persistParentSession(rs.id)
@@ -2005,6 +2191,33 @@ func (s *InteractiveService) startTurnClearingIntent(runID, stepID, prompt, kind
 	}
 }
 
+// waitingReviewReinvokeDrainCap bounds BUG-542 recovery reinvokes per
+// continuous waiting_review occupancy — after the cap the hub stall watchdog
+// owns the surface (hub_stalled card) rather than auto-burning turns on a hub
+// that keeps answering in prose.
+const waitingReviewReinvokeDrainCap = 2
+
+// waitingReviewDrainDueLocked reports whether an idle parent owes a hub review
+// turn the join never queued (BUG-542), and stamps the bounded counter when
+// due. Resets whenever the loop leaves waiting_review. Caller holds s.mu.
+func (s *InteractiveService) waitingReviewDrainDueLocked(rs *interactiveRun) bool {
+	// The wedge run (live run-18354) was flow-engine driven with
+	// autoOrchestrate=false — the obligation lives on either loop flavor, so
+	// gate on "a flow loop is driving this run", not the legacy flag alone.
+	if rs == nil || rs.parentRunID != "" || (!rs.autoOrchestrate && !rs.flowEngineDriven) || rs.reinvokeInFlight {
+		return false
+	}
+	if s.agentOrchestrator.loopStateFor(rs.id).Status != "waiting_review" {
+		rs.waitingReviewReinvokes = 0
+		return false
+	}
+	if rs.waitingReviewReinvokes >= waitingReviewReinvokeDrainCap {
+		return false
+	}
+	rs.waitingReviewReinvokes++
+	return true
+}
+
 // notifyTurnIdle re-flushes durable intents after a turn or gate becomes idle
 // so conflicted deliveries are not stranded for process restart (V10R4 P1).
 //
@@ -2041,6 +2254,17 @@ func (s *InteractiveService) notifyTurnIdle(runID string) {
 		rs.pendingHubReinvoke = false
 		pendingHubReinvokePrompt = rs.pendingHubReinvokePrompt
 		rs.pendingHubReinvokePrompt = ""
+		touchHubProgressLocked(rs)
+	}
+	// BUG-542 (run-18354): a cohort join that rode the provider tool channel
+	// left pendingAgentContext empty, so nothing armed pendingHubReinvoke —
+	// the join's waiting_review transition was never consumed and the loop
+	// wedged silently. On idle, if the loop still owes the hub a review turn
+	// and no intent is queued to drive it, dispatch the missing reinvoke.
+	// waitingReviewReinvokes bounds prose-only hubs; at cap the watchdog
+	// surfaces hub_stalled instead of burning turns.
+	if !busy && !pendingHubReinvoke && !hasIntent && s.waitingReviewDrainDueLocked(rs) {
+		pendingHubReinvoke = true
 		touchHubProgressLocked(rs)
 	}
 	s.mu.Unlock()
@@ -2228,7 +2452,24 @@ func (s *InteractiveService) reconstructPendingChildSessions(parentRunID string)
 		if len(members) == 0 {
 			continue
 		}
-		s.agentOrchestrator.preRegisterCohort(parentRunID, cid, len(members))
+		// BUG-546: count logical seats, not physical session rows — a quota-
+		// vetoed member and its route successor share one label; the buffer
+		// dedups by label, so counting rows inflates expected beyond reach.
+		seatSet := map[string]struct{}{}
+		for _, m := range members {
+			s.mu.Lock()
+			var childLabel string
+			if c := s.runs[m.RunID]; c != nil {
+				childLabel = c.label
+			}
+			s.mu.Unlock()
+			seat := strings.TrimSpace(firstNonEmptyResumeValue(childLabel, m.Label, m.AgentName))
+			if seat == "" {
+				seat = m.RunID
+			}
+			seatSet[seat] = struct{}{}
+		}
+		s.agentOrchestrator.preRegisterCohort(parentRunID, cid, len(seatSet))
 		for _, session := range members {
 			s.mu.Lock()
 			child := s.runs[session.RunID]

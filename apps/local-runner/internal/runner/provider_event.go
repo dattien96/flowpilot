@@ -6,6 +6,12 @@ package runner
 // desktop client (04-01) consumes. Codex/Claude/Gemini specifics live in their own
 // adapters (Phase 3+); this file is provider-neutral.
 
+import (
+	"net/http"
+	"strings"
+	"time"
+)
+
 // ProviderKey identifies a provider runtime.
 type ProviderKey string
 
@@ -442,6 +448,20 @@ type StartRunInput struct {
 	WorkingMode string `json:"workingMode,omitempty"`
 	// FlowRef is an optional pack flow id gated at start (bare or pack-prefixed).
 	FlowRef string `json:"flowRef,omitempty"`
+	// FlowArm is the CP-89 run-scoped launch latch. "" / "immediate" keeps the
+	// byte-identical default (a pinned flow starts on the first turn);
+	// "pending" (alias "chat_then_forward") pins the flow WITHOUT starting it —
+	// hub chat turns continue until an explicit forwardFlow turn (Task-452).
+	// "started" is internal-only: a provider-switch leg carries the run's
+	// latch forward; clients may not request it. Requires a flow pin (FlowRef,
+	// FlowRefFallback, or WorkflowID) when pending.
+	FlowArm string `json:"flowArm,omitempty"`
+	// SourceDocID pins the run's source document at create time (CP-89: a
+	// pending vibe-cp-ingest run carries its CP path here so the forward-time
+	// ingest fence validates against the pin without requiring a repaste on
+	// the forward turn). Stamped onto rs.sourceDocID at create; a turn-level
+	// sourceDocID still wins when supplied.
+	SourceDocID string `json:"sourceDocId,omitempty"`
 	// FlowRefFallback is an internal (non-user) canonical pack flow reference
 	// used ONLY as a catalog-outage resolution hint (BUG-506): spawnChildRun
 	// carries the parent's chatFlowRef here so a child whose WorkflowID is a
@@ -455,6 +475,13 @@ type StartRunInput struct {
 	RunID string `json:"runId,omitempty"`
 	// Client is copied from X-Client by handleStartRun; not a JSON field.
 	Client string `json:"-"`
+	// SpawnedInternally marks an engine-internal child spawn (spawnChildRun).
+	// A child inherits its parent's workflowID as metadata — it is not a user
+	// mount, so enforceWorkingModeStart must not apply the start-family or
+	// client gates to it (BUG-547: vibe parents dead-ended at their first
+	// child spawn with working_mode_flow_forbidden). WorkingMode is still
+	// normalized and stamped — children inherit the parent's mode.
+	SpawnedInternally bool `json:"-"`
 	// Cwd is the active workspace directory for this run (04-06 multi-workspace).
 	// Per-run/per-thread cwd is authoritative; Runner.workspace is only a default.
 	Cwd string `json:"cwd,omitempty"`
@@ -478,6 +505,80 @@ type StartRunInput struct {
 	// Client-gated to desktop|tui (enforceWorktreeStart); a chat's legs share
 	// the one worktree owned by chatId (SD-27 D-8).
 	Worktree bool `json:"worktree,omitempty"`
+}
+
+// ---- CP-89 flowArm latch ---------------------------------------------------
+
+// FlowArm is the run/chat-scoped flow launch latch (Task-451). It is durable
+// (ProviderSessionState.FlowArm, Drive manifest) and run-scoped — a provider
+// switch carries it to the new leg.
+type FlowArm string
+
+const (
+	// FlowArmImmediate is the byte-identical default: a pinned flow starts on
+	// the first turn. Absent/empty input resolves here.
+	FlowArmImmediate FlowArm = "immediate"
+	// FlowArmPending pins a flow without starting it. Chat turns stay plain
+	// hub turns until an explicit forwardFlow turn (Task-452).
+	FlowArmPending FlowArm = "pending"
+	// FlowArmStarted is the post-forward state. It is never a client start
+	// value — only internal legs (provider switch) and reconstruction carry it.
+	FlowArmStarted FlowArm = "started"
+)
+
+// parseFlowArm validates a flowArm string. `hasFlowPin` is FlowRef /
+// FlowRefFallback / WorkflowID non-empty. `internal` permits "started" (switch
+// legs); client-facing creates may only send "", "immediate", "pending", or
+// the "chat_then_forward" alias. Unknown values and pending-without-pin fail
+// closed — never a silent default.
+func parseFlowArm(raw string, hasFlowPin, internal bool) (FlowArm, *apiErr) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", "immediate":
+		return FlowArmImmediate, nil
+	case "pending", "chat_then_forward":
+		if !hasFlowPin {
+			return "", newAPIErr(http.StatusBadRequest, "flow_arm_requires_flow",
+				"flowArm=pending requires a pinned flow (flowRef or workflowID)")
+		}
+		return FlowArmPending, nil
+	case "started":
+		if internal {
+			return FlowArmStarted, nil
+		}
+		return "", newAPIErr(http.StatusBadRequest, "invalid_flow_arm",
+			`flowArm "started" is not a start-request value`)
+	default:
+		return "", newAPIErr(http.StatusBadRequest, "invalid_flow_arm",
+			"unknown flowArm value")
+	}
+}
+
+// parsePersistedFlowArm validates the durable latch on reconstruct. Empty is a
+// legacy row (pre-CP-89) and resolves immediate; a pending row restores as a
+// chat run (no flow machinery); a started row must not re-arm. Anything else
+// is corrupt state → fail closed, never a zero-value resume.
+func parsePersistedFlowArm(raw string) (FlowArm, *apiErr) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", "immediate":
+		return FlowArmImmediate, nil
+	case "pending", "chat_then_forward":
+		return FlowArmPending, nil
+	case "started":
+		return FlowArmStarted, nil
+	default:
+		return "", newAPIErr(http.StatusUnprocessableEntity, "corrupt_flow_arm",
+			"session row carries an unknown flowArm value — repair required")
+	}
+}
+
+// setFlowArmStartedLocked flips pending → started. Caller holds s.mu. It is a
+// no-op unless the run is pending — an immediate or already-started run must
+// never silently re-arm (Task-452 calls it only after the pin check).
+func (rs *interactiveRun) setFlowArmStartedLocked() {
+	if rs.flowArm == FlowArmPending {
+		rs.flowArm = FlowArmStarted
+		rs.updatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	}
 }
 
 type SkillSelection struct {
@@ -515,6 +616,12 @@ type TurnInput struct {
 	// for SubMode.
 	SubMode string `json:"subMode,omitempty"`
 	FlowRef string `json:"flowRef,omitempty"`
+	// ForwardFlow is the CP-89 explicit forward signal (Task-452): on a
+	// flowArm=pending run it flips the latch to started and launches the
+	// pinned flow through the same startResolvedFlow path an immediate run
+	// uses. ForwardFlow on immediate/started → flow_already_started; with no
+	// pin → forward_requires_flow_pin; both 422.
+	ForwardFlow bool `json:"forwardFlow,omitempty"`
 }
 
 // ---- Catalog DTOs (navigator; fake catalog in P2) --------------------------

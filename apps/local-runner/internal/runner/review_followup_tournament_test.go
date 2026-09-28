@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -290,4 +291,133 @@ func TestBug535_LiveClaimantBlocksSweep(t *testing.T) {
 	if loop := svc.agentOrchestrator.loopStateFor(parent.RunID); loop.Status != "blocked" {
 		t.Fatalf("contested worktree should park the flow, loop=%q", loop.Status)
 	}
+}
+
+// BUG-536 (R6 residual): binding picked providers by connectivity only —
+// a ledger-blocked account (billing_required) was re-bound every retry
+// round, so each cohort's candidate vetoed on admission and re-fired the
+// same quota card. Binding must skip providers whose resolved active
+// account is durably hard-blocked.
+func TestBug536_BindingSkipsLedgerBlockedProviderAccount(t *testing.T) {
+	root := t.TempDir()
+	grokHome := filepath.Join(root, "grok-home")
+	devinHome := filepath.Join(root, "devin-home")
+	for _, dir := range []string{grokHome, devinHome} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeLinesToPath083(t, filepath.Join(grokHome, "auth.json"), []string{`{"refresh_token":"r","email":"a@b.c"}`})
+	writeLinesToPath083(t, filepath.Join(devinHome, "credentials.toml"), []string{`api_key = "k"`})
+	writeProviderAccountsConfig083(t, root, []ProviderAccount{
+		{ID: "grok-blocked", ProviderKey: "grok", IsActive: true, AuthStatus: "connected", HomePath: grokHome},
+		{ID: "devin-live", ProviderKey: "devin", IsActive: true, AuthStatus: "connected", HomePath: devinHome},
+	})
+	reg := newProviderRegistry()
+	for _, key := range []ProviderKey{ProviderKeyGrok, ProviderKeyDevin} {
+		key := key
+		reg.register(ProviderRegistration{Key: key, Status: ProviderStatusAvailable, newAdapter: func() ProviderRuntimeAdapter {
+			return fakeAdapterFunc(func(_ context.Context, _ TurnRequest, b TurnBridge) error {
+				b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "ok"})
+				return nil
+			})
+		}})
+	}
+	svc, _ := newTestServerWith(t, reg, newInteractiveCatalog(), newFakeWorkflowStore())
+	svc.quotaRuntimePath = filepath.Join(t.TempDir(), "quota.json")
+	svc.noteAccountBlockedLocked("grok", "grok-blocked", "billing_required")
+
+	def, err := svc.bindTournamentCandidatesToAvailableProviders(tournamentFlowDefinitionMust(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range def.Nodes {
+		if !strings.EqualFold(strings.TrimSpace(n.Cohort), "tournament") {
+			continue
+		}
+		if strings.Contains(n.Model, "grok") {
+			t.Fatalf("candidate %q bound to ledger-blocked grok account (model=%q)", n.ID, n.Model)
+		}
+	}
+	// Both candidates must land on the single unblocked provider.
+	bound := 0
+	for _, n := range def.Nodes {
+		if strings.EqualFold(strings.TrimSpace(n.Cohort), "tournament") && strings.Contains(n.Model, "devin") {
+			bound++
+		}
+	}
+	if bound != 2 {
+		t.Fatalf("expected both candidates on devin, got %d", bound)
+	}
+}
+
+func tournamentFlowDefinitionMust(t *testing.T) agentpack.FlowDefinition {
+	t.Helper()
+	def, err := tournamentFlowDefinition()
+	if err != nil {
+		t.Fatalf("load tournament-harness: %v", err)
+	}
+	return def
+}
+
+// BUG-538 residue class (live run-1651): a stranded leg belonged to a run
+// that normalized to failed on restart and never reloaded into s.runs — its
+// durable session row kept leg_state=active on the candidate worktree, so
+// closeLegsBoundToWorktree (which only scanned memory) left the claim alive
+// forever. The sweep must close durable-only active legs on the dir too.
+func TestBug538_WorktreeSweepClosesDurableOnlyLegClaim(t *testing.T) {
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{Key: ProviderKeyCodex, Status: ProviderStatusAvailable, newAdapter: func() ProviderRuntimeAdapter {
+		return fakeAdapterFunc(func(_ context.Context, _ TurnRequest, b TurnBridge) error {
+			b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "ok"})
+			return nil
+		})
+	}})
+	store := newFakeWorkflowStore()
+	svc, _ := newTestServerWith(t, reg, newInteractiveCatalog(), store)
+	repo := tournamentE2EGreenRepo(t)
+	parent, aerr := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex, Cwd: repo})
+	if aerr != nil {
+		t.Fatal(aerr)
+	}
+	svc.agentOrchestrator.setLoop(parent.RunID, AgentLoopState{Status: "running", Cap: 3, RoundCap: 3})
+	var mgr tournament.WorktreeManager
+	if _, err := mgr.Create(repo, "HEAD", "candidate-a"); err != nil {
+		t.Fatalf("seed claimed worktree: %v", err)
+	}
+	dir := tournament.WorktreePath(repo, "candidate-a")
+	// Durable-only residue: failed run row with an active leg on the dir and
+	// NO in-memory interactiveRun — exactly what run-1651 left behind.
+	if err := store.UpsertProviderSession(context.Background(), ProviderSessionState{
+		RunID:            "run-1651-dead",
+		ProjectID:        "proj",
+		WorkingDirectory: dir,
+		Status:           RunStatusFailed,
+		AgentStatus:      "failed",
+		LegState:         LegStateActive,
+		ParentRunID:      parent.RunID,
+		FlowCohortID:     "flow-auto-parallel_rollout-attempt-0",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	svc.spawnTournamentCandidates(parent.RunID, agentpack.FlowNode{ID: "parallel_rollout"}, []agentpack.FlowNode{
+		{ID: "candidate-a", Run: "delegate", Behavior: "agent.delegate", Agent: "agents/coder.md", Cohort: "tournament", Model: "gpt-5.4-mini"},
+	}, "solve")
+
+	sess, ok, err := store.GetProviderSession(context.Background(), "run-1651-dead")
+	if err != nil || !ok {
+		t.Fatalf("GetProviderSession: ok=%v err=%v", ok, err)
+	}
+	if sess.LegState != LegStateClosed || sess.LegClosedReason != LegClosedReasonWorktreeSwept {
+		t.Fatalf("durable-only leg claim survives the sweep: state=%q reason=%q", sess.LegState, sess.LegClosedReason)
+	}
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	for _, child := range svc.runs {
+		if child.parentRunID == parent.RunID && child.label == "candidate-a" {
+			return
+		}
+	}
+	t.Fatal("dead-run durable claim wedged the spawn — no candidate child created")
 }

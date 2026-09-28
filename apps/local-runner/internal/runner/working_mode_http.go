@@ -36,6 +36,13 @@ func (s *InteractiveService) enforceWorkingModeStart(in *StartRunInput) *apiErr 
 		return mapWorkingModeError(err)
 	}
 	in.WorkingMode = mode
+	if in.SpawnedInternally {
+		// BUG-547: engine-internal child spawns carry the parent's workflowID
+		// as lineage metadata — they are not user mounts. Skip the client and
+		// start-family gates (both were validated when the parent started);
+		// the inherited mode still normalizes/stamps above.
+		return nil
+	}
 	if err := workingmode.CheckClient(in.Client, mode); err != nil {
 		return mapWorkingModeError(err)
 	}

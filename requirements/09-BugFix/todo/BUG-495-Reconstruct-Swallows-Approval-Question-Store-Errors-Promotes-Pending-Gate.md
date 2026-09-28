@@ -1,7 +1,8 @@
 # BUG-495 — reconstructRunInternal swallows approval/question store read errors → pending gate silently promoted on resume
 
 ## Status
-todo — discovered in deep-review round 2 of BUG-487..494 (same class as BUG-491, missed site)
+FIXED — unit-verified (red→green); live leg verified 2026-09-28
+(:4322 fp-live5, questions.ndjson fault drill).
 
 ## Severity
 High — durability/resume contract
@@ -70,3 +71,25 @@ When reconstruction aborts, the partially built `rs` remains in `s.runs`
 (registered before the failing read). A retry re-enters
 `reconstructRunInternal`, which rebuilds and overwrites `s.runs[rs.id]`
 unconditionally — the stub self-heals on the next attempt.
+
+## Live verification (R17 addendum, 2026-09-28)
+
+Fault staged by replacing `.flowpilot/chats/questions.ndjson` with a
+directory (stat succeeds, open/read fails non-ENOENT — the same trick as
+the unit test), then restarting :4322.
+
+- Boot log: `[session-store] questions.ndjson load incomplete: read …:
+  is a directory` → `questionsLoadErr` stored.
+- `POST /client/workflow-runs/run-40835/resume` (vibe flow run with
+  activeFlowNodes) → **502 `gate_state_unavailable`**:
+  `pendingGateStates: questions unreadable … is a directory` — the run
+  does not resume past an unverifiable gate. Fail-closed confirmed on
+  the real HTTP entry.
+- Restore + restart → resume returns 200; no load errors.
+
+Observation (documented, not a new defect): the boot-time proactive
+reconstruct logs `resuming without question state` and tolerates the
+same fault — a run caught there normalizes to `cancelled` rather than
+surfacing 502. Direction is still fail-closed (terminal, never silently
+past a gate), and matches the pre-existing mid-kill normalize edge; the
+explicit-resume leg is where the typed 502 lives.

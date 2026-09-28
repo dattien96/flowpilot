@@ -49,3 +49,30 @@ the account check.
 - `TestBug512_LedgerBlockedPinRejectsReseedOnUncappedNode`
 - `TestBug512_TelemetryExhaustedPinRejectsReseedOnUncappedNode`
 - `TestBug512_HealthyPinPassesOnUncappedNode`
+
+## Live verification (2026-09-28, run-8002 on :4321, devin/swe-2)
+
+Full rotate_leg path verified end-to-end via real HTTP entries, one provider:
+
+1. Heavy review turn drove the pinned leg `pine-pupil` to 225,172/262,000
+   (86%) — devin's own `_cognition.ai/compaction` fired (used dropped
+   192,687→35,979 = 81% drop; devin maps `used` to both `Last` and `Total`,
+   so `isProviderCompaction` engaged and the leg was marked
+   `contextDegradedLegs`).
+2. The leg compacted 3× total — provider self-compaction keeps `used` under
+   ~86%, so the ≥90% `context_pressure_90` ask-tier card is not organically
+   reachable on devin (provider compacts first). The degraded-leg admission
+   offer is the reachable surface.
+3. Next turn admission emitted durable card `q-36232`: "context_pressure:
+   the provider compacted this leg's context — reset the session or keep
+   running degraded" with `rotate_leg`/`continue`/`stop`.
+4. `POST /client/questions/q-36232/answer` `rotate_leg` → resolved; durable
+   `contextResetPending` intent committed.
+5. Next turn admission → `consumePendingContextReset` minted fresh leg
+   `voltaic-lantern`; the run's timeline records the old leg closed with
+   `legClosedReason:"context_reset"` and the new turn completed on the new
+   leg.
+
+Verified: compaction detection → degraded-leg mark → admission card →
+committed intent → leg rotation → durable leg closure → turn continues on
+fresh leg. Single provider (devin), per user's token allowance.

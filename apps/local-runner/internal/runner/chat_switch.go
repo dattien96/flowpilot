@@ -13,6 +13,7 @@ package runner
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -194,6 +195,23 @@ func (s *InteractiveService) persistSwitchLegCloseLocked(src *interactiveRun) {
 	}
 }
 
+// isProvisioningSeedError classifies a seed-turn admission error: provisioning
+// failures mean the leg can never serve a turn (abort-worthy for a committed
+// routing switch), while any other failure is content/runtime-class and stays
+// non-fatal under SD26-X-7.
+func isProvisioningSeedError(err error) bool {
+	var ae *apiErr
+	if !errors.As(err, &ae) {
+		return false
+	}
+	switch ae.code {
+	case "session_unavailable", "account_unavailable", "account_not_signed_in",
+		"provider_unavailable", "leg_closed":
+		return true
+	}
+	return false
+}
+
 // markSwitchSeedFailed records the SD26-X-7 state as a queryable chat record
 // (type switch_seed_failed) instead of log-only: the timeline consumer and
 // operators can see the committed switch whose seed turn failed, and the chat
@@ -295,6 +313,13 @@ func (s *InteractiveService) switchChatLeg(ctx context.Context, chatID string, r
 		s.mu.Unlock()
 		return chatSwitchResponse{}, newAPIErr(http.StatusUnprocessableEntity, "provider_unavailable", err.Error())
 	}
+	// BUG-541 residual: a committed route pins the target account — resolve it
+	// before stamping the durable intent so an unprovisionable binding never
+	// mints a leg (close-before-provision zombie, live run-19946).
+	if err := s.pinnedAccountResolvable(req.TargetProviderKey, req.ProviderAccountID); err != nil {
+		s.mu.Unlock()
+		return chatSwitchResponse{}, newAPIErr(http.StatusConflict, "account_unavailable", err.Error())
+	}
 	// Durable intent, persisted BEFORE unlock (review I-R5): a crash after
 	// this point leaves the marker on disk for healChatLegsLocked.
 	src.switchFromRunID = src.id
@@ -322,6 +347,23 @@ func (s *InteractiveService) switchChatLeg(ctx context.Context, chatID string, r
 		// Task-449: a quota-committed switch carries the target account pin so
 		// the new leg never re-resolves the machine-global active account.
 		ProviderAccountID: req.ProviderAccountID,
+		// CP-89 Task-451: flowArm + the pin are run-scoped — the new leg
+		// inherits them so a pending latch survives a provider switch. The pin
+		// rides FlowRefFallback (internal carrier, never a user mount) so vibe
+		// markers stay governed by the latch, and the parent's working mode
+		// travels with it (a vibe pending run must stay vibe on the new leg).
+		FlowArm:         string(src.flowArm),
+		FlowRefFallback: src.chatFlowRef,
+		WorkingMode:     src.workingMode,
+		// CP-89 review R4-3: the create-time CP source pin is run-scoped like
+		// the latch — a pending vibe-cp-ingest leg that loses it wedges its
+		// forward on invalid_cp_source with no way to recover the pin.
+		SourceDocID: src.sourceDocID,
+		// The leg is engine-minted, not a user mount — the client and
+		// start-family gates were validated on the source leg's own create.
+		// (Without this the propagated vibe mode would hit CheckClient's
+		// user-facing "vibe is Desktop/TUI only" gate with no client header.)
+		SpawnedInternally: true,
 	}
 	if req.YoloMode != nil {
 		createInput.YoloMode = *req.YoloMode
@@ -341,6 +383,37 @@ func (s *InteractiveService) switchChatLeg(ctx context.Context, chatID string, r
 	// (SD26-X-7).
 	if seedPrompt != "" {
 		if _, seedErr := s.startTurn(newHandle.RunID, TurnInput{StepID: newHandle.StepID, Prompt: seedPrompt}, "chat_switch_seed", "chat-switch-seed-"+chatID+"-"+newHandle.RunID); seedErr != nil {
+			// BUG-541 residual / BUG-534 chat-leg variant (live run-19946): a
+			// routing-commit switch pins ProviderAccountID — if the new leg
+			// cannot even provision a session (account home unresolvable,
+			// provider gone), leaving it active strands the chat on a dead
+			// binding forever (close-before-provision zombie). Abort the
+			// switch: fail the new leg terminal, keep the source leg open.
+			// Content-level seed failures stay non-fatal (SD26-X-7).
+			if req.ProviderAccountID != "" && isProvisioningSeedError(seedErr) {
+				s.mu.Lock()
+				if nl := s.runs[newHandle.RunID]; nl != nil {
+					nl.status = RunStatusFailed
+					nl.agentStatus = string(RunStatusFailed)
+					nl.legState = LegStateClosed
+					nl.legClosedReason = LegClosedReasonDispatchFailed
+				}
+				src.switchFromRunID = ""
+				delete(s.chatSwitchInFlight, chatID)
+				snap := sessionStateOf(src)
+				var newSnap *ProviderSessionState
+				if nl := s.runs[newHandle.RunID]; nl != nil {
+					st := sessionStateOf(nl)
+					newSnap = &st
+				}
+				s.mu.Unlock()
+				_ = s.persistProviderSession(snap)
+				if newSnap != nil {
+					_ = s.persistProviderSession(*newSnap)
+				}
+				return chatSwitchResponse{}, newAPIErr(http.StatusConflict, "leg_provision_failed",
+					"new leg cannot provision a session: "+seedErr.msg)
+			}
 			// SD26-X-7: queryable record + log; the leg stays active and the
 			// chat continuable (resend or re-switch).
 			s.markSwitchSeedFailed(chatID, newHandle.RunID, seedErr)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -270,9 +271,11 @@ func (s *InteractiveService) commitQuotaRotation(ctx context.Context, res QuotaR
 	}
 	if rs.parentRunID == "" && rs.chatID != "" {
 		// Hub/chat leg (incl. vibe): the leg machinery owns provider switches —
-		// new leg + compact handoff, old leg closed durable. Notice lands on the
-		// source leg's durable stream before the switch closes it.
-		s.emitQuotaRouteCommitted(res, nil)
+		// new leg + compact handoff, old leg closed durable. The committed
+		// notice emits only after the switch returned — a refused switch
+		// (unresolvable account, same-provider rule) leaves no committed record
+		// and the vetoed leg stays open, mirroring the child-respawn path's
+		// spawn-first ordering (BUG-534 contract, applied to chat legs).
 		_, aerr := s.switchChatLeg(ctx, rs.chatID, chatSwitchRequest{
 			TargetProviderKey: sel.ProviderKey,
 			Model:             sel.Model,
@@ -281,6 +284,7 @@ func (s *InteractiveService) commitQuotaRotation(ctx context.Context, res QuotaR
 		if aerr != nil {
 			return fmt.Errorf("quota_gate: %s", aerr.msg)
 		}
+		s.emitQuotaRouteCommitted(res, nil)
 		return nil
 	}
 	if rs.parentRunID != "" {
@@ -364,6 +368,15 @@ func (s *InteractiveService) respawnChildOnRoute(ctx context.Context, child *int
 		ProviderAccountID: sel.AccountID,
 		WorkspaceCwd:      child.workspaceCwd,
 		FlowCohortID:      child.flowCohortId,
+		// BUG-544: seat arithmetic depends on whether the vetoed member
+		// already contributed a cohort entry. A first-dispatch veto parks the
+		// member on the route card with NO entry — the successor inherits
+		// that held seat (no expected bump). A mid-turn veto already
+		// appended `failed` at TurnFailed — that seat was consumed, so the
+		// successor must register a fresh seat of its own (otherwise the
+		// barrier can never reach the grown expected count).
+		CohortSeatInherited: child.flowCohortId != "" &&
+			!s.agentOrchestrator.memberAlreadyBuffered(child.parentRunID, child.flowCohortId, child.label),
 	}
 	// BUG-535: a dedicated worktree binding must still be this leg's to give
 	// away. A sibling/parent-shared main cwd is not a dedicated binding —
@@ -680,7 +693,19 @@ func (s *InteractiveService) ResumeQuotaGate(ctx context.Context, runID, decisio
 	optionID = strings.TrimSpace(optionID)
 	if optionID == "stop" {
 		s.mu.Lock()
+		var stopSnap ProviderSessionState
+		var haveStopSnap bool
 		if cur := s.runs[runID]; cur != nil {
+			// BUG-544: a vetoed cohort member parked waiting_question holds
+			// its barrier seat and leg claim until the card resolves — `stop`
+			// releases both: append the failed entry the join is waiting on
+			// and close the leg so its worktree claim dies with the member.
+			if cur.legState == LegStateActive {
+				cur.legState = LegStateClosed
+				cur.legClosedReason = LegClosedReasonProviderSwitch
+				stopSnap = sessionStateOf(cur)
+				haveStopSnap = true
+			}
 			s.emitLocked(cur, ProviderEvent{
 				Type: EventQuotaRouteStopped,
 				QuotaRoute: &QuotaRoutePayload{
@@ -690,6 +715,20 @@ func (s *InteractiveService) ResumeQuotaGate(ctx context.Context, runID, decisio
 			})
 		}
 		s.mu.Unlock()
+		if haveStopSnap {
+			if err := s.persistProviderSession(stopSnap); err != nil {
+				log.Printf("[quota-gate] persist stopped member leg close %q: %v", runID, err)
+			}
+		}
+		if rs.parentRunID != "" && rs.flowCohortId != "" && rs.label != "" &&
+			!s.agentOrchestrator.memberAlreadyBuffered(rs.parentRunID, rs.flowCohortId, rs.label) {
+			s.agentOrchestrator.appendCohortResult(rs.parentRunID, rs.flowCohortId, cohortEntry{
+				Label:    rs.label,
+				Provider: string(rs.providerKey),
+				Status:   "failed",
+				Err:      "quota_route_stopped: user declined a route",
+			})
+		}
 		if rs.parentRunID != "" {
 			if _, err := s.applyFlowControl(rs.parentRunID, FlowControlInput{
 				Status:  "escalate",
@@ -714,6 +753,14 @@ func (s *InteractiveService) ResumeQuotaGate(ctx context.Context, runID, decisio
 		return fmt.Errorf("quota_gate: malformed option %q", optionID)
 	}
 	sel := &RouteCandidate{ProviderKey: ProviderKey(parts[0]), AccountID: parts[1], Model: parts[2]}
+	// BUG-541 residual (live run-19946): the option string is operator-supplied —
+	// an account id that does not exist or is not connected ("fakeacct") sailed
+	// straight into commitQuotaRotation, closed the source chat leg, and the new
+	// leg could never provision (session_unavailable zombie, card gone). Apply
+	// the same strict pin the adapter factory enforces before any mutation.
+	if err := s.pinnedAccountResolvable(sel.ProviderKey, sel.AccountID); err != nil {
+		return err
+	}
 	demand, err := s.ResolveExecutionDemand(ctx, runID, nil)
 	if err != nil {
 		return err
@@ -724,10 +771,34 @@ func (s *InteractiveService) ResumeQuotaGate(ctx context.Context, runID, decisio
 	})
 }
 
+// pinnedAccountResolvable fail-closed check for an operator-typed route pin
+// (BUG-541 residual): the named account must exist and be connected for the
+// target provider — the same contract resolveAdapterAccount enforces at
+// dispatch. The "" / "default" sentinels resolve the active account at
+// dispatch (legacy behavior); anything else must be a real connected account.
+func (s *InteractiveService) pinnedAccountResolvable(providerKey ProviderKey, accountID string) error {
+	accountID = strings.TrimSpace(accountID)
+	if accountID == "" || accountID == "default" {
+		return nil
+	}
+	r := s.runner
+	if r == nil {
+		r = &Runner{}
+	}
+	if _, err := r.resolveAdapterAccount(string(providerKey), accountID); err != nil {
+		return fmt.Errorf("quota_gate: selected account %q on %q is not usable: %w", accountID, providerKey, err)
+	}
+	return nil
+}
+
 // applyQuotaRouteAnswer is the AnswerQuestion routing shim — keeps the kind
 // switch in interactive_service.go a one-liner like its siblings.
-func (s *InteractiveService) applyQuotaRouteAnswer(rs *interactiveRun, questionID, optionID string) {
+// BUG-541: the error is returned, not swallowed — a refused respawn (parent
+// loop blocked, worktree contested) must roll the card back to pending in
+// AnswerQuestion instead of consuming the operator's decision.
+func (s *InteractiveService) applyQuotaRouteAnswer(rs *interactiveRun, questionID, optionID string) *apiErr {
 	if err := s.ResumeQuotaGate(context.Background(), rs.id, questionID, optionID); err != nil {
-		log.Printf("[quota-gate] answer apply failed run=%s err=%v", rs.id, err)
+		return newAPIErr(http.StatusConflict, "quota_route_apply_failed", err.Error())
 	}
+	return nil
 }

@@ -578,9 +578,9 @@ does not prove the live path.
 | BUG-492 | Drive restore reader errors (CA-991) | collision probe / local-ahead fault | ☐ BLOCKED (env): no Drive-connected project (`google_drive_not_connected`); `sync-chat` on drill leg → 409 `session_unavailable` (placeholder session). Unit-covered (`bug492_restore_reader_errors_test.go`). |
 | BUG-493 | history/timeline partial views (CA-992) | fault → history + agents endpoints | ☑ LIVE 2026-09-25 (build b487): `GET /client/projects/fp-beds-full/workflow-runs` → **502 `run_history_unavailable`**; agents endpoint → 502. Chat/run-timeline 502 arms unreachable live: file store loads once at boot (sticky `sessionsLoadErr`), so a poisoned store never co-occurs with resident legs — unit-covered (`bug493_history_view_swallow_test.go`). |
 | BUG-494 | live stream scanner Err() unchecked (CA-993) | >10MB provider line / read fault | ◐ LIVE-PARTIAL 2026-09-25: `POST /compat/deep` exercised the modified probe paths on real binaries — `codex app-server initialize` → warn (capabilities absent, goroutine path works), `claude stream-json` → fail (`claude -p` exit 1, env auth — pre-existing path). Capture-goroutine >10MB-line arm unit-covered (`bug494_stream_scanner_err_test.go`); all provider stream readers (claude_stream/grok/devin/opencode/codex_appserver) already checked `Err()`. |
-| BUG-495 | pending-gate sidecar read swallows on resume (CA-994) | fault → resume parked gate run | ◐ UNIT-ONLY 2026-09-25: sidecar read faults are unreachable via filesystem drill — `approvals.ndjson`/`questions.ndjson` per-run writes under chats dir share the same sticky load-once semantics as session store; a mid-reconstruct read fault can't be staged without code hooks. Covered by `bug495_pending_gate_state_swallow_test.go` (fault stub on the reader interface). |
+| BUG-495 | pending-gate sidecar read swallows on resume (CA-994) | fault → resume parked gate run | ☑ LIVE 2026-09-28 (:4322): `questions.ndjson` → directory (stat ok, open fails) → restart → boot `[session-store] load incomplete` + `questionsLoadErr` stored → `POST run-40835/resume` (flow run, activeFlowNodes) → **502 `gate_state_unavailable`** — fail-closed, never past an unverifiable gate; restore+restart → resume 200. Boot-reconstruct tolerates the same fault (logs `resuming without question state`, run normalizes `cancelled` — terminal, still fail-closed direction) |
 | BUG-496 | Drive index merge scans cap 64KB (CA-995) | >64KB index line in remote merge | ☐ BLOCKED (env): no Drive-connected project; same class as BUG-483/476. Unit-covered: real >64KB-line drop reproduced pre-fix in test, `readNDJSONLines` uncapped post-fix. |
-| BUG-497 | contract store load swallows open/scan errors (CA-996) | permission-denied contract file → gate enforcement blind | ◐ UNIT-ONLY 2026-09-25: no public endpoint loads `changecontract` store on demand (loaded at run lifecycle boundaries inside flow orchestration — not a standalone HTTP surface). `bug497_store_load_errors_test.go` covers open-error + >4MB-line propagation. |
+| BUG-497 | contract store load swallows open/scan errors (CA-996) | permission-denied contract file → gate enforcement blind | ☑ LIVE 2026-09-28 (:4322): `GET /client/workflow-runs/run-40835/steps/cp_reader/contract` is a public load surface — baseline `found:false` → `contracts.ndjson`→directory → **500 `contract_store_unavailable`** (error reaches HTTP, not silent empty store) → ~5MiB line + valid tail row → `found:true` tail contract + scope diff (uncapped reader, no silent truncate) |
 | BUG-498 | oracle / TUI SSE unchecked scanner Err (CA-997) | >4MB suite-name line / truncated SSE | ◐ UNIT-ONLY 2026-09-25: oracle parse is invoked by gate hooks during real gate runs (needs a configured suite emitting >4MB name lines — no gate suite on this bed); TUI SSE path is client-side. `bug498_*` tests cover both arms. |
 | BUG-499 | session/dispatch store memory-commit before durable write (CA-998) | write fault → mutation rejected → memory must stay clean → retry must succeed | ☑ LIVE 2026-09-25 (build b499): fault `dispatch.ndjson`→directory → `POST /client/workflow-runs/run-77530/dispatches/turn-77535/resolve` → **error** (`dispatch_operator_error: is a directory`); GET during fault → **rev 28 / uncertain** — memory unchanged (pre-fix ordering would show rev 29); audit shows seq 182 only — **no phantom seq burned**. Restore → same `expectedRev:28` retry → **200 `terminal_completed`, rev 29, seq 183 on disk** — retryable contract preserved end-to-end (the rejected latch design would have deadlocked the store here). |
 | BUG-500 | Supabase store missing gate readers → structural fail-open (CA-999) | Supabase backend reconstruct → pending gates lost | ☐ BLOCKED (env): Supabase store has no production wiring yet (only tests + opt-in path) — no live Supabase backend on this bed. Mock-HTTP unit tests verify `ListApprovalsByRun`/`ListQuestionsByRun` against real migration schema shape; compile-time assertions pin the reader surface on both stores. Write-side schema drift recorded as tracked residual in BUG-500 doc. |
@@ -817,14 +817,16 @@ absent on this machine).
   `route_committed` repin for a parked quota-vetoed child did not
   re-attempt respawn. Fixed to spawn-first ordering; refusal leaves the
   leg open so the next admission re-enters the gate. Live-verified in R8.
-- **Re-bind loop**: retry attempts re-bound `grok-4.5` for candidate-a
-  each round because binding only sees connectivity, not the durable
-  quota block → one veto card per attempt. Consider excluding
-  ledger-blocked accounts at binding time.
-- **`agent-loop/continue` contract**: the option capture reads
-  `feedback` only — a `{"text":...}` body is silently ignored as
-  feedback and the loop re-escalates `(no progress since last
-  continue)`. Same wrong-surface class noted at BUG-462 observation (a).
+- ~~**Re-bind loop**~~ — **resolved as BUG-536 (CA-1044)**: binding now
+  skips providers whose active account carries a durable hard block
+  (`billing_required`/`credits_exhausted`/corrupt-ledger); soft
+  `quota_exhausted` stays telemetry-admissible. Both candidates bind the
+  surviving provider instead of re-binding the blocked one per attempt.
+- ~~**`agent-loop/continue` contract**~~ — **resolved as BUG-537
+  (CA-1044)**: `{"text":...}` now aliases `feedback` (explicit
+  `feedback` still wins); both the decision-choice capture and the
+  resume consume the resolved value. Same wrong-surface class noted at
+  BUG-462 observation (a).
 
 ## H. R7 — deferred-case drill, Devin/swe-2-high only (2026-09-27, workspace /tmp/fp-live2)
 
@@ -874,8 +876,9 @@ nothing → plain chat; noted for future drills).
 
 - `quota_route_committed` is not in `isFlowSidecarEventType` — pre-existing;
   repin durability rides on session rows, not the event file.
-- Re-bind loop (R6) still open: a ledger-blocked account can be re-bound
-  and vetoed once per attempt — fail-closed but wasteful.
+- ~~Re-bind loop (R6)~~ — fixed as BUG-536 (CA-1044): binding consults
+  the durable quota ledger; ledger-blocked providers are skipped at
+  candidate binding.
 - Broad runner suite env-baselines unchanged (missing provider binaries,
   MCP network) — see CA-1042 verification note.
 
@@ -889,3 +892,205 @@ any non-terminal leg owns (cross-run safe), and quota respawn refuses a
 dir that is live-claimed or already swept. Unit-covered by
 `TestBug535_*` ×4; residual: a superseded vetoed leg's pending quota card
 still answers but refuses honestly (cosmetic).
+
+## I. R9 — BUG-535 sweep + quota respawn live drill (2026-09-27, build post-e43ad38d, runner :4321, workspace /tmp/fp-live4)
+
+**Scope:** re-run the tournament on a build carrying BUG-535/536/537.
+Provider scope: grok (real quota, exhausted mid-run — genuine HTTP 402)
++ devin/swe-2-high. Tournament mounted via run-level `flowRef`.
+
+| Row | R9 result |
+|-----|-----------|
+| A-67-1 second-provider leg | ☑ LIVE: run-551 spawned run-945 (grok-4.5) + run-950 (devin) — both legs ran real provider turns; run-950 completed with verified deliverable (`odd.go`/`odd_test.go`, `go test` green in `candidate-candidate-b`) |
+| B-59-5 multi-leg mid-turn kill | ☑ LIVE: `kill -9` during concurrent grok+devin turns → restart → parent run-11 honestly `cancelled`; dead legs run-531/run-536 kept `active` claims until the next spawn — then BUG-535 sweep closed both `worktree_swept` and reclaimed both worktrees (run-945/950 spawned on them) |
+| BUG-535 sweep (live) | ☑ as above — stale leg claims closed on sweep, durable state converged |
+| Real quota exhaustion | ☑ LIVE: grok hit 1% headroom (exact telemetry) then HTTP 402 → ledger `credits_exhausted` persisted → card `q-1059` raised on leg + mirrored on parent |
+| `stop` quota answer | ☑ LIVE: `quota_route_stopped` emitted, parent escalated; `agent-loop/continue` unblocked it; arbiter (devin) joined `candidate-a: failed(402)` + `candidate-b: done`, issued `changes_requested` with verdicts |
+| BUG-534 respawn ordering (2nd live proof) | ☑ answer `use_for_run|devin` on retry card `q-1441` → `run-1651` spawned (devin, same cohort/worktree) → run-945 `leg_state=closed/provider_switch` → `route_committed` emitted |
+| BUG-536 re-bind (live) | ◐ partial: initial binding path verified by unit test; live retry reuses the pinned leg → re-veto → card (by design: leg re-route goes through quota routing, not re-binding) |
+
+### R9 residuals — BUG-538 captured (OPEN)
+
+- **BUG-538**: quota-route successor `run-1651` spawned + handoff delivered
+  but **never dispatched** — step `candidate-a` consumed the old leg's FAILED
+  outcome at the same instant as `route_committed`; successor sits
+  `idle`/`spawned` with `leg_state=active` forever. Parent `run-551` stays
+  `running` with `loop_state=done` — BUG-521's withheld-completion is firing
+  correctly on the stranded leg. Options in the bug doc.
+- Cosmetic: `run-945` keeps `status=waiting_user_approval` +
+  `pending_resume_*` after its leg closed `provider_switch`.
+
+## J. R10 — BUG-538 fix live drill (2026-09-27, build post-1ced80a2, runner :4321, workspace /tmp/fp-live4)
+
+**Scope:** verify the BUG-538 fix + durable-residue sweep on the same
+workspace that produced run-1651. Grok ledger block cleared pre-drill;
+fresh tournaments mounted via run-level `flowRef`.
+
+| Row | R10 result |
+|-----|-----------|
+| BUG-538 durable residue | ☑ LIVE: `run-1651` (`failed`, `leg_state=active` on `candidate-candidate-a`, run never reloadable) was closed `worktree_swept` by a real `spawnTournamentCandidates` sweep — `closeLegsBoundToWorktree` now scans the durable session index, not only `s.runs` |
+| BUG-535 live-claimant park | ☑ LIVE: `run-3240`'s tournament tried `candidate-a` while `run-1663`'s leg `run-2830` still claimed it → spawn refused, loop parked `blocked/escalate` honestly — no sweep of a live claim |
+| BUG-536 binding skip (live again) | ☑ `run-1663` bound devin×2 while grok was ledger-blocked |
+| BUG-538 parked-successor path | ◐ unit-verified end-to-end (park → durable intent → `continue`-path flush → exactly-once dispatch); organic live repro needs a quota-veto→respawn window — grok cleared for the drill but `run-3240` was still park-blocked at drill end |
+
+### R10 residuals
+
+- `run-945`'s cosmetic stale `waiting_user_approval` + `pending_resume_*`
+  fields after `provider_switch` leg close (pre-existing, noted in the
+  BUG-538 doc).
+- Parked-on-contested-dir flows wait for the rival leg to release the
+  claim — by design; a `continue` after release retries the spawn.
+
+## K. R11 — full-campaign sweep (2026-09-28, runners :4321 + :4322, workspaces /tmp/fp-live4 + /tmp/fp-live5)
+
+**Scope:** drive every live-stageable entry point on this machine (devin +
+grok only — claude/codex/agy/opencode binaries absent). Second runner on
+:4322 with isolated workspace for parallel drills.
+
+| Row | R11 result |
+|-----|-----------|
+| `quota_route_blocked` (no candidate) | ☑ LIVE: pinned-devin run against fully-blocked ledger → 409 fail-closed + durable `quota_route_blocked` event (`run-?`, :4322 drill) |
+| BUG-507 approval expiry | ☑ LIVE: non-yolo devin run left `appr-9` unanswered past 10-min TTL → `approval_expired` persisted (seq 6), devin continued without the denied exec, run closed `completed` honestly (run-2, :4322) |
+| Organic quota veto + card | ☑ LIVE: run-14292 bound grok → real 402 (`quota_exhausted`, 0% headroom) → `user_question_required` `q-14305` with per-candidate diagnostics (`exhausted_quota`, `missing_model_binding`, `no_connected_account`); leg closed on veto (run-12520, :4322) |
+| Reprompt cap → escalate → extend-cap → memberAction retry | ☑ LIVE: run-14297 hit `maxFlowGateReprompts` (attempts 0,1 → cap 2) → `applyFlowControl(escalate)` → loop `blocked(escalate)`; `extend-cap` 3→5 (`extendCount:1`); `memberAction=retry` dispatched turn-16427; gate re-blocked honestly → re-escalate. Bounded loop verified end-to-end (run-12520, :4322) |
+| BUG-505 freeze fail-closed | ☑ LIVE: `preflight_contract_freeze` → `blocked/escalate` "invalid planner proposal: preflight draft requires at least one concrete declared path" — freeze refused an invalid proposal, escalated instead of freezing garbage (run-12062, :4322) |
+| Task-harness plan-freeze question | ☑ LIVE: real clarifying card `q-14577` (Slugify punctuation semantics) surfaced pre-freeze; answered plan-default A; flow continued (run-12062) |
+| cp-harness audit fail-closed | ☑ LIVE: `audit` → `blocked/escalate` "feature key missing or unverified; cannot finalize" — degraded catalog input handled honestly, no silent pass (run-332, :4322); reviewer loop bounded 3 rounds → approved → task_splitter → audit |
+| F3 vibe lock durability | ☑ LIVE: `vibe_awaiting_lock`, `vibe_lock_node_id=ss_lock`, `vibe_sprint_budget=8`, `working_mode=vibe` all survived a :4322 restart; `continue` re-drove the lock; owner-debate cohort (`owner_1`/`owner_2`) spawned + completed post-restart (run-11) |
+| Drift detector | ☑ LIVE: `zero_delta_progress` fired score 40 with corrective prompt on run-11's re-drive |
+| Escalate→continue resolution | ☑ LIVE: `continue` on `blocked/escalate` flips loop→running and re-drives active node with feedback (run-12520) |
+
+### R11 new findings (captured, not fixed per review-only scope)
+
+| Bug | Finding |
+|-----|---------|
+| **BUG-539** | Armed gate reprompt stranded: `checkAndBlockStalledMembers` doesn't shield armed reprompts → `member_stalled` fires on a queued reprompt → park/continue paths leave it undriven ~46min; orphan-cure re-drive resets `reprompt_attempts` (cap unreachable); `pending_gate_reprompt_prompt` never persisted (restart loses it). run-2830/run-1663, :4321 |
+| **BUG-540** | Completed turn never settles in-session: `turn_completed` + `terminal_completed` durable but no `gate_eval`/finalize → `turnInFlight` stuck → all re-drives refuse → wedge invisible to watchdogs; only boot `settle_owed` re-drive clears it (turn-6304 on run-1663, turn-4521 on run-2830 — owed 37–90min) |
+| **BUG-541** | Quota answer consumed but apply fails: `POST /client/questions/q-14305/answer` returned `200 accepted` while `respawnChildOnRoute` failed `loop is blocked (escalate)` — question destroyed, respawn never ran, candidate-a permanently lost; run-14292 zombie (`running` + `leg:closed`) |
+
+### R11 skipped / environment-blocked
+
+- **A-58-4 organic 3×reject cap**: run-332's reviewer approved on round 3 — cap not reached organically; cap→escalate machinery is live-verified via the reprompt path (attempt 2 → escalate) and unit-covered for reviewer rounds.
+- **A-65-4 nested parent-resume**: no nested tournament staged on this box; parent-resume seams exercised via continue/retry paths instead.
+- **BUG-512 context-pressure reset veto**: needs organic token exhaustion — not stageable in reasonable provider credit/time.
+- **F2 dev-mode switch mid-lock**: no HTTP mode-switch endpoint exists (Desktop/TUI-only surface) — blocked entry, documented.
+- **Claude/Codex/agy/opencode paths**: provider binaries absent on this machine — unit coverage only.
+
+### R11 residual state
+
+- :4321 runs (`run-1663`, `run-2830`, `run-3240`) normalized `cancelled` on the BUG-540 restart probe; legs remain `active` until a sweep reclaims the worktrees (bookkeeping design).
+- :4322 runs still cycling: `run-332` audit re-drive, `run-12062` freeze escalate (honest — planner can't declare paths without catalog), `run-12520` candidate-b gate-block re-escalate, `run-11` vibe debate `hub_stalled` watchdog.
+- `appr-6602` orphaned pending approval on skipped run-2830 (skip path doesn't resolve pending approvals — folded into BUG-539 notes).
+
+## L. R12 — post-fix re-verification (2026-09-28, rebuilt binary `/private/tmp/fp-runner` w/ CA-631/632/633; :4321 fp-live4 + :4322 fp-live5)
+
+**Scope:** live re-verify the three fixes landed this session + BUG-512
+context-pressure path on devin-swe2 (user: token use OK for this test).
+
+| Row | R12 result |
+|-----|-----------|
+| BUG-540 boot drive intact | ☑ :4322 boot `5 terminal+settle_owed queued` → all finalized (pre-existing wedges from R11 cleared on restart) |
+| BUG-540 in-session settle | ☑ LIVE: turn-18356 (tournament root) + turn-18665 (child run-18660) ran `gate_eval→completion_event→graph_signal→dependents_release→finalizer` in-session, seconds after terminal — the exact shape that previously wedged 37–90 min |
+| BUG-540 live-gate non-interference | ☑ run-8002 `ping` turn held `gate_in_progress` ~5 min while a real `go test ./...` gate ran inside `postTurnGateBusyBound`; settled normally — sweep did not touch a live gate |
+| BUG-539 reprompt cap reachable | ☑ LIVE: run-6565 post-turn gate reprompt armed→dispatched (~2 s)→attempt 2→`Gate reprompt exhausted`→`blocked/escalate` — counter survived to the cap (previously reset by the orphan-cure Resume mint) |
+| BUG-539 member_stalled shield | ◐ unit-verified (5 tests in `bug539_member_stall_reprompt_strand_test.go`); live cohort leg deferred — tournament vehicle wedged on BUG-542 before a member armed a reprompt under a live stall check |
+| BUG-541 card surface + answer path | ☑ LIVE: run-19946 (grok-pinned, exhausted account) → `quota_route_required` refusal + card q-19948 (use_for_run/devin · use_once/devin · stop) → `POST /client/questions/q-19948/answer` accepted → `quota_route_committed` durable. Rollback-on-failed-apply covered by unit tests (apply failure → card re-pends) |
+| BUG-512 context pressure | ☑ LIVE end-to-end on run-8002 (single provider devin): leg `pine-pupil` driven to 225,172/262,000 (86%) → provider-side `_cognition.ai/compaction` fired (used 192,687→35,979 = 81% drop; `used` maps to `Last`+`Total` → `provider_compacted`/`contextDegradedLegs` engaged) → next admission surfaced durable card `q-36232` (`rotate_leg`/`continue`/`stop`) → `rotate_leg` answer committed `contextResetPending` intent → next admission consumed it and minted fresh leg `voltaic-lantern`; old leg closed `legClosedReason=context_reset`, new-leg turn completed. ≥90% `context_pressure_90` ask-card not organically reachable on devin — provider self-compacts ~86% first (by design) |
+
+### R12 new findings
+
+| Bug | Finding |
+|-----|---------|
+| **BUG-542** | Deferred hub reinvoke stranded: `hub_reinvoke_deferred` armed neither `pendingHubReinvoke` (RAM-only, `pendingAgentContext` empty — cohort note rode the provider tool channel) nor surfaced `hub_stalled` in 45+ min. Tournament run-18354 parked `waiting_review` forever; follow-up user turn unblocked it (hub judged in prose but never emitted the deterministic signal — candidate-b never spawned). |
+| **BUG-541 residual (chat-leg variant of BUG-534)** | `switchChatLeg` committed `use_for_run|codex|fakeacct` (unlisted candidate), closed the grok leg, never provisioned the codex leg → run-19946 `running`+`leg:closed`, every turn `session_unavailable`, no quota card re-surfaced — close-before-provision leaves an unrecoverable binding on chat legs. |
+| **run-18660 leg leak** | Completed tournament child kept `leg_state: active` — same leg-claim residue class as BUG-538 but on the normal completion path (not respawn). |
+
+### R12 assessment (per user ask)
+
+- **A-58-4**: recommend **done-with-caveat** — bounded escalate machinery is live-verified twice (reprompt cap→escalate on run-6565 today; reviewer-loop reject rounds + cap unit test). The literal "3 organic reviewer rejects" never occurred (run-332 approved round 3); if the acceptance is the machinery, it's green; if it's the exact 3-reject shape, it stays unit-only.
+- **A-65-4**: **not done** — retry≤2 bound live-proven (run-25153); the nested parent-resume leg still has no live evidence (no nested tournament staged this box).
+
+## M. R13 — BUG-542/541-residual fixes + live re-verification (2026-09-28, binary w/ CA-634/635; :4321 fp-live4 + :4322 fp-live5)
+
+**Fixes landed (commit pending at section write):**
+- CA-634 BUG-542: `waitingReviewDrainDueLocked` — idle flow-driven hub whose
+  loop sits `waiting_review` owes a bounded reinvoke (`drainCap=2`, resets on
+  loop advance; at cap the watchdog owns the surface). Drain-side fix — the
+  `pendingAgentContext`-gate contract at the arm site is preserved
+  (`TestAutoReinvokeHubNoPendingContextNoDefer` stays green). Watchdog
+  `checkAndBlockStalledHub` now re-arms while a live approval/question card
+  is pending — previously the timer chain died on the first live-card tick.
+- CA-635 BUG-541 residual: `pinnedAccountResolvable` rejects invented/unusable
+  route accounts before any mutation (card rolls back pending);
+  `quota_route_committed` emits only after `switchChatLeg` succeeds; Phase-A
+  pin resolution + Phase-B provisioning-class seed-failure abort keep the
+  source leg open when the destination can never provision.
+
+**Unit:** `bug542_hub_reinvoke_deferred_wedge_test.go` (8 tests incl. the
+exact live shape autoOrchestrate=false+flowEngineDriven=true) +
+`bug541_chat_leg_commit_test.go` (4 tests) — green; full `internal/runner`
+suite shows zero non-env regressions (remaining fails = missing provider
+binaries / TempDir races, same as clean-HEAD baseline).
+
+| Row | R13 result |
+|-----|-----------|
+| BUG-541 residual — invented account | ☑ LIVE: run-36264 (grok-pinned, exhausted acct) → card `q-36266` → answer `use_for_run|codex|fakeacct|gpt-5.4` → **HTTP error `quota_route_apply_failed`** ("account fakeacct on codex is not usable") + card stayed `pending` (previously: accepted → committed → zombie) |
+| BUG-541 residual — valid route ordering | ☑ LIVE: re-answered same card `use_for_run|devin|…swe-2-high` → accepted → new leg `run-36269` (devin, `active`, session `thread-36270` provisioned) minted BEFORE grok leg `run-36264` closed — spawn-first ordering on the chat-leg path |
+| BUG-523/541 child respawn | ☑ LIVE: tournament candidate-a `run-22969` organically vetoed (grok exhausted) → card `q-22982` on the CHILD → answered `use_for_run|devin` → successor `run-23156` spawned (devin, active) → vetoed leg closed → parent loop kept running |
+| run-18660 "leg leak" | RECLASSIFIED not-a-bug: leg claims are owned by the parent flow's terminal decision, not child turn completion (a completed child may be re-invoked — closing at settle broke 40+ tests). Its `leg_state=active` residue was a symptom of the BUG-542 parent wedge; terminal cleanup (flow_done/worktree_swept) already covers flow-end closure |
+| BUG-542 live leg | ☑ LIVE on rebuilt binary: cp-harness `run-36272` join → `cohort_join_complete` → `hub_reinvoke_scheduled` → `flow_control_continue` (no wedge); tournaments `run-25217`/`run-26036` both spawned candidate-b + advanced past `waiting_review` — the deferred-reinvoke hole is closed on the flowEngineDriven shape |
+| BUG-539 member-stall shield | ◐ unit-verified (5 tests); live leg NOT organically stageable — watchdog requires a cohort member mid-turn with >stallTimeout provider silence; devin/grok members either stream events or hold a gate (excluded by design) |
+| A-58-4 + A-65-4 | ◐ cp-harness `run-36272` escalated on audit-gate debt (missing change-audit note + inferred contract) — real gate debt, not reviewer-cap; nested-tournament trigger needs a review-loop `blocked` at round cap, audit gate never reached round 2 |
+
+## N. R14 — BUG-544 seat-hold fix + quota-respawn window (2026-09-28, rebuilt binary; :4322 fp-live5)
+
+**New defect found live, fixed, re-verified — same session:**
+
+| Row | R14 result |
+|-----|-----------|
+| BUG-544 repro (pre-fix binary, `run-25217`) | ☑ defect confirmed: candidate-a `run-26015` grok-vetoed → card `q-26028` pending → veto routed through `handleChildStartTurnFailure` → member FAILED + cohort append + leg closed → candidate-b's completion satisfied the barrier at 08:34:58 → arbiter → flow done → loser sweep removed `candidate-candidate-a` worktree → every later answer `quota_route_apply_failed: worktree ... no longer exists (swept)` — card unresolvable forever |
+| BUG-544 fix (CA-636) | `quota_route_required` returns without touching the member (`spawned_child_quota_parked`); successor inherits the held seat when no entry buffered (`CohortSeatInherited`); `stop` answer releases seat (failed append + durable leg close) |
+| BUG-544 post-fix live (`run-26036`) | ☑ candidate-a `run-27175` vetoed → `waiting_question` + `leg_state=active` + worktree `candidate-candidate-a` present on disk THROUGHOUT the pending card; candidate-b cycles could not join the barrier; answering while parent `blocked(escalate)` → typed `quota_route_apply_failed` fail-closed + card stayed pending; after unblock → card resolved → successor `run-28790` spawned `candidate-a`/devin/active and old leg closed `provider_switch` AFTER successor minted |
+| BUG-523 + BUG-538 respawn window | ☑ LIVE: same answer path exercised the child-respawn ordering (BUG-523: successor `run-28790` carries `WorkspaceCwd` + cohort seat; BUG-538: parent re-escalate parked the successor — `cancelled` + durable residue, pinned contract per BUG-543) |
+| run-18660/23156/28790 leg residue | → BUG-543: assessed not-a-narrow-bug; `TestBug543_*` pins the Stop-keeps-claim + flow-done-closes contract; reclamation sweep = future work |
+| BUG-539 member_stalled shield | ☑ LIVE on `run-26036`: candidate-b devin turn silent >10m mid-turn (no gate) → watchdog parked `blocked`/`member_stalled`/`activeNode=candidate-b` → `POST /agent-loop/continue` `memberAction.retry` unblocked + dispatched `turn-32844` (`[flow-engine] Retry: member "candidate-b" was stalled`) — armed intents superseded, not double-driven; skip leg unit-verified (same handler) |
+
+### Outstanding (documented, no live path on this bed)
+- **A-65-4 nested parent-resume**: machinery verified (3 triggers wired, dedup BUG-446, `resumeParentAfterTournament` state path unit-tested); full cap→tournament→resume cycle needs an organically capped review loop — audit-gate debt escalates the loop without incrementing rounds.
+- **BUG-505 option card**: escape-hatch legs LIVE on run-47114/run-49726 (R15); the structured retry-planner-vs-supply-draft option card remains a suggested direction, not shipped contract.
+- **BUG-506 catalog-outage fallback / BUG-517 child-route inflight / BUG-536 ledger-blocked rebind / BUG-513 scoped-leg compaction**: unit + machinery verified; live legs need fault injection not reachable via HTTP seams, or exhausted-provider timing already covered indirectly.
+- **A-60 V7**: probe launched only; no organic requirement-drift event.
+
+## O. R15 — BUG-544 `stop` leg + BUG-505 freeze escape-hatch (2026-09-28, rebuilt binary; :4322 fp-live5 + :4321 fp-live4)
+
+| Row | R15 result |
+|-----|-----------|
+| BUG-544 `stop` answer leg (`run-33490`) | ☑ LIVE: candidate-a `run-33955` grok-vetoed → card `q-33968` pending (member `waiting_question`, leg `active`, worktree intact) → `POST /client/questions/q-33968/answer` `{"optionId":"stop"}` → `accepted` → member leg closed `provider_switch` durably + failed cohort entry appended + parent escalated honestly (`blocked/escalate`, "quota_route_required: user chose stop on the quota routing card") — seat released, no barrier hang |
+| BUG-505 freeze escape-hatch (`run-47114`) | ☑ LIVE on devin: planner emitted parseable-but-invalid draft (no concrete `declared_paths`) → freeze escalate `invalid planner proposal: requires at least one concrete declared path` → unparseable/prose-style continues re-froze the CACHED planner draft and re-escalated with the semantic reason (pre-fix: prose parse-failed verbatim `invalid character 'c'`) → operator-supplied JSON draft via `continue` → freeze minted the contract → context→coder→reviewers→synthesis→`done` — the escape hatch works end-to-end on the fixed build |
+| Re-drive of stop-terminal member | ☑ observed: parent continue re-drove `run-33955` (leg closed by `stop`) → `startTurn` failed → `hub_reinvoke_start_failed` re-arms bounded (≤3) → parent parks `hub_stalled` — fail-closed, no tight loop. Not a defect: per BUG-543 stopped members stay re-drivable; start failure is the terminal surface |
+| BUG-539 `skip` leg | ◐ skip leg not organically reachable this session — `member_action` requires `blockReason=member_stalled` and every member either streamed events or held a gate (shielded by design); retry leg already live (R14) — same handler, terminal branch unit-pinned |
+
+## P. R16 — BUG-545 abs-path DoD + BUG-546 cohort seat-dedup (2026-09-28, :4322 fp-live5)
+
+Two new defects found and fixed during BUG-544 tournament verification:
+
+| Row | R16 result |
+|-----|-----------|
+| BUG-545 (`run-34322`) | ☑ LIVE repro: `MissingDodDocs` flagged an absolute in-workspace `Task-06.md` every eval → reprompt budget drained → escalate loop. Fix (CA-638): resolve abs paths inside root via `EvalSymlinks`, keep out-of-root rejection. Post-fix eval cleared the violation → `candidate-b → DONE` 12:42:48Z |
+| BUG-546 (`run-34296` wedge → `run-37723` verify) | ☑ LIVE: post-restart rebuild counted 3 session rows (vetoed + successor + sibling) → `expected=3` > label-deduped buffer max 2 → `hub_stalled`. Fix (CA-639): both inference sites count distinct seats by label. Verified: fresh tournament `run-37723` — veto `run-39034` → park → successor `run-39327` → **restart mid-cohort** → resume → `expected=2` → `joinRecoveredCohort` drained both seats, note built (`cohort_note_len=459`, 13:08:31Z) |
+| Residual note | Parent `run-37723` normalized `cancelled` on resume (mid-turn kill leaves no pending-gate child) — the joined note deferred rather than driving the arbiter. Post-restart normalize edge, separate from the barrier arithmetic; same class as the earlier nested-tournament restart limitation |
+
+## Q. R17 — BUG-547 vibe child mode + BUG-539 skip leg + BUG-548 drain tombstone + A-65-4/A-58-4 full chain (2026-09-28, rebuilt binary; :4321 fp-live4 + :4322 fp-live5)
+
+| Row | R17 result |
+|-----|-----------|
+| BUG-547 (new defect) | ☑ LIVE repro then fix: vibe `vibe-cp-ingest` parent `run-40835` → child spawn rejected `working_mode_flow_forbidden` — `spawnChildRun` inherited `WorkflowID` but not `WorkingMode`; createRun treated the internal spawn as a dev user-mount and the vibe-family gate vetoed it. Every vibe flow dead-ended at entry spawn. Fix (CA-640): `StartRunInput.SpawnedInternally` + inherited `WorkingMode`; internal spawns bypass user-mount/client gates but still get normalized mode stamped. Post-fix live: `run-40840` (vibe-intake/cp_reader) spawned `blockedStart=false`, zero `working_mode_flow_forbidden` in server log; flow advanced cp_reader → cp_validator → cp_lock |
+| BUG-539 `skip` leg | ☑ LIVE (temp `stallTimeoutSec:60` on tournament-harness, reverted after): `run-40950` sleep-bait → `candidate-a` (successor `run-42814`) silent 1m2s → `member_stalled` → `POST /flow-control` `{"memberAction":"skip","member":"candidate-a"}` → step FAILED, leg closed `LegClosedReasonMemberSkipped`, loop unblocked → `candidate-b` stalled in turn → skipped too — drain + settle path exercised; no defect in watchdog/skip |
+| BUG-548 (new defect) | ☑ LIVE wedge → fix: skip drained the cohort at 13:52, but the skipped member's late `TurnCompleted` (13:59) re-appended + `cohort_expected_inferred` re-registered expected=2 → buffer 1/2 → `hub_stalled`. Fix (CA-641): `cohortDrained` tombstone — `drainCohort` tombstones, `appendCohortResult` drops late arrivals, `inferCohortExpectedIfMissing` refuses resurrection, `registerCohortMember`/`preRegisterCohort` clear the tombstone only for a genuinely new generation. Unit-red→green |
+| A-65-4 / A-58-4 full chain (`run-63271`) | ☑ LIVE end-to-end: sumpair bait (AC-2 vs AC-3 unsatisfiable) → reviewer rejects ×3 → `tournament_escalated` at cap=3 (14:18:34) → child `run-63271-tournament` → 3 rounds of cohort joins completed (BUG-546 seat-dedup held: quota veto → `spawned_child_quota_parked` → successor same-seat, `cohort_join_complete` + `tournament_arbiter_decided` each round, no wedge) → arbiter tie → pick-winner card → `candidate-a` → patch conflict → merge card → operator resolved `diff --git` applied cleanly → `flow_control_done` → **`tournament_resumed` 14:34:21 on parent: "tournament winner candidate-a merged — resuming validation"** → `resumeParentAfterTournament` fired, parent loop `running`; merged marker line present in workspace `sumpair.go` |
+| A-60 V7 requirement pivot | ☑ LIVE on `run-40835` (post-BUG-547): cp_lock parked → resolve lock → `suggest-requirement-change` fired with pivot text → flow re-parked `cp_validator` — requirement-change cycle runs end-to-end; no defect |
+| BUG-505 option card | classified: escape-hatch legs already LIVE (R15); structured retry-planner-vs-supply-draft card remains a suggested direction — `tournamentDecisionCard`/`tournamentMergeDecisionCard` pattern exists for tournaments but planner freeze ships prose-retry + draft-freeze only. No shipped contract → no speculative implementation |
+| Finite `hub_reinvoke_start_failed` burst | observed bounded (5 emissions in ~80ms after skips) — start-failure re-arm path, not a loop; same class as R15 stop-terminal re-drive |
+| BUG-495 fault drill | ☑ LIVE (:4322): `questions.ndjson`→directory → restart → boot `load incomplete`/`questionsLoadErr` → `POST run-40835/resume` → **502 `gate_state_unavailable`** — resume aborts rather than promoting a durably waiting gate; restore → resume 200. Boot-reconstruct tolerant path normalizes `cancelled` (terminal, still fail-closed) |
+| BUG-497 fault drill | ☑ LIVE (:4322): `GET …/steps/cp_reader/contract` — baseline `found:false` → `contracts.ndjson`→directory → **500 `contract_store_unavailable`** (load error reaches HTTP) → ~5MiB line + valid tail → `found:true` tail contract + scope diff (uncapped reader) |
+| Remaining fault-leg feasibility | assessed: BUG-479/482 stageable via real-wire client harness + MITM proxy (client-side parsers); BUG-494 via `FLOWPILOT_*_BIN` stub emitting >10MB line; BUG-498 oracle arm via `.flowpilot/settings/test-config.json` stub `test_command` emitting >4MB suite-name lines; BUG-489 Phase-C needs a mid-handler write fault on a shared file — not reliably stageable externally |

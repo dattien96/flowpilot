@@ -527,6 +527,12 @@ type interactiveRun struct {
 	// can restore the exact picker selection it was started with.
 	chatSubMode string
 	chatFlowRef string
+	// flowArm is the CP-89 run/chat-scoped launch latch (immediate|pending|
+	// started). It belongs to the run, not the provider leg — a provider
+	// switch carries it to the new leg. pending means a flow is pinned
+	// (chatFlowRef) but not started; an explicit forwardFlow turn flips it to
+	// started via setFlowArmStartedLocked (Task-452).
+	flowArm FlowArm
 	// planContextPackage is the FlowContextPackage built for the Plan step of this Flow
 	// Mode run. Non-nil only for workflow runs with a Coding step. Cached here so retries
 	// reuse the same package without rebuilding; cleared when a Plan step reruns (Task-169).
@@ -549,6 +555,16 @@ type interactiveRun struct {
 	// case. Empty means "no custom prompt pending" — the existing generic
 	// retry behavior for cohort-join reinvokes is unaffected.
 	pendingHubReinvokePrompt string
+	// waitingReviewReinvokes bounds the BUG-542 drain-side recovery: a cohort
+	// join that arrived mid-turn via the provider tool channel leaves
+	// pendingAgentContext empty, so pendingHubReinvoke is never armed and the
+	// join's waiting_review transition is never consumed. notifyTurnIdle
+	// re-invokes the hub when the loop still sits at waiting_review on idle —
+	// bounded by waitingReviewReinvokeDrainCap so a hub that keeps answering in
+	// prose (never emits the deterministic signal) surfaces as hub_stalled via
+	// the watchdog instead of burning turns forever. Reset whenever the loop
+	// leaves waiting_review or a real reinvoke intent is armed.
+	waitingReviewReinvokes int
 	// pendingAgentContext holds notes about UI-spawned children (and their results) that
 	// have not yet been folded into this (parent) run's provider conversation. They are
 	// prepended to the next provider turn's prompt and then cleared. Persisted to
@@ -2761,10 +2777,29 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 	// decision, not the park.
 	s.mu.Lock()
 	var orphanIDs []string
+	var resumeIDs []string
 	orphanNodes := nodes
 	for _, cid := range s.agentOrchestrator.listChildren(parentRunID) {
 		c := s.runs[cid]
-		if c == nil || c.status != RunStatusWaitingUserApr ||
+		if c == nil {
+			continue
+		}
+		// BUG-538: a spawned successor refused at first dispatch parks on a
+		// durable resume intent — unblock flushes it through the claiming path.
+		if strings.TrimSpace(c.pendingResumePrompt) != "" &&
+			strings.TrimSpace(c.pendingResumeStepID) != "" {
+			resumeIDs = append(resumeIDs, cid)
+		}
+		// BUG-539: an armed gate reprompt is queued remediation the durable
+		// flush owns — the reprompt channel preserves repromptAttempts so the
+		// cap stays reachable. Minting a fresh Resume turn for it below would
+		// reset the counter every cycle (live run-2830: unbounded gate loop).
+		if strings.TrimSpace(c.pendingGateRepromptPrompt) != "" &&
+			strings.TrimSpace(c.pendingGateRepromptStepID) != "" {
+			resumeIDs = append(resumeIDs, cid)
+			continue
+		}
+		if c.status != RunStatusWaitingUserApr ||
 			c.pendingApprovalID != "" || c.pendingQuestionID != "" ||
 			len(c.pendingGateCodePaths) == 0 {
 			continue
@@ -2775,6 +2810,9 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 		}
 	}
 	s.mu.Unlock()
+	for _, id := range resumeIDs {
+		go s.flushDurableTurnIntents(id)
+	}
 	orphanRedrived := false
 	for _, orphanID := range orphanIDs {
 		label := ""
@@ -2899,15 +2937,24 @@ func (s *InteractiveService) ensureCohortExpectedLocked(parentRunID, cohortID st
 	if parentRunID == "" || cohortID == "" {
 		return
 	}
-	known := 0
+	// BUG-546: count logical seats, not physical runs — a quota-vetoed member
+	// and its route successor are two runs holding one seat (same label), and
+	// the label-deduped buffer can never satisfy a run-counted expected.
+	// Unlabeled members keep per-run semantics via the run-id fallback.
+	seats := map[string]struct{}{}
 	for _, r := range s.runs {
 		if r == nil {
 			continue
 		}
 		if r.parentRunID == parentRunID && strings.TrimSpace(r.flowCohortId) == cohortID {
-			known++
+			seat := strings.TrimSpace(r.label)
+			if seat == "" {
+				seat = r.id
+			}
+			seats[seat] = struct{}{}
 		}
 	}
+	known := len(seats)
 	if known == 0 {
 		return
 	}
@@ -3074,9 +3121,15 @@ func (s *InteractiveService) parkFlowForAwaitingUser(parentRunID string, opts ..
 		child.pendingGateRepromptPrompt = ""
 		child.pendingGateRepromptStepID = ""
 		child.pendingGateRepromptGen = 0
-		child.pendingResumePrompt = ""
-		child.pendingResumeStepID = ""
-		child.pendingResumeGen = 0
+		// BUG-538: a never-dispatched child's durable resume intent is its
+		// FIRST turn (spawned successor refused by this very park), not a stale
+		// continuation — wiping it re-strands the leg claim forever. Dispatch
+		// gates still fence it while blocked.
+		if child.turnCount > 0 {
+			child.pendingResumePrompt = ""
+			child.pendingResumeStepID = ""
+			child.pendingResumeGen = 0
+		}
 		child.pendingFlowGateSettle = false
 		child.pendingFlowGateFinalMsg = ""
 		child.pendingFlowGateOccurredAt = ""
@@ -3180,9 +3233,14 @@ func (s *InteractiveService) parkFlowForAwaitingUserLocked(parentRunID string) {
 		child.pendingGateRepromptPrompt = ""
 		child.pendingGateRepromptStepID = ""
 		child.pendingGateRepromptGen = 0
-		child.pendingResumePrompt = ""
-		child.pendingResumeStepID = ""
-		child.pendingResumeGen = 0
+		// BUG-538: same never-dispatched carve-out as the unlocked park —
+		// the parked successor's resume intent is its first turn, not a
+		// stale auto-continuation.
+		if child.turnCount > 0 {
+			child.pendingResumePrompt = ""
+			child.pendingResumeStepID = ""
+			child.pendingResumeGen = 0
+		}
 		child.pendingFlowGateSettle = false
 		child.pendingFlowGateFinalMsg = ""
 		child.pendingFlowGateOccurredAt = ""
@@ -3346,6 +3404,60 @@ func (s *InteractiveService) notifyHubOfFlowChildFailureLocked(child *interactiv
 	go s.maybeAutoReinvokeHubWithNote(parentRunID, capturedFailNote)
 }
 
+// handleSpawnedChildTurnFailure routes a freshly spawned child's first-turn
+// dispatch failure. flow_awaiting_user is a RETRYABLE admission refusal — the
+// parent loop re-blocked between spawnChildRun's guard and this async dispatch
+// (live run-1651: a vetoed sibling's escalate landed in between). Failing the
+// child strands a spawned leg holding an active worktree claim with no turn
+// and no re-drive; instead park it on a DURABLE resume intent —
+// resumePendingLoopWork/flushDurableTurnIntents re-drive on unblock, and
+// reconstructPendingChildSessions catches the persisted intent after restart.
+// Anything else fails honestly via handleChildStartTurnFailure.
+func (s *InteractiveService) handleSpawnedChildTurnFailure(childRunID, parentRunID, prompt, stepID string, turnErr *apiErr) {
+	if turnErr == nil {
+		return
+	}
+	if turnErr.code == "flow_awaiting_user" {
+		s.mu.Lock()
+		child := s.runs[childRunID]
+		if child != nil && child.legState != LegStateClosed &&
+			child.status != RunStatusFailed && child.status != RunStatusCancelled {
+			child.pendingResumePrompt = prompt
+			child.pendingResumeStepID = stepID
+			child.pendingResumeGen++
+			child.status = RunStatusWaitingUserApr
+			child.agentStatus = string(RunStatusWaitingUserApr)
+			snap := sessionStateOf(child)
+			s.mu.Unlock()
+			if err := s.persistProviderSession(snap); err != nil {
+				log.Printf("[agent-spawn] persist deferred dispatch intent failed child=%s: %v", childRunID, err)
+			}
+			s.flowDiagLog(parentRunID, "spawned_child_dispatch_parked",
+				"spawned child's first turn refused by re-blocked parent loop; parked on durable resume intent",
+				"child_run_id", childRunID)
+			return
+		}
+		s.mu.Unlock()
+	}
+	// BUG-544 (live run-25217/run-26015): a first-dispatch quota veto already
+	// parked the member on a durable quota_route_required card
+	// (waiting_question). It is pending a route decision, NOT a dispatch
+	// failure — marking it failed here appended a terminal cohort entry, let
+	// the barrier join with the card unanswered, ran the arbiter, completed
+	// the flow, and the loser sweep destroyed the worktree the pending
+	// respawn needs (every later answer failed "worktree ... swept"). The
+	// pending card is itself the durable intent: the answer path respawns a
+	// successor inheriting this seat or releases the seat on `stop`, so
+	// leave status/leg/cohort untouched.
+	if turnErr.code == "quota_route_required" {
+		s.flowDiagLog(parentRunID, "spawned_child_quota_parked",
+			"spawned child's first turn vetoed by the quota gate; cohort seat held on the pending route card",
+			"child_run_id", childRunID)
+		return
+	}
+	s.handleChildStartTurnFailure(childRunID, parentRunID, turnErr.msg)
+}
+
 // handleChildStartTurnFailure is the spawnChildRun async startTurn error path:
 // pre-adapter failure never emits EventTurnFailed, so cohort join / non-cohort
 // hub reinvoke must be driven here (BUG-289 H2/F-2 + H-A residual).
@@ -3356,12 +3468,21 @@ func (s *InteractiveService) handleChildStartTurnFailure(childRunID, parentRunID
 	cohortID := ""
 	label := ""
 	provider := ""
+	var failedSnap ProviderSessionState
 	if child != nil {
 		cohortID = child.flowCohortId
 		label = child.label
 		provider = string(child.providerKey)
 		child.status = RunStatusFailed
 		child.agentStatus = string(RunStatusFailed)
+		// BUG-538: a leg that never dispatched must not hold its worktree claim
+		// forever — close the durable claim so future spawns are not parked on a
+		// dead leg (live run-1651: leg_state=active outlived the failed run).
+		if child.legState == LegStateActive {
+			child.legState = LegStateClosed
+			child.legClosedReason = LegClosedReasonDispatchFailed
+		}
+		failedSnap = sessionStateOf(child)
 		// run-43831: stamp hub progress under s.mu before unlock / cohort join /
 		// async reinvoke so pre-adapter start failures do not leave a stale
 		// hubLastProgressAt gap (Codex review of residual F-0).
@@ -3374,6 +3495,13 @@ func (s *InteractiveService) handleChildStartTurnFailure(childRunID, parentRunID
 	}
 	if cohortID != "" {
 		s.mu.Unlock()
+		// BUG-538: persist the failed+leg-closed snapshot — the durable row
+		// must not keep reading idle/active after an in-memory failure.
+		if failedSnap.RunID != "" {
+			if err := s.persistProviderSession(failedSnap); err != nil {
+				log.Printf("[agent-spawn] persist failed child leg close child=%s: %v", childRunID, err)
+			}
+		}
 		// BUG-289 H2/F-2: pre-flight failure never hit appendCohortResult
 		// (only turn-completed/failed handlers do). Stall sweep skips
 		// members with last.IsZero() && !inFlight, so the barrier hung
@@ -3452,6 +3580,12 @@ func (s *InteractiveService) handleChildStartTurnFailure(childRunID, parentRunID
 		s.emitAgentGraphLocked(parentRunID, s.agentOrchestrator.transition(parentRunID, "rejected"))
 	}
 	s.mu.Unlock()
+	// BUG-538: non-cohort tail — same durable persist as the cohort path.
+	if failedSnap.RunID != "" {
+		if err := s.persistProviderSession(failedSnap); err != nil {
+			log.Printf("[agent-spawn] persist failed child leg close child=%s: %v", childRunID, err)
+		}
+	}
 }
 
 // notifyHubOfFlowEntrySpawnFailure is H-B: every flow entry spawn failed before
@@ -4333,6 +4467,7 @@ func (s *InteractiveService) resumePendingLoopWork(parentRunID string) {
 	}
 
 	var next *pendingTurn
+	var resumeIDs []string
 	s.mu.Lock()
 	if !s.loopAllowsNextTurnLocked(parentRunID) {
 		s.mu.Unlock()
@@ -4340,15 +4475,27 @@ func (s *InteractiveService) resumePendingLoopWork(parentRunID string) {
 	}
 	for _, childID := range s.agentOrchestrator.listChildren(parentRunID) {
 		child := s.runs[childID]
-		if child == nil || child.pendingTurnPrompt == "" || child.turnInFlight || !s.dependenciesSatisfiedLocked(child) {
+		if child == nil {
 			continue
 		}
-		next = &pendingTurn{runID: child.id, stepID: child.stepID, prompt: child.pendingTurnPrompt}
-		child.pendingTurnPrompt = ""
-		child.agentStatus = string(RunStatusRunning)
-		break
+		// BUG-538: a spawned successor whose first dispatch was refused by the
+		// re-blocked loop parks on a DURABLE resume intent — it never enters the
+		// in-memory pendingTurnPrompt queue, so unblock must flush it through
+		// the claiming path (gen CAS + clear-on-accept), not a bare startTurn.
+		if strings.TrimSpace(child.pendingResumePrompt) != "" &&
+			strings.TrimSpace(child.pendingResumeStepID) != "" {
+			resumeIDs = append(resumeIDs, childID)
+		}
+		if next == nil && child.pendingTurnPrompt != "" && !child.turnInFlight && s.dependenciesSatisfiedLocked(child) {
+			next = &pendingTurn{runID: child.id, stepID: child.stepID, prompt: child.pendingTurnPrompt}
+			child.pendingTurnPrompt = ""
+			child.agentStatus = string(RunStatusRunning)
+		}
 	}
 	s.mu.Unlock()
+	for _, id := range resumeIDs {
+		go s.flushDurableTurnIntents(id)
+	}
 	if next != nil {
 		prompt, queued := s.takeQueuedFeedbackPrompt(parentRunID, next.runID, next.prompt)
 		if queued != nil {
@@ -4918,6 +5065,7 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 		ActiveFlowNodes:            append([]agentpack.FlowNode(nil), rs.activeFlowNodes...),
 		ChatSubMode:                rs.chatSubMode,
 		ChatFlowRef:                rs.chatFlowRef,
+		FlowArm:                    string(rs.flowArm),
 		WorkingMode:                rs.workingMode,
 		QuotaRouting:               rs.quotaRouting,
 		VibeAwaitingLock:           rs.vibeAwaitingLock,
@@ -5571,6 +5719,13 @@ func (s *InteractiveService) resumePendingFlowGate(runID string) {
 	}
 	// P1-06: single-flight claim — only one resumePendingFlowGate evaluates.
 	if rs.gateClaimID != "" {
+		s.mu.Unlock()
+		return
+	}
+	// BUG-540: a live post-turn gate eval (finishTurn's inline window or a
+	// claimed resume mid-eval) owns the disposition — do not run a second
+	// concurrent eval. Stale windows are released by the sweep's unstick.
+	if gateCancelLive(rs.postTurnGateStartedAt, rs.postTurnGateCancel) {
 		s.mu.Unlock()
 		return
 	}
@@ -7712,12 +7867,14 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 	parentReasoningEffort := ""
 	parentProviderKey := ProviderKey("")
 	parentYolo := false
+	parentWorkingMode := ""
 	boundaryStart := false
 	if parentRun != nil {
 		cwd = parentRun.workspaceCwd
 		projectID = parentRun.projectID
 		workflowID = parentRun.workflowID
 		parentFlowRef = parentRun.chatFlowRef
+		parentWorkingMode = parentRun.workingMode
 		parentModel = parentRun.modelName
 		parentReasoningEffort = parentRun.reasoningEffort
 		parentProviderKey = parentRun.providerKey
@@ -7863,6 +8020,12 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 		// validated by enforceWorkingModeStart (a child must not re-declare).
 		FlowRefFallback:   parentFlowRef,
 		ChatMode:          "normal_chat",
+		// BUG-547: internal child spawn, not a user mount — skip the
+		// start-family/client gates; inherit the parent's working mode so
+		// vibe parents spawn vibe children (vibe flows otherwise dead-end
+		// at their first child with working_mode_flow_forbidden).
+		SpawnedInternally: true,
+		WorkingMode:       parentWorkingMode,
 		Cwd:               cwd,
 		ProviderKey:       providerKey,
 		Model:             childModel,
@@ -7937,7 +8100,7 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 		if in.FCPMarkerProvenanceRunID != "" && in.FCPMarkerProvenanceRunID != rs.id {
 			rs.markerProvenanceRunIDs = append(rs.markerProvenanceRunIDs, in.FCPMarkerProvenanceRunID)
 		}
-		if rs.flowCohortId != "" {
+		if rs.flowCohortId != "" && !in.CohortSeatInherited {
 			if in.CohortSize > 0 {
 				s.agentOrchestrator.preRegisterCohort(parentRunID, rs.flowCohortId, in.CohortSize)
 			} else {
@@ -8073,8 +8236,10 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 			}, "", "")
 			if turnErr != nil {
 				// startTurn failed before the adapter ran — signal waiter + settle
-				// flow/cohort (H-A non-cohort + BUG-289 H2/F-2 cohort).
-				s.handleChildStartTurnFailure(handle.RunID, parentRunID, turnErr.msg)
+				// flow/cohort (H-A non-cohort + BUG-289 H2/F-2 cohort). BUG-538:
+				// a retryable parent-park refusal parks the leg on a durable
+				// intent instead of stranding it.
+				s.handleSpawnedChildTurnFailure(handle.RunID, parentRunID, firstPrompt, handle.StepID, turnErr)
 			}
 		}()
 	}
@@ -9947,6 +10112,108 @@ func clearDurableRecoveryStateLocked(rs *interactiveRun) {
 }
 
 // startTurn validates, enforces one-turn-per-session, applies idempotency, emits
+// ---- CP-89 Task-452 forward seam -------------------------------------------
+
+// resolvePinnedFlowRefForForward finds the run's pinned flow for a forward
+// turn. Order mirrors resolveWorkflowFlowRef's mount semantics: the
+// workflowID pin first, then a root run's chat-mode pin (chatFlowRef). No pin
+// → 422 forward_requires_flow_pin — a forward on a plain chat run is
+// meaningless.
+func resolvePinnedFlowRefForForward(rs *interactiveRun) (string, *apiErr) {
+	if id := strings.TrimSpace(rs.workflowID); id != "" {
+		return id, nil
+	}
+	if rs.parentRunID == "" {
+		if ref := strings.TrimSpace(rs.chatFlowRef); ref != "" {
+			return ref, nil
+		}
+	}
+	return "", newAPIErr(http.StatusUnprocessableEntity, "forward_requires_flow_pin",
+		"forwardFlow requires a pinned flow — create the run with flowRef or workflowID")
+}
+
+// runFirstTurnFences re-runs the same fences an immediate first-turn flow
+// start already enforces — working-mode family gate, vibe-cp-ingest source
+// contract, flow-definition validity — at FORWARD time. A failed fence must
+// not consume the pending latch (the caller returns before the flip), so the
+// user can fix the issue and forward again. The create-pinned SourceDocID
+// counts for the ingest fence; the forward turn's own value wins when both
+// are present.
+func (s *InteractiveService) runFirstTurnFences(ctx context.Context, rs *interactiveRun, flowRef string, in TurnInput) *apiErr {
+	if err := workingmode.FlowAllowedForWorkingMode(rs.workingMode, flowRef, "user"); err != nil {
+		return mapWorkingModeError(err)
+	}
+	if workingmode.BareFlowID(flowRef) == vibeCpIngestFlowID {
+		fenceIn := in
+		if strings.TrimSpace(fenceIn.SourceDocID) == "" {
+			fenceIn.SourceDocID = rs.sourceDocID
+		}
+		if e := s.validateVibeCpIngestSource(rs, fenceIn); e != nil {
+			return e
+		}
+	}
+	// NOTE: called with s.mu held (the forward path runs inside startTurn's
+	// locked section) — read the store field directly rather than via
+	// explicitFlowRefResolves, which takes s.mu itself and would deadlock.
+	if _, err := NewFlowDefinitionResolver(s.flowDefinitionStore).ResolveFlowRef(ctx, flowRef); err != nil {
+		return newAPIErr(http.StatusUnprocessableEntity, "invalid_flow_definition",
+			"pinned flow does not resolve to a valid flow definition")
+	}
+	return nil
+}
+
+// forwardPinnedFlow VALIDATES that this turn may launch rs's pinned flow and
+// returns the resolved ref: chat-root shape, resolvable pin, pending latch,
+// and the same first-turn fences the immediate path runs. Caller holds s.mu.
+// It does NOT flip the latch — commitPendingFlowStartLocked does that only
+// after the prompt pack succeeds, so a rejected forward leaves the run
+// byte-identical (pending, retryable).
+func (s *InteractiveService) forwardPinnedFlow(ctx context.Context, rs *interactiveRun, in TurnInput) (string, *apiErr) {
+	// Forward is a chat-root semantic: a durable row claiming to be a pending
+	// CHILD (parent_run_id + flow_arm=pending) is corrupt — clients cannot
+	// mint one (StartRunInput has no ParentRunID) and spawnChildRun never
+	// stamps pending. Fail closed rather than launch a nested flow.
+	if rs.parentRunID != "" {
+		return "", newAPIErr(http.StatusUnprocessableEntity, "forward_requires_root_run",
+			"forwardFlow is only valid on a chat-root run")
+	}
+	flowRef, pinErr := resolvePinnedFlowRefForForward(rs)
+	if pinErr != nil {
+		return "", pinErr
+	}
+	if rs.flowArm != FlowArmPending {
+		return "", newAPIErr(http.StatusUnprocessableEntity, "flow_already_started",
+			"this run's flow is not pending — it already started or never armed forward")
+	}
+	if e := s.runFirstTurnFences(ctx, rs, flowRef, in); e != nil {
+		return "", e
+	}
+	return flowRef, nil
+}
+
+// commitPendingFlowStartLocked performs the pending→started flip. It must run
+// ONLY after every fallible pre-launch step (fences, prompt pack) succeeded —
+// a rejected forward leaves the latch pending so the user's retry can still
+// launch (R5-1). Caller holds s.mu.
+func (s *InteractiveService) commitPendingFlowStartLocked(rs *interactiveRun, flowRef string) {
+	rs.setFlowArmStartedLocked()
+	rs.flowEngineDriven = true
+	// Flow-start turns lock YOLO=true before the async entry spawn so children
+	// inherit the product posture — same contract as the immediate first-turn
+	// block below (BUG-299 residual).
+	rs.yolo = true
+	rs.chatFlowRef = flowRef
+	if id := workingmode.BareFlowID(flowRef); id == vibeCpIngestFlowID || id == vibeIngestFlowID {
+		rs.vibeAwaitingLock = true
+		if rs.vibeSprintBudget <= 0 {
+			rs.vibeSprintBudget = defaultVibeSprintBudget
+		}
+		if id == vibeCpIngestFlowID {
+			rs.vibeLockedCP = rs.sourceDocID
+		}
+	}
+}
+
 // turn_started, and launches the adapter. Returns the turnId.
 func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, idempotencyKey string) (string, *apiErr) {
 	s.mu.Lock()
@@ -9967,17 +10234,32 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 	if idempotencyKey != "" {
 		if raw, ok := rs.idempotency[idempotencyKey]; ok {
 			tid, launched := parseDurableIdemValue(raw)
+			// CP-89 R5-2: the flowArm latch — not the idempotency map — is the
+			// forward's launch record. A forwardFlow turn on a PENDING latch
+			// means the earlier attempt never launched the flow (rejected
+			// after the key was recorded, or crashed between the durable
+			// started commit and the entry spawn on a healed row). Returning
+			// the stored turnID would ack a launch that never happened —
+			// re-enter the launch path with the same turnID instead.
+			forwardMustRelaunch := in.ForwardFlow && rs.flowArm == FlowArmPending
 			if tid != "" && !strings.HasPrefix(idempotencyKey, "durable-") {
-				s.mu.Unlock()
-				return tid, nil
-			}
-			if tid != "" && strings.HasPrefix(idempotencyKey, "durable-") {
-				if durableIdemReplaySafe(rs, tid, launched) {
+				if forwardMustRelaunch {
+					preparedReuseTurnID = tid
+				} else {
 					s.mu.Unlock()
 					return tid, nil
 				}
-				// Incomplete prep or orphan launch-ack: relaunch with same turnID.
-				preparedReuseTurnID = tid
+			}
+			if tid != "" && strings.HasPrefix(idempotencyKey, "durable-") {
+				if forwardMustRelaunch {
+					preparedReuseTurnID = tid
+				} else if durableIdemReplaySafe(rs, tid, launched) {
+					s.mu.Unlock()
+					return tid, nil
+				} else {
+					// Incomplete prep or orphan launch-ack: relaunch with same turnID.
+					preparedReuseTurnID = tid
+				}
 			}
 		}
 	}
@@ -10111,7 +10393,14 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 	// flowRef directly, so enforce the contract here at admission. Only the
 	// flow-starting turn (turnCount==0, non-restored) is checked — follow-ups
 	// and Drive-restored runs already passed it on the source machine.
+	// CP-89 Task-452: a flowArm=pending run does NOT start the flow on this
+	// turn — its chat turns stay plain and the ingest fence fires at forward
+	// time instead (runFirstTurnFences, which also honors the create-pinned
+	// SourceDocID). Without the immediate check, a pending vibe-cp-ingest
+	// run's first plain chat turn would be fenced as if the flow were
+	// starting — chat would be dead until the user pasted a source.
 	if rs.turnCount == 0 && strings.TrimSpace(rs.restoredFrom) == "" &&
+		rs.flowArm == FlowArmImmediate &&
 		workingmode.BareFlowID(strings.TrimSpace(in.FlowRef)) == vibeCpIngestFlowID {
 		if e := s.validateVibeCpIngestSource(rs, in); e != nil {
 			s.mu.Unlock()
@@ -10353,12 +10642,171 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 	// A new turn resets the idle-summary window to zero (a pending summary timer
 	// is cancelled here and re-armed when this turn completes).
 	s.cancelChatSummary(rs.id)
-	if !isPreparedRelaunch {
+	// CP-89 Task-452: the forwardFlow seam runs BEFORE the ordinary
+	// turnCount==0 flow-start block — and it survives durable relaunch
+	// (BUG-288 prepared intents): the flowArm latch itself is the idempotency
+	// key. A relaunched forward whose flip already committed (arm=started)
+	// completes synthetically — re-spawning would duplicate the flow; a
+	// relaunched forward on a still-pending latch runs the full fence+flip
+	// path because the first attempt never reached the launch.
+	if in.ForwardFlow && isPreparedRelaunch && rs.flowArm == FlowArmStarted {
+		flowStartOnly = true
+	} else if in.ForwardFlow && (!isPreparedRelaunch || rs.flowArm == FlowArmPending) {
+		// Same first-turn adoption the immediate block does — the forward IS
+		// this run's launch turn, so a turn-level changeType/sourceDocID/
+		// subMode must land on the run before the fences read it (and before
+		// vibeLockedCP stamps it). Without this the fence validates the
+		// turn's value but the run keeps the stale pin.
+		// Capture the pre-flip state first: if the durable started+topology
+		// commit below fails, the run must roll back to pending rather than
+		// diverge from the durable row (which would still say pending while
+		// memory believes started — the R4-1 wedge/double-launch).
+		priorArm := rs.flowArm
+		priorDriven := rs.flowEngineDriven
+		priorYolo := rs.yolo
+		priorFlowRef := rs.chatFlowRef
+		priorAwaiting := rs.vibeAwaitingLock
+		priorBudget := rs.vibeSprintBudget
+		priorLockedCP := rs.vibeLockedCP
+		priorEdges := rs.activeFlowEdges
+		priorNodes := rs.activeFlowNodes
+		priorAcceptance := rs.activeFlowAcceptanceNodes
+		priorChangeType := rs.changeType
+		priorSourceDoc := rs.sourceDocID
+		priorSubMode := rs.chatSubMode
+		priorCpDoc := rs.vibeCpDocID
+		// A forward that is REJECTED (fence or pack) must leave the run
+		// byte-identical to before the attempt — latch pending, adoption and
+		// fence-stamped markers rolled back — so the retry can still launch.
+		rollbackRejectedForward := func() {
+			rs.changeType = priorChangeType
+			rs.sourceDocID = priorSourceDoc
+			rs.chatSubMode = priorSubMode
+			rs.vibeCpDocID = priorCpDoc
+			rs.turnInFlight = false
+		}
+		if changeType := normalizeChangeType(in.ChangeType); changeType != "" {
+			rs.changeType = changeType
+		}
+		if resolved := resolveSourceDocID(rs.workspaceCwd, rs.changeType, in.SourceDocID); resolved != "" {
+			rs.sourceDocID = resolved
+		}
+		rs.chatSubMode = strings.TrimSpace(in.SubMode)
+		flowRef, e := s.forwardPinnedFlow(context.Background(), rs, in)
+		if e != nil {
+			rollbackRejectedForward()
+			s.mu.Unlock()
+			return "", e
+		}
+		// CP-89 Task-453: the entry child's prompt = forward text pinned
+		// intact + the settled chat transcript, oldest material degrading
+		// first, under the entry node's hard context budget. The pack runs
+		// BEFORE the flip (R5-1): a pack rejection must not consume the
+		// latch.
+		pkg, perr := s.buildForwardPromptPackage(rs, in.Prompt,
+			s.forwardEntryBudgetTokens(context.Background(), flowRef))
+		if perr != nil {
+			rollbackRejectedForward()
+			s.mu.Unlock()
+			return "", perr
+		}
+		s.commitPendingFlowStartLocked(rs, flowRef)
+		// Durable-first (review residual): stamp the flow topology and
+		// commit arm=started to the durable row BEFORE any child can spawn.
+		// A crash then leaves either durable pending (pre-persist — no
+		// children possible) or started+topology (post-persist — resume
+		// machinery re-drives). startResolvedFlowFromNode re-stamps the same
+		// fields idempotently inside the goroutine.
+		if record, rerr := NewFlowDefinitionResolver(s.flowDefinitionStore).ResolveFlowRef(context.Background(), flowRef); rerr == nil {
+			rs.activeFlowEdges = record.Definition.Edges
+			rs.activeFlowNodes = record.Definition.Nodes
+			rs.activeFlowAcceptanceNodes = append([]string(nil), record.Definition.AcceptanceNodes...)
+		}
+		snap := sessionStateOf(rs)
+		// Lock-ordering (review finding): flowDiagLog and
+		// persistProviderSession read the orchestrator loop (o.mu) while the
+		// vibe reopen sweep holds o.mu and takes s.mu (mutateLoop closures in
+		// interactive_resume) — calling them under s.mu is an ABBA pair.
+		// Drop s.mu for both, then re-acquire before spawning. turnInFlight
+		// stays set across the gap so a concurrent turn still fences on it.
+		s.mu.Unlock()
+		s.flowDiagLog(runID, "forward_prompt_packed",
+			"forward entry prompt packed",
+			"turns_included", pkg.TurnsIncluded,
+			"bytes", pkg.Bytes,
+			"degraded", pkg.Degraded)
+		persistErr := s.persistProviderSession(snap)
+		s.mu.Lock()
+		if s.runs[runID] != rs {
+			// Run was deleted while the lock was dropped. The snapshot just
+			// persisted may have re-inserted this run's durable row after the
+			// delete path already removed it — delete again so the delete
+			// wins as last writer. Spawning now would create orphans anyway.
+			rs.turnInFlight = false
+			s.mu.Unlock()
+			if deleter, ok := s.workflowStore.(interface {
+				DeleteProviderSession(ctx context.Context, runID string) error
+			}); ok {
+				_ = deleter.DeleteProviderSession(context.Background(), runID)
+			}
+			return turnID, nil
+		}
+		// NOTE: `completed` is NOT dead — it is the normal settled-between-
+		// turns state of a continuable chat run (exactly the state a pending
+		// run is in when the forward arrives after earlier chat turns). Only
+		// failed/cancelled mean the run can no longer accept effects.
+		if rs.status == RunStatusFailed || rs.status == RunStatusCancelled {
+			// Stopped while the lock was dropped. The stale snapshot may
+			// have overwritten the stop path's terminal persist — re-persist
+			// the current (terminal) state so the durable record settles
+			// with the correct last writer. No spawn on a dead run.
+			rs.turnInFlight = false
+			rePersist := sessionStateOf(rs)
+			s.mu.Unlock()
+			_ = s.persistProviderSession(rePersist)
+			return turnID, nil
+		}
+		if persistErr != nil {
+			// R4-1: the durable started+topology commit failed — never spawn
+			// children off a flip the durable record does not know about
+			// (restart would find pending and allow a duplicate launch). Roll
+			// the in-memory state back to the durable truth and surface a
+			// typed retryable failure.
+			rs.flowArm = priorArm
+			rs.flowEngineDriven = priorDriven
+			rs.yolo = priorYolo
+			rs.chatFlowRef = priorFlowRef
+			rs.vibeAwaitingLock = priorAwaiting
+			rs.vibeSprintBudget = priorBudget
+			rs.vibeLockedCP = priorLockedCP
+			rs.activeFlowEdges = priorEdges
+			rs.activeFlowNodes = priorNodes
+			rs.activeFlowAcceptanceNodes = priorAcceptance
+			rs.changeType = priorChangeType
+			rs.sourceDocID = priorSourceDoc
+			rs.chatSubMode = priorSubMode
+			rs.vibeCpDocID = priorCpDoc
+			rs.turnInFlight = false
+			s.mu.Unlock()
+			return "", newAPIErr(http.StatusInternalServerError, "persist_failed",
+				"failed to commit flow start to the durable record: "+persistErr.Error())
+		}
+		flowStartOnly = true
+		go s.startResolvedFlow(context.Background(), runID, flowRef, pkg.Prompt)
+		if !isPreparedRelaunch {
+			rs.turnCount++
+		}
+	} else if !isPreparedRelaunch {
 		if rs.turnCount == 0 {
 			if changeType := normalizeChangeType(in.ChangeType); changeType != "" {
 				rs.changeType = changeType
 			}
-			rs.sourceDocID = resolveSourceDocID(rs.workspaceCwd, rs.changeType, in.SourceDocID)
+			// CP-89: a create-pinned SourceDocID (StartRunInput.SourceDocID)
+			// stays when this turn doesn't name one — the pin must survive to
+			// the forward-time ingest fence. An explicit turn value still wins.
+			if resolved := resolveSourceDocID(rs.workspaceCwd, rs.changeType, in.SourceDocID); resolved != "" {
+				rs.sourceDocID = resolved
+			}
 			// CP-42/Task-177: a validated flowRef on the first turn starts the
 			// built-in flow's entry node(s) deterministically instead of relying on
 			// the hub's own AI judgement to decide whether to spawn a review loop.
@@ -10394,7 +10842,10 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 			// manifest, which still restore with turnCount==0. flowEngineDriven is
 			// already restored by reconstructRun (via ActiveFlowNodes), so skipping
 			// here does not demote a restored hub to a plain chat.
-			if flowRef := strings.TrimSpace(in.FlowRef); flowRef != "" && strings.TrimSpace(rs.restoredFrom) == "" {
+			// CP-89 Task-451/452: only an immediate-armed run auto-starts a
+			// pinned flow on its first turn. A pending run MUST NOT start here —
+			// explicit forwardFlow is the only signal that flips the latch.
+			if flowRef := strings.TrimSpace(in.FlowRef); flowRef != "" && rs.flowArm == FlowArmImmediate && strings.TrimSpace(rs.restoredFrom) == "" {
 				flowStartOnly = true
 				rs.flowEngineDriven = true
 				// BUG-299 residual: chat-mode Review Loop (and any explicit flowRef)
@@ -10424,7 +10875,12 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 	// logged reprompt showed attempt=0 and loops ran forever: runs 169/442/
 	// 4014). A reprompt-delivery turn carries the counter; any fresh turn
 	// (user prompt, decision follow-up, resume) resets it.
-	if scenario != scenarioGateReprompt {
+	// BUG-539: a run that still owes gate re-check (pendingGateCodePaths) is
+	// mid-remediation regardless of which channel re-drove it — an orphan-cure
+	// Resume mint resetting the counter here made the cap unreachable live
+	// (run-2830 cycled attempt=0 forever). The gate clears codePaths on pass,
+	// which releases the counter to reset on the next non-remediation turn.
+	if scenario != scenarioGateReprompt && len(rs.pendingGateCodePaths) == 0 {
 		rs.repromptAttempts = 0
 	}
 	touchHubProgressLocked(rs)
@@ -11608,7 +12064,9 @@ func (s *InteractiveService) AnswerQuestion(questionID string, choice []string) 
 		s.applyContextPressureAnswer(decisionTarget, pressureChoice)
 	}
 	if decisionTarget != nil && quotaRouteChoice != "" {
-		s.applyQuotaRouteAnswer(decisionTarget, questionID, quotaRouteChoice)
+		if aerr := s.applyQuotaRouteAnswer(decisionTarget, questionID, quotaRouteChoice); aerr != nil {
+			return s.restorePendingQuotaQuestion(questionID, aerr)
+		}
 	}
 
 	if resumeStepTurn {
@@ -11625,6 +12083,59 @@ func (s *InteractiveService) AnswerQuestion(questionID string, choice []string) 
 		go s.startTurnClearingIntent(restartRunID, restartStepID, restartPrompt, "resume", restartGen)
 	}
 	return nil
+}
+
+// restorePendingQuotaQuestion rolls a consumed quota_route_required card back
+// to pending when the apply failed after the record was already resolved
+// (BUG-541, live run-12520: "use_for_run" returned 200 while
+// respawnChildOnRoute refused on a blocked parent — the card vanished and the
+// candidate was stranded). The card re-surfaces pending so the operator can
+// re-answer once the refusal clears; the same choice retries cleanly.
+func (s *InteractiveService) restorePendingQuotaQuestion(questionID string, aerr *apiErr) *apiErr {
+	var pendingSnap *ProviderQuestionState
+	var owner *interactiveRun
+	s.mu.Lock()
+	rec := s.questions[questionID]
+	if rec != nil && rec.status == "resolved" {
+		rec.status = "pending"
+		rec.revision++
+		rec.choice = nil
+		rec.resolvingSnapshot = nil
+		rec.resolvingSession = nil
+		if rs := s.runs[rec.runID]; rs != nil {
+			rs.pendingQuestionID = rec.id
+			rs.status = RunStatusWaitingQuestion
+			rs.agentStatus = string(RunStatusWaitingQuestion)
+			owner = rs
+			// Re-raise the card on the owner + mirror root — heals the
+			// waiting_question stamp the resolve path just cleared.
+			ev := ProviderEvent{
+				Type:          EventUserQuestionRequired,
+				QuestionID:    rec.id,
+				Prompt:        rec.prompt,
+				Options:       rec.options,
+				QuotaDecision: rec.quotaDecision,
+			}
+			s.emitLocked(rs, ev)
+			if rootID := s.flowRootIDLocked(rs); rootID != "" && rootID != rs.id {
+				if root := s.runs[rootID]; root != nil {
+					s.emitLocked(root, ev)
+				}
+			}
+		}
+		st := questionStateFromRecord(rec, "", rec.expiresAt)
+		pendingSnap = &st
+	}
+	s.mu.Unlock()
+	if pendingSnap != nil {
+		if err := s.persistQuestion(*pendingSnap); err != nil {
+			log.Printf("[gate] persist quota card rollback %s: %v", questionID, err)
+		}
+	}
+	if owner != nil {
+		s.persistParentSession(owner.id)
+	}
+	return aerr
 }
 
 // AskWorkflowQuestion is the deterministic, workflow-driven question path (04-04

@@ -1,0 +1,128 @@
+# BUG-541 — Quota-route answer consumed at the API layer but apply fails on blocked parent; candidate permanently stranded
+
+Status: **FIXED — incl. chat-leg residual (pin validation + commit ordering); live re-verify pending**
+Severity: High — a one-shot operator decision is destroyed on a transient
+failure. The question is consumed (removed from the pending list, cannot be
+re-answered), the respawn never happens, and the candidate is silently lost
+from the cohort — the tournament proceeds with a missing member.
+
+## Symptom (live, `/tmp/fp-live5`, run-12520)
+
+1. run-14292 (candidate-a) bound grok → organic `quota_exhausted` (real 402,
+   0% headroom) → `user_question_required` `q-14305` with
+   `quota_route_required` options (`use_for_run|devin|...` / `use_once` /
+   `stop`). Step stamped `WAITING_USER_APPROVAL` → `FAILED`.
+2. While the card was pending, sibling run-14297 (candidate-b) hit the
+   reprompt cap → `applyFlowControl(escalate)` → parent loop went
+   `blocked(escalate)`.
+3. Operator answered `q-14305` with `use_for_run|devin|...`:
+   `POST /client/questions/q-14305/answer` → **`{"status":"accepted"}` (200)**.
+4. Inside `AnswerQuestion` → `applyQuotaDecision` → `respawnChildOnRoute` →
+   `spawnChildRun` → the spawn guard refused:
+   `[quota-gate] answer apply failed run=run-14292 err=quota_gate: respawn
+   child: parent run "run-12520" loop is blocked (escalate)`.
+5. The answer was already consumed: `GET
+   /admin/workflow-runs/run-12520/questions` → `[]`. The card cannot be
+   re-answered; there is no pending intent to retry the respawn.
+6. run-14292 remains `running` with `leg: closed` (zombie), the flow's
+   `candidate-a` step is `FAILED`, and the tournament continues one member
+   short — no path re-arms the question.
+
+## Root cause
+
+`handleAnswerQuestion` → `AnswerQuestion` resolves the question record
+(consumes it) before/independent of the downstream effect succeeding. The
+respawn path (`respawnChildOnRoute`) runs the synchronous spawn guard, which
+correctly refuses while the parent loop is `blocked`. The failure is logged
+(`answer apply failed`) but:
+
+- not surfaced to the caller (HTTP already returned 200), and
+- not parked as a durable intent (unlike the BUG-538 parked-successor fix,
+  which covers `flow_awaiting_user` on first-turn dispatch — this failure is
+  one frame earlier, inside the answer-apply itself, before a child exists
+  to park).
+
+So the quorum of "answered → applied" is broken at the consume-vs-apply
+boundary: the single decision input is lost on a transient refusal.
+
+## Evidence
+
+- `fp-live5-server.log` 00:44:15: `answer apply failed ... loop is blocked
+  (escalate)`.
+- `run-12520-flow-events.ndjson` seq 14: `user_question_required` q-14305
+  (only event; no follow-up `quota_route_applied`/`spawned` event).
+- Admin questions endpoint returns `[]` after the answer — consumed, not
+  re-armed.
+- sessions.ndjson: run-14292 `status=running, leg_state=closed`
+  (updated_at frozen at the veto); run-12520 `loop.blockReason=escalate`.
+
+## Why it matters
+
+- The decision is unrecoverable: operator intent ("use devin for this run")
+  is dropped, and the flow loses a candidate with no second chance.
+- Same defect class the BUG-538 fix addressed one frame later — the fix
+  covers spawn→dispatch, but the answer-apply→spawn boundary still swallows
+  failures.
+
+## Expected fix shape (for the fixer)
+
+- `AnswerQuestion` must not consume the question when the apply fails —
+  re-surface/retain it (or return an error status to the caller instead of
+  200).
+- Alternatively, park the respawn decision as a durable intent and apply it
+  on the next unblock — mirror the BUG-538 `pendingResume*` mechanism at the
+  answer-apply seam.
+- The stranded child (run-14292) should settle to a terminal status
+  (`failed`) rather than `running` once its leg is closed.
+
+## Fix applied (CA-631)
+
+- `quota_gate.go applyQuotaRouteAnswer` now returns `*apiErr` instead of
+  swallowing failures.
+- `AnswerQuestion`: on apply failure the durable question rolls back to
+  `pending` and is re-mirrored — the card stays answerable, the candidate
+  is not lost, and the caller can see the failure instead of a false 200
+  resolved.
+
+Tests: `bug541_quota_answer_apply_failed_test.go` (2 tests — card survives a
+blocked-parent respawn refusal; apply error surfaces). All green.
+
+## Live re-verification (2026-09-28, post-fix binary)
+
+- run-19946 (chat, pinned grok on exhausted account d317248b): turn admission
+  refused with `quota_route_required`; durable card q-19948 surfaced with
+  use_for_run|devin / use_once|devin / stop.
+- Answer `use_for_run|codex|fakeacct|gpt-5.4` (unlisted candidate) was accepted
+  and committed (`quota-audit: committed, grok→codex/fakeacct, scope=run`) —
+  the chat-leg apply path (`switchChatLeg`) does not validate the target
+  account, so the apply "succeeded" and no rollback triggered (correct for the
+  seam's contract).
+- **New finding (chat-leg variant of BUG-534):** the committed switch closed
+  the grok leg (`leg_state: closed`) but no codex leg ever provisioned
+  (account doesn't exist). Run-19946 now reads `status=running` with every
+  turn returning `session_unavailable` — and the quota card does NOT
+  re-surface, so the dead binding is unrecoverable via the UI. Close-before-
+  provision on chat legs leaves a zombie run; the BUG-534 fix covered the
+  child-respawn path only.
+- The stranded-child rollback path itself is covered by unit tests
+  (bug541_quota_answer_apply_failed_test.go); the earlier live capture on
+  run-12520 remains the organic repro evidence.
+
+## Residual fix (2026-09-28, CA-635)
+
+The chat-leg variant above is now fixed:
+
+- `ResumeQuotaGate` validates the operator-typed route pin via
+  `pinnedAccountResolvable` (same strict contract as `resolveAdapterAccount`)
+  before any mutation — `use_for_run|codex|fakeacct|...` now returns
+  `quota_route_apply_failed` and the card rolls back to pending.
+- `commitQuotaRotation` emits `quota_route_committed` only AFTER
+  `switchChatLeg` succeeds (spawn-first ordering, mirroring BUG-534).
+- `switchChatLeg` Phase A resolves pinned accounts before stamping the
+  durable intent; Phase B aborts the switch when a pinned leg's seed turn
+  fails provisioning-class (`isProvisioningSeedError`) — destination closes
+  terminal `dispatch_failed`, source leg stays open, card re-answerable.
+
+Tests: `bug541_chat_leg_commit_test.go` (4 tests — invented account rejected
+pending card intact, committed only after destination exists, unresolvable
+pin rejected pre-mutation, provisioning-vs-content seed classification).

@@ -149,6 +149,10 @@ type ProviderSessionState struct {
 	// launch (which has its own WorkflowID/launchMode restore path already).
 	ChatSubMode string
 	ChatFlowRef string
+	// FlowArm persists the CP-89 run-scoped launch latch
+	// ("immediate"|"pending"|"started"). Empty loads as immediate (legacy
+	// rows). pending = flow pinned but not yet started; started = forwarded.
+	FlowArm string
 	// WorkingMode is Task-326 local-only ("dev"|"vibe"). Empty loads as dev. Not a Supabase column.
 	WorkingMode string
 	// Task-321: vibe lock + sequential sprint queue (sessions.ndjson only).

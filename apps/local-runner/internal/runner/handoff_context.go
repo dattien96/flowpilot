@@ -40,6 +40,11 @@ type handoffContextResponse struct {
 type transcriptTurn struct {
 	User      string
 	Assistant string
+	// Failed marks a turn closed by EventTurnFailed — its prompt and partial
+	// assistant output must not ship as "settled" context (CP-89 R4-4). The
+	// handoff renderers keep including it (a failed turn is still history);
+	// settledChatTurnsForRun is the filter point.
+	Failed bool
 	// StartSeq/EndSeq carry the event seq range of the turn (BUG-355 F2):
 	// the run-timeline legacy synthesis stamps them as record eseq so the
 	// TUI can skip turns the open replay already rendered. Handoff packing
@@ -205,6 +210,9 @@ func transcriptTurnsFromRun(rs *interactiveRun) []transcriptTurn {
 			current.EndSeq = ev.Seq
 			current.Assistant = appendTranscriptLine(current.Assistant, text)
 		case EventTurnFailed:
+			if current != nil {
+				current.Failed = true
+			}
 			flush()
 		}
 	}

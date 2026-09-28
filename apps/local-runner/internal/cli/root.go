@@ -154,6 +154,10 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 				// Task-250 T-6: reconcile every non-terminal dispatch record left by a
 				// prior crash — best-effort, mirrors ScanPersistedChatsForSummaries below.
 				go interactive.ScanDispatchRecoveryOnBoot(ctx)
+				// BUG-540: in-session sweep — re-drive terminal+settle_owed
+				// records whose in-session driver was lost, so a wedged settle
+				// no longer needs a restart to converge.
+				interactive.StartSettleSweep(ctx)
 			}
 			interactive.AttachRunner(instance)
 			// CP-87 Task-447: bridge the per-account quota probe into the

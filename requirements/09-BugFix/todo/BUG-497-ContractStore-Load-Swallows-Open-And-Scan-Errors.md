@@ -1,7 +1,9 @@
 # BUG-497 — changecontract loadFromDisk swallows open + scanner errors → declared-path enforcement silently blind
 
 ## Status
-todo — discovered in deep-review round 2
+FIXED — unit-verified (red→green); live leg verified 2026-09-28
+(:4322 fp-live5, contracts.ndjson fault drill via
+`GET /client/workflow-runs/{runId}/steps/{stepId}/contract`).
 
 ## Severity
 Medium — enforcement degradation, fail-open direction
@@ -58,3 +60,20 @@ requires distinguishing them.
     → error, not partial contents.
   - Missing file → empty store, nil error (unchanged).
   - Healthy multi-line file → all contracts loaded (unchanged).
+
+## Live verification (R17 addendum, 2026-09-28)
+
+Via `GET /client/workflow-runs/{runId}/steps/{stepId}/contract` on :4322
+(workspace `/tmp/fp-live5`, run `run-40835` resumed into memory):
+
+- Baseline (no contracts.ndjson): 200 `found:false` — empty store.
+- **Unreadable leg**: `contracts.ndjson` replaced by a directory →
+  **500 `contract_store_unavailable`**: `read …/contracts.ndjson: is a
+  directory` — the load error reaches the HTTP surface instead of
+  masquerading as an empty store.
+- **Oversized-line leg**: file containing a ~5 MiB declared_paths line
+  followed by a valid contract row → 200 `found:true` with the tail
+  contract (`run-40835`/`cp_reader`) fully returned, including scope-diff
+  computation — pre-fix scanner cap would have truncated the load and
+  silently dropped it.
+- File removed after the drill; workspace restored.
