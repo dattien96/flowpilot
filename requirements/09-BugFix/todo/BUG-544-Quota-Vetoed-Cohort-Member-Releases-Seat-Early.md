@@ -62,8 +62,13 @@ Three seams, all keyed on the pending-card semantics:
 ## Live verify
 - `run-25217` reproduced the defect end-to-end (sequence above).
 - Post-fix tournament `run-26036`: candidate veto → card → sibling alone
-  does not join → answer → successor inherits seat → arbiter waits.
-  (Evidence recorded in CP-Full-Live-Test R13.)
+  does not join → answer → successor `run-28790` inherits seat
+  (worktree `candidate-candidate-a` + `provider_switch` close ordering).
+- `stop` leg, `run-33490` (R15): candidate-a `run-33955` grok-vetoed → card
+  `q-33968` → answered `stop` → accepted → leg closed `provider_switch`
+  durably + failed cohort entry appended + flow escalated honestly
+  (`blocked/escalate`, "user chose stop on the quota routing card") —
+  seat released, no hang.
 
 ## Related
 - BUG-534 (spawn-first ordering), BUG-535 (liveClaim guard),

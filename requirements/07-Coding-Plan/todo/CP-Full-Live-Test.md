@@ -1057,6 +1057,25 @@ binaries / TempDir races, same as clean-HEAD baseline).
 
 ### Outstanding (documented, no live path on this bed)
 - **A-65-4 nested parent-resume**: machinery verified (3 triggers wired, dedup BUG-446, `resumeParentAfterTournament` state path unit-tested); full cap→tournament→resume cycle needs an organically capped review loop — audit-gate debt escalates the loop without incrementing rounds.
-- **BUG-505 option card**: needs organic `preflight_contract_freeze` escalate (planner emits no draft) — grok legs that produced it are quota-exhausted.
+- **BUG-505 option card**: escape-hatch legs LIVE on run-47114/run-49726 (R15); the structured retry-planner-vs-supply-draft option card remains a suggested direction, not shipped contract.
 - **BUG-506 catalog-outage fallback / BUG-517 child-route inflight / BUG-536 ledger-blocked rebind / BUG-513 scoped-leg compaction**: unit + machinery verified; live legs need fault injection not reachable via HTTP seams, or exhausted-provider timing already covered indirectly.
 - **A-60 V7**: probe launched only; no organic requirement-drift event.
+
+## O. R15 — BUG-544 `stop` leg + BUG-505 freeze escape-hatch (2026-09-28, rebuilt binary; :4322 fp-live5 + :4321 fp-live4)
+
+| Row | R15 result |
+|-----|-----------|
+| BUG-544 `stop` answer leg (`run-33490`) | ☑ LIVE: candidate-a `run-33955` grok-vetoed → card `q-33968` pending (member `waiting_question`, leg `active`, worktree intact) → `POST /client/questions/q-33968/answer` `{"optionId":"stop"}` → `accepted` → member leg closed `provider_switch` durably + failed cohort entry appended + parent escalated honestly (`blocked/escalate`, "quota_route_required: user chose stop on the quota routing card") — seat released, no barrier hang |
+| BUG-505 freeze escape-hatch (`run-47114`) | ☑ LIVE on devin: planner emitted parseable-but-invalid draft (no concrete `declared_paths`) → freeze escalate `invalid planner proposal: requires at least one concrete declared path` → unparseable/prose-style continues re-froze the CACHED planner draft and re-escalated with the semantic reason (pre-fix: prose parse-failed verbatim `invalid character 'c'`) → operator-supplied JSON draft via `continue` → freeze minted the contract → context→coder→reviewers→synthesis→`done` — the escape hatch works end-to-end on the fixed build |
+| Re-drive of stop-terminal member | ☑ observed: parent continue re-drove `run-33955` (leg closed by `stop`) → `startTurn` failed → `hub_reinvoke_start_failed` re-arms bounded (≤3) → parent parks `hub_stalled` — fail-closed, no tight loop. Not a defect: per BUG-543 stopped members stay re-drivable; start failure is the terminal surface |
+| BUG-539 `skip` leg | ◐ skip leg not organically reachable this session — `member_action` requires `blockReason=member_stalled` and every member either streamed events or held a gate (shielded by design); retry leg already live (R14) — same handler, terminal branch unit-pinned |
+
+## P. R16 — BUG-545 abs-path DoD + BUG-546 cohort seat-dedup (2026-09-28, :4322 fp-live5)
+
+Two new defects found and fixed during BUG-544 tournament verification:
+
+| Row | R16 result |
+|-----|-----------|
+| BUG-545 (`run-34322`) | ☑ LIVE repro: `MissingDodDocs` flagged an absolute in-workspace `Task-06.md` every eval → reprompt budget drained → escalate loop. Fix (CA-638): resolve abs paths inside root via `EvalSymlinks`, keep out-of-root rejection. Post-fix eval cleared the violation → `candidate-b → DONE` 12:42:48Z |
+| BUG-546 (`run-34296` wedge → `run-37723` verify) | ☑ LIVE: post-restart rebuild counted 3 session rows (vetoed + successor + sibling) → `expected=3` > label-deduped buffer max 2 → `hub_stalled`. Fix (CA-639): both inference sites count distinct seats by label. Verified: fresh tournament `run-37723` — veto `run-39034` → park → successor `run-39327` → **restart mid-cohort** → resume → `expected=2` → `joinRecoveredCohort` drained both seats, note built (`cohort_note_len=459`, 13:08:31Z) |
+| Residual note | Parent `run-37723` normalized `cancelled` on resume (mid-turn kill leaves no pending-gate child) — the joined note deferred rather than driving the arbiter. Post-restart normalize edge, separate from the barrier arithmetic; same class as the earlier nested-tournament restart limitation |
