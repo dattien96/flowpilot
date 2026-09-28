@@ -236,7 +236,18 @@ issues; all fixed with assertion-red tests first
    carried flowArm/FlowRefFallback/WorkingMode but not `SourceDocID`, so
    a pending vibe-cp-ingest leg failed its own forward fence with
    `invalid_cp_source`. `SourceDocID: src.sourceDocID` now rides the leg.
-   Test: `TestR4_ProviderSwitchKeepsSourceDocPin`.
+   The first live run of L-14 then caught a deeper same-class gap: the
+   createRun durable-row literal never wrote `source_doc_id` — the pin was
+   RAM-only until the first post-create persist, and a restart before any
+   turn lost it on the ORIGIN leg too (exactly the FlowArm literal gap's
+   shape). `SourceDocID: rs.sourceDocID` is now stamped on the create row;
+   both store mappers already carried the field. Tests:
+   `TestR4_ProviderSwitchKeepsSourceDocPin` (asserts the durable create
+   row AND the new leg's durable row, not just in-memory),
+   live `TestCP89Live/L-14_switch_keeps_cp_source_pin` (pin present on the
+   switched leg's sessions.ndjson row; the forward passes the fence and
+   is blocked only by the alt provider's quota_route_required — the
+   invalid_cp_source regression is asserted absent).
 4. **Failed turns leaked into the "settled" forward package (R4-4).**
    `transcriptTurnsFromRun` flushed failed turns into the list and
    `settledChatTurnsForRun` kept them. Turns closed by `EventTurnFailed`

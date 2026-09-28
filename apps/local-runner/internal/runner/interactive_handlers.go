@@ -1326,6 +1326,10 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 		ChatFlowRef:       rs.chatFlowRef,
 		FlowArm:           string(rs.flowArm),
 		QuotaRouting:      quotaSnapshot,
+		// CP-89 R4-3: the create-time CP source pin is durable state — without
+		// it on the create row a restart before any turn silently loses the
+		// pin (same class as the FlowArm create-row gap).
+		SourceDocID: rs.sourceDocID,
 	}
 	worktreeFieldsToSession(&st, rs.worktree)
 	if err := s.persistProviderSession(st); err != nil {

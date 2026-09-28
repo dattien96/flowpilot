@@ -795,4 +795,62 @@ func TestCP89Live(t *testing.T) {
 		}
 		t.Logf("L-13: run=%s ended as chat run, flow_arm=%v", runID, row["flow_arm"])
 	})
+
+	// L-14 (R4-3): a pending vibe-cp-ingest run's create-time source pin must
+	// ride the provider switch — the new leg's forward must pass the ingest
+	// fence via the inherited pin (invalid_cp_source = the bug; a quota-class
+	// failure past the fence still proves the pin arrived).
+	t.Run("L-14_switch_keeps_cp_source_pin", func(t *testing.T) {
+		if env.alt == "" {
+			t.Skip("no second provider binary for leg switch — set CP89_LIVE_PROVIDER_ALT")
+		}
+		if _, err := os.Stat(filepath.Join(ws, filepath.FromSlash(cpDocRel))); err != nil {
+			t.Skipf("CP source doc not staged (%v)", err)
+		}
+		code, body, runID := env.cp89StartRun(t, map[string]any{
+			"flowRef": "vibe-cp-ingest", "flowArm": "pending", "workingMode": "vibe",
+			"sourceDocId": cpDocRel,
+		})
+		if code != http.StatusOK && code != http.StatusCreated {
+			t.Fatalf("createRun vibe pending w/ pin: %d %v", code, body)
+		}
+		chatID, _ := body["chatId"].(string)
+		if chatID == "" {
+			t.Fatalf("run %s create response exposes no chatId", runID)
+		}
+		code, body = env.cp89Req(t, http.MethodPost, "/client/chats/"+chatID+"/switch-provider",
+			map[string]any{"targetProviderKey": env.alt})
+		if code != http.StatusOK {
+			if code == http.StatusBadGateway || code == http.StatusUnprocessableEntity {
+				t.Skipf("alt provider %s unavailable at runtime: %d %v", env.alt, code, body)
+			}
+			t.Fatalf("switch-provider → %s: %d %v", env.alt, code, body)
+		}
+		handle, _ := body["handle"].(map[string]any)
+		newRunID, _ := handle["runId"].(string)
+		if newRunID == "" || newRunID == runID {
+			t.Fatalf("switch must mint a new leg runId, got %v", handle)
+		}
+		row := env.cp89LastRow(t, newRunID)
+		if row["flow_arm"] != "pending" {
+			t.Fatalf("new leg flow_arm=%v, want pending", row["flow_arm"])
+		}
+		if row["source_doc_id"] != cpDocRel {
+			t.Fatalf("new leg lost the CP source pin: source_doc_id=%v want %v", row["source_doc_id"], cpDocRel)
+		}
+		code, body = env.cp89Turn(t, newRunID, map[string]any{"forwardFlow": true})
+		if code == http.StatusOK {
+			kid := env.cp89WaitChild(t, newRunID)
+			t.Logf("L-14: switched leg kept CP pin → forward started (child=%s)", kid["run_id"])
+			return
+		}
+		if cp89ErrCode(body) == "invalid_cp_source" {
+			t.Fatalf("R4-3 regression: forward on switched leg lost the source pin: %d %v", code, body)
+		}
+		if c := cp89ErrCode(body); strings.HasPrefix(c, "quota_") || c == "account_unavailable" || c == "account_not_signed_in" {
+			t.Logf("L-14: pin rode the leg (source_doc_id=%v, fence passed) — forward blocked only by alt quota: %d %s", row["source_doc_id"], code, c)
+			return
+		}
+		t.Fatalf("forward on switched leg: %d %v", code, body)
+	})
 }

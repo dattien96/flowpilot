@@ -225,7 +225,8 @@ func TestR4_ProviderSwitchKeepsSourceDocPin(t *testing.T) {
 		[]byte("# CP\nDocument ID: CP-89\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	svc := task451Service(t)
+	store := newFakeWorkflowStore()
+	svc := task451ServiceWithStore(t, store)
 	h, apiErr := svc.createRun(StartRunInput{
 		ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex,
 		FlowRef:     "flowpilot-core-flow-pack/vibe-cp-ingest",
@@ -236,6 +237,12 @@ func TestR4_ProviderSwitchKeepsSourceDocPin(t *testing.T) {
 	})
 	if apiErr != nil {
 		t.Fatalf("createRun: %v", apiErr)
+	}
+	// The pin is durable state — the CREATE row itself must carry it (the
+	// L-14 live run caught the row being written without source_doc_id).
+	if sess, ok, gErr := store.GetProviderSession(context.Background(), h.RunID); gErr != nil || !ok ||
+		sess.SourceDocID != "requirements/07-Coding-Plan/CP-89-switch.md" {
+		t.Fatalf("durable create row lost the source pin: %+v (ok=%v err=%v)", sess.SourceDocID, ok, gErr)
 	}
 	resp, swErr := svc.switchChatProvider(context.Background(), "cht-r43", chatSwitchRequest{
 		TargetProviderKey: ProviderKeyDevin,
@@ -252,6 +259,12 @@ func TestR4_ProviderSwitchKeepsSourceDocPin(t *testing.T) {
 	svc.mu.Unlock()
 	if src != "requirements/07-Coding-Plan/CP-89-switch.md" {
 		t.Fatalf("new leg lost the CP source pin, sourceDocID=%q", src)
+	}
+	// The new leg's durable row must carry the pin too — a restart between
+	// switch and forward otherwise wedges the leg.
+	if sess, ok, gErr := store.GetProviderSession(context.Background(), resp.Handle.RunID); gErr != nil || !ok ||
+		sess.SourceDocID != "requirements/07-Coding-Plan/CP-89-switch.md" {
+		t.Fatalf("new leg durable row lost the source pin: %+v (ok=%v err=%v)", sess.SourceDocID, ok, gErr)
 	}
 	if arm != FlowArmPending {
 		t.Fatalf("new leg flowArm = %q, want pending", arm)
