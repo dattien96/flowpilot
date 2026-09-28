@@ -944,7 +944,12 @@ func (s *InteractiveService) flowEntryChildExists(runID string, nodes []agentpac
 		if c == nil || strings.TrimSpace(c.parentRunID) != runID {
 			continue
 		}
-		if _, hit := wanted[strings.TrimSpace(c.label)]; hit {
+		if _, hit := wanted[strings.TrimSpace(c.label)]; !hit {
+			continue
+		}
+		// Same engagement contract as the index scan: a reconstructed
+		// minted-but-idle row is not launch proof either.
+		if flowEntryRunEngaged(c) {
 			found = true
 			break
 		}
@@ -996,6 +1001,29 @@ func flowEntryChildRowEngaged(sess ProviderSessionState) bool {
 	if sess.PendingFlowGateSettle || len(sess.PendingAgentContext) > 0 ||
 		strings.TrimSpace(sess.PendingResumePrompt) != "" ||
 		strings.TrimSpace(sess.PendingGateRepromptPrompt) != "" {
+		return true
+	}
+	return false
+}
+
+// flowEntryRunEngaged mirrors flowEntryChildRowEngaged for the in-memory run
+// table (called under s.mu): the same durable signals on the live run fields.
+func flowEntryRunEngaged(c *interactiveRun) bool {
+	if c.turnCount > 0 {
+		return true
+	}
+	switch c.status {
+	case "", RunStatusIdle:
+		// minted only — no durable turn evidence yet
+	default:
+		return true
+	}
+	if len(c.dependsOn) > 0 || strings.TrimSpace(c.agentStatus) == "waiting_dependency" {
+		return true
+	}
+	if c.pendingFlowGateSettle || len(c.pendingAgentContext) > 0 ||
+		strings.TrimSpace(c.pendingResumePrompt) != "" ||
+		strings.TrimSpace(c.pendingGateRepromptPrompt) != "" {
 		return true
 	}
 	return false
@@ -1065,7 +1093,16 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 	// cleanly instead of wedging on flow_already_started with a flow that
 	// never ran. An unreadable session index fails closed toward keeping
 	// started — a wrong heal would double-launch.
-	if restoredFlowArm == FlowArmStarted && strings.TrimSpace(st.SwitchFromRunID) == "" &&
+	// CP-89 review R8-2: parked topology / a task plan are post-launch
+	// progress markers — the vibe engine only writes them once nodes have
+	// already run (a mid-run sprint/debate swap mints the NEW topology's
+	// entry child before it can engage, while the engaged children still
+	// carry PARKED node ids a current-topology-only scan cannot see).
+	// Their presence vetoes the heal: this is not a launch that never ran,
+	// and healing would also wipe the progress in the pending normalization
+	// below before a retry re-launches the wrong flow.
+	vibeFlowProgress := len(st.VibeParkedNodes) > 0 || len(st.VibeTaskPlan) > 0
+	if restoredFlowArm == FlowArmStarted && strings.TrimSpace(st.SwitchFromRunID) == "" && !vibeFlowProgress &&
 		(len(st.ActiveFlowNodes) == 0 || !s.flowEntryChildExists(st.RunID, st.ActiveFlowNodes)) {
 		restoredFlowArm = FlowArmPending
 	}

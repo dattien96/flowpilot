@@ -424,3 +424,66 @@ TestCP89Live` **PASS 308.2s — 11 PASS + 3 named skips**, identical matrix.
 PASS: L-1..L-4, L-6..L-10, L-13, L-14. Skips: L-5 (`hub_parked` while the
 flow remains active — unit-covered), L-11 (grok quota — latch ride
 verified), L-12 (`go:embed`; no runtime file to corrupt).
+
+## Review pass 8 (R8-*) — regression audit; 3 findings reproduced red, fixed
+
+Post-R7 regression sweep. Three findings, each reproduced assertion-red on
+HEAD (two also verified green on the pre-fix commit), then fixed:
+
+- **R8-1 — a provider-switched leg could re-launch a flow that already ran
+  (Critical regression from Task-451's pin ride).** Every switch stamped
+  FlowRefFallback=src.chatFlowRef so a pending latch keeps its forward
+  target — but the ref also rode when the flow had ALREADY launched
+  (flowEngineDriven set by the immediate first-turn or a committed
+  forward). The new leg restarts at turnCount=0, so when the seed turn
+  failed or was never sent, the first plain follow-up resolved the carried
+  ref as a first-turn mount and re-ran the whole flow on the switched leg.
+  Fix: `switchLegFlowRefFallback` — the ref rides only while the launch is
+  still possible (pending latch needs the forward target; an immediate
+  mount that never ran keeps its intent); once flowEngineDriven is set the
+  fallback is dropped. The latch pair (flowArm + flowEngineDriven) is
+  snapshotted under s.mu so a forward committing mid-switch cannot hand
+  the leg a torn pending+ref pair. Tests:
+  `TestR8_SwitchedLegDoesNotRelaunchLaunchedFlow` (immediate+flowEngineDriven
+  leg minted with empty chatFlowRef; resolver never hands a flowRef),
+  `TestR8_SwitchedLegKeepsPendingForwardTarget` (control: pending leg still
+  carries latch + ref).
+- **R8-2 — the R7-2 heal wiped a mid-topology-swap run's progress
+  (Critical).** Vibe sprint/debate replace ActiveFlowNodes mid-run and park
+  the old topology on the parent row. In the swap window the row carries
+  the NEW topology while its minted child is still idle and the engaged
+  children carry PARKED node ids — the current-topology-only evidence scan
+  found nothing engaged, healed the latch to pending, and the pending
+  normalization then wiped vibeLockedCP/task plan/sprint index/parked
+  topology (a retry would also re-launch the WRONG flow — chatFlowRef is
+  vibe-sprint post-swap, not the pinned ref). Fix: parked nodes and the
+  task plan are themselves post-launch progress markers, so their presence
+  vetoes the heal entirely. Also closed the R7-2 asymmetry: the in-memory
+  scan now applies the same engagement check (`flowEntryRunEngaged`) — a
+  reconstructed minted-idle row in s.runs no longer counts as proof either.
+  Test: `TestR8_TopologySwapEngagedChildKeepsStartedAndProgress` (engaged
+  parked-topology child + minted-idle new-topology child keeps started and
+  preserves all vibe progress fields).
+- **R8-3 — a foreign manifest re-restore downgraded a committed latch
+  (Important — R7-1 residual).** R7-1 covered only this machine's own
+  snapshot; a manifest from ANOTHER machine still skipped the merge by
+  design. But a restored copy of a foreign chat that forwarded locally
+  (zero provider bytes appended) hit neither localAhead nor selfRerestore —
+  re-restoring the owner's stale pending manifest persisted `pending` over
+  the local `started`. Fix: the latch is monotonic — once this machine's
+  row durably committed started, no manifest may downgrade it; when the
+  existing local row is started and the incoming session is not,
+  `preserveCommittedFlowLatch` carries the latch + adopted pin/mode +
+  committed topology + turn count from the local row. Test:
+  `TestR8_ForeignRerestoreKeepsCommittedFlowLatch` (foreign machine-A
+  manifest over a locally-forwarded copy keeps started + adopted pin +
+  vibe mode).
+
+Verification: `TestR8_*` (4) red on HEAD / green post-fix +
+`TestR[4567]_`/`TestTask45[123]`/`TestSwitch*`/`TestRestore*`/`TestSync*`
+sweep green. `-race` green on the CP-89 set; two pre-existing flakes
+observed under -race sweep reproduce on BASELINE too
+(`TestSwitchNeverHoldsLockAcrossCreateRun` — fakeAdapterDelay global vs the
+fire-and-forget seed goroutine; provider-accounts cross-test config
+clobber hitting syncChatRunToDrive in R6/R7 tests — all pass standalone;
+untouched code).

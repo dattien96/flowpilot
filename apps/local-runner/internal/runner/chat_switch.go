@@ -253,6 +253,22 @@ func (s *InteractiveService) switchChatProvider(ctx context.Context, chatID stri
 	return s.switchChatLeg(ctx, chatID, req, false)
 }
 
+// switchLegFlowRefFallback decides whether the source leg's chatFlowRef rides
+// the new leg as FlowRefFallback. The ref is only still needed while the flow
+// could legitimately launch: a pending latch needs it as the forward target,
+// and an immediate mount that never ran keeps its intent. Once
+// flowEngineDriven is set the flow already launched on the source leg
+// (immediate first-turn or a committed forward — both set it), and the new leg
+// restarts at turnCount=0: a carried ref would resolve as a first-turn mount
+// in resolveWorkflowFlowRef and re-run the whole flow on the first post-switch
+// turn whose seed failed or was never sent (CP-89 review R8-1).
+func switchLegFlowRefFallback(src *interactiveRun) string {
+	if src.flowEngineDriven {
+		return ""
+	}
+	return src.chatFlowRef
+}
+
 // switchChatLeg mints a new leg for the chat from the handoff machinery.
 // allowSameProvider=false keeps the provider-switch contract (same-provider
 // continuity uses the in-place model-change path); true is the Task-443
@@ -334,6 +350,14 @@ func (s *InteractiveService) switchChatLeg(ctx context.Context, chatID string, r
 	// ---- Phase B (no lock): envelope, createRun, seed ----------------------
 	env := s.buildChatHandoffContext(ctx, chatID, src, req)
 	seedPrompt := env.Prompt
+	// The latch pair (flowArm + flowEngineDriven, via the fallback helper)
+	// must be read atomically: a forward committing between the Phase-A
+	// turnInFlight check and this read could otherwise hand the new leg a
+	// torn pending+ref pair and double-launch the flow on forward.
+	s.mu.Lock()
+	srcFlowArm := src.flowArm
+	srcFlowRefFallback := switchLegFlowRefFallback(src)
+	s.mu.Unlock()
 	createInput := StartRunInput{
 		ProjectID:       src.projectID,
 		ChatMode:        "normal_chat",
@@ -352,8 +376,8 @@ func (s *InteractiveService) switchChatLeg(ctx context.Context, chatID string, r
 		// rides FlowRefFallback (internal carrier, never a user mount) so vibe
 		// markers stay governed by the latch, and the parent's working mode
 		// travels with it (a vibe pending run must stay vibe on the new leg).
-		FlowArm:         string(src.flowArm),
-		FlowRefFallback: src.chatFlowRef,
+		FlowArm:         string(srcFlowArm),
+		FlowRefFallback: srcFlowRefFallback,
 		WorkingMode:     src.workingMode,
 		// CP-89 review R4-3: the create-time CP source pin is run-scoped like
 		// the latch — a pending vibe-cp-ingest leg that loses it wedges its

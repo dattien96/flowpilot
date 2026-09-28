@@ -351,3 +351,42 @@ real, so treating it as the entry is defensible.
 
 Tests: `cp89_review7_test.go` (3 new red-first tests). Focused + `-race`
 green; restore/sync sweep green standalone.
+
+## Review pass 8 (R8-*) — regression audit: switch-leg ref, heal veto, monotonic latch
+
+Three findings, all reproduced assertion-red before fixing:
+
+1. **Switched leg re-launched an already-running flow (R8-1, Critical —
+   regression from the Task-451 pin ride).** FlowRefFallback carried
+   src.chatFlowRef unconditionally; a launched flow (flowEngineDriven) on a
+   new turnCount=0 leg resolved as a first-turn mount in
+   resolveWorkflowFlowRef whenever the seed turn failed/never ran —
+   re-running the whole flow on the switched leg. Fix: the ref rides only
+   while the launch is still possible (`switchLegFlowRefFallback` drops it
+   once flowEngineDriven is set; pending latch keeps its forward target).
+   The flowArm+driven pair is snapshotted under s.mu to prevent a torn
+   read while a forward commits mid-switch. Tests:
+   `TestR8_SwitchedLegDoesNotRelaunchLaunchedFlow`,
+   `TestR8_SwitchedLegKeepsPendingForwardTarget` (control).
+2. **R7-2 heal wiped mid-topology-swap vibe progress (R8-2, Critical).**
+   A sprint/debate swap leaves the parent row on the NEW topology while
+   engaged children carry PARKED node ids and the new entry child is still
+   minted-idle — the current-topology evidence scan found nothing, healed
+   to pending, and pending normalization wiped lock/plan/index/parked
+   topology. Fix: VibeParkedNodes/VibeTaskPlan are post-launch progress
+   markers that veto the heal; the in-memory scan now applies the same
+   engagement check (`flowEntryRunEngaged`) closing the R7-2 asymmetry.
+   Test: `TestR8_TopologySwapEngagedChildKeepsStartedAndProgress`.
+3. **Foreign re-restore downgraded a committed latch (R8-3, Important —
+   R7-1 residual).** A restored copy of ANOTHER machine's chat that
+   forwarded locally hit neither localAhead nor selfRerestore, so the
+   foreign stale pending manifest overwrote `started`. Fix: the latch is
+   monotonic — an existing local `started` row can never be downgraded by
+   any manifest; `preserveCommittedFlowLatch` carries the latch + adopted
+   pin/mode + committed topology + turn count. Test:
+   `TestR8_ForeignRerestoreKeepsCommittedFlowLatch`.
+
+Tests: `cp89_review8_test.go` (4 new red-first tests). Focused + `-race`
+green on the CP-89 set; the only sweep flakes reproduce on baseline
+(pre-existing test-infra races / provider-accounts config clobber).
+Live re-verification recorded in the review note.
