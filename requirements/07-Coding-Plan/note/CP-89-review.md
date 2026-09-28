@@ -487,3 +487,9 @@ observed under -race sweep reproduce on BASELINE too
 fire-and-forget seed goroutine; provider-accounts cross-test config
 clobber hitting syncChatRunToDrive in R6/R7 tests — all pass standalone;
 untouched code).
+Live re-verification on the pass-8 build (`789ac4bf`): `LIVE=1 -v
+TestCP89Live` **PASS 309.0s — 11 PASS + 3 named skips**, identical matrix.
+PASS: L-1..L-4, L-6..L-10, L-13, L-14 (pin rode the leg; forward blocked
+only by the alt quota route, not invalid_cp_source). Skips: L-5
+(`hub_parked` while the flow remains active — unit-covered), L-11 (grok
+quota), L-12 (`go:embed`; no runtime file to corrupt).
