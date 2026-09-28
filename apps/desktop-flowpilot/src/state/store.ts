@@ -19,6 +19,7 @@ import type {
   PromptAttachment,
   QuotaRoutingSettings,
   RemoteChatSessionSummary,
+  RunHandle,
   RunHistoryItem,
   RunRealtimeProjection,
   RunStatus,
@@ -629,6 +630,21 @@ export interface AppState {
     message: string;
     providerKey?: ProviderKey;
   };
+  /** CA-1047: runId of the chat open currently in flight — the Navigator
+   *  highlights and spins the target row the instant it is clicked, before
+   *  the resume/transcript fetches land. */
+  historyOpeningRunId?: string;
+  /** CA-1047: stale-response guard for openHistoryRun — every open, resetRun,
+   *  or sendPrompt bumps it; late resume/timeline responses from an older
+   *  click are discarded instead of stealing focus back. */
+  _historyOpenSeq: number;
+  /** CA-1047: rows for runs minted by this client that the authoritative
+   *  history poll has not echoed yet — merged into every server list so a
+   *  fresh chat's row cannot flicker out between the POST and the next tick. */
+  _locallyStartedRuns: Record<string, RunHistoryItem>;
+  /** CA-1047: first-send window before the runner mints a runId — the
+   *  Navigator renders it as a "New chat…" skeleton row immediately. */
+  pendingChatStart?: { projectId: string; prompt: string; startedAt: number };
 
   // internal: id of the assistant bubble currently accumulating deltas
   _streamingAssistantId?: string;
@@ -911,6 +927,10 @@ export const useStore = create<AppState>((set, get) => ({
   workspaceMainView: "chat",
   _historyReplaying: false,
   _historyLoadSeq: 0,
+  historyOpeningRunId: undefined,
+  _historyOpenSeq: 0,
+  _locallyStartedRuns: {},
+  pendingChatStart: undefined,
   _remoteHistoryLoadSeq: 0,
   _agentRunsLoadSeq: 0,
   _agentGraphLoadSeq: 0,
@@ -2212,11 +2232,23 @@ export const useStore = create<AppState>((set, get) => ({
     // provider → 422 provider_unavailable) we must not be left with a blank screen and
     // no record of what the user typed (BUG-050). The catch below replaces the thinking
     // bubble with a visible error instead of failing silently.
+    // CA-1047: _streamRunSeq bumps at send time (not when startRun lands) so a
+    // slow first mint can never steal focus back from a chat the user opened
+    // meanwhile; pendingChatStart drives the Navigator's skeleton row.
+    const sendSeq = get()._streamRunSeq + 1;
     set((s) => ({
       recoverable: false,
       latestTokenUsage: undefined, contextNotice: undefined,
       status: "running",
       _streamingAssistantId: undefined,
+      _streamRunSeq: sendSeq,
+      _historyOpenSeq: s._historyOpenSeq + 1,
+      // CA-1047: this send supersedes any in-flight history open — drop its
+      // Navigator spinner along with the seq bump that discards the response.
+      historyOpeningRunId: undefined,
+      pendingChatStart: s.runId || !selectedProjectId
+        ? s.pendingChatStart
+        : { projectId: selectedProjectId, prompt: prompt.slice(0, 140), startedAt: Date.now() },
       timeline: [
         ...s.timeline,
         {
@@ -2285,14 +2317,28 @@ export const useStore = create<AppState>((set, get) => ({
         if (handle.stepId) {
           turnStepId = handle.stepId;
         }
-        set({
-          mainRunId: handle.runId,
+        // CA-1047: the mint may land after the user opened another chat — keep
+        // the focus writes gated on the send's seq. The run itself always gets
+        // a local history row regardless of focus.
+        if (get()._streamRunSeq === sendSeq) {
+          set({
+            mainRunId: handle.runId,
+            chatId: handle.chatId ?? existingChatId,
+            chatDetached: false,
+            activeAgentRunId: undefined,
+            activeWorktreePath: handle.worktreePath ?? "",
+          });
+          if (get().worktreeEnabled) set({ activeWorktreeState: "active" });
+        }
+        noteLocallyStartedRun(set, mintedRunHistoryRow(handle, {
+          projectId: selectedProjectId!,
+          providerKey: selectedProvider ?? "codex",
+          runKind: "chat",
+          prompt,
           chatId: handle.chatId ?? existingChatId,
-          chatDetached: false,
-          activeAgentRunId: undefined,
-          activeWorktreePath: handle.worktreePath ?? "",
-        });
-        if (get().worktreeEnabled) set({ activeWorktreeState: "active" });
+          subMode: chatStartMode === "bugfix" ? "bug" : undefined,
+          flowRef: chatStartMode === "bugfix" ? flowRef : undefined,
+        }));
       } else if (!runId) {
         const handle = await startRunWithRetry(
           chatMode === "normal_chat"
@@ -2322,14 +2368,25 @@ export const useStore = create<AppState>((set, get) => ({
         if (handle.stepId) {
           turnStepId = handle.stepId;
         }
-        set({
-          mainRunId: handle.runId,
+        if (get()._streamRunSeq === sendSeq) {
+          set({
+            mainRunId: handle.runId,
+            chatId: handle.chatId,
+            chatDetached: false,
+            activeAgentRunId: undefined,
+            activeWorktreePath: handle.worktreePath ?? "",
+          });
+          if (get().worktreeEnabled) set({ activeWorktreeState: "active" });
+        }
+        noteLocallyStartedRun(set, mintedRunHistoryRow(handle, {
+          projectId: selectedProjectId!,
+          providerKey: selectedProvider ?? "codex",
+          runKind: chatMode === "normal_chat" ? "chat" : "workflow",
+          prompt,
           chatId: handle.chatId,
-          chatDetached: false,
-          activeAgentRunId: undefined,
-          activeWorktreePath: handle.worktreePath ?? "",
-        });
-        if (get().worktreeEnabled) set({ activeWorktreeState: "active" });
+          subMode: chatStartMode === "bugfix" ? "bug" : undefined,
+          flowRef: chatStartMode === "bugfix" ? flowRef : undefined,
+        }));
       }
 
       const turnInput: TurnInput = {
@@ -2383,10 +2440,16 @@ export const useStore = create<AppState>((set, get) => ({
         // turnId instead of minting a duplicate turn.
         idempotencyKey: `turn-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
       };
-      set({ runId, lastTurnInput: turnInput, activeStepId: turnStepId, _streamRunSeq: get()._streamRunSeq + 1 });
-      cancelHistoryReplayStream();
-      cancelOrchestrationStream();
-      cancelAgentFocusStream();
+      // CA-1047: seq moved while startRun/sendTurn was in flight means the user
+      // already navigated to another chat — the minted run keeps streaming
+      // server-side (consumeStream self-stales) but must not refocus here.
+      const stillFocused = get()._streamRunSeq === sendSeq;
+      if (stillFocused) {
+        set({ runId, lastTurnInput: turnInput, activeStepId: turnStepId });
+        cancelHistoryReplayStream();
+        cancelOrchestrationStream();
+        cancelAgentFocusStream();
+      }
 
       // A follow-up sent the instant a flow *looks* done can race the hub's own
       // final turn: the loop is marked "done" (which unblocks the composer via
@@ -2446,6 +2509,7 @@ export const useStore = create<AppState>((set, get) => ({
     // under. Other lanes' drafts are untouched.
     get().clearDraft(draftKeyAtSend);
     } catch (err) {
+      set({ pendingChatStart: undefined });
       // eslint-disable-next-line no-console
       console.error("[FlowPilot] sendPrompt failed:", err);
       // Task-432: the composer cleared optimistically before the call — put the
@@ -2906,10 +2970,15 @@ export const useStore = create<AppState>((set, get) => ({
     try {
       const runHistory = await client.listRunHistory(selectedProjectId);
       if (get()._historyLoadSeq !== seq) return;
-      attentionQueue.ingestHistory(runHistory, selectedProjectId);
+      // CA-1047: rows minted by this client since the last poll must survive
+      // the authoritative list — a poll fetched mid-POST doesn't know the new
+      // run exists yet and would otherwise blank its sidebar row.
+      const merged = mergeLocallyStartedRuns(get()._locallyStartedRuns, selectedProjectId, runHistory);
+      attentionQueue.ingestHistory(merged.items, selectedProjectId);
       set((s) => ({
-        runHistory,
-        projectHistoryById: { ...s.projectHistoryById, [selectedProjectId]: runHistory },
+        runHistory: merged.items,
+        projectHistoryById: { ...s.projectHistoryById, [selectedProjectId]: merged.items },
+        _locallyStartedRuns: merged.local,
         historyLoading: false,
         historyLoadError: undefined,
       }));
@@ -2928,13 +2997,15 @@ export const useStore = create<AppState>((set, get) => ({
     projectHistoryInflight.add(projectId);
     try {
       const items = await client.listRunHistory(projectId);
-      attentionQueue.ingestHistory(items, projectId);
+      const merged = mergeLocallyStartedRuns(get()._locallyStartedRuns, projectId, items);
+      attentionQueue.ingestHistory(merged.items, projectId);
       set((s) => ({
-        projectHistoryById: { ...s.projectHistoryById, [projectId]: items },
+        projectHistoryById: { ...s.projectHistoryById, [projectId]: merged.items },
+        _locallyStartedRuns: merged.local,
         // The active project's slice also feeds runHistory — keep it in sync
         // when a stale cache warmer resolves after the user switched to it.
         ...(s.selectedProjectId === projectId && s.runHistory.length === 0 && !s.historyLoading
-          ? { runHistory: items }
+          ? { runHistory: merged.items }
           : {}),
       }));
     } catch {
@@ -3128,7 +3199,15 @@ export const useStore = create<AppState>((set, get) => ({
       return { _runSnapshots: next };
     });
     // Optimistically remove from local history so the UI responds immediately.
-    set((s) => ({ runHistory: s.runHistory.filter((item) => item.runId !== runId) }));
+    // CA-1047: drop the not-yet-polled local row too — otherwise the next
+    // merge would resurrect a deleted chat.
+    set((s) => {
+      const { [runId]: _dropped, ...remainingLocal } = s._locallyStartedRuns;
+      return {
+        runHistory: s.runHistory.filter((item) => item.runId !== runId),
+        _locallyStartedRuns: remainingLocal,
+      };
+    });
     // If the deleted run was the active session, reset the whole workspace back to
     // an empty new chat — reuse resetRun() (not a hand-rolled subset) so Flow Timeline
     // and Agents panel state (mainRunId, agentRuns, workflowStepRuntime, etc.) and the
@@ -3219,6 +3298,9 @@ export const useStore = create<AppState>((set, get) => ({
 
   async openHistoryRun(runId, itemOverride) {
     const { client } = get();
+    // CA-1047: clicking the already-focused row is a no-op — a redundant resume
+    // only round-trips the runner without changing the view.
+    if (runId === get().runId && !get().historyOpeningRunId) return;
     // Task-433: cache the outgoing run BEFORE switching so switching back
     // paints instantly; the reopened run's own snapshot seeds the timeline and
     // is then revalidated by the replay below (authority always wins).
@@ -3242,6 +3324,12 @@ export const useStore = create<AppState>((set, get) => ({
     if (get().spectatorRunId === runId) {
       set({ spectatorRunId: null, spectatorProjectId: null });
     }
+    // CA-1047: the click gets instant feedback — the Navigator marks the row
+    // as opening while the resume round-trips. Every open/reset/send bumps
+    // _historyOpenSeq so a late resume/timeline response can never steal
+    // focus back.
+    const openSeq = get()._historyOpenSeq + 1;
+    set({ _historyOpenSeq: openSeq, historyOpeningRunId: runId, pendingChatStart: undefined });
     let handle;
     try {
       handle = await client.resumeRun(runId);
@@ -3262,12 +3350,17 @@ export const useStore = create<AppState>((set, get) => ({
           ...((err.code === "account_not_signed_in" || err.code === "account_unavailable")
             ? { historyOpenError: { code: err.code, message: err.message, providerKey: historyProvider } }
             : {}),
+          ...(s._historyOpenSeq === openSeq ? { historyOpeningRunId: undefined } : {}),
         }));
         return;
       }
       console.error("[FlowPilot][history-open] unexpected resume failure", { runId, error: err });
+      set((s) => (s._historyOpenSeq === openSeq ? { historyOpeningRunId: undefined } : {}));
       throw err;
     }
+    // CA-1047: a newer open/reset/send superseded this click — discard the
+    // response instead of swapping the timeline under the user's feet.
+    if (get()._historyOpenSeq !== openSeq) return;
     console.info("[FlowPilot][history-open] resume succeeded", {
       requestedRunId: runId,
       runId: handle.runId,
@@ -3279,27 +3372,20 @@ export const useStore = create<AppState>((set, get) => ({
     // CP-59 F4 / CA-699: hydrate prior legs from chatTimeline (provider-agnostic,
     // chatId only). Best effort: timeline fetch failures keep current-leg replay.
     // Fallback to historyItem.chatId when ResumeRun's handle lacks it (BUG-338).
-    let priorTimeline: TimelineItem[] = [];
     // Task-421: fetch only the transcript TAIL page on open — the durable
     // store is the source of truth and older pages are pulled on demand via
     // loadEarlierTimeline. Keeps reopen memory bounded for long chats.
-    let timelineAnchorSeq: number | undefined;
-    let timelineHasOlder = false;
+    // CA-1047: the fetch is kicked off BEFORE the focus set below — the chat
+    // switches on resume, and the tail page merges in when it resolves.
     const effectiveChatId = (handle.chatId as string) || (historyItem?.chatId as string) || "";
-    if (effectiveChatId && historyItem?.runKind !== "workflow" && (handle as { runKind?: string }).runKind !== "workflow") {
-      try {
-        const tl = await client.chatTimeline(effectiveChatId, undefined, TIMELINE_TRANSCRIPT_PAGE, -1);
-        const records = tl.records ?? [];
-        timelineAnchorSeq = records.length > 0 ? records[0].chatSeq : undefined;
-        timelineHasOlder = tl.truncated === true;
-        priorTimeline = applyTimelineWindow(
-          buildPriorChatTimeline(records, handle.runId),
-          undefined,
-        ).timeline;
-      } catch (e) {
-        console.warn("[FlowPilot][history-open] chatTimeline failed, falling back to single-leg replay", e);
-      }
-    }
+    const handleRunKind = (handle as { runKind?: string }).runKind;
+    const tailPromise =
+      effectiveChatId && historyItem?.runKind !== "workflow" && handleRunKind !== "workflow"
+        ? client.chatTimeline(effectiveChatId, undefined, TIMELINE_TRANSCRIPT_PAGE, -1).catch((e) => {
+            console.warn("[FlowPilot][history-open] chatTimeline failed, falling back to single-leg replay", e);
+            return null;
+          })
+        : null;
     // BUG-170: restore the mode this run actually was, not whatever the UI happened to be
     // in before the user clicked a history item. Without this, reopening a workflow/flow-
     // mode run left chatMode stuck (often "normal_chat"), so the reopened run rendered
@@ -3309,7 +3395,6 @@ export const useStore = create<AppState>((set, get) => ({
     // BUG-340 follow-up: when the history row is missing entirely (restored/terminal
     // chat resumed without a row), fall back to the handle's runKind so a terminal chat
     // with a chatId still marks detached — a workflow handle never carries a chatId.
-    const handleRunKind = (handle as { runKind?: string }).runKind;
     const isWorkflowHistoryItem = historyItem === undefined
       ? handleRunKind === "workflow"
       : historyItem.runKind !== "chat";
@@ -3351,14 +3436,18 @@ export const useStore = create<AppState>((set, get) => ({
       // Task-433: a cached snapshot of THIS run paints instantly (transient
       // optimistic rows dropped — replay re-appends them with durable ids);
       // the replay stream below remains the authority and revalidates it.
+      // CA-1047: without a cache the timeline starts empty — the tail page
+      // fired above prepends prior legs when it lands, and the replay fills
+      // the current leg; neither blocks the focus switch.
       timeline: cached
         ? cached.timeline.filter((it) => !it.id.startsWith("prompt-local-") && it.kind !== "thinking")
-        : priorTimeline,
-      timelineHasOlder: cached?.timelineHasOlder ?? timelineHasOlder,
-      _timelineAnchorSeq: cached?._timelineAnchorSeq ?? timelineAnchorSeq,
+        : [],
+      timelineHasOlder: cached?.timelineHasOlder ?? false,
+      _timelineAnchorSeq: cached?._timelineAnchorSeq,
       _timelineLoadingEarlier: false,
       _timelineEvictedIds: new Set(cached?._timelineEvictedIds ?? []),
       artifacts: cached?.artifacts ?? [],
+      historyOpeningRunId: undefined,
       pendingApprovals: [],
       pendingQuestions: [],
       gateBlock: undefined,
@@ -3394,6 +3483,29 @@ export const useStore = create<AppState>((set, get) => ({
         item.runId === runId ? { ...item, unavailableReason: undefined } : item
       ),
     });
+    // CA-1047: the transcript tail page resolves after the focus set — prepend
+    // prior-leg rows (id-deduped) so ordering stays transcript-before-live
+    // even when a cached snapshot or early replay rows already painted.
+    const tl = tailPromise ? await tailPromise : null;
+    if (get()._historyOpenSeq !== openSeq) return;
+    if (tl) {
+      const records = tl.records ?? [];
+      const hydrated = applyTimelineWindow(
+        buildPriorChatTimeline(records, handle.runId),
+        undefined,
+      ).timeline;
+      set((s) => {
+        const seen = new Set(s.timeline.map((it) => it.id));
+        const fresh = hydrated.filter((it) => !seen.has(it.id));
+        const win = applyTimelineWindow([...fresh, ...s.timeline], s._timelineEvictedIds);
+        return {
+          timeline: win.timeline,
+          _timelineEvictedIds: win.evictedIds,
+          _timelineAnchorSeq: records.length > 0 ? records[0].chatSeq : s._timelineAnchorSeq,
+          timelineHasOlder: tl.truncated === true,
+        };
+      });
+    }
     if (historyProvider) {
       void get().loadSkills(historyProvider);
     }
@@ -3503,6 +3615,12 @@ export const useStore = create<AppState>((set, get) => ({
       // CA-1000: stop watching a scaffold transcript — the server-side turn is
       // unaffected and keeps writing to .flowpilot/scaffold-progress.ndjson.
       scaffoldSession: undefined,
+      // CA-1047: a fresh chat supersedes any in-flight history open or pending
+      // first send — seq bumps make their late responses no-op.
+      historyOpeningRunId: undefined,
+      pendingChatStart: undefined,
+      _historyOpenSeq: get()._historyOpenSeq + 1,
+      _streamRunSeq: get()._streamRunSeq + 1,
     });
   },
 
@@ -4480,6 +4598,88 @@ function patchHistoryLane(set: (fn: (s: AppState) => Partial<AppState>) => void,
       ...(s.selectedProjectId === lane.projectId ? { runHistory: next } : {}),
     };
   });
+}
+
+/** CA-1047: insert a just-minted run into the Navigator's local history lanes.
+ *  The authoritative poll lags up to 3s (running) / 10s (idle); without this
+ *  the fresh chat is invisible in the sidebar until the next tick. The row
+ *  stays in _locallyStartedRuns until a server list echoes the runId. */
+function noteLocallyStartedRun(
+  set: (fn: (s: AppState) => Partial<AppState>) => void,
+  row: RunHistoryItem,
+): void {
+  if (!row.projectId) {
+    set(() => ({ pendingChatStart: undefined }));
+    return;
+  }
+  set((s) => {
+    const items = s.projectHistoryById[row.projectId] ?? [];
+    const next = items.some((it) => it.runId === row.runId)
+      ? items.map((it) => (it.runId === row.runId ? { ...it, ...row } : it))
+      : [...items, row];
+    return {
+      _locallyStartedRuns: { ...s._locallyStartedRuns, [row.runId]: row },
+      pendingChatStart: undefined,
+      projectHistoryById: { ...s.projectHistoryById, [row.projectId]: next },
+      ...(s.selectedProjectId === row.projectId ? { runHistory: next } : {}),
+    };
+  });
+}
+
+/** CA-1047: fold locally-started rows into a fresh server list — keeps rows
+ *  for runs the poll hasn't caught yet and prunes entries it now echoes. */
+function mergeLocallyStartedRuns(
+  local: Record<string, RunHistoryItem>,
+  projectId: string,
+  items: RunHistoryItem[],
+): { items: RunHistoryItem[]; local: Record<string, RunHistoryItem> } {
+  const echoed = new Set(items.map((it) => it.runId));
+  const merged = [...items];
+  const nextLocal = { ...local };
+  for (const row of Object.values(local)) {
+    if (row.projectId !== projectId) continue;
+    if (echoed.has(row.runId)) {
+      delete nextLocal[row.runId];
+    } else {
+      merged.push(row);
+    }
+  }
+  return { items: merged, local: nextLocal };
+}
+
+/** CA-1047: RunHistoryItem for a run minted by this send — built from the
+ *  values captured AT SEND TIME (the user may have switched chat/project
+ *  while startRun was in flight). The next poll replaces it wholesale, so
+ *  only sidebar-visible fields are worth carrying. */
+function mintedRunHistoryRow(
+  handle: RunHandle,
+  ctx: {
+    projectId: string;
+    providerKey: ProviderKey;
+    runKind: string;
+    prompt: string;
+    chatId?: string;
+    subMode?: string;
+    flowRef?: string;
+  },
+): RunHistoryItem {
+  const now = new Date().toISOString();
+  return {
+    runId: handle.runId,
+    projectId: ctx.projectId,
+    chatId: ctx.chatId ?? handle.chatId,
+    providerKey: ctx.providerKey,
+    status: "running",
+    startedAt: now,
+    updatedAt: now,
+    lastPrompt: ctx.prompt,
+    runKind: ctx.runKind,
+    subMode: ctx.subMode,
+    flowRef: ctx.flowRef,
+    worktreeState: handle.worktreeState,
+    worktreeSlug: handle.worktreeSlug,
+    worktreePath: handle.worktreePath,
+  };
 }
 
 /** Synthesize a bounded RunHistoryItem from projection fields only. Server-

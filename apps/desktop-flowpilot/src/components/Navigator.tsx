@@ -8,6 +8,11 @@ import { RemoteSyncPanel } from "@/components/RemoteSyncPanel";
 
 const HISTORY_LIMIT = 5;
 
+/** CA-1047: sentinel row rendered while the first send is still waiting for
+ *  the runner to mint a runId — the new chat shows in the sidebar instantly
+ *  instead of appearing only after the next history poll. */
+const PENDING_CHAT_ROW_ID = "__pending_chat__";
+
 const RUN_TIME_FORMAT = new Intl.DateTimeFormat(undefined, {
   month: "short",
   day: "numeric",
@@ -121,6 +126,8 @@ export function Navigator(): React.ReactElement {
   const attentionItems = useStore((s) => s.attentionItems);
   const resetRun = useStore((s) => s.resetRun);
   const deleteHistoryRun = useStore((s) => s.deleteHistoryRun);
+  const historyOpeningRunId = useStore((s) => s.historyOpeningRunId);
+  const pendingChatStart = useStore((s) => s.pendingChatStart);
   const visibleRunHistory = useMemo(() => filterVisibleHistory(runHistory), [runHistory]);
   const gateBlockedRunIds = useStore((s) => s._gateBlockedRunIds);
 
@@ -269,16 +276,33 @@ export function Navigator(): React.ReactElement {
 
   // CP-59 Task-316 (DOD-5): one row per logical chat — provider-switch legs
   // collapse under the chat head (latest leg) with a leg-count chip.
+  // CA-1047: while the first send waits for its runId the pending skeleton row
+  // leads the list; the minted run's own row replaces it on handle-land.
+  const pendingRow = useMemo((): (RunHistoryItem & { legsCount?: number }) | null => {
+    if (!pendingChatStart || pendingChatStart.projectId !== selectedProjectId) return null;
+    const at = new Date(pendingChatStart.startedAt).toISOString();
+    return {
+      runId: PENDING_CHAT_ROW_ID,
+      projectId: pendingChatStart.projectId,
+      providerKey: "codex",
+      status: "starting",
+      startedAt: at,
+      updatedAt: at,
+      lastPrompt: pendingChatStart.prompt,
+      runKind: "chat",
+    };
+  }, [pendingChatStart, selectedProjectId]);
   const activeHistory = useMemo(() => {
     const base = selectedProjectId ? (projectHistoryById[selectedProjectId] ?? []) : [];
-    return flattenGroupedHistory(groupRunsByChatId(filterVisibleHistory(sortByRecent(base))));
-  }, [selectedProjectId, projectHistoryById]);
+    const flattened = flattenGroupedHistory(groupRunsByChatId(filterVisibleHistory(sortByRecent(base))));
+    return pendingRow ? [pendingRow, ...flattened] : flattened;
+  }, [selectedProjectId, projectHistoryById, pendingRow]);
   const showAllHistory = expandedHistoryIds.has(selectedProjectId ?? "");
   const visibleHistory = showAllHistory ? activeHistory : activeHistory.slice(0, HISTORY_LIMIT);
   // CP-85: local-flag-only hint for the Open Sync badge — no remote list is
   // fetched here, so this can over-count vs the Drive index; the sync panel
   // recomputes against the fresh remote list once opened.
-  const unsyncedCount = activeHistory.filter((item) => isSyncableRun(item)).length;
+  const unsyncedCount = activeHistory.filter((item) => item.runId !== PENDING_CHAT_ROW_ID && isSyncableRun(item)).length;
 
   const toggleShowAllHistory = (projectId: string) => {
     setExpandedHistoryIds((current) => {
@@ -503,8 +527,24 @@ export function Navigator(): React.ReactElement {
             )}
 
             {visibleHistory.map((item) => {
+              if (item.runId === PENDING_CHAT_ROW_ID) {
+                return (
+                  <div key={item.runId} className="project-history-item-row" aria-busy="true">
+                    <div className="project-history-item project-history-item--has-icon project-history-item--pending">
+                      <span className="project-history-item-top">
+                        <span className="history-status-spinner" aria-hidden="true" />
+                        <span className="project-history-item-title">{runTitle(item.lastPrompt)}</span>
+                      </span>
+                      <span className="project-history-item-meta">
+                        Starting · {RUN_TIME_FORMAT.format(new Date(item.updatedAt))}
+                      </span>
+                    </div>
+                  </div>
+                );
+              }
               const isNew = newlyCompleted.has(item.runId);
               const isActive = item.runId === runId;
+              const isOpening = item.runId === historyOpeningRunId;
               // A gate-blocked run is treated as "completed" whether or not it is the
               // active chat. The runner keeps such a run in "running" state until the user
               // re-prompts, so both the polled runHistory ("running") AND the live store
@@ -514,10 +554,12 @@ export function Navigator(): React.ReactElement {
               // spinner for a genuine new turn. (CP-35 BUG-137)
               // Otherwise: the active chat trusts the live store status (the polled snapshot
               // can lag a just-completed turn); inactive chats use the polled status.
-              const effectiveStatus = gateBlockedRunIds[item.runId]
+              const effectiveStatus = isOpening
+                ? "starting"
+                : gateBlockedRunIds[item.runId]
                 ? "completed"
                 : (isActive ? status : item.status);
-              const hasIcon = isNew || effectiveStatus === "running" || effectiveStatus === "starting" ||
+              const hasIcon = isNew || isOpening || effectiveStatus === "running" || effectiveStatus === "starting" ||
                 effectiveStatus === "waiting_approval" || effectiveStatus === "waiting_question";
               const isUnavailable = Boolean(item.unavailableReason);
               const isSyncing = item.syncStatus === "syncing";
@@ -585,9 +627,9 @@ export function Navigator(): React.ReactElement {
                 >
                   <button
                     type="button"
-                    className={`project-history-item${hasIcon ? " project-history-item--has-icon" : ""}${isUnavailable ? " project-history-item--disabled" : ""}${isActive ? " project-history-item--active" : ""}`}
+                    className={`project-history-item${hasIcon ? " project-history-item--has-icon" : ""}${isUnavailable ? " project-history-item--disabled" : ""}${isActive || isOpening ? " project-history-item--active" : ""}`}
                     disabled={isUnavailable}
-                    aria-current={isActive ? "true" : undefined}
+                    aria-current={isActive || isOpening ? "true" : undefined}
                     onPointerDown={() => startLongPress(item, selectedProjectId!)}
                     onPointerUp={cancelLongPress}
                     onPointerLeave={cancelLongPress}
@@ -611,7 +653,7 @@ export function Navigator(): React.ReactElement {
                       </span>
                     </span>
                     <span className="project-history-item-meta">
-                      {isSyncing ? "Syncing to Drive…" : runTypeLabel(item, isActive ? status : undefined)} · {RUN_TIME_FORMAT.format(new Date(item.updatedAt))}
+                      {isSyncing ? "Syncing to Drive…" : runTypeLabel(item, isActive || isOpening ? effectiveStatus : undefined)} · {RUN_TIME_FORMAT.format(new Date(item.updatedAt))}
                     </span>
                   </button>
                 </div>
