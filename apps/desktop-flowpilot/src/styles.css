@@ -2431,11 +2431,15 @@ body[data-platform="darwin"] .app-header {
 .project-history-item-row--disabled {
   opacity: 0.7;
 }
+/* Task-455: history rows are a single line — icon, optional terminal tag,
+   ellipsized title, compact relative time pinned right. */
 .project-history-item {
-  padding: var(--space-2) var(--space-2);
+  padding: var(--space-1) var(--space-2);
   text-align: left;
-  display: grid;
-  gap: 2px;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
   background: var(--bg-3);
 }
 .project-history-sync {
@@ -2859,13 +2863,17 @@ body[data-platform="darwin"] .app-header {
 .project-history-item--disabled:hover {
   background: var(--bg-3);
 }
+/* RemoteSyncPanel rows still wrap icon+title in a -top span; inside the
+   flex row it takes the truncating share so the meta stays pinned right. */
 .project-history-item-top {
   display: flex;
   align-items: center;
   gap: var(--space-2);
+  flex: 1;
   min-width: 0;
 }
 .project-history-item-title {
+  flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2875,9 +2883,16 @@ body[data-platform="darwin"] .app-header {
 .project-history-item-meta {
   color: var(--text-dim);
   font-size: 9px;
+  flex-shrink: 0;
+  margin-left: auto;
 }
-.project-history-item--has-icon .project-history-item-meta {
-  margin-left: var(--space-5);
+.project-history-item-tag {
+  flex-shrink: 0;
+  color: var(--text-dim);
+  font-size: 9px;
+}
+.project-history-item-tag--warn {
+  color: var(--warn);
 }
 
 @keyframes history-spin {

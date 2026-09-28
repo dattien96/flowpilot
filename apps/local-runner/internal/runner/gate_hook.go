@@ -412,7 +412,7 @@ func (s *InteractiveService) runFlowGateAtEpoch(
 	violations := flowgate.Evaluate(tr, rules)
 	hasCA := flowgate.HasChangeAuditNote(diff)
 	hasCode := flowgate.HasCodeChanges(diff)
-	log.Printf("[gate] violations=%d gateMode=%q hasCode=%v hasCA=%v", len(violations), loadGateMode(dotFP), hasCode, hasCA)
+	log.Printf("[gate] violations=%d gateMode=%q hasCode=%v hasCA=%v", len(violations), effectiveGateMode(dotFP, rs), hasCode, hasCA)
 
 	// 8a. Proposal-turn exemption (Task-155 opt-2): the AI just proposed a requirement
 	// change and has not fixed code yet; tests are expected to still fail. Suppress
@@ -512,7 +512,9 @@ func (s *InteractiveService) runFlowGateAtEpoch(
 		return false
 	}
 
-	gateMode := loadGateMode(dotFP)
+	// Task-455: chat-surface runs gate as warn regardless of the persisted
+	// gate_mode — enforce/reprompt actions only apply to flow-context runs.
+	gateMode := effectiveGateMode(dotFP, rs)
 	result := flowgate.Enforce(violations, gateMode)
 	s.recordGateEnforceMetric(dotFP, rs, turnID, gateMode, result)
 	if s.applyVibeGateResolver(runID, rs.parentRunID, turnID, rs, result) {

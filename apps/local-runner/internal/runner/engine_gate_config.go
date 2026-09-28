@@ -57,6 +57,23 @@ func writeGateMode(dotFP string, mode string) error {
 	return os.WriteFile(filepath.Join(settingsDir, "gate-config.json"), data, 0o644)
 }
 
+// effectiveGateMode resolves the mode a run actually gates under. Task-455:
+// chat-surface runs (a normal_chat root with no workflowID and no live flow
+// engine) always gate as "warn" — violations surface inline but never
+// reprompt or block. The user's enforce/warn choice governs flow-context
+// runs only, mirroring the shouldForceFlowYolo chat-vs-flow split.
+func effectiveGateMode(dotFP string, rs *interactiveRun) string {
+	// Spawned children carry runKind "chat" by convention but are pure flow
+	// machinery — they follow the persisted mode, as does any run whose root
+	// is a workflow or has a live flow engine (a bug-mode chat that launched
+	// its pinned flow is flow work, not plain chat).
+	if rs == nil || rs.parentRunID != "" ||
+		shouldForceFlowYolo(rs.runKind, rs.workflowID, rs.flowEngineDriven) {
+		return loadGateMode(dotFP)
+	}
+	return "warn"
+}
+
 // writeDefaultGateConfig writes gate-config.json with gate_mode:"enforce" only
 // when the file does not exist yet (first init). Existing user choices are kept.
 func writeDefaultGateConfig(dotFP string) {

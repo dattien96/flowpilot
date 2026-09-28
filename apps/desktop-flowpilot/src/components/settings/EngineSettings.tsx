@@ -421,7 +421,8 @@ export function EngineSettings(): React.ReactElement {
             <h3>Flow Gate</h3>
             <p>
               The gate runs after every AI turn. Enforce activates reprompt and block actions.
-              Warn logs violations without interrupting the step.
+              Warn logs violations without interrupting the step. This mode applies to flow
+              runs — chat-mode turns always warn.
             </p>
           </div>
           <div className="settings-actions" style={{ marginTop: 0 }}>
