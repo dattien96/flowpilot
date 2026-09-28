@@ -264,3 +264,29 @@ Verification: focused suite + `-race` green; the only sweep failures are
 pre-existing missing-binary environment noise (codex/opencode/agy).
 Live `TestCP89Live` re-run on the rebuilt binary recorded in
 `requirements/07-Coding-Plan/note/CP-89-review.md`.
+
+## Review pass 5 (R5-*) — deep audit of the whole CP-89 diff
+
+Assertion-red reproductions first, then production fixes (see
+`requirements/07-Coding-Plan/note/CP-89-review.md` for the full narrative):
+
+1. **Rejected forward consumed the latch (R5-1).** The pending→started flip
+   ran before the prompt pack; a pack rejection wedged the run on
+   `flow_already_started`. Split into `forwardPinnedFlow` (validate-only) +
+   `commitPendingFlowStartLocked` (flip, after fences+pack); rejections roll
+   back adoption + `vibeCpDocID`.
+2. **Idempotent replay acked a launch that never happened (R5-2).** A
+   forwardFlow turn on a pending latch now always re-enters the launch path
+   with the recorded turnID — covers both poisoned non-durable keys and
+   durable keys replaying the synthetic TurnCompleted on a healed crash row.
+3. **Drive manifest dropped pending-pin fields (R5-3).** `sourceDocId`,
+   `workingMode`, `changeType` now round-trip the sync manifest + restore.
+4. **Assembled prompt could exceed the entry cap (R5-4).** Post-pack
+   `EstimateTokens(packed) > budget` → typed 422 `forward_prompt_too_large`.
+5. **Launch evidence beyond child rows (R5-5).** `flowEntryChildExists` also
+   checks the durable step-transition log and non-PENDING/StartedAt step rows;
+   unreadable evidence fails closed to started.
+
+Tests: `cp89_review5_test.go` — 6 tests, all assertion-red before the fixes.
+Verification: focused + `-race` green on the CP-89 set; live re-run on the
+rebuilt binary recorded in the review note.

@@ -942,6 +942,37 @@ func (s *InteractiveService) flowEntryChildExists(runID string, nodes []agentpac
 	if found {
 		return true
 	}
+	// R5-5: a child row is not the only launch evidence. The executor writes a
+	// durable step-transition line the moment it reaches a node (entry status
+	// RUNNING before the spawn commit, node DONE inside inline-entry chains
+	// before the delegate spawn). A started row whose transition log shows the
+	// executor progressed — even without a surviving child row — is mid-flight
+	// flow work owned by the resume machinery, not a never-launched crash row.
+	// Reseeded PENDING step rows are deliberately NOT evidence: reseed runs at
+	// executor start AND at resume, so they cannot distinguish.
+	if tlog, ok := s.workflowStore.(StepTransitionLogStore); ok {
+		lines, lerr := tlog.LoadStepTransitions(context.Background(), runID)
+		if lerr != nil {
+			// Evidence unreadable — same fail-closed contract as an unreadable
+			// session index: keep started rather than risk a duplicate launch.
+			return true
+		}
+		for _, l := range lines {
+			if _, hit := wanted[strings.TrimSpace(l.NodeID)]; hit {
+				return true
+			}
+		}
+	}
+	if steps, serr := s.workflowStore.LoadRunSteps(context.Background(), runID); serr == nil {
+		for _, step := range steps {
+			if _, hit := wanted[strings.TrimSpace(step.ID)]; !hit {
+				continue
+			}
+			if (step.Status != "" && step.Status != StepStatusPending) || strings.TrimSpace(step.StartedAt) != "" {
+				return true
+			}
+		}
+	}
 	// Neither the durable index nor live memory shows a launched child. When
 	// the index itself was never readable, stay fail-closed: claim the launch
 	// happened rather than risk a duplicate.

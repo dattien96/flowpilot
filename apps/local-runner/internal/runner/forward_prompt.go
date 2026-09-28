@@ -147,6 +147,15 @@ func (s *InteractiveService) buildForwardPromptPackage(rs *interactiveRun, forwa
 	if perr != nil {
 		return ForwardPromptPackage{}, newAPIErr(http.StatusUnprocessableEntity, "forward_prompt_pack_failed", perr.Error())
 	}
+	// R5-4: TotalMaxTokens bounds section CONTENT only — PackPrompt adds the
+	// section headers/joiners on top, and the forward section is mandatory
+	// (never truncated). Measure the ASSEMBLED prompt against the entry
+	// node's hard cap; an over-cap assembly is a typed rejection, not a
+	// silent oversize launch.
+	if int64(promptpacker.EstimateTokens(packed)) > budget {
+		return ForwardPromptPackage{}, newAPIErr(http.StatusUnprocessableEntity, "forward_prompt_too_large",
+			fmt.Sprintf("assembled forward prompt (%d est. tokens) exceeds the entry node's prompt budget (%d tokens); shorten the message", promptpacker.EstimateTokens(packed), budget))
+	}
 	return ForwardPromptPackage{
 		Prompt:        packed,
 		TurnsIncluded: included,

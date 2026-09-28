@@ -10162,12 +10162,12 @@ func (s *InteractiveService) runFirstTurnFences(ctx context.Context, rs *interac
 	return nil
 }
 
-// forwardPinnedFlow is the ONLY path that flips flowArm pending → started and
-// returns the resolved pin for the caller to spawn. Caller holds s.mu. The
-// latch flip, flowEngineDriven flag, and vibe start-marker arming happen
-// together — the forward IS the arm moment a pending run deferred at create.
-// Errors before the flip leave pending intact (retryable); there is no path
-// that consumes pending and then fails to start the flow.
+// forwardPinnedFlow VALIDATES that this turn may launch rs's pinned flow and
+// returns the resolved ref: chat-root shape, resolvable pin, pending latch,
+// and the same first-turn fences the immediate path runs. Caller holds s.mu.
+// It does NOT flip the latch — commitPendingFlowStartLocked does that only
+// after the prompt pack succeeds, so a rejected forward leaves the run
+// byte-identical (pending, retryable).
 func (s *InteractiveService) forwardPinnedFlow(ctx context.Context, rs *interactiveRun, in TurnInput) (string, *apiErr) {
 	// Forward is a chat-root semantic: a durable row claiming to be a pending
 	// CHILD (parent_run_id + flow_arm=pending) is corrupt — clients cannot
@@ -10188,6 +10188,14 @@ func (s *InteractiveService) forwardPinnedFlow(ctx context.Context, rs *interact
 	if e := s.runFirstTurnFences(ctx, rs, flowRef, in); e != nil {
 		return "", e
 	}
+	return flowRef, nil
+}
+
+// commitPendingFlowStartLocked performs the pending→started flip. It must run
+// ONLY after every fallible pre-launch step (fences, prompt pack) succeeded —
+// a rejected forward leaves the latch pending so the user's retry can still
+// launch (R5-1). Caller holds s.mu.
+func (s *InteractiveService) commitPendingFlowStartLocked(rs *interactiveRun, flowRef string) {
 	rs.setFlowArmStartedLocked()
 	rs.flowEngineDriven = true
 	// Flow-start turns lock YOLO=true before the async entry spawn so children
@@ -10204,7 +10212,6 @@ func (s *InteractiveService) forwardPinnedFlow(ctx context.Context, rs *interact
 			rs.vibeLockedCP = rs.sourceDocID
 		}
 	}
-	return flowRef, nil
 }
 
 // turn_started, and launches the adapter. Returns the turnId.
@@ -10227,17 +10234,32 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 	if idempotencyKey != "" {
 		if raw, ok := rs.idempotency[idempotencyKey]; ok {
 			tid, launched := parseDurableIdemValue(raw)
+			// CP-89 R5-2: the flowArm latch — not the idempotency map — is the
+			// forward's launch record. A forwardFlow turn on a PENDING latch
+			// means the earlier attempt never launched the flow (rejected
+			// after the key was recorded, or crashed between the durable
+			// started commit and the entry spawn on a healed row). Returning
+			// the stored turnID would ack a launch that never happened —
+			// re-enter the launch path with the same turnID instead.
+			forwardMustRelaunch := in.ForwardFlow && rs.flowArm == FlowArmPending
 			if tid != "" && !strings.HasPrefix(idempotencyKey, "durable-") {
-				s.mu.Unlock()
-				return tid, nil
-			}
-			if tid != "" && strings.HasPrefix(idempotencyKey, "durable-") {
-				if durableIdemReplaySafe(rs, tid, launched) {
+				if forwardMustRelaunch {
+					preparedReuseTurnID = tid
+				} else {
 					s.mu.Unlock()
 					return tid, nil
 				}
-				// Incomplete prep or orphan launch-ack: relaunch with same turnID.
-				preparedReuseTurnID = tid
+			}
+			if tid != "" && strings.HasPrefix(idempotencyKey, "durable-") {
+				if forwardMustRelaunch {
+					preparedReuseTurnID = tid
+				} else if durableIdemReplaySafe(rs, tid, launched) {
+					s.mu.Unlock()
+					return tid, nil
+				} else {
+					// Incomplete prep or orphan launch-ack: relaunch with same turnID.
+					preparedReuseTurnID = tid
+				}
 			}
 		}
 	}
@@ -10652,6 +10674,17 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 		priorChangeType := rs.changeType
 		priorSourceDoc := rs.sourceDocID
 		priorSubMode := rs.chatSubMode
+		priorCpDoc := rs.vibeCpDocID
+		// A forward that is REJECTED (fence or pack) must leave the run
+		// byte-identical to before the attempt — latch pending, adoption and
+		// fence-stamped markers rolled back — so the retry can still launch.
+		rollbackRejectedForward := func() {
+			rs.changeType = priorChangeType
+			rs.sourceDocID = priorSourceDoc
+			rs.chatSubMode = priorSubMode
+			rs.vibeCpDocID = priorCpDoc
+			rs.turnInFlight = false
+		}
 		if changeType := normalizeChangeType(in.ChangeType); changeType != "" {
 			rs.changeType = changeType
 		}
@@ -10661,23 +10694,23 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 		rs.chatSubMode = strings.TrimSpace(in.SubMode)
 		flowRef, e := s.forwardPinnedFlow(context.Background(), rs, in)
 		if e != nil {
-			// Failed fence: no turn was launched — release the in-flight
-			// flag set above so the run is not stuck "running", and leave
-			// the pending latch untouched for the user's retry.
-			rs.turnInFlight = false
+			rollbackRejectedForward()
 			s.mu.Unlock()
 			return "", e
 		}
 		// CP-89 Task-453: the entry child's prompt = forward text pinned
 		// intact + the settled chat transcript, oldest material degrading
-		// first, under the entry node's hard context budget.
+		// first, under the entry node's hard context budget. The pack runs
+		// BEFORE the flip (R5-1): a pack rejection must not consume the
+		// latch.
 		pkg, perr := s.buildForwardPromptPackage(rs, in.Prompt,
 			s.forwardEntryBudgetTokens(context.Background(), flowRef))
 		if perr != nil {
-			rs.turnInFlight = false
+			rollbackRejectedForward()
 			s.mu.Unlock()
 			return "", perr
 		}
+		s.commitPendingFlowStartLocked(rs, flowRef)
 		// Durable-first (review residual): stamp the flow topology and
 		// commit arm=started to the durable row BEFORE any child can spawn.
 		// A crash then leaves either durable pending (pre-persist — no
@@ -10752,6 +10785,7 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 			rs.changeType = priorChangeType
 			rs.sourceDocID = priorSourceDoc
 			rs.chatSubMode = priorSubMode
+			rs.vibeCpDocID = priorCpDoc
 			rs.turnInFlight = false
 			s.mu.Unlock()
 			return "", newAPIErr(http.StatusInternalServerError, "persist_failed",

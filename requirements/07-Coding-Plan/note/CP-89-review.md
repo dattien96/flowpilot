@@ -259,3 +259,62 @@ literal gap). Fixed by stamping `SourceDocID` onto the create row.
 Skips unchanged and justified: L-5 (flow still running → `hub_parked`,
 unit-covered), L-11 (latch ride verified; grok quota blocks the forward),
 L-12 (go:embed — no runtime file to corrupt).
+
+## Deep review pass 5 (R5-*) — all-findings sweep of e13c5509..aeee1ebc
+
+A full-diff audit pass over every CP-89 commit, tracing durability/recovery,
+forward, provider-switch, prompt-pack and Drive-restore paths. All findings
+were reproduced with assertion-red tests first (`cp89_review5_test.go`),
+fixed, and the suite re-run green.
+
+### Findings + fixes
+
+- **R5-1 — a rejected forward consumed the latch (Critical).**
+  `forwardPinnedFlow` flipped `pending→started` before the prompt pack ran,
+  so a `forward_prompt_too_large` rejection left the run permanently started
+  with no child (every retry → `flow_already_started`). The flip is now
+  `commitPendingFlowStartLocked`, invoked only after fences AND the pack
+  succeed; rejection paths roll back the turn-metadata adoption and the
+  fence-stamped `vibeCpDocID` — a rejected forward leaves the run
+  byte-identical. Tests: `TestR5_RejectedForwardKeepsLatchPending`,
+  `TestR5_ForwardRetrySameKeyAfterRejectionLaunches`.
+- **R5-2 — idempotent replay could ack a launch that never happened
+  (Critical).** The replay check runs before the forward seam: a rejected
+  forward's non-durable key was already stored (`idem[key]=turnID`), and a
+  durable key on a crash row healed back to pending replayed the synthetic
+  `TurnCompleted` as launch-ack. Both returned the old turnID with no flow
+  ever starting. Fix: `in.ForwardFlow && flowArm==pending` never
+  short-circuits — it re-enters the launch path reusing the recorded turnID
+  (the latch is the forward's real idempotency record). Tests:
+  `TestR5_ForwardRetrySameKeyAfterRejectionLaunches`,
+  `TestR5_DurableKeyRetryOnHealedPendingLaunches` (asserts turnID reuse).
+- **R5-3 — Drive restore dropped pending-pin fields (Important).** The sync
+  manifest carried `flowArm`/`chatFlowRef` but not `sourceDocID`,
+  `workingMode`, or `changeType` — a restored pending vibe-cp-ingest leg came
+  back as a dev-mode chat with no CP pin and wedged on `invalid_cp_source`.
+  All three fields now round-trip the manifest (omitempty; absent == pre-fix).
+  Test: `TestR5_DriveManifestRoundTripsPendingPin`.
+- **R5-4 — assembled prompt could exceed the hard cap (Important).**
+  `TotalMaxTokens` bounds section content only; headers/joiners are added at
+  assembly and a mandatory forward section is never truncated — an in-content-
+  budget forward could assemble over the cap (measured 210 vs 200 in the red
+  test). `buildForwardPromptPackage` now post-checks the ASSEMBLED prompt
+  against the budget and rejects over-cap with `forward_prompt_too_large`.
+  Test: `TestR5_ForwardPackageAssembledWithinBudget` (asserts both the
+  in-cap invariant and the over-cap rejection).
+- **R5-5 — child rows were the only launch evidence (Important).**
+  `flowEntryChildExists` also consults the durable step-transition log and
+  step rows moved past PENDING: an entry RUNNING line or a node step with a
+  `StartedAt` stamp means the executor actually reached the node (inline-entry
+  chains write the entry DONE before their delegate spawn), so the run is
+  mid-flight flow work owned by resume machinery — not a never-launched crash
+  row. Transition-log unreadable fails closed to started (same as the
+  unreadable-index rule). Reseeded PENDING rows are deliberately not evidence:
+  reseed runs at executor start AND at resume. Test:
+  `TestR5_StepTransitionEvidenceKeepsStarted`. Residual: a crash mid-Dispatch
+  before ANY durable evidence is written is safely-retryable — inline
+  behaviors are deterministic context producers and re-dispatch converges.
+
+Verification: `TestR5_*` (6) + `TestR4_*` + `TestTask45[123]` green,
+`-race` green on the CP-89 set. `TestTask450_*` quota tests flake under the
+wider -race glob (timing-sensitive, pass standalone, untouched code).

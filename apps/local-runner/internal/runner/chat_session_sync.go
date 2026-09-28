@@ -87,6 +87,15 @@ type ChatSessionSyncManifest struct {
 	// pending — not silently re-arm immediate and start the flow on the next
 	// plain turn. omitempty: absent == pre-CP-89 == immediate.
 	FlowArm string `json:"flowArm,omitempty"`
+	// SourceDocID/WorkingMode/ChangeType carry the rest of the CP-89 pending-run
+	// launch state the latch alone does not cover: the forward-time CP ingest
+	// fence validates SourceDocID (vibe-cp-ingest) and a restored pending vibe
+	// run must still be a vibe run. Without them a Drive-restored pending leg
+	// comes back as a dev-mode chat with no source pin — same contract class as
+	// the provider-switch pin ride (R4-3). All omitempty: absent == pre-fix.
+	SourceDocID string `json:"sourceDocId,omitempty"`
+	WorkingMode string `json:"workingMode,omitempty"`
+	ChangeType  string `json:"changeType,omitempty"`
 	// TurnCount carries the hub's completed-turn count (BUG-315). The flow's
 	// entry nodes are started only on a run's genuine first turn, gated on
 	// turnCount==0 (startTurn) and re-resolved from workflowID only then
@@ -480,6 +489,9 @@ func (s *InteractiveService) BuildChatSessionSyncManifest(ctx context.Context, r
 		ChatSubMode:         session.ChatSubMode,
 		ChatFlowRef:         session.ChatFlowRef,
 		FlowArm:             session.FlowArm,
+		SourceDocID:         session.SourceDocID,
+		WorkingMode:         session.WorkingMode,
+		ChangeType:          session.ChangeType,
 		TurnCount:           session.TurnCount, // BUG-315
 		// BUG-476: carry the durable provider-leg identity so the manifest
 		// describes which leg of which logical chat it is.
@@ -1880,6 +1892,9 @@ func (s *InteractiveService) restoreChatRunTreeFromDrive(ctx context.Context, re
 		ChatSubMode:         manifest.ChatSubMode,
 		ChatFlowRef:         manifest.ChatFlowRef,
 		FlowArm:             manifest.FlowArm,
+		SourceDocID:         manifest.SourceDocID,
+		WorkingMode:         manifest.WorkingMode,
+		ChangeType:          manifest.ChangeType,
 		TurnCount:           manifest.TurnCount, // BUG-315
 		// BUG-476: restore the leg's logical-chat identity so the restored chat
 		// groups correctly via ListProviderSessionsByChat and keeps its history.
