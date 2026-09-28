@@ -40,22 +40,22 @@ func DefaultRegistry() Registry {
 		"nextjs": {
 			Platform: "nextjs", Binary: "vtsls", Args: []string{"--stdio"},
 			FileExtensions: []string{".ts", ".tsx", ".js", ".jsx"},
-			InstallHint:    "npm i -g vtsls",
+			InstallHint:    "npm i -g @vtsls/language-server",
 		},
 		"reactjs": {
 			Platform: "reactjs", Binary: "vtsls", Args: []string{"--stdio"},
 			FileExtensions: []string{".ts", ".tsx", ".js", ".jsx"},
-			InstallHint:    "npm i -g vtsls",
+			InstallHint:    "npm i -g @vtsls/language-server",
 		},
 		"react-native": {
 			Platform: "react-native", Binary: "vtsls", Args: []string{"--stdio"},
 			FileExtensions: []string{".ts", ".tsx", ".js", ".jsx"},
-			InstallHint:    "npm i -g vtsls",
+			InstallHint:    "npm i -g @vtsls/language-server",
 		},
 		"node": {
 			Platform: "node", Binary: "vtsls", Args: []string{"--stdio"},
 			FileExtensions: []string{".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"},
-			InstallHint:    "npm i -g vtsls",
+			InstallHint:    "npm i -g @vtsls/language-server",
 		},
 		"python": {
 			// The LSP server binary shipped by the pyright npm package.
