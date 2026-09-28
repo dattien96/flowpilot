@@ -2761,7 +2761,7 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 	// and leaves the loop "running" with no turn — the composer soft-locks.
 	// "Confirm to continue" on a chat run means re-drive its work: dispatch a
 	// real turn carrying the feedback as the prompt.
-	if prevBlockReason == DriftPauseBlockReason && s.resumeDriftParkedChat(parentRunID, feedback) {
+	if prevBlockReason == DriftPauseBlockReason && s.resumeParkedPlainChat(parentRunID, feedback, prevBlockReason) {
 		return snap, nil
 	}
 
@@ -2837,6 +2837,32 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 		return snap, nil
 	}
 
+	// BUG-550 (live run-2012663): a gate-reprompt-exhausted escalate parks a
+	// PLAIN chat run too — no hub, no flow nodes, no children for the sweep
+	// above to flush — so the generic tail's maybeAutoReinvokeHubWithNote
+	// no-ops on autoOrchestrate=false and the hub-stall watchdog refuses
+	// non-flow runs (!rs.flowEngineDriven). Retry flipped the loop to running
+	// and emitted agent_graph_updated, then stranded it with no turn — a
+	// silent composer soft-lock. When the sweep dispatched nothing, re-drive
+	// a real turn on the run itself; the parked gate violation rides the
+	// prompt so a bare Retry does not re-violate blind and burn straight
+	// back into escalate.
+	if prevBlockReason == "escalate" && len(resumeIDs) == 0 {
+		resumePrompt := feedback
+		if violation := strings.TrimPrefix(strings.TrimSpace(prevGateReason), "Gate reprompt exhausted: "); violation != "" {
+			note := "[flow-engine] Resumed after a gate escalation. Outstanding gate violation: " + violation +
+				"\n\nResolve the violation first, then continue."
+			if strings.TrimSpace(resumePrompt) != "" {
+				resumePrompt = strings.TrimSpace(resumePrompt) + "\n\n---\n\n" + note
+			} else {
+				resumePrompt = note
+			}
+		}
+		if s.resumeParkedPlainChat(parentRunID, resumePrompt, prevBlockReason) {
+			return snap, nil
+		}
+	}
+
 	resumeNote := ""
 	if feedback != "" {
 		resumeNote = "[flow-engine] The flow was paused awaiting your input. User guidance:\n" + feedback +
@@ -2847,18 +2873,24 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 
 }
 
-// resumeDriftParkedChat re-drives a drift-parked plain chat run: Continue is
-// the human's "confirmed" answer, so the run resumes by starting a real turn
-// whose prompt is the feedback (bare Continue becomes a neutral continue).
+// resumeParkedPlainChat re-drives a parked plain chat run (drift pause, or a
+// gate-reprompt-exhausted escalate — BUG-550): Continue is the human's
+// "confirmed" answer, so the run resumes by starting a real turn whose prompt
+// is the feedback (bare Continue becomes a neutral continue). blockReason is
+// the park's own reason, re-stamped verbatim if the re-drive must re-park.
 // Flow-driven parents return false — their hub reinvoke tail owns the resume
 // (autoOrchestrate is re-armed for activeFlowNodes above). On dispatch failure
 // the loop re-parks with the reason so the composer never soft-locks on a
 // dead "running" loop.
-func (s *InteractiveService) resumeDriftParkedChat(parentRunID, feedback string) bool {
+func (s *InteractiveService) resumeParkedPlainChat(parentRunID, feedback, blockReason string) bool {
 	s.mu.Lock()
 	rs := s.runs[parentRunID]
+	// BUG-550 / run-203966: only a live run may re-drive — a terminal root is
+	// a real outcome, not park poison to resurrect (the Cancelled-heal above
+	// already restored park-poisoned runs to Running before this point).
 	plainChat := rs != nil && rs.parentRunID == "" && !rs.flowEngineDriven &&
-		len(rs.activeFlowNodes) == 0 && !rs.autoOrchestrate
+		len(rs.activeFlowNodes) == 0 && !rs.autoOrchestrate &&
+		rs.status != RunStatusFailed && rs.status != RunStatusCancelled && rs.status != RunStatusCompleted
 	stepID := durableResumeStepID(rs)
 	s.mu.Unlock()
 	if !plainChat || stepID == "" {
@@ -2869,17 +2901,20 @@ func (s *InteractiveService) resumeDriftParkedChat(parentRunID, feedback string)
 		prompt = "continue"
 	}
 	if _, aerr := s.startTurn(parentRunID, TurnInput{StepID: stepID, Prompt: prompt}, "", ""); aerr != nil {
+		if strings.TrimSpace(blockReason) == "" {
+			blockReason = DriftPauseBlockReason
+		}
 		snap := s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
 			if st.Status != "running" {
 				return st
 			}
 			st.Status = "blocked"
-			st.BlockReason = DriftPauseBlockReason
+			st.BlockReason = blockReason
 			st.GateReason = "continue failed to dispatch: " + aerr.Error()
 			return st
 		})
 		s.emitAgentGraph(parentRunID, snap)
-		s.flowDiagLog(parentRunID, "drift_resume_dispatch_failed", "drift-parked chat continue could not start a turn", "error", aerr.Error())
+		s.flowDiagLog(parentRunID, "drift_resume_dispatch_failed", "parked chat continue could not start a turn", "error", aerr.Error())
 	}
 	return true
 }
@@ -8018,8 +8053,8 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 		// UUID is unreachable (transient catalog outage dead-parked the flow).
 		// FlowRefFallback, not FlowRef — FlowRef is a user-declared mount
 		// validated by enforceWorkingModeStart (a child must not re-declare).
-		FlowRefFallback:   parentFlowRef,
-		ChatMode:          "normal_chat",
+		FlowRefFallback: parentFlowRef,
+		ChatMode:        "normal_chat",
 		// BUG-547: internal child spawn, not a user mount — skip the
 		// start-family/client gates; inherit the parent's working mode so
 		// vibe parents spawn vibe children (vibe flows otherwise dead-end
