@@ -10169,6 +10169,14 @@ func (s *InteractiveService) runFirstTurnFences(ctx context.Context, rs *interac
 // Errors before the flip leave pending intact (retryable); there is no path
 // that consumes pending and then fails to start the flow.
 func (s *InteractiveService) forwardPinnedFlow(ctx context.Context, rs *interactiveRun, in TurnInput) (string, *apiErr) {
+	// Forward is a chat-root semantic: a durable row claiming to be a pending
+	// CHILD (parent_run_id + flow_arm=pending) is corrupt — clients cannot
+	// mint one (StartRunInput has no ParentRunID) and spawnChildRun never
+	// stamps pending. Fail closed rather than launch a nested flow.
+	if rs.parentRunID != "" {
+		return "", newAPIErr(http.StatusUnprocessableEntity, "forward_requires_root_run",
+			"forwardFlow is only valid on a chat-root run")
+	}
 	flowRef, pinErr := resolvePinnedFlowRefForForward(rs)
 	if pinErr != nil {
 		return "", pinErr
@@ -10622,6 +10630,18 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 	if in.ForwardFlow && isPreparedRelaunch && rs.flowArm == FlowArmStarted {
 		flowStartOnly = true
 	} else if in.ForwardFlow && (!isPreparedRelaunch || rs.flowArm == FlowArmPending) {
+		// Same first-turn adoption the immediate block does — the forward IS
+		// this run's launch turn, so a turn-level changeType/sourceDocID/
+		// subMode must land on the run before the fences read it (and before
+		// vibeLockedCP stamps it). Without this the fence validates the
+		// turn's value but the run keeps the stale pin.
+		if changeType := normalizeChangeType(in.ChangeType); changeType != "" {
+			rs.changeType = changeType
+		}
+		if resolved := resolveSourceDocID(rs.workspaceCwd, rs.changeType, in.SourceDocID); resolved != "" {
+			rs.sourceDocID = resolved
+		}
+		rs.chatSubMode = strings.TrimSpace(in.SubMode)
 		flowRef, e := s.forwardPinnedFlow(context.Background(), rs, in)
 		if e != nil {
 			// Failed fence: no turn was launched — release the in-flight
@@ -10641,11 +10661,6 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 			s.mu.Unlock()
 			return "", perr
 		}
-		s.flowDiagLog(runID, "forward_prompt_packed",
-			"forward entry prompt packed",
-			"turns_included", pkg.TurnsIncluded,
-			"bytes", pkg.Bytes,
-			"degraded", pkg.Degraded)
 		// Durable-first (review residual): stamp the flow topology and
 		// commit arm=started to the durable row BEFORE any child can spawn.
 		// A crash then leaves either durable pending (pre-persist — no
@@ -10657,7 +10672,46 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 			rs.activeFlowNodes = record.Definition.Nodes
 			rs.activeFlowAcceptanceNodes = append([]string(nil), record.Definition.AcceptanceNodes...)
 		}
-		_ = s.persistProviderSession(sessionStateOf(rs))
+		snap := sessionStateOf(rs)
+		// Lock-ordering (review finding): flowDiagLog and
+		// persistProviderSession read the orchestrator loop (o.mu) while the
+		// vibe reopen sweep holds o.mu and takes s.mu (mutateLoop closures in
+		// interactive_resume) — calling them under s.mu is an ABBA pair.
+		// Drop s.mu for both, then re-acquire before spawning. turnInFlight
+		// stays set across the gap so a concurrent turn still fences on it.
+		s.mu.Unlock()
+		s.flowDiagLog(runID, "forward_prompt_packed",
+			"forward entry prompt packed",
+			"turns_included", pkg.TurnsIncluded,
+			"bytes", pkg.Bytes,
+			"degraded", pkg.Degraded)
+		_ = s.persistProviderSession(snap)
+		s.mu.Lock()
+		if s.runs[runID] != rs {
+			// Run was deleted while the lock was dropped. The snapshot just
+			// persisted may have re-inserted this run's durable row after the
+			// delete path already removed it — delete again so the delete
+			// wins as last writer. Spawning now would create orphans anyway.
+			rs.turnInFlight = false
+			s.mu.Unlock()
+			if deleter, ok := s.workflowStore.(interface {
+				DeleteProviderSession(ctx context.Context, runID string) error
+			}); ok {
+				_ = deleter.DeleteProviderSession(context.Background(), runID)
+			}
+			return turnID, nil
+		}
+		if runStatusTerminal(rs.status) {
+			// Stopped while the lock was dropped. The stale snapshot may
+			// have overwritten the stop path's terminal persist — re-persist
+			// the current (terminal) state so the durable record settles
+			// with the correct last writer. No spawn on a dead run.
+			rs.turnInFlight = false
+			rePersist := sessionStateOf(rs)
+			s.mu.Unlock()
+			_ = s.persistProviderSession(rePersist)
+			return turnID, nil
+		}
 		flowStartOnly = true
 		go s.startResolvedFlow(context.Background(), runID, flowRef, pkg.Prompt)
 		if !isPreparedRelaunch {

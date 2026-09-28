@@ -947,7 +947,12 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 	// state is only reachable from a pre-fix crash row or torn write; heal to
 	// pending so an explicit forwardFlow retries cleanly. A flow that really
 	// launched always keeps its topology (activeFlowNodes is never cleared).
-	if restoredFlowArm == FlowArmStarted && len(st.ActiveFlowNodes) == 0 {
+	// A switched leg carries arm=started by inheritance but owns no topology
+	// (the flow runs attach to the ORIGIN leg's run id) — healing that to
+	// pending would let a retry forward launch the same flow a second time.
+	// Only heal first-leg rows: started + no topology + no switch marker.
+	if restoredFlowArm == FlowArmStarted && len(st.ActiveFlowNodes) == 0 &&
+		strings.TrimSpace(st.SwitchFromRunID) == "" {
 		restoredFlowArm = FlowArmPending
 	}
 	rs := &interactiveRun{
@@ -1523,10 +1528,14 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 		clamped := reconcileVibeSprintCursor(rs)
 		s.mu.Unlock()
 		if clamped {
+			// Lock-order (CP-89 review): mutateLoop holds o.mu across the
+			// closure, so taking s.mu inside it inverts the documented
+			// s.mu→o.mu order (persistProviderSession is safe under s.mu).
+			// Hoist the map read — the closure only needs the pointer.
+			s.mu.Lock()
+			r := s.runs[rs.id]
+			s.mu.Unlock()
 			s.agentOrchestrator.mutateLoop(rs.id, func(st AgentLoopState) AgentLoopState {
-				s.mu.Lock()
-				r := s.runs[rs.id]
-				s.mu.Unlock()
 				return attachVibeTaskProgressLocked(r, st)
 			})
 			go s.persistParentSession(rs.id)

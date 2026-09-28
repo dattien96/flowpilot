@@ -150,3 +150,47 @@ A production-diff review pass found and fixed four more real issues:
   topology normalizes to pending so a retry forward launches cleanly
   (`TestTask451_StartedWithoutTopologyHealsToPending`,
   `TestTask452_ForwardPersistsStartedBeforeSpawn`).
+
+### Review pass 3 — deeper concurrency + seam findings (all FIXED)
+
+1. **Forward-time launch metadata was not adopted onto the run.** The
+   immediate first-turn block adopts `ChangeType`/`SourceDocID`/`SubMode`
+   into `rs` before the fences; the forward branch validated the turn's
+   `SourceDocID` but never stored it — `vibeLockedCP` would stamp the stale
+   create-time pin (or empty) instead of the validated value. The forward
+   is this run's launch turn; adoption now mirrors the immediate path.
+   Test: `TestTask452_ForwardTurnSourceDocIDAdopted` (turn-level source
+   lands on `rs.sourceDocID` and `vibeLockedCP`).
+
+2. **Lock-ordering hardening on the durable-first persist.**
+   `persistProviderSession`/`flowDiagLog` take `o.mu` (loopStateFor) and
+   are documented safe under `s.mu` — but baseline `o.mu→s.mu` inversion
+   sites exist (mutateLoop closures), so holding `s.mu` across them widens
+   an ABBA exposure, and holding `s.mu` across disk I/O is unnecessary.
+   The forward path now drops `s.mu` for diag+persist, then re-locks and
+   verifies the run is still present and non-terminal before spawning.
+   The interleavings are handled explicitly:
+   - deleted mid-gap → re-delete the resurrected durable row (delete wins
+     as last writer), no spawn;
+   - stopped mid-gap → re-persist the terminal snapshot (stop's status
+     wins as last writer), no spawn.
+   Adjacent baseline inversion fixed in the vibe reopen sweep
+   (interactive_resume: the mutateLoop closure no longer takes `s.mu`
+   inside — the map read is hoisted out). Other `o.mu→s.mu` closures
+   (cohort_stall, vibe_cp, vibe_debate, vibe_gate, vibe_sprint) are
+   pre-existing baseline sites — same latent hazard class, unchanged
+   by this fix, tracked as follow-up.
+
+3. **Heal guard refined for switch legs.** `started` + no topology +
+   `SwitchFromRunID != ""` is an inherited-latch leg whose flow runs on
+   the ORIGIN leg — healing it to pending would let a retry forward
+   launch the same flow twice. Heal now applies only to first-leg rows
+   (`SwitchFromRunID` empty).
+
+4. **Corrupt pending-child row could forward a nested flow.** Clients
+   cannot mint a pending child (`StartRunInput` has no ParentRunID) and
+   spawnChildRun never stamps pending, but a bad durable row reaching
+   reconstruct could. `forwardPinnedFlow` now fails closed with
+   `forward_requires_root_run` before pin resolution.
+   Test: `TestTask452_ForwardOnPendingChildRunIs422` (422 + latch stays
+   pending).

@@ -141,6 +141,33 @@ func TestTask452_ForwardOnImmediateRunIs422(t *testing.T) {
 	}
 }
 
+// Corrupt durable row: flow_arm=pending on a CHILD run. Clients cannot mint
+// this (StartRunInput has no ParentRunID), but a bad row that survives
+// reconstruct must not let forwardFlow launch a nested flow from a child.
+func TestTask452_ForwardOnPendingChildRunIs422(t *testing.T) {
+	svc := task451Service(t)
+	h, err := svc.createRun(StartRunInput{
+		ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex,
+		FlowRef: "task-harness", FlowArm: "pending",
+	})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	svc.mu.Lock()
+	svc.runs[h.RunID].parentRunID = "run-parent"
+	svc.mu.Unlock()
+	_, e := svc.startTurn(h.RunID, TurnInput{StepID: "chat", ForwardFlow: true}, "", "")
+	if e == nil || e.status != http.StatusUnprocessableEntity || e.code != "forward_requires_root_run" {
+		t.Fatalf("forward on pending child must 422 forward_requires_root_run, got %v", e)
+	}
+	svc.mu.Lock()
+	arm := svc.runs[h.RunID].flowArm
+	svc.mu.Unlock()
+	if arm != FlowArmPending {
+		t.Fatalf("rejected forward must leave latch pending, got %q", arm)
+	}
+}
+
 // A failed fence never consumes the pending latch — fix the issue, retry.
 func TestTask452_FailedFenceKeepsPending(t *testing.T) {
 	svc := task451Service(t)
@@ -308,6 +335,47 @@ func TestTask452_PendingVibeChatTurnNotIngestFenced(t *testing.T) {
 	// The bare forward is still fenced — only the CHAT leg is exempt.
 	if _, e := svc.startTurn(h.RunID, TurnInput{StepID: "chat", ForwardFlow: true}, "", ""); e == nil || e.code != "invalid_cp_source" {
 		t.Fatalf("forward without source must still fail invalid_cp_source, got %v", e)
+	}
+}
+
+// A turn-level SourceDocID on the forward IS this run's launch metadata — it
+// must be adopted onto rs.sourceDocID (like the immediate first-turn block
+// does) so vibeLockedCP stamps the validated value, not the stale pin.
+func TestTask452_ForwardTurnSourceDocIDAdopted(t *testing.T) {
+	ws := t.TempDir()
+	cpDir := filepath.Join(ws, "requirements", "07-Coding-Plan")
+	if err := os.MkdirAll(cpDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cpPath := filepath.Join(cpDir, "CP-89-turn.md")
+	if err := os.WriteFile(cpPath, []byte("# CP\nDocument ID: CP-89\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	svc := task451Service(t)
+	h, err := svc.createRun(StartRunInput{
+		ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex,
+		FlowRef: "flowpilot-core-flow-pack/vibe-cp-ingest",
+		WorkingMode: "vibe", Client: "tui",
+		FlowArm: "pending", Cwd: ws,
+	})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	if _, e := svc.startTurn(h.RunID, TurnInput{
+		StepID: "chat", ForwardFlow: true,
+		ChangeType: "coding-plan", SourceDocID: "requirements/07-Coding-Plan/CP-89-turn.md",
+	}, "", ""); e != nil {
+		t.Fatalf("forward with turn-level source must pass, got %v", e)
+	}
+	svc.mu.Lock()
+	rs := svc.runs[h.RunID]
+	src, lockedCP := rs.sourceDocID, rs.vibeLockedCP
+	svc.mu.Unlock()
+	if src != "requirements/07-Coding-Plan/CP-89-turn.md" {
+		t.Fatalf("sourceDocID not adopted, got %q", src)
+	}
+	if lockedCP != src {
+		t.Fatalf("vibeLockedCP = %q, want adopted source %q", lockedCP, src)
 	}
 }
 
