@@ -290,3 +290,29 @@ Assertion-red reproductions first, then production fixes (see
 Tests: `cp89_review5_test.go` — 6 tests, all assertion-red before the fixes.
 Verification: focused + `-race` green on the CP-89 set; live re-run on the
 rebuilt binary recorded in the review note.
+
+## Review pass 6 (R6-*) — restore merge + evidence correction
+
+Two findings, both reproduced assertion-red before fixing:
+
+1. **Local-ahead Drive restore regressed the latch (R6-1, Critical).**
+   `applyLocalAheadSessionFields` now also preserves `flowArm`,
+   `sourceDocID`, `workingMode`, `changeType`, `chatSubMode`,
+   `vibeLockedCP`, `vibeCpDocID` when the local rollout is ahead — a
+   synced-pending-then-forwarded chat no longer restores the stale
+   manifest's `pending` (which would let a retry double-launch a flow with
+   live children). Non-empty guards match the existing merge convention.
+2. **Transition evidence without a child wedged the run (R6-2, Important —
+   corrects R5-5).** The R5-5 evidence extension kept `started` on a
+   transition-only row, but the resume machinery only continues existing
+   children — zero child rows meant nothing resumed and forward wedged on
+   `flow_already_started`. Reverted to child-row-only launch evidence
+   (child row = synchronous spawn commit); transition-only rows heal to
+   pending and retry relaunches. The `TestR5_StepTransitionEvidence
+   KeepsStarted` assertion was repinned as
+   `TestR5_StepRowEvidenceWithoutChildHealsPending` (step-row variant of the
+   same contract); the transition-line variant is
+   `TestR6_TransitionEvidenceWithoutChildHealsPending`.
+
+Tests: `cp89_review6_test.go` (2 new red-first tests) + repinned step-row
+test. Focused + `-race` green; live suite re-run recorded in the review note.

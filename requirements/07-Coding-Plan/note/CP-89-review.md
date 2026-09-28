@@ -324,3 +324,40 @@ Live re-verification on the pass-5 build (`7b533d29`): `LIVE=1 TestCP89Live`
 L-3 (forward starts flow, 5.31s), L-9/L-10 (restart pending/started), and
 L-14 (switch keeps CP source pin → quota_route_required, never
 invalid_cp_source) all re-verified end-to-end through the rebuilt binary.
+
+## Review pass 6 (post-R5 deeper sweep) — 2 findings, fixed
+
+Capture pass found two concrete paths; both reproduced red, fixed, and
+live-verified. NOTE: R6-2 corrects the R5-5 fix — the transition/step
+evidence extension turned out to be the wedged outcome, not the safe one.
+
+- **R6-1 — local-ahead Drive restore regressed the latch (Critical).**
+  `applyLocalAheadSessionFields` preserved TurnCount/LoopState/topology but
+  not the CP-89 latch or pin fields, so a chat synced while pending then
+  forwarded locally restored the STALE manifest's `pending` — the next
+  forward turn could double-launch a flow that already has children. The
+  local-ahead merge now also carries `flowArm`, `sourceDocID`,
+  `workingMode`, `changeType`, `chatSubMode`, and the flip-stamped
+  `vibeLockedCP`/`vibeCpDocID` (non-empty guards, same convention as the
+  other preserved fields — an old-build local row that never recorded them
+  keeps the manifest value). Test:
+  `TestR6_LocalAheadRestoreKeepsFlowArmAndPin` (asserts the latch AND the
+  forward-adopted source pin survive a stale re-restore).
+- **R6-2 — transition evidence without a child wedged the run (Important;
+  corrects R5-5).** The R5-5 extension let step-transition/step-row evidence
+  keep `started` with zero child rows — but the child row IS the launch
+  commit (the spawn persists it synchronously), and the resume machinery only
+  continues EXISTING children. A transition-only row (inline-entry DONE /
+  entry RUNNING written before the spawn commit) therefore wedged: nothing
+  resumed it and forward retry answered flow_already_started. Reverted to
+  child-row-only evidence; such rows heal to pending and the retry
+  relaunches (the re-run inline dispatch is deterministic context
+  production). Unreadable session index still fails closed to started.
+  Tests: `TestR6_TransitionEvidenceWithoutChildHealsPending` (transition
+  line, assert heal + retry launch), `TestR5_StepRowEvidenceWithoutChild
+  HealsPending` (step-row variant; renamed from the original
+  `...KeepsStarted` assertion).
+
+Verification: `TestR6_*` (2) + `TestR5_StepRow*` + `TestR4_*` +
+`TestTask45[123]` + `TestRestore*`/`TestSync*`/`TestBug49*` green; `-race`
+green on the CP-89 + restore set.

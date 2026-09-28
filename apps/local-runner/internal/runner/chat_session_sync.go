@@ -1528,6 +1528,35 @@ func (s *InteractiveService) applyLocalAheadSessionFields(ctx context.Context, s
 	if strings.TrimSpace(local.FlowCohortID) != "" {
 		session.FlowCohortID = local.FlowCohortID
 	}
+	// CP-89 R6-1: the latch + pin fields also mutate over a run's lifetime —
+	// a forward flips pending→started and adopts the turn's sourceDocID/
+	// changeType/subMode, and the flip stamps the vibe lock fields. A chat
+	// that synced while pending then forwarded locally must keep the local
+	// latch: restoring the stale manifest's "pending" lets the next turn
+	// double-launch a flow that already has children. Non-empty guard (not
+	// unconditional copy): an old-build local row that never recorded these
+	// fields keeps the manifest's value rather than wiping it.
+	if strings.TrimSpace(local.FlowArm) != "" {
+		session.FlowArm = local.FlowArm
+	}
+	if strings.TrimSpace(local.SourceDocID) != "" {
+		session.SourceDocID = local.SourceDocID
+	}
+	if strings.TrimSpace(local.WorkingMode) != "" {
+		session.WorkingMode = local.WorkingMode
+	}
+	if strings.TrimSpace(local.ChangeType) != "" {
+		session.ChangeType = local.ChangeType
+	}
+	if strings.TrimSpace(local.ChatSubMode) != "" {
+		session.ChatSubMode = local.ChatSubMode
+	}
+	if strings.TrimSpace(local.VibeLockedCP) != "" {
+		session.VibeLockedCP = local.VibeLockedCP
+	}
+	if strings.TrimSpace(local.VibeCpDocID) != "" {
+		session.VibeCpDocID = local.VibeCpDocID
+	}
 	return nil
 }
 
