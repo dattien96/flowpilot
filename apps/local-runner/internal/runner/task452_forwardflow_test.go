@@ -379,6 +379,39 @@ func TestTask452_ForwardTurnSourceDocIDAdopted(t *testing.T) {
 	}
 }
 
+// Live L-3 regression: a pending run whose chat turns settled is
+// status=completed — `completed` is continuable, NOT dead. The forward path
+// must still flip the latch and launch the flow; treating completed as
+// terminal wedged the run (arm=started durable, no children ever spawned).
+func TestTask452_ForwardOnSettledRunStillLaunches(t *testing.T) {
+	svc := task451Service(t)
+	h, err := svc.createRun(StartRunInput{
+		ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex,
+		FlowRef: "task-harness", FlowArm: "pending",
+	})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	// Simulate a settled chat turn: the run completed and is continuable.
+	svc.mu.Lock()
+	svc.runs[h.RunID].status = RunStatusCompleted
+	svc.runs[h.RunID].turnCount = 1
+	svc.mu.Unlock()
+	if _, e := svc.startTurn(h.RunID, TurnInput{StepID: "chat", ForwardFlow: true}, "", ""); e != nil {
+		t.Fatalf("forward on settled run must pass, got %v", e)
+	}
+	svc.mu.Lock()
+	rs := svc.runs[h.RunID]
+	arm, nodes := rs.flowArm, len(rs.activeFlowNodes)
+	svc.mu.Unlock()
+	if arm != FlowArmStarted {
+		t.Fatalf("arm = %q, want started", arm)
+	}
+	if nodes == 0 {
+		t.Fatal("topology not stamped — flow would never resume after restart")
+	}
+}
+
 // ---- prepared-relaunch idempotency (review residual fix) --------------------
 // A durably-prepared forward turn relaunched after a crash must not lose the
 // forward intent: the flowArm latch is the idempotency key.

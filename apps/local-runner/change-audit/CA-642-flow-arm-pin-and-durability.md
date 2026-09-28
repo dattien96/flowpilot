@@ -194,3 +194,15 @@ A production-diff review pass found and fixed four more real issues:
    `forward_requires_root_run` before pin resolution.
    Test: `TestTask452_ForwardOnPendingChildRunIs422` (422 + latch stays
    pending).
+
+### Live-caught regression (pass 3 self-inflicted, FIXED)
+
+The pass-3 stop/delete recheck used `runStatusTerminal`, which counts
+`completed` — but `completed` is the normal **settled-between-turns** state
+of a continuable chat run, i.e. exactly the state a pending run is in when
+the forward arrives after earlier chat turns. The forward returned 200 and
+durably flipped arm=started while the spawn was skipped — a permanent
+wedge (L-3 timed out with no entry child; L-9/L-10 hit the same wall
+post-restart). Narrowed to `failed`/`cancelled` only; `completed` runs
+continue to launch (baseline flow machinery drives the parent's status).
+Red test: `TestTask452_ForwardOnSettledRunStillLaunches`.

@@ -10701,7 +10701,11 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 			}
 			return turnID, nil
 		}
-		if runStatusTerminal(rs.status) {
+		// NOTE: `completed` is NOT dead — it is the normal settled-between-
+		// turns state of a continuable chat run (exactly the state a pending
+		// run is in when the forward arrives after earlier chat turns). Only
+		// failed/cancelled mean the run can no longer accept effects.
+		if rs.status == RunStatusFailed || rs.status == RunStatusCancelled {
 			// Stopped while the lock was dropped. The stale snapshot may
 			// have overwritten the stop path's terminal persist — re-persist
 			// the current (terminal) state so the durable record settles
