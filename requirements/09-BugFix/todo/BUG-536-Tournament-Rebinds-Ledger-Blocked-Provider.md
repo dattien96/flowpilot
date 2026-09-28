@@ -1,6 +1,8 @@
 # BUG-536 — Tournament binding re-picks a ledger-blocked provider every retry round
 
-Status: FIXED (unit-verified red→green; pending live re-run)
+Status: FIXED (unit-verified red→green; live-verified 2026-09-28 — grok
+ledger-blocked tournament spawned devin×2 candidates, evidence in the
+BUG-538 doc's live section and CP-Full-Live-Test R14)
 Filed: 2026-09-27 (R6 residual — review of run-2634 tournament retries)
 CA: CA-1044
 
