@@ -271,9 +271,11 @@ func (s *InteractiveService) commitQuotaRotation(ctx context.Context, res QuotaR
 	}
 	if rs.parentRunID == "" && rs.chatID != "" {
 		// Hub/chat leg (incl. vibe): the leg machinery owns provider switches —
-		// new leg + compact handoff, old leg closed durable. Notice lands on the
-		// source leg's durable stream before the switch closes it.
-		s.emitQuotaRouteCommitted(res, nil)
+		// new leg + compact handoff, old leg closed durable. The committed
+		// notice emits only after the switch returned — a refused switch
+		// (unresolvable account, same-provider rule) leaves no committed record
+		// and the vetoed leg stays open, mirroring the child-respawn path's
+		// spawn-first ordering (BUG-534 contract, applied to chat legs).
 		_, aerr := s.switchChatLeg(ctx, rs.chatID, chatSwitchRequest{
 			TargetProviderKey: sel.ProviderKey,
 			Model:             sel.Model,
@@ -282,6 +284,7 @@ func (s *InteractiveService) commitQuotaRotation(ctx context.Context, res QuotaR
 		if aerr != nil {
 			return fmt.Errorf("quota_gate: %s", aerr.msg)
 		}
+		s.emitQuotaRouteCommitted(res, nil)
 		return nil
 	}
 	if rs.parentRunID != "" {
@@ -715,6 +718,14 @@ func (s *InteractiveService) ResumeQuotaGate(ctx context.Context, runID, decisio
 		return fmt.Errorf("quota_gate: malformed option %q", optionID)
 	}
 	sel := &RouteCandidate{ProviderKey: ProviderKey(parts[0]), AccountID: parts[1], Model: parts[2]}
+	// BUG-541 residual (live run-19946): the option string is operator-supplied —
+	// an account id that does not exist or is not connected ("fakeacct") sailed
+	// straight into commitQuotaRotation, closed the source chat leg, and the new
+	// leg could never provision (session_unavailable zombie, card gone). Apply
+	// the same strict pin the adapter factory enforces before any mutation.
+	if err := s.pinnedAccountResolvable(sel.ProviderKey, sel.AccountID); err != nil {
+		return err
+	}
 	demand, err := s.ResolveExecutionDemand(ctx, runID, nil)
 	if err != nil {
 		return err
@@ -723,6 +734,26 @@ func (s *InteractiveService) ResumeQuotaGate(ctx context.Context, runID, decisio
 		Outcome: QuotaRotate, Demand: demand, Selected: sel,
 		PolicyVersion: QuotaRoutingPolicyVersion, Reason: "user_choice", Scope: scope,
 	})
+}
+
+// pinnedAccountResolvable fail-closed check for an operator-typed route pin
+// (BUG-541 residual): the named account must exist and be connected for the
+// target provider — the same contract resolveAdapterAccount enforces at
+// dispatch. The "" / "default" sentinels resolve the active account at
+// dispatch (legacy behavior); anything else must be a real connected account.
+func (s *InteractiveService) pinnedAccountResolvable(providerKey ProviderKey, accountID string) error {
+	accountID = strings.TrimSpace(accountID)
+	if accountID == "" || accountID == "default" {
+		return nil
+	}
+	r := s.runner
+	if r == nil {
+		r = &Runner{}
+	}
+	if _, err := r.resolveAdapterAccount(string(providerKey), accountID); err != nil {
+		return fmt.Errorf("quota_gate: selected account %q on %q is not usable: %w", accountID, providerKey, err)
+	}
+	return nil
 }
 
 // applyQuotaRouteAnswer is the AnswerQuestion routing shim — keeps the kind

@@ -1,6 +1,6 @@
 # BUG-542 — Deferred hub reinvoke stranded; watchdog never fires `hub_stalled`
 
-**Status:** captured live, not fixed
+**Status:** FIXED — drain-side recovery + watchdog re-arm (CA-634); live re-verify pending
 **Found:** 2026-09-28 live campaign (runner `/private/tmp/fp-runner`, :4322 workspace `/tmp/fp-live5`)
 **Severity:** high — a flow root parks forever at `waiting_review` with no escalation surface
 
@@ -62,3 +62,25 @@ masked by stale busy residue. The flow looks `running` forever.
 - Durable evidence to assert in tests: loop `waiting_review` + dead provider
   session + last event `hub_reinvoke_deferred` → `hub_stalled` block within
   timeout, or a real hub turn dispatch.
+
+## Fix (2026-09-28, CA-634)
+
+Drain-side recovery rather than arm-site (the `pendingAgentContext` gate is a
+deliberate anti-spurious-duplicate contract — `TestAutoReinvokeHubNoPendingContextNoDefer`):
+
+- `waitingReviewDrainDueLocked` (interactive_resume.go): an idle
+  flow-driven hub whose loop is `waiting_review` owes one bounded reinvoke —
+  the join obligation exists even when no note/context survived.
+  `waitingReviewReinvokeDrainCap=2` bounds it; a prose-only hub exhausts the
+  budget and the stall watchdog surfaces `hub_stalled` instead of burning
+  turns forever. Budget resets when the loop leaves `waiting_review`.
+- `notifyTurnIdle` dispatches the owed reinvoke when no other durable intent
+  consumed the idle transition.
+- `checkAndBlockStalledHub` (hub_stall.go) now re-arms the watchdog before
+  returning on a live approval/question card — previously the chain died on
+  the first live-card tick and never evaluated again after resolution.
+
+Tests: `bug542_hub_reinvoke_deferred_wedge_test.go` (7 tests — idle
+waiting_review owes reinvoke, bounded drain, reset on advance, notifyTurnIdle
+dispatches, watchdog re-arms under approval + question, surfaces hub_stalled
+after resolution). All green; legacy arm-site contracts unchanged.

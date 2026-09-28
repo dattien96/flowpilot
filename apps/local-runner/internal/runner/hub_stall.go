@@ -413,6 +413,13 @@ func (s *InteractiveService) checkAndBlockStalledHub(runID string) bool {
 		}
 		s.mu.Unlock()
 		if hasCard {
+			// BUG-542 (run-18354): a live card is actionable, but resolving it
+			// does not re-arm this watchdog — the card can sit for far longer
+			// than the timeout (approval TTL is 10m) and whatever drove the
+			// deferral may have vanished meanwhile. Keep re-arming so the tick
+			// that follows the card's resolution still evaluates progress;
+			// without it the chain dies silently on the first live-card tick.
+			s.maybeScheduleHubStallCheck(runID)
 			return false
 		}
 		// Status says waiting but no card — stalled (H4 class).

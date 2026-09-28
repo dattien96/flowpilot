@@ -2005,6 +2005,33 @@ func (s *InteractiveService) startTurnClearingIntent(runID, stepID, prompt, kind
 	}
 }
 
+// waitingReviewReinvokeDrainCap bounds BUG-542 recovery reinvokes per
+// continuous waiting_review occupancy — after the cap the hub stall watchdog
+// owns the surface (hub_stalled card) rather than auto-burning turns on a hub
+// that keeps answering in prose.
+const waitingReviewReinvokeDrainCap = 2
+
+// waitingReviewDrainDueLocked reports whether an idle parent owes a hub review
+// turn the join never queued (BUG-542), and stamps the bounded counter when
+// due. Resets whenever the loop leaves waiting_review. Caller holds s.mu.
+func (s *InteractiveService) waitingReviewDrainDueLocked(rs *interactiveRun) bool {
+	// The wedge run (live run-18354) was flow-engine driven with
+	// autoOrchestrate=false — the obligation lives on either loop flavor, so
+	// gate on "a flow loop is driving this run", not the legacy flag alone.
+	if rs == nil || rs.parentRunID != "" || (!rs.autoOrchestrate && !rs.flowEngineDriven) || rs.reinvokeInFlight {
+		return false
+	}
+	if s.agentOrchestrator.loopStateFor(rs.id).Status != "waiting_review" {
+		rs.waitingReviewReinvokes = 0
+		return false
+	}
+	if rs.waitingReviewReinvokes >= waitingReviewReinvokeDrainCap {
+		return false
+	}
+	rs.waitingReviewReinvokes++
+	return true
+}
+
 // notifyTurnIdle re-flushes durable intents after a turn or gate becomes idle
 // so conflicted deliveries are not stranded for process restart (V10R4 P1).
 //
@@ -2041,6 +2068,17 @@ func (s *InteractiveService) notifyTurnIdle(runID string) {
 		rs.pendingHubReinvoke = false
 		pendingHubReinvokePrompt = rs.pendingHubReinvokePrompt
 		rs.pendingHubReinvokePrompt = ""
+		touchHubProgressLocked(rs)
+	}
+	// BUG-542 (run-18354): a cohort join that rode the provider tool channel
+	// left pendingAgentContext empty, so nothing armed pendingHubReinvoke —
+	// the join's waiting_review transition was never consumed and the loop
+	// wedged silently. On idle, if the loop still owes the hub a review turn
+	// and no intent is queued to drive it, dispatch the missing reinvoke.
+	// waitingReviewReinvokes bounds prose-only hubs; at cap the watchdog
+	// surfaces hub_stalled instead of burning turns.
+	if !busy && !pendingHubReinvoke && !hasIntent && s.waitingReviewDrainDueLocked(rs) {
+		pendingHubReinvoke = true
 		touchHubProgressLocked(rs)
 	}
 	s.mu.Unlock()

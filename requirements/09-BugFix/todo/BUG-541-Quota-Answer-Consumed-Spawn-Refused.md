@@ -1,6 +1,6 @@
 # BUG-541 — Quota-route answer consumed at the API layer but apply fails on blocked parent; candidate permanently stranded
 
-Status: **FIXED — regression tests green; live re-verify pending**
+Status: **FIXED — incl. chat-leg residual (pin validation + commit ordering); live re-verify pending**
 Severity: High — a one-shot operator decision is destroyed on a transient
 failure. The question is consumed (removed from the pending list, cannot be
 re-answered), the respawn never happens, and the candidate is silently lost
@@ -107,3 +107,22 @@ blocked-parent respawn refusal; apply error surfaces). All green.
 - The stranded-child rollback path itself is covered by unit tests
   (bug541_quota_answer_apply_failed_test.go); the earlier live capture on
   run-12520 remains the organic repro evidence.
+
+## Residual fix (2026-09-28, CA-635)
+
+The chat-leg variant above is now fixed:
+
+- `ResumeQuotaGate` validates the operator-typed route pin via
+  `pinnedAccountResolvable` (same strict contract as `resolveAdapterAccount`)
+  before any mutation — `use_for_run|codex|fakeacct|...` now returns
+  `quota_route_apply_failed` and the card rolls back to pending.
+- `commitQuotaRotation` emits `quota_route_committed` only AFTER
+  `switchChatLeg` succeeds (spawn-first ordering, mirroring BUG-534).
+- `switchChatLeg` Phase A resolves pinned accounts before stamping the
+  durable intent; Phase B aborts the switch when a pinned leg's seed turn
+  fails provisioning-class (`isProvisioningSeedError`) — destination closes
+  terminal `dispatch_failed`, source leg stays open, card re-answerable.
+
+Tests: `bug541_chat_leg_commit_test.go` (4 tests — invented account rejected
+pending card intact, committed only after destination exists, unresolvable
+pin rejected pre-mutation, provisioning-vs-content seed classification).

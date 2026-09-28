@@ -549,6 +549,16 @@ type interactiveRun struct {
 	// case. Empty means "no custom prompt pending" — the existing generic
 	// retry behavior for cohort-join reinvokes is unaffected.
 	pendingHubReinvokePrompt string
+	// waitingReviewReinvokes bounds the BUG-542 drain-side recovery: a cohort
+	// join that arrived mid-turn via the provider tool channel leaves
+	// pendingAgentContext empty, so pendingHubReinvoke is never armed and the
+	// join's waiting_review transition is never consumed. notifyTurnIdle
+	// re-invokes the hub when the loop still sits at waiting_review on idle —
+	// bounded by waitingReviewReinvokeDrainCap so a hub that keeps answering in
+	// prose (never emits the deterministic signal) surfaces as hub_stalled via
+	// the watchdog instead of burning turns forever. Reset whenever the loop
+	// leaves waiting_review or a real reinvoke intent is armed.
+	waitingReviewReinvokes int
 	// pendingAgentContext holds notes about UI-spawned children (and their results) that
 	// have not yet been folded into this (parent) run's provider conversation. They are
 	// prepended to the next provider turn's prompt and then cleared. Persisted to
