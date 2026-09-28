@@ -361,3 +361,9 @@ evidence extension turned out to be the wedged outcome, not the safe one.
 Verification: `TestR6_*` (2) + `TestR5_StepRow*` + `TestR4_*` +
 `TestTask45[123]` + `TestRestore*`/`TestSync*`/`TestBug49*` green; `-race`
 green on the CP-89 + restore set.
+
+Live re-verification on the pass-6 build (`e8b124a5`): `LIVE=1 -v
+TestCP89Live` **PASS 307.5s — 11 PASS + 3 named skips**, identical to the
+pre-R6 matrix. PASS: L-1..L-4, L-6..L-10, L-13, L-14. Skips: L-5
+(`hub_parked` while the flow remains active — unit-covered), L-11 (grok
+quota — latch ride verified), L-12 (`go:embed`; no runtime file to corrupt).
