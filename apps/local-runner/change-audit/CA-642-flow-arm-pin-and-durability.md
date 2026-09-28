@@ -316,3 +316,38 @@ Two findings, both reproduced assertion-red before fixing:
 
 Tests: `cp89_review6_test.go` (2 new red-first tests) + repinned step-row
 test. Focused + `-race` green; live suite re-run recorded in the review note.
+
+## Review pass 7 (R7-*) — same-file re-restore + unengaged child evidence
+
+Two findings, both reproduced assertion-red before fixing:
+
+1. **Byte-identical provider file disabled the local-ahead merge (R7-1,
+   Critical).** The merge was gated on the rollout FILE extending the
+   synced snapshot, but a forward turn commits durable latch state without
+   appending provider bytes — a synced-pending-then-forwarded chat
+   re-restores with a byte-identical file and regressed the local
+   `started` latch back to the stale manifest's `pending` (double-launch
+   exposure). The merge now also runs when the manifest is THIS machine's
+   own snapshot resolving onto the existing local row (`selfRerestore`) —
+   the local row is never behind a snapshot this machine wrote. Foreign
+   manifests still skip the merge: the remote lineage owner may
+   legitimately be newer. Test: `TestR7_SameFileReRestoreKeepsLocalAhead
+   FlowArm`.
+2. **Minted-but-never-engaged child row counted as launch proof (R7-2,
+   Critical).** spawnChildRun persists the child row before scheduling its
+   first turn; a kill in the gap leaves an idle TurnCount=0 row that no
+   recovery path can re-drive (first prompt is not durable). The parent
+   wedged `started` with forward answering `flow_already_started`. The
+   durable evidence path now requires engagement
+   (`flowEntryChildRowEngaged`): TurnCount>0, non-idle status,
+   dependency-parked wait, or pending durable intent. Unengaged rows heal
+   the parent to pending so the retry relaunches. Tests:
+   `TestR7_IdleEntryChildRowDoesNotProveLaunch`,
+   `TestR7_WaitingDependencyChildKeepsStarted` (control).
+
+Residual (documented): a manually spawned child deliberately labeled with
+a flow node id that actually ran still counts as evidence — its work is
+real, so treating it as the entry is defensible.
+
+Tests: `cp89_review7_test.go` (3 new red-first tests). Focused + `-race`
+green; restore/sync sweep green standalone.

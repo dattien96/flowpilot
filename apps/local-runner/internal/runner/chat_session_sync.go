@@ -1942,7 +1942,32 @@ func (s *InteractiveService) restoreChatRunTreeFromDrive(ctx context.Context, re
 			session.SwitchFromRunID = src
 		}
 	}
-	if localAhead {
+	// R7-1: localAhead only detects provider-FILE growth, but a CP-89 forward
+	// commits durable latch state (flowArm=started, adopted sourceDocID,
+	// turnCount++) without appending a single provider byte — a re-restore of
+	// this machine's own snapshot can hit a byte-identical file while the
+	// local row is strictly ahead. When the manifest is this machine's OWN
+	// record and resolveRestoredRunID mapped it back onto the existing local
+	// row, that row is never behind the snapshot (syncs only ever snapshot
+	// local state, and local state only advances afterward), so the mutable-
+	// field merge must run regardless of the file delta. A manifest written
+	// by a DIFFERENT machine skips this: the remote lineage owner may
+	// legitimately be newer than a stale local restore copy.
+	selfRerestore := false
+	if storeDir := s.chatSessionStoreDir(); strings.TrimSpace(storeDir) != "" {
+		if identity, identErr := loadOrCreateMachineIdentity(storeDir); identErr == nil && identity.MachineID == manifest.SourceMachineID {
+			if reader, ok := s.workflowStore.(SessionHistoryReader); ok {
+				existing, found, rerr := reader.GetProviderSession(ctx, localRunID)
+				if rerr != nil {
+					return ChatSessionRestoreResult{}, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", rerr.Error())
+				}
+				selfRerestore = found &&
+					existing.SourceMachineID == manifest.SourceMachineID &&
+					existing.SourceRunID == manifest.SourceRunID
+			}
+		}
+	}
+	if localAhead || selfRerestore {
 		// The local rollout file is ahead of the restored snapshot, so the older
 		// remote manifest must not downgrade the local conversation metadata. (BUG-091)
 		// BUG-492: a read error here is not "no local record" — abort the restore

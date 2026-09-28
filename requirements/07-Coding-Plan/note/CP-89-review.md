@@ -367,3 +367,54 @@ TestCP89Live` **PASS 307.5s — 11 PASS + 3 named skips**, identical to the
 pre-R6 matrix. PASS: L-1..L-4, L-6..L-10, L-13, L-14. Skips: L-5
 (`hub_parked` while the flow remains active — unit-covered), L-11 (grok
 quota — latch ride verified), L-12 (`go:embed`; no runtime file to corrupt).
+
+## Review pass 7 (post-R6 deeper sweep) — 2 findings, fixed
+
+Capture pass found two more concrete crash/restore windows; both reproduced
+red, fixed, and pending live re-verification.
+
+- **R7-1 — byte-identical provider file disabled the local merge
+  (Critical).** R6-1 gated the local-ahead merge on the rollout FILE
+  extending the synced snapshot. A CP-89 forward is a synthetic turn: it
+  commits durable latch state (flowArm=started, adopted sourceDocID,
+  turnCount++) without appending any provider bytes. A chat synced while
+  pending then forwarded locally re-restores with a byte-identical provider
+  file, so localAhead stayed false, the merge never ran, and the stale
+  manifest's pending latch overwrote the local started latch — the next
+  forward double-launches a flow that already has children. Fix: when the
+  manifest is this machine's OWN snapshot and resolveRestoredRunID maps it
+  onto the existing local row, the local row is never behind a snapshot this
+  machine wrote, so the mutable-field merge runs regardless of the file
+  delta. Manifests written by a DIFFERENT machine still skip the merge —
+  the remote lineage owner may legitimately be newer than a stale local
+  restore copy. Test: `TestR7_SameFileReRestoreKeepsLocalAheadFlowArm`
+  (identical-file re-restore keeps started latch + adopted pin + vibe mode).
+- **R7-2 — a minted-but-never-engaged child row was counted as launch proof
+  (Critical).** spawnChildRun persists the child row BEFORE scheduling its
+  first-turn goroutine. A kill in that window leaves an idle TurnCount=0
+  agentStatus=spawned row — but reconstructPendingChildSessions only
+  re-drives children with pending gate/cohort/continuation markers, and the
+  child's first prompt exists only in the lost goroutine, so nothing can
+  ever run it: the parent wedged "started" with a dead child while forward
+  retry answered flow_already_started. Fix: `flowEntryChildRowEngaged` —
+  the durable index path counts a child only when it shows engagement past
+  minting (TurnCount>0, non-idle status, dependency-parked wait, or a
+  pending durable intent). An idle minted row heals the parent to pending;
+  the forward retry re-packs and re-spawns a fresh entry child (the orphan
+  row stays as an honest never-ran record). In-memory children keep the
+  label-only rule — a live rs is mid-launch in this process. Tests:
+  `TestR7_IdleEntryChildRowDoesNotProveLaunch` (idle+spawned+TC0 heals and
+  the retry relaunches) and `TestR7_WaitingDependencyChildKeepsStarted`
+  (waiting_dependency+DependsOn control stays started).
+
+Note on the third capture item (non-flow child whose label collides with a
+node id): the engagement gate already narrows it — a never-ran lookalike no
+longer counts. Residual: a deliberately node-labeled manual spawn that DID
+run still counts as evidence — acceptable (that child did real work under
+that label); documented, not fixed.
+
+Verification: `TestR7_*` (3) + `TestR4/R5/R6` + `TestTask45[123]` +
+`TestRestore*`/`TestSync*`/`TestBug32*`/`TestBug49*` green; `-race` green on
+the CP-89 set. Two sweep flakes observed were pre-existing cross-test
+provider-accounts timing noise (different tests each run, both pass
+standalone; untouched code).

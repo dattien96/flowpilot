@@ -921,7 +921,18 @@ func (s *InteractiveService) flowEntryChildExists(runID string, nodes []agentpac
 				if strings.TrimSpace(sess.ParentRunID) != runID {
 					continue
 				}
-				if _, hit := wanted[strings.TrimSpace(sess.Label)]; hit {
+				if _, hit := wanted[strings.TrimSpace(sess.Label)]; !hit {
+					continue
+				}
+				// R7-2: spawnChildRun persists the child row BEFORE scheduling
+				// its first-turn goroutine, so a kill in that window leaves a
+				// minted-but-never-engaged row. Counting the bare row wedges the
+				// parent "started" forever — reconstructPendingChildSessions
+				// only re-drives children carrying pending gate/cohort/
+				// continuation markers, and the child's first prompt is not
+				// durable, so nothing can ever run it. Only an engaged row
+				// proves the launch produced resumable work.
+				if flowEntryChildRowEngaged(sess) {
 					return true
 				}
 			}
@@ -953,6 +964,38 @@ func (s *InteractiveService) flowEntryChildExists(runID string, nodes []agentpac
 	// When the index itself was never readable, stay fail-closed: claim the
 	// launch happened rather than risk a duplicate.
 	if !indexRead {
+		return true
+	}
+	return false
+}
+
+// flowEntryChildRowEngaged reports whether a durable child row shows the
+// launch actually RAN, not merely minted (R7-2). spawnChildRun persists the
+// row before scheduling the child's first turn, so a kill in that window
+// leaves an idle TurnCount=0 agentStatus=spawned row forever — nothing
+// resumable was produced, and the child's first prompt exists only in the
+// lost goroutine. Engagement = any durable signal the child moved past
+// minting: a completed turn (TurnCount), a lifecycle status past idle
+// (running/completed/failed/cancelled — the row was touched by real work or
+// a real decision), a deliberately parked dependency wait (the flow owns
+// re-firing it — healing would double-spawn), or a pending continuation
+// intent the resume machinery re-drives.
+func flowEntryChildRowEngaged(sess ProviderSessionState) bool {
+	if sess.TurnCount > 0 {
+		return true
+	}
+	switch sess.Status {
+	case "", RunStatusIdle:
+		// minted only — no durable turn evidence yet
+	default:
+		return true
+	}
+	if len(sess.DependsOn) > 0 || strings.TrimSpace(sess.AgentStatus) == "waiting_dependency" {
+		return true
+	}
+	if sess.PendingFlowGateSettle || len(sess.PendingAgentContext) > 0 ||
+		strings.TrimSpace(sess.PendingResumePrompt) != "" ||
+		strings.TrimSpace(sess.PendingGateRepromptPrompt) != "" {
 		return true
 	}
 	return false
