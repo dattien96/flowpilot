@@ -318,3 +318,9 @@ fixed, and the suite re-run green.
 Verification: `TestR5_*` (6) + `TestR4_*` + `TestTask45[123]` green,
 `-race` green on the CP-89 set. `TestTask450_*` quota tests flake under the
 wider -race glob (timing-sensitive, pass standalone, untouched code).
+
+Live re-verification on the pass-5 build (`7b533d29`): `LIVE=1 TestCP89Live`
+**PASS 304.3s — 11 PASS + 3 named skips**, identical to the pre-fix matrix.
+L-3 (forward starts flow, 5.31s), L-9/L-10 (restart pending/started), and
+L-14 (switch keeps CP source pin → quota_route_required, never
+invalid_cp_source) all re-verified end-to-end through the rebuilt binary.
