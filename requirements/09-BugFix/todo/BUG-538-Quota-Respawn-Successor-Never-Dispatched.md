@@ -110,3 +110,15 @@ the "spawned but never dispatched" wedge.
 `run-945` keeps `status: waiting_user_approval` + `pending_resume_*` fields
 after its leg closed `provider_switch` — the run-level status wasn't synced to
 the leg terminalization.
+
+## R14 live leg (2026-09-28, `/tmp/fp-live5`, binary w/ CA-636)
+
+- `run-26036` tournament: candidate-a `run-27175` quota-parked; answering
+  `q-27188` while the parent loop was `blocked(escalate)` returned typed
+  `quota_route_apply_failed` and the card stayed **pending** — the
+  parked-successor path fails closed instead of dispatching into a blocked
+  loop.
+- After unblocking, the same card resolved and successor `run-28790`
+  spawned (devin, `candidate-a`, worktree preserved). A subsequent
+  candidate-b escalate park-cancelled the successor's in-flight turn —
+  durable `pending_resume_*` residue is the pinned contract (BUG-543).

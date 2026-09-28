@@ -1009,3 +1009,54 @@ context-pressure path on devin-swe2 (user: token use OK for this test).
 
 - **A-58-4**: recommend **done-with-caveat** — bounded escalate machinery is live-verified twice (reprompt cap→escalate on run-6565 today; reviewer-loop reject rounds + cap unit test). The literal "3 organic reviewer rejects" never occurred (run-332 approved round 3); if the acceptance is the machinery, it's green; if it's the exact 3-reject shape, it stays unit-only.
 - **A-65-4**: **not done** — retry≤2 bound live-proven (run-25153); the nested parent-resume leg still has no live evidence (no nested tournament staged this box).
+
+## M. R13 — BUG-542/541-residual fixes + live re-verification (2026-09-28, binary w/ CA-634/635; :4321 fp-live4 + :4322 fp-live5)
+
+**Fixes landed (commit pending at section write):**
+- CA-634 BUG-542: `waitingReviewDrainDueLocked` — idle flow-driven hub whose
+  loop sits `waiting_review` owes a bounded reinvoke (`drainCap=2`, resets on
+  loop advance; at cap the watchdog owns the surface). Drain-side fix — the
+  `pendingAgentContext`-gate contract at the arm site is preserved
+  (`TestAutoReinvokeHubNoPendingContextNoDefer` stays green). Watchdog
+  `checkAndBlockStalledHub` now re-arms while a live approval/question card
+  is pending — previously the timer chain died on the first live-card tick.
+- CA-635 BUG-541 residual: `pinnedAccountResolvable` rejects invented/unusable
+  route accounts before any mutation (card rolls back pending);
+  `quota_route_committed` emits only after `switchChatLeg` succeeds; Phase-A
+  pin resolution + Phase-B provisioning-class seed-failure abort keep the
+  source leg open when the destination can never provision.
+
+**Unit:** `bug542_hub_reinvoke_deferred_wedge_test.go` (8 tests incl. the
+exact live shape autoOrchestrate=false+flowEngineDriven=true) +
+`bug541_chat_leg_commit_test.go` (4 tests) — green; full `internal/runner`
+suite shows zero non-env regressions (remaining fails = missing provider
+binaries / TempDir races, same as clean-HEAD baseline).
+
+| Row | R13 result |
+|-----|-----------|
+| BUG-541 residual — invented account | ☑ LIVE: run-36264 (grok-pinned, exhausted acct) → card `q-36266` → answer `use_for_run|codex|fakeacct|gpt-5.4` → **HTTP error `quota_route_apply_failed`** ("account fakeacct on codex is not usable") + card stayed `pending` (previously: accepted → committed → zombie) |
+| BUG-541 residual — valid route ordering | ☑ LIVE: re-answered same card `use_for_run|devin|…swe-2-high` → accepted → new leg `run-36269` (devin, `active`, session `thread-36270` provisioned) minted BEFORE grok leg `run-36264` closed — spawn-first ordering on the chat-leg path |
+| BUG-523/541 child respawn | ☑ LIVE: tournament candidate-a `run-22969` organically vetoed (grok exhausted) → card `q-22982` on the CHILD → answered `use_for_run|devin` → successor `run-23156` spawned (devin, active) → vetoed leg closed → parent loop kept running |
+| run-18660 "leg leak" | RECLASSIFIED not-a-bug: leg claims are owned by the parent flow's terminal decision, not child turn completion (a completed child may be re-invoked — closing at settle broke 40+ tests). Its `leg_state=active` residue was a symptom of the BUG-542 parent wedge; terminal cleanup (flow_done/worktree_swept) already covers flow-end closure |
+| BUG-542 live leg | ☑ LIVE on rebuilt binary: cp-harness `run-36272` join → `cohort_join_complete` → `hub_reinvoke_scheduled` → `flow_control_continue` (no wedge); tournaments `run-25217`/`run-26036` both spawned candidate-b + advanced past `waiting_review` — the deferred-reinvoke hole is closed on the flowEngineDriven shape |
+| BUG-539 member-stall shield | ◐ unit-verified (5 tests); live leg NOT organically stageable — watchdog requires a cohort member mid-turn with >stallTimeout provider silence; devin/grok members either stream events or hold a gate (excluded by design) |
+| A-58-4 + A-65-4 | ◐ cp-harness `run-36272` escalated on audit-gate debt (missing change-audit note + inferred contract) — real gate debt, not reviewer-cap; nested-tournament trigger needs a review-loop `blocked` at round cap, audit gate never reached round 2 |
+
+## N. R14 — BUG-544 seat-hold fix + quota-respawn window (2026-09-28, rebuilt binary; :4322 fp-live5)
+
+**New defect found live, fixed, re-verified — same session:**
+
+| Row | R14 result |
+|-----|-----------|
+| BUG-544 repro (pre-fix binary, `run-25217`) | ☑ defect confirmed: candidate-a `run-26015` grok-vetoed → card `q-26028` pending → veto routed through `handleChildStartTurnFailure` → member FAILED + cohort append + leg closed → candidate-b's completion satisfied the barrier at 08:34:58 → arbiter → flow done → loser sweep removed `candidate-candidate-a` worktree → every later answer `quota_route_apply_failed: worktree ... no longer exists (swept)` — card unresolvable forever |
+| BUG-544 fix (CA-636) | `quota_route_required` returns without touching the member (`spawned_child_quota_parked`); successor inherits the held seat when no entry buffered (`CohortSeatInherited`); `stop` answer releases seat (failed append + durable leg close) |
+| BUG-544 post-fix live (`run-26036`) | ☑ candidate-a `run-27175` vetoed → `waiting_question` + `leg_state=active` + worktree `candidate-candidate-a` present on disk THROUGHOUT the pending card; candidate-b cycles could not join the barrier; answering while parent `blocked(escalate)` → typed `quota_route_apply_failed` fail-closed + card stayed pending; after unblock → card resolved → successor `run-28790` spawned `candidate-a`/devin/active and old leg closed `provider_switch` AFTER successor minted |
+| BUG-523 + BUG-538 respawn window | ☑ LIVE: same answer path exercised the child-respawn ordering (BUG-523: successor `run-28790` carries `WorkspaceCwd` + cohort seat; BUG-538: parent re-escalate parked the successor — `cancelled` + durable residue, pinned contract per BUG-543) |
+| run-18660/23156/28790 leg residue | → BUG-543: assessed not-a-narrow-bug; `TestBug543_*` pins the Stop-keeps-claim + flow-done-closes contract; reclamation sweep = future work |
+| BUG-539/542 combined tournament | partial: tournament survived BUG-542 (join + advance) and BUG-544 (seat hold); member_stalled leg still unit-only (see R13) |
+
+### Outstanding (documented, no live path on this bed)
+- **A-65-4 nested parent-resume**: machinery verified (3 triggers wired, dedup BUG-446, `resumeParentAfterTournament` state path unit-tested); full cap→tournament→resume cycle needs an organically capped review loop — audit-gate debt escalates the loop without incrementing rounds.
+- **BUG-505 option card**: needs organic `preflight_contract_freeze` escalate (planner emits no draft) — grok legs that produced it are quota-exhausted.
+- **BUG-506 catalog-outage fallback / BUG-517 child-route inflight / BUG-536 ledger-blocked rebind / BUG-513 scoped-leg compaction**: unit + machinery verified; live legs need fault injection not reachable via HTTP seams, or exhausted-provider timing already covered indirectly.
+- **A-60 V7**: probe launched only; no organic requirement-drift event.
