@@ -559,8 +559,10 @@ export function EngineSettings(): React.ReactElement {
           </div>
         )}
         {/* CA-916: live AI scaffold transcript for the selected project —
-            self-hides when the runner reports no scaffold activity. */}
-        <ScaffoldActivity projectId={selectedProjectId || null} />
+            self-hides when the runner reports no scaffold activity.
+            BUG-549: scoped to the selected binding so a run on another binding
+            never renders here. */}
+        <ScaffoldActivity projectId={selectedProjectId || null} workingDirectory={selectedBindingPath || null} />
       </div>
       <div className="settings-subpanel">
         <div className="settings-panel-head">

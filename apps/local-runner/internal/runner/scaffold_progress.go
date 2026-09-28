@@ -159,16 +159,28 @@ func (s *InteractiveService) endScaffoldProgress(projectID string, result *Scaff
 	})
 }
 
-// scaffoldProgressSnapshot returns events with seq > after plus the feed's
-// current head state. When the hub is empty (runner restarted, or a dispatch
-// from before this feature ran), the persisted NDJSON tail is replayed so the
-// client still sees the last run's transcript.
+// scaffoldProgressSnapshot keeps the legacy project-level contract: callers
+// that pass no workingDirectory (TUI, Projects page) see the project's latest
+// run regardless of which binding it targeted.
 func (s *InteractiveService) scaffoldProgressSnapshot(projectID string, after int64) ScaffoldProgressSnapshot {
+	return s.scaffoldProgressSnapshotScoped(projectID, after, "")
+}
+
+// scaffoldProgressSnapshotScoped returns events with seq > after plus the
+// feed's current head state. When workspaceFilter is set (BUG-549), hub events
+// are only served while the hub's captured workspace is that same directory —
+// a feed requested for another binding falls through to that directory's own
+// persisted tail instead of leaking the live run's transcript. When the hub is
+// empty (runner restarted, or a dispatch from before this feature ran), the
+// persisted NDJSON tail is replayed so the client still sees the last run's
+// transcript.
+func (s *InteractiveService) scaffoldProgressSnapshotScoped(projectID string, after int64, workspaceFilter string) ScaffoldProgressSnapshot {
 	snap := ScaffoldProgressSnapshot{ProjectID: projectID, Events: []ScaffoldProgressEvent{}}
 	var hubFloor, runStartSeq int64
 	s.mu.Lock()
 	hub := s.scaffoldProgress[projectID]
-	if hub != nil {
+	hubMatches := hub != nil && (workspaceFilter == "" || sameWorkspacePath(hub.workspace, workspaceFilter))
+	if hubMatches {
 		runStartSeq = hub.runStartSeq
 		snap.Active = hub.active
 		snap.NextSeq = hub.nextSeq
@@ -191,8 +203,8 @@ func (s *InteractiveService) scaffoldProgressSnapshot(projectID string, after in
 	}
 	s.mu.Unlock()
 
-	if hub == nil || len(hub.events) == 0 {
-		if persisted := s.loadScaffoldProgressTail(projectID); len(persisted) > 0 {
+	if hub == nil || len(hub.events) == 0 || !hubMatches {
+		if persisted := s.loadScaffoldProgressTail(projectID, workspaceFilter); len(persisted) > 0 {
 			filtered := persisted[:0]
 			for _, ev := range persisted {
 				if ev.Seq > after {
@@ -223,7 +235,7 @@ func (s *InteractiveService) scaffoldProgressSnapshot(projectID string, after in
 	// from THIS run (hubFloor > runStartSeq), prepend the persisted log for the
 	// missing head so a late joiner still sees the full transcript.
 	if hubFloor > runStartSeq && after < hubFloor {
-		if persisted := s.loadScaffoldProgressTail(projectID); len(persisted) > 0 {
+		if persisted := s.loadScaffoldProgressTail(projectID, workspaceFilter); len(persisted) > 0 {
 			head := make([]ScaffoldProgressEvent, 0, len(persisted)+len(snap.Events))
 			for _, ev := range persisted {
 				if ev.Seq > after && ev.Seq < hubFloor && ev.Seq >= runStartSeq {
@@ -238,18 +250,24 @@ func (s *InteractiveService) scaffoldProgressSnapshot(projectID string, after in
 
 // loadScaffoldProgressTail replays the persisted NDJSON log for a project whose
 // hub is empty. Best-effort: an unreadable or unresolvable workspace yields nil.
-func (s *InteractiveService) loadScaffoldProgressTail(projectID string) []ScaffoldProgressEvent {
-	project, ok := s.lookupProject(projectID)
-	if !ok {
-		return nil
+// BUG-549: an explicit workspaceFilter wins over the catalog's project.Path so a
+// scaffold dispatched on a non-primary binding still replays after restart.
+func (s *InteractiveService) loadScaffoldProgressTail(projectID, workspaceFilter string) []ScaffoldProgressEvent {
+	dir := strings.TrimSpace(workspaceFilter)
+	if dir == "" {
+		project, ok := s.lookupProject(projectID)
+		if !ok {
+			return nil
+		}
+		dir = strings.TrimSpace(project.Path)
 	}
-	dir, err := s.resolveEngineWorkingDirectory(strings.TrimSpace(project.Path))
-	if err != nil || dir == "" {
+	resolved, err := s.resolveEngineWorkingDirectory(dir)
+	if err != nil || resolved == "" {
 		return nil
 	}
 	// Read more than the in-memory ring so the merge path can recover a trimmed
 	// transcript head; NDJSON lines are small so a few thousand is cheap.
-	events, scanErr := readScaffoldProgressTail(filepath.Join(dir, ".flowpilot", scaffoldProgressFileName), scaffoldProgressKeep*8)
+	events, scanErr := readScaffoldProgressTail(filepath.Join(resolved, ".flowpilot", scaffoldProgressFileName), scaffoldProgressKeep*8)
 	if scanErr != nil {
 		fmt.Printf("[scaffold-progress] progress log read incomplete project=%s: %v\n", projectID, scanErr)
 	}
@@ -384,7 +402,36 @@ func readScaffoldProgressTail(path string, limit int) ([]ScaffoldProgressEvent, 
 	return events, scanErr
 }
 
+// sameWorkspacePath compares two workspace paths after normalization so a
+// binding-scoped feed filter matches the directory captured at dispatch even
+// when the caller spells it differently (trailing slash, symlinked parent —
+// macOS maps /var onto /private/var).
+func sameWorkspacePath(a, b string) bool {
+	norm := func(p string) string {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			return ""
+		}
+		if abs, err := filepath.Abs(p); err == nil {
+			p = abs
+		}
+		return filepath.Clean(p)
+	}
+	na, nb := norm(a), norm(b)
+	if na == "" || nb == "" {
+		return false
+	}
+	if na == nb {
+		return true
+	}
+	ra, errA := filepath.EvalSymlinks(na)
+	rb, errB := filepath.EvalSymlinks(nb)
+	return errA == nil && errB == nil && filepath.Clean(ra) == filepath.Clean(rb)
+}
+
 // handleScaffoldProgress serves GET /client/projects/{projectId}/scaffold/progress.
+// BUG-549: an optional workingDirectory query scopes the feed to that binding —
+// omitting it keeps the legacy project-level view.
 func (s *InteractiveService) handleScaffoldProgress(w http.ResponseWriter, r *http.Request) {
 	projectID := r.PathValue("projectId")
 	var after int64
@@ -393,5 +440,16 @@ func (s *InteractiveService) handleScaffoldProgress(w http.ResponseWriter, r *ht
 			after = n
 		}
 	}
-	writeInteractiveJSON(w, http.StatusOK, s.scaffoldProgressSnapshot(projectID, after))
+	workspaceFilter := ""
+	if raw := strings.TrimSpace(r.URL.Query().Get("workingDirectory")); raw != "" {
+		// Resolve when possible so the comparison uses the same canonical form
+		// as the dispatch-time workspace; an unresolvable filter still applies —
+		// it simply matches no live hub and yields no persisted tail.
+		if resolved, apiErr := s.resolveEngineWorkingDirectory(raw); apiErr == nil {
+			workspaceFilter = resolved
+		} else {
+			workspaceFilter = raw
+		}
+	}
+	writeInteractiveJSON(w, http.StatusOK, s.scaffoldProgressSnapshotScoped(projectID, after, workspaceFilter))
 }
