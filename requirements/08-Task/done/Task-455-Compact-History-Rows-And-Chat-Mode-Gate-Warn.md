@@ -34,9 +34,9 @@
 
 - `T-1` single line everywhere the row renders (active list, inactive-project
   peek, selection mode, pending skeleton).
-- `T-2` chat-vs-flow split reuses `shouldForceFlowYolo(runKind, workflowID,
-  flowEngineDriven)` — a chat run that actually launched a flow engine keeps
-  the configured mode.
+- `T-2` configured mode applies only while a flow actually drives the run
+  (`flowEngineDriven` latch or spawned child); chat runs and idle flow-mode
+  runs without an attached flowRef auto-warn.
 - `T-3` child/flow-internal gates (`runChildArtifactOutputGateAtEpoch`,
   `flow_validate_audit_dispatch`) are untouched — children only exist under
   flow contexts.

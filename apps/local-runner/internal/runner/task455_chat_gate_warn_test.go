@@ -31,16 +31,31 @@ func TestTask455_ChatRunGatesWarnUnderEnforceConfig(t *testing.T) {
 	}
 }
 
+// CP-89: a flow-mode run that never actually attached a flowRef is still
+// chat surface — the persisted mode must not apply to it either.
+func TestTask455_IdleFlowRunGatesWarnUnderEnforceConfig(t *testing.T) {
+	dot := filepath.Join(t.TempDir(), ".flowpilot")
+	writeGateConfigForTest(t, dot, "enforce")
+	cases := map[string]*interactiveRun{
+		"workflow run, no flow yet": {id: "r1", runKind: "workflow"},
+		"empty-kind root":           {id: "r2", runKind: ""},
+		"workflowID pin, no engine": {id: "r3", runKind: "chat", workflowID: "wf-1"},
+	}
+	for name, rs := range cases {
+		if got := effectiveGateMode(dot, rs); got != "warn" {
+			t.Fatalf("%s must auto-warn until a flow really launches, got %q", name, got)
+		}
+	}
+}
+
 func TestTask455_FlowContextRunsKeepConfiguredMode(t *testing.T) {
 	dot := filepath.Join(t.TempDir(), ".flowpilot")
 	writeGateConfigForTest(t, dot, "enforce")
 	cases := map[string]*interactiveRun{
-		"workflow root":      {id: "r1", runKind: "workflow"},
-		"empty-kind root":    {id: "r2", runKind: ""},
-		"workflowID pin":     {id: "r3", runKind: "chat", workflowID: "wf-1"},
-		"flow engine live":   {id: "r4", runKind: "chat", flowEngineDriven: true},
-		"spawned child":      {id: "r5", runKind: "chat", parentRunID: "r4"},
-		"nil run":            nil,
+		"flow engine live": {id: "r4", runKind: "chat", flowEngineDriven: true},
+		"workflow driven":  {id: "r6", runKind: "workflow", flowEngineDriven: true},
+		"spawned child":    {id: "r5", runKind: "chat", parentRunID: "r4"},
+		"nil run":          nil,
 	}
 	for name, rs := range cases {
 		if got := effectiveGateMode(dot, rs); got != "enforce" {

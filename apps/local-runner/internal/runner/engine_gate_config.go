@@ -58,17 +58,13 @@ func writeGateMode(dotFP string, mode string) error {
 }
 
 // effectiveGateMode resolves the mode a run actually gates under. Task-455:
-// chat-surface runs (a normal_chat root with no workflowID and no live flow
-// engine) always gate as "warn" — violations surface inline but never
-// reprompt or block. The user's enforce/warn choice governs flow-context
-// runs only, mirroring the shouldForceFlowYolo chat-vs-flow split.
+// only a genuinely flow-driven run honors the persisted gate_mode — the
+// flowEngineDriven latch set when a flow really launches, or a spawned child
+// (children exist only under flow machinery). Everything else — plain chat
+// AND a flow-mode run still chatting without an attached flowRef — gates as
+// "warn": violations surface inline but never reprompt or block.
 func effectiveGateMode(dotFP string, rs *interactiveRun) string {
-	// Spawned children carry runKind "chat" by convention but are pure flow
-	// machinery — they follow the persisted mode, as does any run whose root
-	// is a workflow or has a live flow engine (a bug-mode chat that launched
-	// its pinned flow is flow work, not plain chat).
-	if rs == nil || rs.parentRunID != "" ||
-		shouldForceFlowYolo(rs.runKind, rs.workflowID, rs.flowEngineDriven) {
+	if rs == nil || rs.parentRunID != "" || rs.flowEngineDriven {
 		return loadGateMode(dotFP)
 	}
 	return "warn"

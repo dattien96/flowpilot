@@ -9,9 +9,9 @@ Two UX complaints bundled in one task:
    `[icon] [Cancelled] title-with-ellipsis… <relative time>`.
 2. The flow gate ran in whatever `gate_mode` the project had saved — for
    plain chat-mode turns that meant enforce could reprompt/block a casual
-   chat. Chat-surface runs now always gate as `warn` (violations surface
-   inline, never interrupt); the persisted mode governs flow-context runs
-   only.
+   chat. Any run without a live flow engine now gates as `warn`
+   (violations surface inline, never interrupt); the persisted mode applies
+   only once a flow really drives the run.
 
 ## Changes
 
@@ -33,11 +33,11 @@ Two UX complaints bundled in one task:
 - `apps/desktop-flowpilot/src/components/settings/EngineSettings.tsx`
   - Flow Gate copy notes chat-mode turns always warn.
 - `apps/local-runner/internal/runner/engine_gate_config.go`
-  - `effectiveGateMode(dotFP, rs)` — returns `"warn"` for chat-surface root
-    runs (`runKind:"chat"`, no `workflowID`, no live `flowEngineDriven`,
-    `parentRunID` empty — i.e. `shouldForceFlowYolo` false); otherwise the
-    persisted `gate_mode`. Spawned children and flow-driven chat runs keep
-    the configured mode.
+  - `effectiveGateMode(dotFP, rs)` — returns `"warn"` unless the run is
+    genuinely flow-driven (`flowEngineDriven` latched, or a spawned child).
+    Plain chat AND flow-mode runs still chatting without an attached
+    flowRef warn; only a real running flow honors the user's
+    enforce/warn config.
 - `gate_hook.go` (enforce site + log) and `gate_blind_hook.go` now resolve
   through `effectiveGateMode`, so a blind-block also warns instead of
   interrupting a chat turn.
