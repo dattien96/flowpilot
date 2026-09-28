@@ -4,7 +4,7 @@ import { MockRunnerClient } from "../client/MockRunnerClient";
 import type { RunHandle, RunHistoryItem } from "../types/contract";
 import { useStore } from "./store";
 
-// CA-1047: chat-switch latency — a fresh send must surface in the Navigator
+// CA-1049: chat-switch latency — a fresh send must surface in the Navigator
 // immediately (pending row + minted-run upsert) instead of waiting for the
 // 3s/10s history poll, a click must focus the chat as soon as resume lands
 // (not after the transcript tail), and stale resume/start responses can never

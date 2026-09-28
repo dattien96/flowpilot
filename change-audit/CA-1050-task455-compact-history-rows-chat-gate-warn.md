@@ -1,4 +1,4 @@
-# CA-1048 — Compact single-line history rows + chat-mode gate auto-warn (Task-455)
+# CA-1050 — Compact single-line history rows + chat-mode gate auto-warn (Task-455)
 
 ## Summary
 
@@ -62,7 +62,7 @@ Two UX complaints bundled in one task:
   `navigatorHistory.test.js` 16/16, `RemoteSyncPanel.render` + tokens suites
   unchanged.
 - Full phase-1 desktop suite: same 13 pre-existing baseline failures as the
-  CA-1047 run (Node-26 `localStorage`, stale-state flakes).
+  CA-1049 run (Node-26 `localStorage`, stale-state flakes).
 
 # ---8<--- flowpilot:change-ledger
 feature_key: project-nav

@@ -8,7 +8,7 @@ import { RemoteSyncPanel } from "@/components/RemoteSyncPanel";
 
 const HISTORY_LIMIT = 5;
 
-/** CA-1047: sentinel row rendered while the first send is still waiting for
+/** CA-1049: sentinel row rendered while the first send is still waiting for
  *  the runner to mint a runId — the new chat shows in the sidebar instantly
  *  instead of appearing only after the next history poll. */
 const PENDING_CHAT_ROW_ID = "__pending_chat__";
@@ -250,7 +250,7 @@ export function Navigator(): React.ReactElement {
 
   // CP-59 Task-316 (DOD-5): one row per logical chat — provider-switch legs
   // collapse under the chat head (latest leg) with a leg-count chip.
-  // CA-1047: while the first send waits for its runId the pending skeleton row
+  // CA-1049: while the first send waits for its runId the pending skeleton row
   // leads the list; the minted run's own row replaces it on handle-land.
   const pendingRow = useMemo((): (RunHistoryItem & { legsCount?: number }) | null => {
     if (!pendingChatStart || pendingChatStart.projectId !== selectedProjectId) return null;

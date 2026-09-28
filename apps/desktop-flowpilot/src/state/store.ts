@@ -630,19 +630,19 @@ export interface AppState {
     message: string;
     providerKey?: ProviderKey;
   };
-  /** CA-1047: runId of the chat open currently in flight — the Navigator
+  /** CA-1049: runId of the chat open currently in flight — the Navigator
    *  highlights and spins the target row the instant it is clicked, before
    *  the resume/transcript fetches land. */
   historyOpeningRunId?: string;
-  /** CA-1047: stale-response guard for openHistoryRun — every open, resetRun,
+  /** CA-1049: stale-response guard for openHistoryRun — every open, resetRun,
    *  or sendPrompt bumps it; late resume/timeline responses from an older
    *  click are discarded instead of stealing focus back. */
   _historyOpenSeq: number;
-  /** CA-1047: rows for runs minted by this client that the authoritative
+  /** CA-1049: rows for runs minted by this client that the authoritative
    *  history poll has not echoed yet — merged into every server list so a
    *  fresh chat's row cannot flicker out between the POST and the next tick. */
   _locallyStartedRuns: Record<string, RunHistoryItem>;
-  /** CA-1047: first-send window before the runner mints a runId — the
+  /** CA-1049: first-send window before the runner mints a runId — the
    *  Navigator renders it as a "New chat…" skeleton row immediately. */
   pendingChatStart?: { projectId: string; prompt: string; startedAt: number };
 
@@ -2232,7 +2232,7 @@ export const useStore = create<AppState>((set, get) => ({
     // provider → 422 provider_unavailable) we must not be left with a blank screen and
     // no record of what the user typed (BUG-050). The catch below replaces the thinking
     // bubble with a visible error instead of failing silently.
-    // CA-1047: _streamRunSeq bumps at send time (not when startRun lands) so a
+    // CA-1049: _streamRunSeq bumps at send time (not when startRun lands) so a
     // slow first mint can never steal focus back from a chat the user opened
     // meanwhile; pendingChatStart drives the Navigator's skeleton row.
     const sendSeq = get()._streamRunSeq + 1;
@@ -2243,7 +2243,7 @@ export const useStore = create<AppState>((set, get) => ({
       _streamingAssistantId: undefined,
       _streamRunSeq: sendSeq,
       _historyOpenSeq: s._historyOpenSeq + 1,
-      // CA-1047: this send supersedes any in-flight history open — drop its
+      // CA-1049: this send supersedes any in-flight history open — drop its
       // Navigator spinner along with the seq bump that discards the response.
       historyOpeningRunId: undefined,
       pendingChatStart: s.runId || !selectedProjectId
@@ -2317,7 +2317,7 @@ export const useStore = create<AppState>((set, get) => ({
         if (handle.stepId) {
           turnStepId = handle.stepId;
         }
-        // CA-1047: the mint may land after the user opened another chat — keep
+        // CA-1049: the mint may land after the user opened another chat — keep
         // the focus writes gated on the send's seq. The run itself always gets
         // a local history row regardless of focus.
         if (get()._streamRunSeq === sendSeq) {
@@ -2440,7 +2440,7 @@ export const useStore = create<AppState>((set, get) => ({
         // turnId instead of minting a duplicate turn.
         idempotencyKey: `turn-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
       };
-      // CA-1047: seq moved while startRun/sendTurn was in flight means the user
+      // CA-1049: seq moved while startRun/sendTurn was in flight means the user
       // already navigated to another chat — the minted run keeps streaming
       // server-side (consumeStream self-stales) but must not refocus here.
       const stillFocused = get()._streamRunSeq === sendSeq;
@@ -2970,7 +2970,7 @@ export const useStore = create<AppState>((set, get) => ({
     try {
       const runHistory = await client.listRunHistory(selectedProjectId);
       if (get()._historyLoadSeq !== seq) return;
-      // CA-1047: rows minted by this client since the last poll must survive
+      // CA-1049: rows minted by this client since the last poll must survive
       // the authoritative list — a poll fetched mid-POST doesn't know the new
       // run exists yet and would otherwise blank its sidebar row.
       const merged = mergeLocallyStartedRuns(get()._locallyStartedRuns, selectedProjectId, runHistory);
@@ -3199,7 +3199,7 @@ export const useStore = create<AppState>((set, get) => ({
       return { _runSnapshots: next };
     });
     // Optimistically remove from local history so the UI responds immediately.
-    // CA-1047: drop the not-yet-polled local row too — otherwise the next
+    // CA-1049: drop the not-yet-polled local row too — otherwise the next
     // merge would resurrect a deleted chat.
     set((s) => {
       const { [runId]: _dropped, ...remainingLocal } = s._locallyStartedRuns;
@@ -3298,7 +3298,7 @@ export const useStore = create<AppState>((set, get) => ({
 
   async openHistoryRun(runId, itemOverride) {
     const { client } = get();
-    // CA-1047: clicking the already-focused row is a no-op — a redundant resume
+    // CA-1049: clicking the already-focused row is a no-op — a redundant resume
     // only round-trips the runner without changing the view.
     if (runId === get().runId && !get().historyOpeningRunId) return;
     // Task-433: cache the outgoing run BEFORE switching so switching back
@@ -3324,7 +3324,7 @@ export const useStore = create<AppState>((set, get) => ({
     if (get().spectatorRunId === runId) {
       set({ spectatorRunId: null, spectatorProjectId: null });
     }
-    // CA-1047: the click gets instant feedback — the Navigator marks the row
+    // CA-1049: the click gets instant feedback — the Navigator marks the row
     // as opening while the resume round-trips. Every open/reset/send bumps
     // _historyOpenSeq so a late resume/timeline response can never steal
     // focus back.
@@ -3358,7 +3358,7 @@ export const useStore = create<AppState>((set, get) => ({
       set((s) => (s._historyOpenSeq === openSeq ? { historyOpeningRunId: undefined } : {}));
       throw err;
     }
-    // CA-1047: a newer open/reset/send superseded this click — discard the
+    // CA-1049: a newer open/reset/send superseded this click — discard the
     // response instead of swapping the timeline under the user's feet.
     if (get()._historyOpenSeq !== openSeq) return;
     console.info("[FlowPilot][history-open] resume succeeded", {
@@ -3375,7 +3375,7 @@ export const useStore = create<AppState>((set, get) => ({
     // Task-421: fetch only the transcript TAIL page on open — the durable
     // store is the source of truth and older pages are pulled on demand via
     // loadEarlierTimeline. Keeps reopen memory bounded for long chats.
-    // CA-1047: the fetch is kicked off BEFORE the focus set below — the chat
+    // CA-1049: the fetch is kicked off BEFORE the focus set below — the chat
     // switches on resume, and the tail page merges in when it resolves.
     const effectiveChatId = (handle.chatId as string) || (historyItem?.chatId as string) || "";
     const handleRunKind = (handle as { runKind?: string }).runKind;
@@ -3436,7 +3436,7 @@ export const useStore = create<AppState>((set, get) => ({
       // Task-433: a cached snapshot of THIS run paints instantly (transient
       // optimistic rows dropped — replay re-appends them with durable ids);
       // the replay stream below remains the authority and revalidates it.
-      // CA-1047: without a cache the timeline starts empty — the tail page
+      // CA-1049: without a cache the timeline starts empty — the tail page
       // fired above prepends prior legs when it lands, and the replay fills
       // the current leg; neither blocks the focus switch.
       timeline: cached
@@ -3483,7 +3483,7 @@ export const useStore = create<AppState>((set, get) => ({
         item.runId === runId ? { ...item, unavailableReason: undefined } : item
       ),
     });
-    // CA-1047: the transcript tail page resolves after the focus set — prepend
+    // CA-1049: the transcript tail page resolves after the focus set — prepend
     // prior-leg rows (id-deduped) so ordering stays transcript-before-live
     // even when a cached snapshot or early replay rows already painted.
     const tl = tailPromise ? await tailPromise : null;
@@ -3615,7 +3615,7 @@ export const useStore = create<AppState>((set, get) => ({
       // CA-1000: stop watching a scaffold transcript — the server-side turn is
       // unaffected and keeps writing to .flowpilot/scaffold-progress.ndjson.
       scaffoldSession: undefined,
-      // CA-1047: a fresh chat supersedes any in-flight history open or pending
+      // CA-1049: a fresh chat supersedes any in-flight history open or pending
       // first send — seq bumps make their late responses no-op.
       historyOpeningRunId: undefined,
       pendingChatStart: undefined,
@@ -4600,7 +4600,7 @@ function patchHistoryLane(set: (fn: (s: AppState) => Partial<AppState>) => void,
   });
 }
 
-/** CA-1047: insert a just-minted run into the Navigator's local history lanes.
+/** CA-1049: insert a just-minted run into the Navigator's local history lanes.
  *  The authoritative poll lags up to 3s (running) / 10s (idle); without this
  *  the fresh chat is invisible in the sidebar until the next tick. The row
  *  stays in _locallyStartedRuns until a server list echoes the runId. */
@@ -4626,7 +4626,7 @@ function noteLocallyStartedRun(
   });
 }
 
-/** CA-1047: fold locally-started rows into a fresh server list — keeps rows
+/** CA-1049: fold locally-started rows into a fresh server list — keeps rows
  *  for runs the poll hasn't caught yet and prunes entries it now echoes. */
 function mergeLocallyStartedRuns(
   local: Record<string, RunHistoryItem>,
@@ -4647,7 +4647,7 @@ function mergeLocallyStartedRuns(
   return { items: merged, local: nextLocal };
 }
 
-/** CA-1047: RunHistoryItem for a run minted by this send — built from the
+/** CA-1049: RunHistoryItem for a run minted by this send — built from the
  *  values captured AT SEND TIME (the user may have switched chat/project
  *  while startRun was in flight). The next poll replaces it wholesale, so
  *  only sidebar-visible fields are worth carrying. */

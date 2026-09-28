@@ -74,6 +74,6 @@
 
 - result: shipped — Navigator rows are single-line (icon, `[Cancelled]`/`[Failed]`
   tag, ellipsis title, relative time); `effectiveGateMode` auto-warns chat-surface
-  runs while flow-context runs keep the persisted gate_mode. CA-1048.
+  runs while flow-context runs keep the persisted gate_mode. CA-1050.
 - follow-ups: none
 - upstream docs updated: EngineSettings Flow Gate copy notes chat auto-warn.

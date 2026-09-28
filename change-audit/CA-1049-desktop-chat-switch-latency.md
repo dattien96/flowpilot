@@ -1,4 +1,4 @@
-# CA-1047 — Instant chat navigation: pending row, click-time open, stale-response guards
+# CA-1049 — Instant chat navigation: pending row, click-time open, stale-response guards
 
 ## Summary
 
@@ -66,7 +66,7 @@ timeline (the focus writes were unguarded).
 
 # ---8<--- flowpilot:change-ledger
 feature_key: desktop-scaffold-chat
-source_doc_id: CA-1047
+source_doc_id: CA-1049
 change_type: bugfix
 summary: instant chat navigation — pending skeleton row on first send, local minted-run upsert surviving stale polls, click-time open marker, focus on resume instead of transcript fetch, and seq guards so late resume/startRun responses can't steal focus
 # --->8---
