@@ -244,5 +244,18 @@ All findings reproduced with assertion-red tests in
 
 Verification: `TestR4_*` + `TestTask45[123]` green, `-race` green; the
 only sweep failures are the pre-existing missing-binary environment noise
-(codex/opencode/agy). Live harness re-run on the rebuilt binary recorded
-below.
+(codex/opencode/agy).
+
+Live re-verification (`LIVE=1`, devin + grok-alt, rebuilt binary,
+`c46478de`): **TestCP89Live 11 PASS + 3 named skips, 299s** — including a
+new live case **L-14** covering R4-3 end-to-end (pending vibe-cp-ingest +
+pinned source → provider switch → leg row carries `source_doc_id`, the
+forward passes the fence and is blocked only by the alt provider's
+`quota_route_required`). L-14's first run caught a deeper same-class gap:
+the createRun durable-row literal never wrote `source_doc_id` — the pin
+was RAM-only until the first post-create persist and a restart before any
+turn lost it on the ORIGIN leg too (same shape as the earlier FlowArm
+literal gap). Fixed by stamping `SourceDocID` onto the create row.
+Skips unchanged and justified: L-5 (flow still running → `hub_parked`,
+unit-covered), L-11 (latch ride verified; grok quota blocks the forward),
+L-12 (go:embed — no runtime file to corrupt).
