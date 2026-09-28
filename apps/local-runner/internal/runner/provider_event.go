@@ -455,6 +455,13 @@ type StartRunInput struct {
 	RunID string `json:"runId,omitempty"`
 	// Client is copied from X-Client by handleStartRun; not a JSON field.
 	Client string `json:"-"`
+	// SpawnedInternally marks an engine-internal child spawn (spawnChildRun).
+	// A child inherits its parent's workflowID as metadata — it is not a user
+	// mount, so enforceWorkingModeStart must not apply the start-family or
+	// client gates to it (BUG-547: vibe parents dead-ended at their first
+	// child spawn with working_mode_flow_forbidden). WorkingMode is still
+	// normalized and stamped — children inherit the parent's mode.
+	SpawnedInternally bool `json:"-"`
 	// Cwd is the active workspace directory for this run (04-06 multi-workspace).
 	// Per-run/per-thread cwd is authoritative; Runner.workspace is only a default.
 	Cwd string `json:"cwd,omitempty"`

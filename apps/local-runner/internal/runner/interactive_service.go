@@ -7860,12 +7860,14 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 	parentReasoningEffort := ""
 	parentProviderKey := ProviderKey("")
 	parentYolo := false
+	parentWorkingMode := ""
 	boundaryStart := false
 	if parentRun != nil {
 		cwd = parentRun.workspaceCwd
 		projectID = parentRun.projectID
 		workflowID = parentRun.workflowID
 		parentFlowRef = parentRun.chatFlowRef
+		parentWorkingMode = parentRun.workingMode
 		parentModel = parentRun.modelName
 		parentReasoningEffort = parentRun.reasoningEffort
 		parentProviderKey = parentRun.providerKey
@@ -8011,6 +8013,12 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 		// validated by enforceWorkingModeStart (a child must not re-declare).
 		FlowRefFallback:   parentFlowRef,
 		ChatMode:          "normal_chat",
+		// BUG-547: internal child spawn, not a user mount — skip the
+		// start-family/client gates; inherit the parent's working mode so
+		// vibe parents spawn vibe children (vibe flows otherwise dead-end
+		// at their first child with working_mode_flow_forbidden).
+		SpawnedInternally: true,
+		WorkingMode:       parentWorkingMode,
 		Cwd:               cwd,
 		ProviderKey:       providerKey,
 		Model:             childModel,

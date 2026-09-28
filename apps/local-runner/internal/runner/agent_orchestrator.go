@@ -26,6 +26,12 @@ type AgentOrchestrator struct {
 	// keyed by "parentRunID/cohortId" so multiple cohorts on one parent don't collide.
 	cohort         map[string][]cohortEntry
 	cohortExpected map[string]int // expected member count per cohort key
+	// cohortDrained tombstones delivered cohorts (BUG-548, live run-40950):
+	// a late member result arriving after drain must not re-append and must
+	// not resurrect the expected count via inference — otherwise the barrier
+	// re-opens permanently (hub_stalled). Registration for a fresh member
+	// generation clears the tombstone.
+	cohortDrained map[string]bool
 }
 
 // cohortEntry is one member's result within a flow cohort barrier.
@@ -59,6 +65,7 @@ func newAgentOrchestrator() *AgentOrchestrator {
 		queued:         make(map[string][]AgentBusMessage),
 		cohort:         make(map[string][]cohortEntry),
 		cohortExpected: make(map[string]int),
+		cohortDrained:  make(map[string]bool),
 	}
 }
 
@@ -67,9 +74,13 @@ func newAgentOrchestrator() *AgentOrchestrator {
 func (o *AgentOrchestrator) registerCohortMember(parentRunID, cohortID string) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	o.cohortExpected[cohortKey(parentRunID, cohortID)]++
+	k := cohortKey(parentRunID, cohortID)
+	// BUG-548: a new member generation legitimately reuses a drained cohort
+	// key — registration re-opens it.
+	delete(o.cohortDrained, k)
+	o.cohortExpected[k]++
 	cohortDiagLog("registerCohortMember increment parent=%q cohort=%q expectedNow=%d",
-		parentRunID, cohortID, o.cohortExpected[cohortKey(parentRunID, cohortID)])
+		parentRunID, cohortID, o.cohortExpected[k])
 }
 
 // preRegisterCohort sets the expected count for a cohort to count on the first
@@ -80,6 +91,8 @@ func (o *AgentOrchestrator) preRegisterCohort(parentRunID, cohortID string, coun
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	k := cohortKey(parentRunID, cohortID)
+	// BUG-548: a declared member generation re-opens a drained key.
+	delete(o.cohortDrained, k)
 	if o.cohortExpected[k] == 0 {
 		o.cohortExpected[k] = count
 		cohortDiagLog("preRegisterCohort SET parent=%q cohort=%q expected=%d", parentRunID, cohortID, count)
@@ -99,6 +112,14 @@ func (o *AgentOrchestrator) appendCohortResult(parentRunID, cohortID string, e c
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	k := cohortKey(parentRunID, cohortID)
+	// BUG-548: the cohort already delivered — drop late straggler results so
+	// the barrier cannot re-open after drain (live run-40950: a route
+	// successor outlived its skip and re-registered the barrier).
+	if o.cohortDrained[k] {
+		cohortDiagLog("appendCohortResult drop-drained parent=%q cohort=%q label=%q status=%q",
+			parentRunID, cohortID, e.Label, e.Status)
+		return
+	}
 	if label := strings.TrimSpace(e.Label); label != "" {
 		for _, existing := range o.cohort[k] {
 			if strings.TrimSpace(existing.Label) == label {
@@ -136,6 +157,13 @@ func (o *AgentOrchestrator) inferCohortExpectedIfMissing(parentRunID, cohortID s
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	k := cohortKey(parentRunID, cohortID)
+	// BUG-548: never resurrect expected for a delivered cohort — the heal
+	// path would re-open the drained barrier on a late straggler.
+	if o.cohortDrained[k] {
+		cohortDiagLog("inferCohortExpectedIfMissing skip-drained parent=%q cohort=%q",
+			parentRunID, cohortID)
+		return
+	}
 	if o.cohortExpected[k] == 0 {
 		o.cohortExpected[k] = knownMembers
 		cohortDiagLog("inferCohortExpectedIfMissing SET parent=%q cohort=%q expected=%d",
@@ -185,6 +213,9 @@ func (o *AgentOrchestrator) drainCohort(parentRunID, cohortID string) []cohortEn
 	}
 	delete(o.cohort, k)
 	delete(o.cohortExpected, k)
+	// BUG-548: tombstone the delivered key — late member appends and
+	// expected-count inference must not re-open a drained barrier.
+	o.cohortDrained[k] = true
 	return entries
 }
 
