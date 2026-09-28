@@ -981,3 +981,31 @@ grok only — claude/codex/agy/opencode binaries absent). Second runner on
 - :4321 runs (`run-1663`, `run-2830`, `run-3240`) normalized `cancelled` on the BUG-540 restart probe; legs remain `active` until a sweep reclaims the worktrees (bookkeeping design).
 - :4322 runs still cycling: `run-332` audit re-drive, `run-12062` freeze escalate (honest — planner can't declare paths without catalog), `run-12520` candidate-b gate-block re-escalate, `run-11` vibe debate `hub_stalled` watchdog.
 - `appr-6602` orphaned pending approval on skipped run-2830 (skip path doesn't resolve pending approvals — folded into BUG-539 notes).
+
+## L. R12 — post-fix re-verification (2026-09-28, rebuilt binary `/private/tmp/fp-runner` w/ CA-631/632/633; :4321 fp-live4 + :4322 fp-live5)
+
+**Scope:** live re-verify the three fixes landed this session + BUG-512
+context-pressure path on devin-swe2 (user: token use OK for this test).
+
+| Row | R12 result |
+|-----|-----------|
+| BUG-540 boot drive intact | ☑ :4322 boot `5 terminal+settle_owed queued` → all finalized (pre-existing wedges from R11 cleared on restart) |
+| BUG-540 in-session settle | ☑ LIVE: turn-18356 (tournament root) + turn-18665 (child run-18660) ran `gate_eval→completion_event→graph_signal→dependents_release→finalizer` in-session, seconds after terminal — the exact shape that previously wedged 37–90 min |
+| BUG-540 live-gate non-interference | ☑ run-8002 `ping` turn held `gate_in_progress` ~5 min while a real `go test ./...` gate ran inside `postTurnGateBusyBound`; settled normally — sweep did not touch a live gate |
+| BUG-539 reprompt cap reachable | ☑ LIVE: run-6565 post-turn gate reprompt armed→dispatched (~2 s)→attempt 2→`Gate reprompt exhausted`→`blocked/escalate` — counter survived to the cap (previously reset by the orphan-cure Resume mint) |
+| BUG-539 member_stalled shield | ◐ unit-verified (5 tests in `bug539_member_stall_reprompt_strand_test.go`); live cohort leg deferred — tournament vehicle wedged on BUG-542 before a member armed a reprompt under a live stall check |
+| BUG-541 card surface + answer path | ☑ LIVE: run-19946 (grok-pinned, exhausted account) → `quota_route_required` refusal + card q-19948 (use_for_run/devin · use_once/devin · stop) → `POST /client/questions/q-19948/answer` accepted → `quota_route_committed` durable. Rollback-on-failed-apply covered by unit tests (apply failure → card re-pends) |
+| BUG-512 context pressure | ◐ LIVE partial: run-8002 single-provider devin session drove to 225,172/262,000 (86%) → provider-side `_cognition.ai/compaction` fired twice (used 192,687→35,979 = 81% drop, `used` mapped to both `Last`+`Total` so `provider_compacted`/`contextDegradedLegs` machinery engaged; leg stays degraded → next admission offers `rotate_leg`). ≥90% `context_pressure_90` card not organically reachable on devin — provider self-compacts at ~86% first. rotate_leg admission leg: pending (turn in flight writing review) |
+
+### R12 new findings
+
+| Bug | Finding |
+|-----|---------|
+| **BUG-542** | Deferred hub reinvoke stranded: `hub_reinvoke_deferred` armed neither `pendingHubReinvoke` (RAM-only, `pendingAgentContext` empty — cohort note rode the provider tool channel) nor surfaced `hub_stalled` in 45+ min. Tournament run-18354 parked `waiting_review` forever; follow-up user turn unblocked it (hub judged in prose but never emitted the deterministic signal — candidate-b never spawned). |
+| **BUG-541 residual (chat-leg variant of BUG-534)** | `switchChatLeg` committed `use_for_run|codex|fakeacct` (unlisted candidate), closed the grok leg, never provisioned the codex leg → run-19946 `running`+`leg:closed`, every turn `session_unavailable`, no quota card re-surfaced — close-before-provision leaves an unrecoverable binding on chat legs. |
+| **run-18660 leg leak** | Completed tournament child kept `leg_state: active` — same leg-claim residue class as BUG-538 but on the normal completion path (not respawn). |
+
+### R12 assessment (per user ask)
+
+- **A-58-4**: recommend **done-with-caveat** — bounded escalate machinery is live-verified twice (reprompt cap→escalate on run-6565 today; reviewer-loop reject rounds + cap unit test). The literal "3 organic reviewer rejects" never occurred (run-332 approved round 3); if the acceptance is the machinery, it's green; if it's the exact 3-reject shape, it stays unit-only.
+- **A-65-4**: **not done** — retry≤2 bound live-proven (run-25153); the nested parent-resume leg still has no live evidence (no nested tournament staged this box).

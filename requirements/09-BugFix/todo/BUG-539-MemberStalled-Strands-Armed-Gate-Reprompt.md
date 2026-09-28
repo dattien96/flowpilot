@@ -120,3 +120,19 @@ reprompt cycle on an unsatisfiable gate.
 Tests: `bug539_member_stall_reprompt_strand_test.go` (5 regression tests —
 stall shield, no double-drive + counter preserved, skip clears+leg close,
 retry clears, counter guard). All green.
+
+## Live re-verification (2026-09-28, post-fix binary)
+
+- Reprompt-cap reachability verified live on run-6565 (cp-harness on :4321):
+  post-turn gate reprompt armed → dispatched promptly (~2 s) → counter
+  incremented to attempt 2 → `Gate reprompt exhausted` → `blocked`/escalate.
+  The counter now survives to the cap; the orphan-cure Resume mint no longer
+  resets it.
+- The stall-shield/member_stalled live leg was not re-staged: the tournament
+  vehicle (run-18354) wedged earlier at `waiting_review` on a different
+  defect (BUG-542) before a cohort member could arm a reprompt under a live
+  stall check. Shield behavior is covered by
+  `bug539_member_stall_reprompt_strand_test.go` (armed-intent member not
+  counted silent; orphan-cure drives the reprompt channel; skip clears
+  intents + closes leg; retry clears intents; cap counter guard) — unit-verified,
+  live leg deferred to a future cohort run.

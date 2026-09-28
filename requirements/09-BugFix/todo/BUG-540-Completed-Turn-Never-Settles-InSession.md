@@ -106,3 +106,21 @@ refuse → only boot `settle_owed` re-drive clears it.
 Tests: `bug540_settle_sweep_test.go` (3 tests — sweep settles a wedged owed
 record, sweep unsticks a wedged gate eval and releases claims, live gate eval
 left alone). All green.
+
+## Live re-verification (2026-09-28, post-fix binary)
+
+- Boot drive on :4322 (`fp-live5`): `[dispatch-settle] boot drive: 5
+  terminal+settle_owed queued` → all five finalized — boot path intact.
+- In-session settle verified on real flow children: tournament run-18354's
+  launch turn (turn-18356) and child run-18660's turn (turn-18665) both ran
+  `gate_eval → completion_event → graph_signal → dependents_release →
+  finalizer` in-session seconds after terminal — previously this exact shape
+  wedged 20–90 min until restart (live runs turn-4521/turn-6304).
+- A slow-but-real gate eval (run-8002 `ping` turn, ~6 min `go test` gate on a
+  large repo) held `gate_in_progress` while genuinely inside
+  `postTurnGateBusyBound`, then completed normally — the sweep did not
+  interfere with a live gate (matches `unstickSettleResidueLocked` live-gate
+  guard + `errSettleGatePending` defer).
+- Residual sibling finding (not settle_owed): run-18354 wedged at
+  `waiting_review` via a deferred hub reinvoke — different channel, captured
+  as BUG-542.

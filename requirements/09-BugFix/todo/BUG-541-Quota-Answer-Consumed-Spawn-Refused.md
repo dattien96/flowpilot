@@ -86,3 +86,24 @@ boundary: the single decision input is lost on a transient refusal.
 
 Tests: `bug541_quota_answer_apply_failed_test.go` (2 tests — card survives a
 blocked-parent respawn refusal; apply error surfaces). All green.
+
+## Live re-verification (2026-09-28, post-fix binary)
+
+- run-19946 (chat, pinned grok on exhausted account d317248b): turn admission
+  refused with `quota_route_required`; durable card q-19948 surfaced with
+  use_for_run|devin / use_once|devin / stop.
+- Answer `use_for_run|codex|fakeacct|gpt-5.4` (unlisted candidate) was accepted
+  and committed (`quota-audit: committed, grok→codex/fakeacct, scope=run`) —
+  the chat-leg apply path (`switchChatLeg`) does not validate the target
+  account, so the apply "succeeded" and no rollback triggered (correct for the
+  seam's contract).
+- **New finding (chat-leg variant of BUG-534):** the committed switch closed
+  the grok leg (`leg_state: closed`) but no codex leg ever provisioned
+  (account doesn't exist). Run-19946 now reads `status=running` with every
+  turn returning `session_unavailable` — and the quota card does NOT
+  re-surface, so the dead binding is unrecoverable via the UI. Close-before-
+  provision on chat legs leaves a zombie run; the BUG-534 fix covered the
+  child-respawn path only.
+- The stranded-child rollback path itself is covered by unit tests
+  (bug541_quota_answer_apply_failed_test.go); the earlier live capture on
+  run-12520 remains the organic repro evidence.
