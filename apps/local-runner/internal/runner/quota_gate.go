@@ -368,6 +368,15 @@ func (s *InteractiveService) respawnChildOnRoute(ctx context.Context, child *int
 		ProviderAccountID: sel.AccountID,
 		WorkspaceCwd:      child.workspaceCwd,
 		FlowCohortID:      child.flowCohortId,
+		// BUG-544: seat arithmetic depends on whether the vetoed member
+		// already contributed a cohort entry. A first-dispatch veto parks the
+		// member on the route card with NO entry — the successor inherits
+		// that held seat (no expected bump). A mid-turn veto already
+		// appended `failed` at TurnFailed — that seat was consumed, so the
+		// successor must register a fresh seat of its own (otherwise the
+		// barrier can never reach the grown expected count).
+		CohortSeatInherited: child.flowCohortId != "" &&
+			!s.agentOrchestrator.memberAlreadyBuffered(child.parentRunID, child.flowCohortId, child.label),
 	}
 	// BUG-535: a dedicated worktree binding must still be this leg's to give
 	// away. A sibling/parent-shared main cwd is not a dedicated binding —
@@ -684,7 +693,19 @@ func (s *InteractiveService) ResumeQuotaGate(ctx context.Context, runID, decisio
 	optionID = strings.TrimSpace(optionID)
 	if optionID == "stop" {
 		s.mu.Lock()
+		var stopSnap ProviderSessionState
+		var haveStopSnap bool
 		if cur := s.runs[runID]; cur != nil {
+			// BUG-544: a vetoed cohort member parked waiting_question holds
+			// its barrier seat and leg claim until the card resolves — `stop`
+			// releases both: append the failed entry the join is waiting on
+			// and close the leg so its worktree claim dies with the member.
+			if cur.legState == LegStateActive {
+				cur.legState = LegStateClosed
+				cur.legClosedReason = LegClosedReasonProviderSwitch
+				stopSnap = sessionStateOf(cur)
+				haveStopSnap = true
+			}
 			s.emitLocked(cur, ProviderEvent{
 				Type: EventQuotaRouteStopped,
 				QuotaRoute: &QuotaRoutePayload{
@@ -694,6 +715,20 @@ func (s *InteractiveService) ResumeQuotaGate(ctx context.Context, runID, decisio
 			})
 		}
 		s.mu.Unlock()
+		if haveStopSnap {
+			if err := s.persistProviderSession(stopSnap); err != nil {
+				log.Printf("[quota-gate] persist stopped member leg close %q: %v", runID, err)
+			}
+		}
+		if rs.parentRunID != "" && rs.flowCohortId != "" && rs.label != "" &&
+			!s.agentOrchestrator.memberAlreadyBuffered(rs.parentRunID, rs.flowCohortId, rs.label) {
+			s.agentOrchestrator.appendCohortResult(rs.parentRunID, rs.flowCohortId, cohortEntry{
+				Label:    rs.label,
+				Provider: string(rs.providerKey),
+				Status:   "failed",
+				Err:      "quota_route_stopped: user declined a route",
+			})
+		}
 		if rs.parentRunID != "" {
 			if _, err := s.applyFlowControl(rs.parentRunID, FlowControlInput{
 				Status:  "escalate",

@@ -259,6 +259,13 @@ type SpawnAgentInput struct {
 	// subsequent spawns with the same cohort key are no-ops on the expected count.
 	// When zero, membership is counted one-by-one via registerCohortMember.
 	CohortSize int `json:"cohortSize,omitempty"`
+	// CohortSeatInherited marks a spawn that takes over an already-registered
+	// member's barrier seat (BUG-544: a quota-vetoed member parked on a route
+	// card never appended an entry; its routed successor inherits the seat).
+	// The child still carries FlowCohortID so its completion joins the right
+	// barrier, but the expected count is NOT incremented — bumping it would
+	// grow the barrier past what the buffered entries can ever reach.
+	CohortSeatInherited bool `json:"-"`
 	// AutoOrchestrate enables bounded hub auto-reinvocation (Task-093 / CP-36 P-7).
 	// When true on the FIRST spawn of a flow, sets autoOrchestrate on the parent run
 	// so the engine re-prompts the hub after each cohort join, bounded by the cap.

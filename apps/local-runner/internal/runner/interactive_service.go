@@ -3424,6 +3424,22 @@ func (s *InteractiveService) handleSpawnedChildTurnFailure(childRunID, parentRun
 		}
 		s.mu.Unlock()
 	}
+	// BUG-544 (live run-25217/run-26015): a first-dispatch quota veto already
+	// parked the member on a durable quota_route_required card
+	// (waiting_question). It is pending a route decision, NOT a dispatch
+	// failure — marking it failed here appended a terminal cohort entry, let
+	// the barrier join with the card unanswered, ran the arbiter, completed
+	// the flow, and the loser sweep destroyed the worktree the pending
+	// respawn needs (every later answer failed "worktree ... swept"). The
+	// pending card is itself the durable intent: the answer path respawns a
+	// successor inheriting this seat or releases the seat on `stop`, so
+	// leave status/leg/cohort untouched.
+	if turnErr.code == "quota_route_required" {
+		s.flowDiagLog(parentRunID, "spawned_child_quota_parked",
+			"spawned child's first turn vetoed by the quota gate; cohort seat held on the pending route card",
+			"child_run_id", childRunID)
+		return
+	}
 	s.handleChildStartTurnFailure(childRunID, parentRunID, turnErr.msg)
 }
 
@@ -8060,7 +8076,7 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 		if in.FCPMarkerProvenanceRunID != "" && in.FCPMarkerProvenanceRunID != rs.id {
 			rs.markerProvenanceRunIDs = append(rs.markerProvenanceRunIDs, in.FCPMarkerProvenanceRunID)
 		}
-		if rs.flowCohortId != "" {
+		if rs.flowCohortId != "" && !in.CohortSeatInherited {
 			if in.CohortSize > 0 {
 				s.agentOrchestrator.preRegisterCohort(parentRunID, rs.flowCohortId, in.CohortSize)
 			} else {
