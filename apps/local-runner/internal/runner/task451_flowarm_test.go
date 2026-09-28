@@ -168,13 +168,16 @@ func TestTask451_RestartPendingReconstructsAsChat(t *testing.T) {
 
 // A started run never re-arms: flowArm stays started, vibe markers stay off
 // (BUG-315 shape preserved — reconstruction never calls startResolvedFlow).
+// A legitimately started flow always carries its persisted topology —
+// started + no topology is the never-launched crash row and heals pending.
 func TestTask451_RestartStartedDoesNotReArm(t *testing.T) {
 	svc := task451Service(t)
 	rs, err := svc.reconstructRun(ProviderSessionState{
 		RunID: "run-s1", ProjectID: "proj", RunKind: "chat",
 		ProviderKey: ProviderKeyCodex, Status: RunStatusRunning,
-		ChatFlowRef: "flowpilot-core-flow-pack/vibe-cp-ingest",
-		FlowArm:     "started", TurnCount: 5,
+		ChatFlowRef:     "flowpilot-core-flow-pack/vibe-cp-ingest",
+		FlowArm:         "started", TurnCount: 5,
+		ActiveFlowNodes: []agentpack.FlowNode{{ID: "n1"}},
 	})
 	if err != nil {
 		t.Fatalf("reconstructRun: %v", err)
@@ -184,6 +187,30 @@ func TestTask451_RestartStartedDoesNotReArm(t *testing.T) {
 	}
 	if rs.vibeAwaitingLock {
 		t.Fatal("started run must not re-arm vibeAwaitingLock")
+	}
+}
+
+// Crash-window heal: arm=started persisted but no flow topology — the
+// forward's flip landed before the durable-first topology commit (or a
+// pre-fix row hit the spawn-before-persist window). The flow never durably
+// established, so the honest state is pending: a retry forwardFlow can
+// launch cleanly instead of wedging on flow_already_started.
+func TestTask451_StartedWithoutTopologyHealsToPending(t *testing.T) {
+	svc := task451Service(t)
+	rs, err := svc.reconstructRun(ProviderSessionState{
+		RunID: "run-h1", ProjectID: "proj", RunKind: "chat",
+		ProviderKey: ProviderKeyCodex, Status: RunStatusIdle,
+		ChatFlowRef: "task-harness",
+		FlowArm:     "started", TurnCount: 1,
+	})
+	if err != nil {
+		t.Fatalf("reconstructRun: %v", err)
+	}
+	if rs.flowArm != FlowArmPending {
+		t.Fatalf("flowArm = %q, want pending (never-launched started row must heal)", rs.flowArm)
+	}
+	if rs.chatFlowRef == "" {
+		t.Fatal("healed pending run must keep the flow pin")
 	}
 }
 

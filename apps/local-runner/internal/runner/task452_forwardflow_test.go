@@ -310,3 +310,112 @@ func TestTask452_PendingVibeChatTurnNotIngestFenced(t *testing.T) {
 		t.Fatalf("forward without source must still fail invalid_cp_source, got %v", e)
 	}
 }
+
+// ---- prepared-relaunch idempotency (review residual fix) --------------------
+// A durably-prepared forward turn relaunched after a crash must not lose the
+// forward intent: the flowArm latch is the idempotency key.
+
+func TestTask452_PreparedRelaunchForwardOnPendingStillLaunches(t *testing.T) {
+	svc := task451Service(t)
+	h, err := svc.createRun(StartRunInput{
+		ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex,
+		FlowRef: "task-harness", FlowArm: "pending",
+	})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	// Simulate the crash window: the durable key saw prep but never the
+	// launch ack — the arm is still pending, so the relaunch must run the
+	// full fence+flip+launch path rather than replaying a chat turn.
+	svc.mu.Lock()
+	rs := svc.runs[h.RunID]
+	rs.idempotency["durable-fwd-restart-1"] = durableIdemPreparedPrefix + "turn-9"
+	svc.mu.Unlock()
+
+	tid, apiErr := svc.startTurn(h.RunID,
+		TurnInput{StepID: "chat", ForwardFlow: true}, "", "durable-fwd-restart-1")
+	if apiErr != nil {
+		t.Fatalf("relaunched forward must not error: %v", apiErr)
+	}
+	if tid != "turn-9" {
+		t.Fatalf("relaunch must reuse prepared turnID, got %q", tid)
+	}
+	svc.mu.Lock()
+	rs = svc.runs[h.RunID]
+	arm := rs.flowArm
+	svc.mu.Unlock()
+	if arm != FlowArmStarted {
+		t.Fatalf("relaunched forward must still flip pending→started, arm=%q", arm)
+	}
+}
+
+func TestTask452_PreparedRelaunchForwardOnStartedCompletesNoRespawn(t *testing.T) {
+	svc := task451Service(t)
+	h, err := svc.createRun(StartRunInput{
+		ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex,
+		FlowRef: "task-harness", FlowArm: "pending",
+	})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	// Crash AFTER the flip+topology commit but before the launch ack: the
+	// durable row says started. The relaunch completes the turn synthetically
+	// (flowStartOnly) — it must NOT call forwardPinnedFlow again (which would
+	// 422 flow_already_started) and must NOT re-spawn children.
+	svc.mu.Lock()
+	rs := svc.runs[h.RunID]
+	rs.flowArm = FlowArmStarted
+	rs.idempotency["durable-fwd-restart-2"] = durableIdemPreparedPrefix + "turn-9"
+	svc.mu.Unlock()
+
+	tid, apiErr := svc.startTurn(h.RunID,
+		TurnInput{StepID: "chat", ForwardFlow: true}, "", "durable-fwd-restart-2")
+	if apiErr != nil {
+		t.Fatalf("relaunched forward on committed arm must complete, not error: %v", apiErr)
+	}
+	if tid != "turn-9" {
+		t.Fatalf("relaunch must reuse prepared turnID, got %q", tid)
+	}
+	// No child spawn may happen on this replay — count children after settle.
+	waitTurnIdle(t, svc, h.RunID)
+	svc.mu.Lock()
+	children := 0
+	for _, c := range svc.runs {
+		if c.parentRunID == h.RunID {
+			children++
+		}
+	}
+	svc.mu.Unlock()
+	if children != 0 {
+		t.Fatalf("relaunched forward must not spawn children, got %d", children)
+	}
+}
+
+// Durable-first ordering: the forward path must commit arm=started (with
+// flow topology) to the durable row BEFORE the entry spawn goroutine can
+// create children — a crash can never orphan a launch the row forgot.
+func TestTask452_ForwardPersistsStartedBeforeSpawn(t *testing.T) {
+	svc := task451Service(t)
+	h, err := svc.createRun(StartRunInput{
+		ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex,
+		FlowRef: "task-harness", FlowArm: "pending",
+	})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	if _, e := svc.startTurn(h.RunID,
+		TurnInput{StepID: "chat", ForwardFlow: true}, "", ""); e != nil {
+		t.Fatalf("forward: %v", e)
+	}
+	// startTurn returns after the durable commit — the session snapshot must
+	// already carry arm=started + topology, independent of goroutine timing.
+	svc.mu.Lock()
+	snap := sessionStateOf(svc.runs[h.RunID])
+	svc.mu.Unlock()
+	if snap.FlowArm != "started" {
+		t.Fatalf("snapshot at startTurn return must carry started, got %q", snap.FlowArm)
+	}
+	if len(snap.ActiveFlowNodes) == 0 {
+		t.Fatal("snapshot must carry flow topology — started without nodes is the never-launched crash state")
+	}
+}

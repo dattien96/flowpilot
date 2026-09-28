@@ -940,6 +940,16 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 	if armErr != nil {
 		return nil, armErr
 	}
+	// CP-89 review (residual heal): a durable `started` latch with no flow
+	// topology means the flip committed but the launch never stamped
+	// activeFlowNodes — the flow never durably established. The startTurn
+	// forward path now persists arm+topology before any child spawn, so this
+	// state is only reachable from a pre-fix crash row or torn write; heal to
+	// pending so an explicit forwardFlow retries cleanly. A flow that really
+	// launched always keeps its topology (activeFlowNodes is never cleared).
+	if restoredFlowArm == FlowArmStarted && len(st.ActiveFlowNodes) == 0 {
+		restoredFlowArm = FlowArmPending
+	}
 	rs := &interactiveRun{
 		id:                     st.RunID,
 		projectID:              st.ProjectID,

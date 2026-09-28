@@ -134,15 +134,19 @@ A production-diff review pass found and fixed four more real issues:
    second (root-only, since a child's fallback pin is not a mount). Aligned
    — a forward now launches the same pin the first-turn path would.
 
-### Documented residuals (not fixed — fail-closed, recoverable)
+### Residuals — FIXED in review pass 2
 
-- **Prepared-relaunch forward loss.** A `forwardFlow` turn that is durably
-  prepared then crash-relaunched skips the forward block
-  (`isPreparedRelaunch`) and replays as an ordinary provider turn. The latch
-  stays `pending` and the user can re-forward — losing the intent is
-  preferred over a possible double flow launch.
-- **Flip-vs-persist crash window.** `flowArm: started` is persisted at the
-  flowStartOnly snapshot after the spawn goroutine launches; a kill in that
-  window leaves the durable row `pending` while an entry child exists —
-  identical exposure class as the baseline immediate flow-start
-  (`flowEngineDriven`/`turnCount` window), not a new defect.
+- **Prepared-relaunch forward loss.** FIXED: the forward seam now runs on
+  durable relaunch — the latch is the idempotency key. Relaunch on
+  arm=started completes synthetically (no respawn); relaunch on pending
+  runs the full fence+flip+launch. Tests:
+  `TestTask452_PreparedRelaunchForwardOnPendingStillLaunches`,
+  `TestTask452_PreparedRelaunchForwardOnStartedCompletesNoRespawn`.
+- **Flip-vs-persist crash window.** FIXED: the forward path stamps flow
+  topology and persists arm=started BEFORE spawning the goroutine
+  (durable-first). A crash can only leave pending (pre-persist, no
+  children possible) or started+topology (resume machinery owns it).
+  Backward-compat heal on reconstruct: `started` with no persisted
+  topology normalizes to pending so a retry forward launches cleanly
+  (`TestTask451_StartedWithoutTopologyHealsToPending`,
+  `TestTask452_ForwardPersistsStartedBeforeSpawn`).

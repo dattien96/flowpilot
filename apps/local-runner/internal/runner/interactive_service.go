@@ -10612,44 +10612,59 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 	// A new turn resets the idle-summary window to zero (a pending summary timer
 	// is cancelled here and re-armed when this turn completes).
 	s.cancelChatSummary(rs.id)
-	if !isPreparedRelaunch {
-		// CP-89 Task-452: the forwardFlow seam runs BEFORE the ordinary
-		// turnCount==0 flow-start block. forwardFlow is the only way a
-		// flowArm=pending run starts its pinned flow — explicit, deterministic,
-		// never inferred from prompt content. A failed fence returns before the
-		// latch flips: pending is not consumed, the user fixes the issue and
-		// retries. On success the latch atomically goes pending→started and the
-		// pinned flow launches through the same startResolvedFlow path an
-		// immediate first turn uses (flowStartOnly suppresses this turn's own
-		// provider dispatch exactly like the first-turn flow start does).
-		if in.ForwardFlow {
-			flowRef, e := s.forwardPinnedFlow(context.Background(), rs, in)
-			if e != nil {
-				// Failed fence: no turn was launched — release the in-flight
-				// flag set above so the run is not stuck "running", and leave
-				// the pending latch untouched for the user's retry.
-				rs.turnInFlight = false
-				s.mu.Unlock()
-				return "", e
-			}
-			// CP-89 Task-453: the entry child's prompt = forward text pinned
-			// intact + the settled chat transcript, oldest material degrading
-			// first, under the entry node's hard context budget.
-			pkg, perr := s.buildForwardPromptPackage(rs, in.Prompt,
-				s.forwardEntryBudgetTokens(context.Background(), flowRef))
-			if perr != nil {
-				rs.turnInFlight = false
-				s.mu.Unlock()
-				return "", perr
-			}
-			s.flowDiagLog(runID, "forward_prompt_packed",
-				"forward entry prompt packed",
-				"turns_included", pkg.TurnsIncluded,
-				"bytes", pkg.Bytes,
-				"degraded", pkg.Degraded)
-			flowStartOnly = true
-			go s.startResolvedFlow(context.Background(), runID, flowRef, pkg.Prompt)
-		} else if rs.turnCount == 0 {
+	// CP-89 Task-452: the forwardFlow seam runs BEFORE the ordinary
+	// turnCount==0 flow-start block — and it survives durable relaunch
+	// (BUG-288 prepared intents): the flowArm latch itself is the idempotency
+	// key. A relaunched forward whose flip already committed (arm=started)
+	// completes synthetically — re-spawning would duplicate the flow; a
+	// relaunched forward on a still-pending latch runs the full fence+flip
+	// path because the first attempt never reached the launch.
+	if in.ForwardFlow && isPreparedRelaunch && rs.flowArm == FlowArmStarted {
+		flowStartOnly = true
+	} else if in.ForwardFlow && (!isPreparedRelaunch || rs.flowArm == FlowArmPending) {
+		flowRef, e := s.forwardPinnedFlow(context.Background(), rs, in)
+		if e != nil {
+			// Failed fence: no turn was launched — release the in-flight
+			// flag set above so the run is not stuck "running", and leave
+			// the pending latch untouched for the user's retry.
+			rs.turnInFlight = false
+			s.mu.Unlock()
+			return "", e
+		}
+		// CP-89 Task-453: the entry child's prompt = forward text pinned
+		// intact + the settled chat transcript, oldest material degrading
+		// first, under the entry node's hard context budget.
+		pkg, perr := s.buildForwardPromptPackage(rs, in.Prompt,
+			s.forwardEntryBudgetTokens(context.Background(), flowRef))
+		if perr != nil {
+			rs.turnInFlight = false
+			s.mu.Unlock()
+			return "", perr
+		}
+		s.flowDiagLog(runID, "forward_prompt_packed",
+			"forward entry prompt packed",
+			"turns_included", pkg.TurnsIncluded,
+			"bytes", pkg.Bytes,
+			"degraded", pkg.Degraded)
+		// Durable-first (review residual): stamp the flow topology and
+		// commit arm=started to the durable row BEFORE any child can spawn.
+		// A crash then leaves either durable pending (pre-persist — no
+		// children possible) or started+topology (post-persist — resume
+		// machinery re-drives). startResolvedFlowFromNode re-stamps the same
+		// fields idempotently inside the goroutine.
+		if record, rerr := NewFlowDefinitionResolver(s.flowDefinitionStore).ResolveFlowRef(context.Background(), flowRef); rerr == nil {
+			rs.activeFlowEdges = record.Definition.Edges
+			rs.activeFlowNodes = record.Definition.Nodes
+			rs.activeFlowAcceptanceNodes = append([]string(nil), record.Definition.AcceptanceNodes...)
+		}
+		_ = s.persistProviderSession(sessionStateOf(rs))
+		flowStartOnly = true
+		go s.startResolvedFlow(context.Background(), runID, flowRef, pkg.Prompt)
+		if !isPreparedRelaunch {
+			rs.turnCount++
+		}
+	} else if !isPreparedRelaunch {
+		if rs.turnCount == 0 {
 			if changeType := normalizeChangeType(in.ChangeType); changeType != "" {
 				rs.changeType = changeType
 			}
