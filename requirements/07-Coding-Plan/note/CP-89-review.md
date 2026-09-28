@@ -418,3 +418,9 @@ Verification: `TestR7_*` (3) + `TestR4/R5/R6` + `TestTask45[123]` +
 the CP-89 set. Two sweep flakes observed were pre-existing cross-test
 provider-accounts timing noise (different tests each run, both pass
 standalone; untouched code).
+
+Live re-verification on the pass-7 build (`c8af0145`): `LIVE=1 -v
+TestCP89Live` **PASS 308.2s — 11 PASS + 3 named skips**, identical matrix.
+PASS: L-1..L-4, L-6..L-10, L-13, L-14. Skips: L-5 (`hub_parked` while the
+flow remains active — unit-covered), L-11 (grok quota — latch ride
+verified), L-12 (`go:embed`; no runtime file to corrupt).
