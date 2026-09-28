@@ -2266,7 +2266,24 @@ func (s *InteractiveService) reconstructPendingChildSessions(parentRunID string)
 		if len(members) == 0 {
 			continue
 		}
-		s.agentOrchestrator.preRegisterCohort(parentRunID, cid, len(members))
+		// BUG-546: count logical seats, not physical session rows — a quota-
+		// vetoed member and its route successor share one label; the buffer
+		// dedups by label, so counting rows inflates expected beyond reach.
+		seatSet := map[string]struct{}{}
+		for _, m := range members {
+			s.mu.Lock()
+			var childLabel string
+			if c := s.runs[m.RunID]; c != nil {
+				childLabel = c.label
+			}
+			s.mu.Unlock()
+			seat := strings.TrimSpace(firstNonEmptyResumeValue(childLabel, m.Label, m.AgentName))
+			if seat == "" {
+				seat = m.RunID
+			}
+			seatSet[seat] = struct{}{}
+		}
+		s.agentOrchestrator.preRegisterCohort(parentRunID, cid, len(seatSet))
 		for _, session := range members {
 			s.mu.Lock()
 			child := s.runs[session.RunID]

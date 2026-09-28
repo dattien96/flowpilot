@@ -2931,15 +2931,24 @@ func (s *InteractiveService) ensureCohortExpectedLocked(parentRunID, cohortID st
 	if parentRunID == "" || cohortID == "" {
 		return
 	}
-	known := 0
+	// BUG-546: count logical seats, not physical runs — a quota-vetoed member
+	// and its route successor are two runs holding one seat (same label), and
+	// the label-deduped buffer can never satisfy a run-counted expected.
+	// Unlabeled members keep per-run semantics via the run-id fallback.
+	seats := map[string]struct{}{}
 	for _, r := range s.runs {
 		if r == nil {
 			continue
 		}
 		if r.parentRunID == parentRunID && strings.TrimSpace(r.flowCohortId) == cohortID {
-			known++
+			seat := strings.TrimSpace(r.label)
+			if seat == "" {
+				seat = r.id
+			}
+			seats[seat] = struct{}{}
 		}
 	}
+	known := len(seats)
 	if known == 0 {
 		return
 	}

@@ -146,14 +146,32 @@ func MissingDodDocs(workspaceCwd string, writtenPaths []string) []string {
 			continue
 		}
 		clean := filepath.Clean(filepath.FromSlash(p))
-		if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-			seen[p] = true
-			missing = append(missing, p)
-			continue
-		}
-		abs := filepath.Join(root, clean)
-		if resolved, err := filepath.EvalSymlinks(abs); err == nil {
-			abs = resolved
+		var abs string
+		if filepath.IsAbs(clean) {
+			// BUG-545: provider file-change events can carry absolute paths
+			// (devin ACP reports worktree-absolute paths). An absolute path
+			// that resolves INSIDE the workspace is a real doc — read it.
+			// Only out-of-root absolutes and .. escapes stay missing.
+			resolvedAbs := clean
+			if resolved, err := filepath.EvalSymlinks(clean); err == nil {
+				resolvedAbs = resolved
+			}
+			if !strings.HasPrefix(resolvedAbs, root+string(filepath.Separator)) && resolvedAbs != root {
+				seen[p] = true
+				missing = append(missing, p)
+				continue
+			}
+			abs = resolvedAbs
+		} else {
+			if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+				seen[p] = true
+				missing = append(missing, p)
+				continue
+			}
+			abs = filepath.Join(root, clean)
+			if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+				abs = resolved
+			}
 		}
 		if !strings.HasPrefix(abs, root+string(filepath.Separator)) && abs != root {
 			seen[p] = true
