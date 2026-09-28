@@ -1,6 +1,6 @@
 # BUG-539 — Armed child gate reprompts have no drive path; orphan-cure resets the reprompt cap (unbounded cycle)
 
-Status: **FIXED — regression tests green; live re-verify pending**
+Status: **FIXED — regression tests green; live-verified 2026-09-28 (R14, run-26036)**
 Severity: Important — a queued child gate reprompt is undriven for tens of
 minutes and, when recovered via the orphan-cure path, the reprompt-attempt
 counter resets so `maxFlowGateReprompts` can never engage — an unbounded
@@ -128,11 +128,13 @@ retry clears, counter guard). All green.
   incremented to attempt 2 → `Gate reprompt exhausted` → `blocked`/escalate.
   The counter now survives to the cap; the orphan-cure Resume mint no longer
   resets it.
-- The stall-shield/member_stalled live leg was not re-staged: the tournament
-  vehicle (run-18354) wedged earlier at `waiting_review` on a different
-  defect (BUG-542) before a cohort member could arm a reprompt under a live
-  stall check. Shield behavior is covered by
-  `bug539_member_stall_reprompt_strand_test.go` (armed-intent member not
-  counted silent; orphan-cure drives the reprompt channel; skip clears
-  intents + closes leg; retry clears intents; cap counter guard) — unit-verified,
-  live leg deferred to a future cohort run.
+- The stall-shield/member_stalled live leg **fired organically** on
+  tournament `run-26036` (fp-live5, fixed binary): candidate-b's devin turn
+  went silent >10m mid-turn with no gate → watchdog parked the hub
+  `blocked`/`member_stalled`/`activeNode=candidate-b` →
+  `POST /agent-loop/continue` with `{"memberAction":{"action":"retry","node":"candidate-b"}}`
+  unblocked the loop and dispatched the retry turn (`turn-32844`, prompt
+  `[flow-engine] Retry: member "candidate-b" was stalled`) — the armed
+  intents were superseded, not double-driven. The member re-hit its real
+  gate debt afterwards and escalated at reprompt cap — bounded, correct.
+  `skip` leg stays unit-verified (same handler, entry proven live).
