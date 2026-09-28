@@ -4732,6 +4732,18 @@ body[data-platform="darwin"] .app-header {
   color: var(--text-dim);
   font-size: var(--font-size-xs);
 }
+/* CA-1000: replaces the Stop button while a scaffold watch blocks the
+   composer — the scaffold turn has no cancel endpoint, so it shows status. */
+.composer-scaffold-status {
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-pill);
+  color: var(--text-dim);
+  font-size: var(--font-size-xs);
+  white-space: nowrap;
+}
 .composer-main-btn {
   display: inline-flex;
   align-items: center;

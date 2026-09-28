@@ -41,6 +41,11 @@ import { ADMIN_WEB_URL } from "@/config";
 import { isSyncableRun } from "@/components/navigatorHistory";
 import { attentionQueue, type AttentionItem } from "@/state/attentionQueue";
 import {
+  dispatchScaffold,
+  fetchScaffoldProgress,
+  type ScaffoldRunResult,
+} from "@/components/settings/projectEngine";
+import {
   draftKeyFor,
   isEmptyDraft,
   loadDrafts,
@@ -651,6 +656,18 @@ export interface AppState {
   _streamRunSeq: number;
   // separate generation for the live parent orchestration stream
   _orchestrationStreamSeq: number;
+  // CA-1000: live AI-scaffold watch session. When set, the Chat timeline is a
+  // scaffold transcript (prompt row + streamed assistant bubble + phase lines)
+  // rather than a durable run — the server-side scaffold turn keeps running if
+  // the user navigates away; resetRun/openHistoryRun just stop the watcher.
+  scaffoldSession?: {
+    token: number;
+    projectId: string;
+    workingDirectory: string;
+    active: boolean;
+    phase: string;
+    attempt: number;
+  };
 
   // actions
   loadProjects(): Promise<void>;
@@ -658,6 +675,17 @@ export interface AppState {
   loadLocalProviders(): Promise<void>;
   loadSkills(provider: string, cwd?: string): Promise<void>;
   selectProject(projectId: string): Promise<void>;
+  /** CA-1000: dispatch a manual AI scaffold and render it as a live Chat
+   *  transcript ("/init" parity with the TUI). Opens a fresh chat surface for
+   *  the project, streams provider output into one assistant bubble, and
+   *  resolves when the scaffold turn reaches a terminal result. */
+  runScaffoldChat(input: {
+    projectId: string;
+    workingDirectory: string;
+    platform?: string;
+    modelName?: string;
+    force?: boolean;
+  }): Promise<void>;
   setLaunchMode(mode: LaunchMode): void;
   setChatMode(mode: ChatMode): void;
   selectProvider(provider?: ProviderKey): void;
@@ -755,7 +783,7 @@ export interface AppState {
   backToMainRun(): void;
   openOrchestrationBoard(): void;
   closeOrchestrationBoard(): void;
-  appendSystemMessage(text: string, tone?: "info" | "error"): void;
+  appendSystemMessage(text: string, tone?: "info" | "error" | "warn"): void;
   openAgentSpawnGuide(agentName?: string): void;
   clearAgentSpawnGuide(): void;
   syncHistoryRun(runId: string, projectId?: string): Promise<void>;
@@ -2142,6 +2170,14 @@ export const useStore = create<AppState>((set, get) => ({
     } = get();
     const focusedRunId = get().activeAgentRunId;
     const mainRunId = get().mainRunId ?? get().runId;
+    // CA-1000: while an AI scaffold streams into this chat surface a normal
+    // send would start a second provider turn writing the same workspace —
+    // TUI blocks the composer during scaffold; mirror that here for any
+    // programmatic caller too.
+    if (get().scaffoldSession?.active) {
+      get().appendSystemMessage("AI scaffold is still running — wait for it to finish before sending.", "warn");
+      return;
+    }
     if (chatMode === "normal_chat" && focusedRunId && mainRunId && focusedRunId !== mainRunId) {
       get().appendSystemMessage("Child transcript is read-only. Return to the main chat to send prompts.");
       return;
@@ -3295,6 +3331,9 @@ export const useStore = create<AppState>((set, get) => ({
       chatDetached: isDetached,
       mainRunId: handle.runId,
       activeAgentRunId: undefined,
+      // CA-1000: opening a real run detaches the scaffold watcher — the
+      // server-side scaffold turn keeps running and can be re-watched.
+      scaffoldSession: undefined,
       status: handle.status,
       activeStepId: handle.stepId,
       // CP-71: restore the per-chat toggle from the opened run's binding —
@@ -3461,7 +3500,40 @@ export const useStore = create<AppState>((set, get) => ({
       activeWorktreePath: "",
       activeWorktreeState: "",
       selectedModel: pickDefaultModel(selectedProvider, supportedModels),
+      // CA-1000: stop watching a scaffold transcript — the server-side turn is
+      // unaffected and keeps writing to .flowpilot/scaffold-progress.ndjson.
+      scaffoldSession: undefined,
     });
+  },
+
+  async runScaffoldChat(input) {
+    const { projectId, workingDirectory, platform, modelName, force } = input;
+    if (!projectId || !workingDirectory) return;
+    if (get().scaffoldSession?.active) return;
+    if (get().selectedProjectId !== projectId) {
+      // selectProject already resets the run state on a project change.
+      await get().selectProject(projectId);
+    } else {
+      get().resetRun();
+    }
+    const token = ++scaffoldChatTokenCounter;
+    const assistantId = `scaffold-assistant-${token}`;
+    const session = { token, projectId, workingDirectory, active: true, phase: "dispatch", attempt: 1 };
+    set((s) => ({
+      scaffoldSession: session,
+      timeline: [
+        ...s.timeline,
+        { kind: "prompt", id: `scaffold-prompt-${token}`, text: "Run AI Scaffold" },
+        {
+          kind: "system",
+          id: `scaffold-intro-${token}`,
+          text: `AI scaffold running for ${workingDirectory} — provider output streams below. The turn continues on the runner if you leave this chat.`,
+          tone: "info",
+        },
+        { kind: "assistant", id: assistantId, text: "", finalized: false },
+      ],
+    }));
+    await pumpScaffoldChat(set, get, session, assistantId, { platform, modelName, force });
   },
 
   toggleTerminal() {
@@ -4113,6 +4185,195 @@ function startOrchestrationStream(
 }
 
 // ---- CP-84 (Task-429 T-5/T-6): multiplexed lane stream --------------------
+// CA-1000: scaffold-chat watch loop. The scaffold POST blocks for the whole
+// AI turn, so live rendering comes from the CA-916 progress feed — the same
+// persisted NDJSON the TUI replays. The pump is a pure watcher: it exits when
+// scaffoldSession is cleared (resetRun / openHistoryRun / project switch) and
+// never cancels the server-side turn.
+const SCAFFOLD_CHAT_POLL_MS = 700;
+// After the dispatch POST settles, keep polling briefly so a result event that
+// is still being flushed to the feed wins over the HTTP response body. The
+// runner emits the result event before the handler returns, so two polls are
+// plenty — this counter is just the bound for a dead feed.
+const SCAFFOLD_CHAT_DRAIN_POLLS = 3;
+let scaffoldChatTokenCounter = 0;
+
+// Test seam (mirrors runUpdatesLoopTestHooks): unit tests shrink the waits so
+// a full pump cycle takes milliseconds instead of the production cadence.
+export const scaffoldChatTestHooks = {
+  settleDelayMs: 300,
+  pollMs: SCAFFOLD_CHAT_POLL_MS,
+};
+
+type ScaffoldSet = (fn: (s: AppState) => Partial<AppState>) => void;
+
+interface ScaffoldChatSessionRef {
+  token: number;
+  projectId: string;
+  workingDirectory: string;
+}
+
+function scaffoldChatActive(get: () => AppState, token: number): boolean {
+  return get().scaffoldSession?.token === token;
+}
+
+function scaffoldChatAppend(
+  set: ScaffoldSet,
+  get: () => AppState,
+  session: ScaffoldChatSessionRef,
+  assistantId: string,
+  fold: {
+    outputDelta?: string;
+    phases?: Array<{ text: string; phase: string; attempt: number }>;
+    result?: ScaffoldRunResult | null;
+  },
+): void {
+  if (!scaffoldChatActive(get, session.token)) return;
+  const items: TimelineItem[] = [];
+  for (const milestone of fold.phases ?? []) {
+    items.push({
+      kind: "system",
+      id: `scaffold-phase-${session.token}-${milestone.phase}-${milestone.attempt}-${items.length}`,
+      text: `▸ ${milestone.text}`,
+      tone: "info",
+    });
+  }
+  let terminalText = "";
+  let terminalTone: "info" | "warn" | "error" = "info";
+  const result = fold.result ?? null;
+  if (result) {
+    terminalTone = result.status === "error" ? "error" : result.status === "skipped" ? "warn" : "info";
+    terminalText =
+      result.message?.trim() ||
+      (result.status === "done"
+        ? "AI scaffold completed."
+        : result.status === "skipped"
+          ? "AI scaffold skipped."
+          : "AI scaffold failed.");
+    items.push({ kind: "system", id: `scaffold-end-${session.token}`, text: terminalText, tone: terminalTone });
+  }
+  set((s) => {
+    if (s.scaffoldSession?.token !== session.token) return {};
+    const timeline = s.timeline.map((it) => {
+      if (it.id !== assistantId || it.kind !== "assistant") return it;
+      const text = it.text + (fold.outputDelta ?? "");
+      // A scaffold that ends without any provider output (skipped, early
+      // error) would otherwise render as an empty bubble.
+      if (result && text.trim() === "") {
+        return { ...it, text: "*(no provider output)*", finalized: true };
+      }
+      return { ...it, text, finalized: it.finalized || Boolean(result) };
+    });
+    return {
+      timeline: [...timeline, ...items],
+      scaffoldSession:
+        result || (fold.phases?.length ?? 0) > 0
+          ? {
+              ...s.scaffoldSession,
+              active: !result,
+              phase: result?.status ?? fold.phases?.at(-1)?.phase ?? s.scaffoldSession.phase,
+              attempt: fold.phases?.at(-1)?.attempt ?? s.scaffoldSession.attempt,
+            }
+          : s.scaffoldSession,
+    };
+  });
+}
+
+async function pumpScaffoldChat(
+  set: ScaffoldSet,
+  get: () => AppState,
+  session: ScaffoldChatSessionRef,
+  assistantId: string,
+  dispatchOptions: { platform?: string; modelName?: string; force?: boolean },
+): Promise<void> {
+  let cursor = 0;
+  let sawStarted = false;
+  let postSettled = false;
+  let postResult: ScaffoldRunResult | null = null;
+  let postError: string | null = null;
+  const postDone = dispatchScaffold(session.projectId, session.workingDirectory, dispatchOptions)
+    .then((result) => {
+      postResult = result;
+    })
+    .catch((error) => {
+      postError = error instanceof Error ? error.message : String(error);
+    })
+    .finally(() => {
+      postSettled = true;
+    });
+
+  // Let the POST land first — the runner emits "started" synchronously at
+  // dispatch begin, so a poll that arrives earlier would replay the previous
+  // run's persisted tail and render stale output in the fresh transcript.
+  await new Promise((resolve) => setTimeout(resolve, scaffoldChatTestHooks.settleDelayMs));
+
+  let drainPolls = 0;
+  for (;;) {
+    // Watcher detached (resetRun / history open / project switch) — the POST
+    // continues server-side; the pump must not hang waiting on it.
+    if (!scaffoldChatActive(get, session.token)) return;
+    let snap;
+    try {
+      snap = await fetchScaffoldProgress(session.projectId, cursor, undefined, session.workingDirectory);
+    } catch {
+      if (postSettled) break;
+      await new Promise((resolve) => setTimeout(resolve, scaffoldChatTestHooks.pollMs));
+      continue;
+    }
+    if (!scaffoldChatActive(get, session.token)) return;
+    // The runner clears the hub at dispatch begin, so an ACTIVE snapshot only
+    // ever carries this run's events; after begin was observed (sawStarted)
+    // the hub still holds only this run, so post-end snapshots keep folding.
+    // An INACTIVE snapshot before begin is still serving the PREVIOUS run's
+    // events/result — skip them entirely so a stale tail never renders.
+    const foldable = sawStarted || snap.active;
+    const phases: Array<{ text: string; phase: string; attempt: number }> = [];
+    let outputDelta = "";
+    let result: ScaffoldRunResult | null = null;
+    if (foldable) {
+      for (const ev of snap.events) {
+        if (ev.seq <= cursor) continue;
+        if (ev.kind === "phase" && ev.phase === "started") {
+          sawStarted = true;
+          continue;
+        }
+        if (ev.kind === "output" && ev.text) {
+          outputDelta += ev.text;
+        } else if (ev.kind === "phase" && ev.phase && ev.text) {
+          phases.push({ text: ev.text, phase: ev.phase, attempt: ev.attempt ?? 1 });
+        } else if (ev.kind === "result" && ev.result) {
+          result = ev.result;
+        }
+      }
+    }
+    // Advance past anything skipped so stale events are never re-served.
+    cursor = Math.max(cursor, snap.nextSeq - 1);
+    if (outputDelta || phases.length > 0 || result) {
+      scaffoldChatAppend(set, get, session, assistantId, { outputDelta, phases, result });
+    }
+    if (result) {
+      await postDone.catch(() => {});
+      return;
+    }
+    if (sawStarted && snap.result) {
+      scaffoldChatAppend(set, get, session, assistantId, { result: snap.result });
+      await postDone.catch(() => {});
+      return;
+    }
+    if (postSettled) {
+      // POST resolution is authoritative and always follows the feed's
+      // terminal event — bound the drain so a dead feed can't hang the pump.
+      if (++drainPolls >= SCAFFOLD_CHAT_DRAIN_POLLS) break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, scaffoldChatTestHooks.pollMs));
+  }
+  await postDone.catch(() => {});
+  if (!scaffoldChatActive(get, session.token)) return;
+  scaffoldChatAppend(set, get, session, assistantId, {
+    result: postResult ?? { status: "error", message: postError ?? "AI scaffold ended without a result." },
+  });
+}
+
 // One app-lifetime controller — deliberately NOT cancelled by resetRun(),
 // project switches, or chat focus changes. The stream is level-triggered:
 // every reconnect starts from a chunked authoritative snapshot; the 30s

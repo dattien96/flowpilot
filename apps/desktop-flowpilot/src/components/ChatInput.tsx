@@ -677,14 +677,21 @@ export function ChatInput(): React.ReactElement {
     }
   }, [activeConnectedProviders, installedProviders, isChatMode, readyProviders, runId, selectProvider, selectedProvider]);
 
+  // CA-1000: an active scaffold watch also blocks the composer — the scaffold
+  // turn is writing the workspace, so a concurrent chat turn must not start
+  // (TUI parity). It is NOT a stoppable run, so the toolbar shows a status
+  // pill instead of the Stop button while only the scaffold blocks.
+  const scaffoldSession = useStore((s) => s.scaffoldSession);
+  const scaffoldActive = scaffoldSession?.active === true;
   // Include "blocked" (flow awaiting user / escalate) so Stop stays available on
   // the main composer — previously only RunStatus / FlowAwaitingUserCard had Stop
   // while status=blocked, and dual gate UI made main Stop hard to reach (CP-51 A1).
-  const blocked =
+  const runBlocked =
     status === "running" ||
     status === "waiting_approval" ||
     status === "waiting_question" ||
     status === "blocked";
+  const blocked = runBlocked || scaffoldActive;
   // The manual "Gen summary" control is available only for an existing chat that
   // is idle/completed (never mid-turn) — mirrors the runner's busy guard.
   const canGenerateSummary = isChatMode && !!runId && timeline.length > 0 && !blocked && !summaryGenerating;
@@ -975,7 +982,9 @@ export function ChatInput(): React.ReactElement {
     }
   };
 
-  const placeholder = hasBlockingChild && !blocked
+  const placeholder = !runBlocked && scaffoldActive
+    ? "AI Scaffold is running — chat is paused until it finishes…"
+    : hasBlockingChild && !blocked
     ? "Waiting for a sub-agent (wait=true) to finish…"
     : blocked
     ? "Waiting for the current turn..."
@@ -1474,9 +1483,17 @@ export function ChatInput(): React.ReactElement {
               )}
               <span className="composer-spacer" />
               {blocked ? (
+                // CA-1000: a scaffold-only block is not a stoppable run — show
+                // its phase instead of a Stop button that could never land.
+                !runBlocked && scaffoldActive ? (
+                  <span className="composer-scaffold-status" role="status" aria-live="polite">
+                    AI Scaffold{scaffoldSession?.phase && scaffoldSession.phase !== "dispatch" ? ` · ${scaffoldSession.phase}` : ""} running…
+                  </span>
+                ) : (
                 <button type="button" className="icon-btn composer-send composer-send-stop" onClick={() => void stop()} aria-label="Stop AI">
                   <StopIcon />
                 </button>
+                )
               ) : (
                 <button type="button" className="icon-btn composer-send" onClick={send} disabled={!canSend} aria-label="Send">
                   <SendIcon size={15} />
