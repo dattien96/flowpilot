@@ -355,6 +355,10 @@ func (s *InteractiveService) switchChatLeg(ctx context.Context, chatID string, r
 		FlowArm:         string(src.flowArm),
 		FlowRefFallback: src.chatFlowRef,
 		WorkingMode:     src.workingMode,
+		// CP-89 review R4-3: the create-time CP source pin is run-scoped like
+		// the latch — a pending vibe-cp-ingest leg that loses it wedges its
+		// forward on invalid_cp_source with no way to recover the pin.
+		SourceDocID: src.sourceDocID,
 		// The leg is engine-minted, not a user mount — the client and
 		// start-family gates were validated on the source leg's own create.
 		// (Without this the propagated vibe mode would hit CheckClient's

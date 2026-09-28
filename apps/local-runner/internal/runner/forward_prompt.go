@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -75,6 +76,11 @@ func settledChatTurnsForRun(rs *interactiveRun) []transcriptTurn {
 		if isSystemPrompt(tr.User) {
 			continue
 		}
+		// R4-4: a turn that closed via TurnFailed is not settled — its prompt
+		// and partial reply must never reach the entry child as context.
+		if tr.Failed {
+			continue
+		}
 		out = append(out, tr)
 	}
 	return out
@@ -113,6 +119,15 @@ func (s *InteractiveService) buildForwardPromptPackage(rs *interactiveRun, forwa
 		budget = forwardPromptBudgetTokens
 	}
 	fwd := strings.TrimSpace(forwardText)
+	// R4-5: the forward text is a mandatory section — PackPrompt will never
+	// truncate it, so a text that alone overflows the budget would ship
+	// oversize while the forward still succeeds. Reject explicitly instead:
+	// fail-closed, typed, and the user can shorten the message or pick a
+	// flow whose entry node carries a bigger context profile.
+	if fwd != "" && int64(promptpacker.EstimateTokens(fwd)) > budget {
+		return ForwardPromptPackage{}, newAPIErr(http.StatusUnprocessableEntity, "forward_prompt_too_large",
+			fmt.Sprintf("forward text (%d est. tokens) exceeds the entry node's prompt budget (%d tokens); shorten the message", promptpacker.EstimateTokens(fwd), budget))
+	}
 	turns := settledChatTurnsForRun(rs)
 	// The transcript's byte cap = budget − forward text − envelope reserve.
 	// Tokens ≈ bytes/4 (EstimateTokens), so the transcript cap in bytes is

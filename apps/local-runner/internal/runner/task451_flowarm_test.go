@@ -16,6 +16,11 @@ import (
 
 func task451Service(t *testing.T) *InteractiveService {
 	t.Helper()
+	return task451ServiceWithStore(t, newFakeWorkflowStore())
+}
+
+func task451ServiceWithStore(t *testing.T, store WorkflowStore) *InteractiveService {
+	t.Helper()
 	reg := newProviderRegistry()
 	reg.register(ProviderRegistration{
 		Key: ProviderKeyCodex, Status: ProviderStatusAvailable,
@@ -37,7 +42,7 @@ func task451Service(t *testing.T) *InteractiveService {
 			})
 		},
 	})
-	return newInteractiveService(reg, newInteractiveCatalog(), newFakeWorkflowStore())
+	return newInteractiveService(reg, newInteractiveCatalog(), store)
 }
 
 // Default: a client that sends no flowArm behaves exactly as today — the run
@@ -168,10 +173,22 @@ func TestTask451_RestartPendingReconstructsAsChat(t *testing.T) {
 
 // A started run never re-arms: flowArm stays started, vibe markers stay off
 // (BUG-315 shape preserved — reconstruction never calls startResolvedFlow).
-// A legitimately started flow always carries its persisted topology —
-// started + no topology is the never-launched crash row and heals pending.
+// A legitimately started flow always carries its persisted topology AND the
+// durable entry child row the launch produced (child rows are never pruned) —
+// started + topology + no child evidence is the never-launched crash row and
+// heals pending (R4-2).
 func TestTask451_RestartStartedDoesNotReArm(t *testing.T) {
-	svc := task451Service(t)
+	store := newFakeWorkflowStore()
+	// The entry child row the real launch wrote: ParentRunID + Label = the
+	// flow node id. This is what distinguishes a launched flow from a torn
+	// started write.
+	if err := store.UpsertProviderSession(context.Background(), ProviderSessionState{
+		RunID: "run-s1-entry", ProjectID: "proj", ParentRunID: "run-s1",
+		Label: "n1", Status: RunStatusCompleted,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	svc := task451ServiceWithStore(t, store)
 	rs, err := svc.reconstructRun(ProviderSessionState{
 		RunID: "run-s1", ProjectID: "proj", RunKind: "chat",
 		ProviderKey: ProviderKeyCodex, Status: RunStatusRunning,

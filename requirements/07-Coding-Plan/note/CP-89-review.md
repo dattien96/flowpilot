@@ -120,3 +120,129 @@ work is concentrated in four seams: `handleStartTurn` admission (F-1),
 `startTurn`'s `turnCount==0` block (F-2, F-3), `flowArm` durability (F-7),
 and the forward-time fence set (F-4, F-5). None require new machinery — all
 are extensions of existing gates, which is what the contract asks for.
+
+## Post-implementation deep review — 2026-09-28 (capture only; no fixes)
+
+Scope: CP-89 Task-451/452/453 on branch `cp89` at `f9a22d76`; current
+`TestTask45[123]` suite passes. Findings below are traced from concrete code
+paths, **not** claimed as newly executed live failures. The untracked Task-454
+architecture-review document was not changed. Ordered by severity.
+
+### R4-1 — Critical: failed durable flip still spawns flow
+
+`startTurn` sets `flowArm=started` and topology in RAM, snapshots them, then
+ignores the result of `persistProviderSession(snap)` at
+`interactive_service.go:10645-10688`; it starts `startResolvedFlow` at
+`10719-10720` regardless. A failed sessions.ndjson/Supabase upsert leaves the
+durable row pending while children execute. Restart can then re-forward the
+same flow, orphan the original children, or lose the original launch. The
+later non-durable persist at `11023-11028` also ignores errors; neither write
+is a durable commit barrier. This directly contradicts the durable-first
+ordering recorded in CA-642 and AGENTS §2. Repro test: inject an upsert error
+for the `started` snapshot, forward a pending flow, assert typed failure/no
+entry child and durable `pending` (current code would spawn). Include a
+restart/second-forward assertion; don't rely on an in-memory snapshot.
+
+### R4-2 — Critical: committed topology does not prove a flow was launched
+
+There is a crash window **after** the `started`+topology upsert and **before**
+the `go startResolvedFlow` call (`interactive_service.go:10675-10720`). On
+reconstruct the heal only returns `started` to `pending` when topology is
+absent (`interactive_resume.go:943-956`); with topology present,
+`normalizeResumedFlowRun` never launches the entry (`416-444`). No resume path
+calls `startResolvedFlow` for this committed-but-unspawned state. An idempotent
+prepared-forward replay on `started` completes synthetically without spawn
+(`interactive_service.go:10623-10632`). The user gets a permanently started
+flow with no child; a bare forward afterwards gets `flow_already_started`.
+Repro test: persist a pending run's started+topology pre-spawn snapshot with
+no child/session/step-start evidence; restart, then replay the prepared
+forward. Assert one entry child is eventually claimed or a truthful
+retryable/uncertain outcome (current branch short-circuits). The original
+packed entry prompt is not carried in the pre-spawn snapshot either.
+
+### R4-3 — Important: provider switch drops the pinned CP source
+
+`switchChatLeg` creates the new leg with `FlowArm`, `FlowRefFallback`, and
+`WorkingMode`, but omits `SourceDocID` (`chat_switch.go:337-363`). `createRun`
+initializes `rs.sourceDocID` solely from the new input
+(`interactive_handlers.go:1240-1263`). A pending `vibe-cp-ingest` run with a
+valid create-time CP source therefore loses that pin on switch. A bare forward
+on the new leg falls back to an empty source and returns `invalid_cp_source`
+(`interactive_service.go:10145-10153`; `vibe_cp.go:429-443`) instead of
+starting the flow. Repro: create pending vibe-cp-ingest with a valid
+`SourceDocID`, switch provider/same-provider leg, bare-forward on the active
+leg; assert source pin and forward success. Existing L-11 checks only the arm
+and flow pin (and is quota-skipped before full forward).
+
+### R4-4 — Important: failed provider turn enters “settled” prompt package
+
+`transcriptTurnsFromRun` flushes a turn on `EventTurnFailed` into the returned
+list (`handoff_context.go:169-177,207-211`). `settledChatTurnsForRun` only
+removes an **open trailing** turn and system prompts
+(`forward_prompt.go:47-80`); it does not remove failed turns. Forwarding after
+one failed chat turn passes that failed user's unagreed request (and any
+partial assistant output) to the entry child, contrary to Task-453's
+“failed turn is excluded” contract. Repro: append TurnStarted + partial
+MessageCompleted + TurnFailed followed by a settled chat turn; pack forward,
+assert the failed turn's marker is absent. The current only-settled test
+covers an open tail, not a failed turn.
+
+### R4-5 — Important: mandatory forward text can exceed the hard budget
+
+`buildForwardPromptPackage` reserves room for `forwardText` when calculating
+the transcript allowance but never checks that the forward text itself fits
+(`forward_prompt.go:111-140`). `PackPrompt` retains mandatory sections whole
+even when their tokens exceed `TotalMaxTokens`, returning a **warning**, not
+an error (`promptpacker/packer.go:199-234`). Thus a sufficiently long forward
+message produces `pkg.Bytes` / tokens over the entry-node budget while
+`forwardFlow` succeeds. Repro: use an entry budget of 100 tokens and a
+>100-token forward message, no transcript; assert either a typed rejection
+or a package within cap (current code returns an over-budget package). This
+is a contract conflict with “forward text intact” requiring an explicit
+oversize policy, not silent truncation.
+
+### R4 fix pass — 2026-09-28 (all five findings fixed, red→green)
+
+All findings reproduced with assertion-red tests in
+`internal/runner/cp89_review4_test.go`, then fixed:
+
+- **R4-1** — `startTurn` now checks the `persistProviderSession` result of
+  the started+topology commit. On failure it rolls the in-memory run back
+  to the durable truth (pending latch, cleared topology/vibe markers,
+  restored prior turn metadata) and returns typed `persist_failed` 500 —
+  no child can spawn off a flip the durable record does not know.
+  Test: `TestR4_PersistFailureKeepsPendingNoSpawn` (injects a started-row
+  upsert failure; asserts typed error, zero children, durable row still
+  pending, retry succeeds after recovery).
+- **R4-2** — reconstruct now treats `started`+topology **without a durable
+  entry-child row** (parent_run_id + label==node id; child rows are never
+  pruned) as the never-launched crash window and heals to pending, so the
+  retry forwardFlow launches cleanly instead of wedging on
+  `flow_already_started`. Unreadable session index fails closed toward
+  keeping started (a false heal would double-launch). Healed rows also
+  drop the orphan topology from the pin inference. Tests:
+  `TestR4_StartedTopologyNoEntryChildHealsPending`,
+  `TestR4_StartedTopologyWithEntryChildStaysStarted` (control),
+  `TestR4_RestartedCrashWindowForwardRetriesAndLaunches`.
+  `TestTask451_RestartStartedDoesNotReArm`'s fixture gained the entry
+  child row — a real started run always has one.
+- **R4-3** — `switchChatLeg` now carries `SourceDocID` onto the new leg so
+  the create-time CP pin survives a provider switch; the forward-time
+  ingest fence reads it without a repaste. Test:
+  `TestR4_ProviderSwitchKeepsSourceDocPin` (pending vibe-cp-ingest +
+  pinned CP → codex→devin switch → bare forward passes the fence).
+- **R4-4** — `transcriptTurnsFromRun` now marks turns closed by
+  `EventTurnFailed`; `settledChatTurnsForRun` excludes them, so a failed
+  prompt + partial assistant output can never enter the forward package.
+  Handoff renderers keep including failed turns (history ≠ settled
+  context). Test: `TestR4_FailedTurnExcludedFromForwardPackage`.
+- **R4-5** — `buildForwardPromptPackage` rejects a forward text whose own
+  token estimate exceeds the entry-node budget with typed 422
+  `forward_prompt_too_large` (mandatory sections are never truncated —
+  the explicit policy is reject, not silent oversize). Test:
+  `TestR4_OversizedForwardTextRejected`.
+
+Verification: `TestR4_*` + `TestTask45[123]` green, `-race` green; the
+only sweep failures are the pre-existing missing-binary environment noise
+(codex/opencode/agy). Live harness re-run on the rebuilt binary recorded
+below.

@@ -10635,6 +10635,23 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 		// subMode must land on the run before the fences read it (and before
 		// vibeLockedCP stamps it). Without this the fence validates the
 		// turn's value but the run keeps the stale pin.
+		// Capture the pre-flip state first: if the durable started+topology
+		// commit below fails, the run must roll back to pending rather than
+		// diverge from the durable row (which would still say pending while
+		// memory believes started — the R4-1 wedge/double-launch).
+		priorArm := rs.flowArm
+		priorDriven := rs.flowEngineDriven
+		priorYolo := rs.yolo
+		priorFlowRef := rs.chatFlowRef
+		priorAwaiting := rs.vibeAwaitingLock
+		priorBudget := rs.vibeSprintBudget
+		priorLockedCP := rs.vibeLockedCP
+		priorEdges := rs.activeFlowEdges
+		priorNodes := rs.activeFlowNodes
+		priorAcceptance := rs.activeFlowAcceptanceNodes
+		priorChangeType := rs.changeType
+		priorSourceDoc := rs.sourceDocID
+		priorSubMode := rs.chatSubMode
 		if changeType := normalizeChangeType(in.ChangeType); changeType != "" {
 			rs.changeType = changeType
 		}
@@ -10685,7 +10702,7 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 			"turns_included", pkg.TurnsIncluded,
 			"bytes", pkg.Bytes,
 			"degraded", pkg.Degraded)
-		_ = s.persistProviderSession(snap)
+		persistErr := s.persistProviderSession(snap)
 		s.mu.Lock()
 		if s.runs[runID] != rs {
 			// Run was deleted while the lock was dropped. The snapshot just
@@ -10715,6 +10732,30 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 			s.mu.Unlock()
 			_ = s.persistProviderSession(rePersist)
 			return turnID, nil
+		}
+		if persistErr != nil {
+			// R4-1: the durable started+topology commit failed — never spawn
+			// children off a flip the durable record does not know about
+			// (restart would find pending and allow a duplicate launch). Roll
+			// the in-memory state back to the durable truth and surface a
+			// typed retryable failure.
+			rs.flowArm = priorArm
+			rs.flowEngineDriven = priorDriven
+			rs.yolo = priorYolo
+			rs.chatFlowRef = priorFlowRef
+			rs.vibeAwaitingLock = priorAwaiting
+			rs.vibeSprintBudget = priorBudget
+			rs.vibeLockedCP = priorLockedCP
+			rs.activeFlowEdges = priorEdges
+			rs.activeFlowNodes = priorNodes
+			rs.activeFlowAcceptanceNodes = priorAcceptance
+			rs.changeType = priorChangeType
+			rs.sourceDocID = priorSourceDoc
+			rs.chatSubMode = priorSubMode
+			rs.turnInFlight = false
+			s.mu.Unlock()
+			return "", newAPIErr(http.StatusInternalServerError, "persist_failed",
+				"failed to commit flow start to the durable record: "+persistErr.Error())
 		}
 		flowStartOnly = true
 		go s.startResolvedFlow(context.Background(), runID, flowRef, pkg.Prompt)

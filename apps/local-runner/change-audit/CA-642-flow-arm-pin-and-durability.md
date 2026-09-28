@@ -206,3 +206,50 @@ wedge (L-3 timed out with no entry child; L-9/L-10 hit the same wall
 post-restart). Narrowed to `failed`/`cancelled` only; `completed` runs
 continue to launch (baseline flow machinery drives the parent's status).
 Red test: `TestTask452_ForwardOnSettledRunStillLaunches`.
+
+### Review pass 4 (R4-1..R4-5) — FIXED
+
+Fault-injection review of the committed forward seam found five more
+issues; all fixed with assertion-red tests first
+(`internal/runner/cp89_review4_test.go`):
+
+1. **Failed durable flip still spawned (R4-1, critical).** The
+   started+topology `persistProviderSession` result was ignored — a
+   failed upsert left durable `pending` while children ran, and a restart
+   could then re-forward and double-launch. The commit result is now
+   checked; failure rolls the in-memory run back to durable truth and
+   returns typed `persist_failed` (500, retryable) before any spawn.
+   Test: `TestR4_PersistFailureKeepsPendingNoSpawn`.
+2. **Committed topology is not launch proof (R4-2, critical).** Crash
+   between the started+topology commit and `go startResolvedFlow`
+   wedged the run: reconstruct kept `started`, no resume path spawned the
+   entry, prepared replay completed synthetically, and a manual forward
+   got `flow_already_started`. Reconstruct now verifies launch evidence:
+   a child row whose `ParentRunID`/`Label` matches a persisted flow node
+   id (child rows are never pruned). Absent → heal to pending so the
+   retry launches; unreadable session index fails closed to `started` (a
+   false heal would double-launch). Tests:
+   `TestR4_StartedTopologyNoEntryChildHealsPending`,
+   `TestR4_StartedTopologyWithEntryChildStaysStarted`,
+   `TestR4_RestartedCrashWindowForwardRetriesAndLaunches`.
+3. **Switch legs dropped the CP source pin (R4-3).** `switchChatLeg`
+   carried flowArm/FlowRefFallback/WorkingMode but not `SourceDocID`, so
+   a pending vibe-cp-ingest leg failed its own forward fence with
+   `invalid_cp_source`. `SourceDocID: src.sourceDocID` now rides the leg.
+   Test: `TestR4_ProviderSwitchKeepsSourceDocPin`.
+4. **Failed turns leaked into the "settled" forward package (R4-4).**
+   `transcriptTurnsFromRun` flushed failed turns into the list and
+   `settledChatTurnsForRun` kept them. Turns closed by `EventTurnFailed`
+   are now marked and excluded from the package; handoff renderers keep
+   them as history. Test: `TestR4_FailedTurnExcludedFromForwardPackage`.
+5. **Mandatory forward text could exceed the hard budget (R4-5).**
+   PackPrompt retains mandatory sections whole over budget. The packer
+   now rejects an over-budget forward text with typed 422
+   `forward_prompt_too_large` — explicit rejection instead of silent
+   oversize (forward text is still never truncated).
+   Test: `TestR4_OversizedForwardTextRejected`.
+
+Verification: focused suite + `-race` green; the only sweep failures are
+pre-existing missing-binary environment noise (codex/opencode/agy).
+Live `TestCP89Live` re-run on the rebuilt binary recorded in
+`requirements/07-Coding-Plan/note/CP-89-review.md`.

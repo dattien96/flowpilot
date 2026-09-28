@@ -896,6 +896,61 @@ func (s *InteractiveService) reconstructRun(st ProviderSessionState) (*interacti
 	return s.reconstructRunInternal(st, false)
 }
 
+// flowEntryChildExists reports whether the durable record (or the live run
+// table) still carries a child of runID whose label matches a persisted flow
+// node id — the proof a flow launch actually produced work. Child rows are
+// never pruned, so absence means the spawn never ran. When the session index
+// is unreadable the result fails closed to "exists" — a false heal would
+// double-launch the flow, strictly worse than keeping a wedge a retry can
+// still surface.
+func (s *InteractiveService) flowEntryChildExists(runID string, nodes []agentpack.FlowNode) bool {
+	wanted := make(map[string]struct{}, len(nodes))
+	for _, n := range nodes {
+		if id := strings.TrimSpace(n.ID); id != "" {
+			wanted[id] = struct{}{}
+		}
+	}
+	if len(wanted) == 0 {
+		return false
+	}
+	indexRead := false
+	if indexReader, ok := s.workflowStore.(SessionIndexReader); ok {
+		if sessions, err := indexReader.ListAllProviderSessions(context.Background()); err == nil {
+			indexRead = true
+			for _, sess := range sessions {
+				if strings.TrimSpace(sess.ParentRunID) != runID {
+					continue
+				}
+				if _, hit := wanted[strings.TrimSpace(sess.Label)]; hit {
+					return true
+				}
+			}
+		}
+	}
+	s.mu.Lock()
+	found := false
+	for _, c := range s.runs {
+		if c == nil || strings.TrimSpace(c.parentRunID) != runID {
+			continue
+		}
+		if _, hit := wanted[strings.TrimSpace(c.label)]; hit {
+			found = true
+			break
+		}
+	}
+	s.mu.Unlock()
+	if found {
+		return true
+	}
+	// Neither the durable index nor live memory shows a launched child. When
+	// the index itself was never readable, stay fail-closed: claim the launch
+	// happened rather than risk a duplicate.
+	if !indexRead {
+		return true
+	}
+	return false
+}
+
 // reconstructRunDeferred loads a child without auto-scheduling pending gates /
 // durable intents so the parent can finish cohortExpected + sibling buffers
 // first (V10R4 P0 atomic cohort recovery).
@@ -951,9 +1006,27 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 	// (the flow runs attach to the ORIGIN leg's run id) — healing that to
 	// pending would let a retry forward launch the same flow a second time.
 	// Only heal first-leg rows: started + no topology + no switch marker.
-	if restoredFlowArm == FlowArmStarted && len(st.ActiveFlowNodes) == 0 &&
-		strings.TrimSpace(st.SwitchFromRunID) == "" {
+	//
+	// CP-89 review R4-2: started + topology only proves the durable flip
+	// committed — NOT that the launch ran. The launch's durable proof is the
+	// flow's child row (parent_run_id=run, label=node id); non-terminal
+	// records are never pruned, so its absence means the process died between
+	// commit and spawn. Healing to pending lets the retry forward relaunch
+	// cleanly instead of wedging on flow_already_started with a flow that
+	// never ran. An unreadable session index fails closed toward keeping
+	// started — a wrong heal would double-launch.
+	if restoredFlowArm == FlowArmStarted && strings.TrimSpace(st.SwitchFromRunID) == "" &&
+		(len(st.ActiveFlowNodes) == 0 || !s.flowEntryChildExists(st.RunID, st.ActiveFlowNodes)) {
 		restoredFlowArm = FlowArmPending
+	}
+	// Topology only restores when the latch still says the flow launched — a
+	// healed-to-pending row's orphan nodes must not feed the pack-ref
+	// inference either (the pin lives on ChatFlowRef for a pending run).
+	restoredFlowNodes := st.ActiveFlowNodes
+	restoredFlowEdges := st.ActiveFlowEdges
+	if restoredFlowArm == FlowArmPending {
+		restoredFlowNodes = nil
+		restoredFlowEdges = nil
 	}
 	rs := &interactiveRun{
 		id:                     st.RunID,
@@ -1058,10 +1131,10 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 		suppressAutoGateResume:          deferGate,
 		autoOrchestrate:                 st.AutoOrchestrate,
 		flowCohortId:                    st.FlowCohortID,
-		activeFlowEdges:                 append([]agentpack.FlowEdge(nil), st.ActiveFlowEdges...),
-		activeFlowNodes:                 append([]agentpack.FlowNode(nil), st.ActiveFlowNodes...),
+		activeFlowEdges:                 append([]agentpack.FlowEdge(nil), restoredFlowEdges...),
+		activeFlowNodes:                 append([]agentpack.FlowNode(nil), restoredFlowNodes...),
 		chatSubMode:                     st.ChatSubMode,
-		chatFlowRef:                     inferPackFlowRefFromNodes(st.ActiveFlowNodes, st.ChatFlowRef),
+		chatFlowRef:                     inferPackFlowRefFromNodes(restoredFlowNodes, st.ChatFlowRef),
 		flowArm:                         restoredFlowArm,
 		workingMode:                     st.WorkingMode,
 		vibeAwaitingLock:                st.VibeAwaitingLock,
@@ -1154,6 +1227,7 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 		// (active nodes, engine-driven flag, a deferred post-turn gate) on the
 		// row is corrupt and must not leak into the reconstructed chat run.
 		rs.activeFlowNodes = nil
+		rs.activeFlowEdges = nil
 		rs.flowEngineDriven = false
 		rs.pendingFlowGateSettle = false
 		rs.pendingFlowGateFinalMsg = ""
