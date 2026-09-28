@@ -3,7 +3,7 @@
 - Document ID: `CP-89-Test-Steps`
 - Title: `CP-89 Test Steps`
 - Phase: `coding-plan`
-- Status: `todo`
+- Status: `done`
 - Created: `2026-09-28`
 - Parent Documents: `CP-89`
 - Child Documents: ``
@@ -85,3 +85,44 @@ provider; `immediate` is provider-agnostic.
 - L-1 through L-13 executed or explicitly skipped with reason; each row has
   run IDs + evidence pointer.
 - `CP-89-Test-Steps` updated to `done` alongside the task docs.
+
+## 5. Execution Evidence (2026-09-28)
+
+Automated §2 — all green on `cp89`:
+
+- `go test -count=1 -run 'TestTask45[123]' ./internal/runner/` → PASS
+  (9 Task-451 + 11 Task-452 + 8 Task-453 incl. real-file ndjson
+  round-trip + pending-vibe chat-turn fence regression)
+- `go test -race -count=1 -run 'TestTask45[123]'` → PASS
+- Full `internal/runner` — failures limited to pre-existing env noise
+  (missing provider/tooling binaries, same baseline as CP-88).
+
+Live §3 — `LIVE=1 CP89_LIVE_PROVIDER=devin CP89_LIVE_PROVIDER_ALT=grok
+go test -run TestCP89Live -v` → **PASS (292s)**, 10 executed + 3 named
+skips on a real `flowpilot runner serve` process:
+
+| # | Result | Evidence |
+|---|---|---|
+| L-1 | PASS | run-1, entry child run-6 `contract-planner` |
+| L-2 | PASS | run-14 chat ×3, `flow_arm=pending`, no children |
+| L-3 | PASS | run-53 forward → `flow_arm=started`, child run-77 |
+| L-4 | PASS | run-85 bare forward → child run-90 (not a 400) |
+| L-5 | SKIP | L-3's flow still live at 4min → `hub_parked` 409; typed 422 unit-covered by `TestTask452_ForwardOnStarted` |
+| L-6 | PASS | run-126 → 422 `forward_requires_flow_pin` |
+| L-7 | PASS | run-129: bare forward → 422 `invalid_cp_source`, latch stayed pending; +`sourceDocId` → child run-154 |
+| L-8 | PASS | run-162 create-pin `sourceDocId` → forward OK, child run-167 |
+| L-9 | PASS | run-1154 killed mid-pending → restart → latch pending → forward works (child run-1210) |
+| L-10 | PASS | run-1218 reconstructed as started flow run |
+| L-11 | SKIP | latch rode leg switch (`flow_arm=pending` on run-1246); grok leg forward blocked by `quota_route_required` — provider-side, leg-inheritance proven |
+| L-12 | SKIP | flow defs are `go:embed`'d — no live corrupt seam; unit-covered by `TestTask452_CorruptDefinitionFailsClosed` |
+| L-13 | PASS | run-1253 deleted mid-pending → no children, no flow rows |
+
+Provider matrix: devin executed end-to-end; grok binary present but
+quota-blocked at claim time (named skip). claude/codex/opencode binaries
+absent (named skip). `immediate` is provider-agnostic.
+
+Two production gaps were caught BY the live harness and fixed red-first:
+`sessions.ndjson` dropped `flow_arm` entirely (CA-642 addendum +
+`TestTask451_FlowArmSurvivesSessionsNDJSONRoundTrip`), and the BUG-399
+admission ingest-fence fired on pending runs' first CHAT turn
+(CA-643 addendum + `TestTask452_PendingVibeChatTurnNotIngestFenced`).

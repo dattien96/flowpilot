@@ -3,7 +3,7 @@
 - Document ID: `Task-452`
 - Title: `Explicit forward turn: admission field, pinned-ref resolution seam, first-turn fences at forward time, typed errors`
 - Phase: `task`
-- Status: `todo`
+- Status: `done`
 - Created: `2026-09-28`
 - Parent Documents: `CP-89`, `Task-451`
 - Related Documents: `Task-453` (entry prompt), `CP-89-Test-Steps`, BUG-261/BUG-315 (gates that must not soften)

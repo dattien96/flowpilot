@@ -3,7 +3,7 @@
 - Document ID: `Task-451`
 - Title: `Run-level flowArm latch (immediate|pending|started) — admission field, durable homes, restart/switch semantics`
 - Phase: `task`
-- Status: `todo`
+- Status: `done`
 - Created: `2026-09-28`
 - Parent Documents: `CP-89`
 - Related Documents: `CP-59` (chat SSOT), `CP-42`, `Task-452`, `Task-453`, `CP-89-Test-Steps`

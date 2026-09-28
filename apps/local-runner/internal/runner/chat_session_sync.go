@@ -82,6 +82,11 @@ type ChatSessionSyncManifest struct {
 	// selection (BUG-263) so a restored run keeps its Bug/Review-Loop intent.
 	ChatSubMode string `json:"chatSubMode,omitempty"`
 	ChatFlowRef string `json:"chatFlowRef,omitempty"`
+	// FlowArm carries the CP-89 run-scoped launch latch across a Drive restore
+	// (same durability rule as TurnCount above): a pending run must restore
+	// pending — not silently re-arm immediate and start the flow on the next
+	// plain turn. omitempty: absent == pre-CP-89 == immediate.
+	FlowArm string `json:"flowArm,omitempty"`
 	// TurnCount carries the hub's completed-turn count (BUG-315). The flow's
 	// entry nodes are started only on a run's genuine first turn, gated on
 	// turnCount==0 (startTurn) and re-resolved from workflowID only then
@@ -474,6 +479,7 @@ func (s *InteractiveService) BuildChatSessionSyncManifest(ctx context.Context, r
 		PendingAgentContext: append([]string(nil), session.PendingAgentContext...),
 		ChatSubMode:         session.ChatSubMode,
 		ChatFlowRef:         session.ChatFlowRef,
+		FlowArm:             session.FlowArm,
 		TurnCount:           session.TurnCount, // BUG-315
 		// BUG-476: carry the durable provider-leg identity so the manifest
 		// describes which leg of which logical chat it is.
@@ -1873,6 +1879,7 @@ func (s *InteractiveService) restoreChatRunTreeFromDrive(ctx context.Context, re
 		PendingAgentContext: append([]string(nil), manifest.PendingAgentContext...),
 		ChatSubMode:         manifest.ChatSubMode,
 		ChatFlowRef:         manifest.ChatFlowRef,
+		FlowArm:             manifest.FlowArm,
 		TurnCount:           manifest.TurnCount, // BUG-315
 		// BUG-476: restore the leg's logical-chat identity so the restored chat
 		// groups correctly via ListProviderSessionsByChat and keeps its history.

@@ -3,7 +3,7 @@
 - Document ID: `Task-453`
 - Title: `Entry-node prompt = forward text + bounded settled chat transcript, packed via promptpacker`
 - Phase: `task`
-- Status: `todo`
+- Status: `done`
 - Created: `2026-09-28`
 - Parent Documents: `CP-89`, `Task-452`
 - Related Documents: `Task-341` (context profiles), `promptpacker`, `CP-89-Test-Steps`

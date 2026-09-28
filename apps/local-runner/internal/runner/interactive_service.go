@@ -527,6 +527,12 @@ type interactiveRun struct {
 	// can restore the exact picker selection it was started with.
 	chatSubMode string
 	chatFlowRef string
+	// flowArm is the CP-89 run/chat-scoped launch latch (immediate|pending|
+	// started). It belongs to the run, not the provider leg — a provider
+	// switch carries it to the new leg. pending means a flow is pinned
+	// (chatFlowRef) but not started; an explicit forwardFlow turn flips it to
+	// started via setFlowArmStartedLocked (Task-452).
+	flowArm FlowArm
 	// planContextPackage is the FlowContextPackage built for the Plan step of this Flow
 	// Mode run. Non-nil only for workflow runs with a Coding step. Cached here so retries
 	// reuse the same package without rebuilding; cleared when a Plan step reruns (Task-169).
@@ -5059,6 +5065,7 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 		ActiveFlowNodes:            append([]agentpack.FlowNode(nil), rs.activeFlowNodes...),
 		ChatSubMode:                rs.chatSubMode,
 		ChatFlowRef:                rs.chatFlowRef,
+		FlowArm:                    string(rs.flowArm),
 		WorkingMode:                rs.workingMode,
 		QuotaRouting:               rs.quotaRouting,
 		VibeAwaitingLock:           rs.vibeAwaitingLock,
@@ -10105,6 +10112,90 @@ func clearDurableRecoveryStateLocked(rs *interactiveRun) {
 }
 
 // startTurn validates, enforces one-turn-per-session, applies idempotency, emits
+// ---- CP-89 Task-452 forward seam -------------------------------------------
+
+// resolvePinnedFlowRefForForward finds the run's pinned flow for a forward
+// turn. Order: the chat-mode pin (chatFlowRef) first, then a workflowID-
+// mounted pin (a pending workflow run's mount). No pin → 422
+// forward_requires_flow_pin — a forward on a plain chat run is meaningless.
+func resolvePinnedFlowRefForForward(rs *interactiveRun) (string, *apiErr) {
+	if ref := strings.TrimSpace(rs.chatFlowRef); ref != "" {
+		return ref, nil
+	}
+	if id := strings.TrimSpace(rs.workflowID); id != "" {
+		return id, nil
+	}
+	return "", newAPIErr(http.StatusUnprocessableEntity, "forward_requires_flow_pin",
+		"forwardFlow requires a pinned flow — create the run with flowRef or workflowID")
+}
+
+// runFirstTurnFences re-runs the same fences an immediate first-turn flow
+// start already enforces — working-mode family gate, vibe-cp-ingest source
+// contract, flow-definition validity — at FORWARD time. A failed fence must
+// not consume the pending latch (the caller returns before the flip), so the
+// user can fix the issue and forward again. The create-pinned SourceDocID
+// counts for the ingest fence; the forward turn's own value wins when both
+// are present.
+func (s *InteractiveService) runFirstTurnFences(ctx context.Context, rs *interactiveRun, flowRef string, in TurnInput) *apiErr {
+	if err := workingmode.FlowAllowedForWorkingMode(rs.workingMode, flowRef, "user"); err != nil {
+		return mapWorkingModeError(err)
+	}
+	if workingmode.BareFlowID(flowRef) == vibeCpIngestFlowID {
+		fenceIn := in
+		if strings.TrimSpace(fenceIn.SourceDocID) == "" {
+			fenceIn.SourceDocID = rs.sourceDocID
+		}
+		if e := s.validateVibeCpIngestSource(rs, fenceIn); e != nil {
+			return e
+		}
+	}
+	// NOTE: called with s.mu held (the forward path runs inside startTurn's
+	// locked section) — read the store field directly rather than via
+	// explicitFlowRefResolves, which takes s.mu itself and would deadlock.
+	if _, err := NewFlowDefinitionResolver(s.flowDefinitionStore).ResolveFlowRef(ctx, flowRef); err != nil {
+		return newAPIErr(http.StatusUnprocessableEntity, "invalid_flow_definition",
+			"pinned flow does not resolve to a valid flow definition")
+	}
+	return nil
+}
+
+// forwardPinnedFlow is the ONLY path that flips flowArm pending → started and
+// returns the resolved pin for the caller to spawn. Caller holds s.mu. The
+// latch flip, flowEngineDriven flag, and vibe start-marker arming happen
+// together — the forward IS the arm moment a pending run deferred at create.
+// Errors before the flip leave pending intact (retryable); there is no path
+// that consumes pending and then fails to start the flow.
+func (s *InteractiveService) forwardPinnedFlow(ctx context.Context, rs *interactiveRun, in TurnInput) (string, *apiErr) {
+	flowRef, pinErr := resolvePinnedFlowRefForForward(rs)
+	if pinErr != nil {
+		return "", pinErr
+	}
+	if rs.flowArm != FlowArmPending {
+		return "", newAPIErr(http.StatusUnprocessableEntity, "flow_already_started",
+			"this run's flow is not pending — it already started or never armed forward")
+	}
+	if e := s.runFirstTurnFences(ctx, rs, flowRef, in); e != nil {
+		return "", e
+	}
+	rs.setFlowArmStartedLocked()
+	rs.flowEngineDriven = true
+	// Flow-start turns lock YOLO=true before the async entry spawn so children
+	// inherit the product posture — same contract as the immediate first-turn
+	// block below (BUG-299 residual).
+	rs.yolo = true
+	rs.chatFlowRef = flowRef
+	if id := workingmode.BareFlowID(flowRef); id == vibeCpIngestFlowID || id == vibeIngestFlowID {
+		rs.vibeAwaitingLock = true
+		if rs.vibeSprintBudget <= 0 {
+			rs.vibeSprintBudget = defaultVibeSprintBudget
+		}
+		if id == vibeCpIngestFlowID {
+			rs.vibeLockedCP = rs.sourceDocID
+		}
+	}
+	return flowRef, nil
+}
+
 // turn_started, and launches the adapter. Returns the turnId.
 func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, idempotencyKey string) (string, *apiErr) {
 	s.mu.Lock()
@@ -10269,7 +10360,14 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 	// flowRef directly, so enforce the contract here at admission. Only the
 	// flow-starting turn (turnCount==0, non-restored) is checked — follow-ups
 	// and Drive-restored runs already passed it on the source machine.
+	// CP-89 Task-452: a flowArm=pending run does NOT start the flow on this
+	// turn — its chat turns stay plain and the ingest fence fires at forward
+	// time instead (runFirstTurnFences, which also honors the create-pinned
+	// SourceDocID). Without the immediate check, a pending vibe-cp-ingest
+	// run's first plain chat turn would be fenced as if the flow were
+	// starting — chat would be dead until the user pasted a source.
 	if rs.turnCount == 0 && strings.TrimSpace(rs.restoredFrom) == "" &&
+		rs.flowArm == FlowArmImmediate &&
 		workingmode.BareFlowID(strings.TrimSpace(in.FlowRef)) == vibeCpIngestFlowID {
 		if e := s.validateVibeCpIngestSource(rs, in); e != nil {
 			s.mu.Unlock()
@@ -10512,11 +10610,52 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 	// is cancelled here and re-armed when this turn completes).
 	s.cancelChatSummary(rs.id)
 	if !isPreparedRelaunch {
-		if rs.turnCount == 0 {
+		// CP-89 Task-452: the forwardFlow seam runs BEFORE the ordinary
+		// turnCount==0 flow-start block. forwardFlow is the only way a
+		// flowArm=pending run starts its pinned flow — explicit, deterministic,
+		// never inferred from prompt content. A failed fence returns before the
+		// latch flips: pending is not consumed, the user fixes the issue and
+		// retries. On success the latch atomically goes pending→started and the
+		// pinned flow launches through the same startResolvedFlow path an
+		// immediate first turn uses (flowStartOnly suppresses this turn's own
+		// provider dispatch exactly like the first-turn flow start does).
+		if in.ForwardFlow {
+			flowRef, e := s.forwardPinnedFlow(context.Background(), rs, in)
+			if e != nil {
+				// Failed fence: no turn was launched — release the in-flight
+				// flag set above so the run is not stuck "running", and leave
+				// the pending latch untouched for the user's retry.
+				rs.turnInFlight = false
+				s.mu.Unlock()
+				return "", e
+			}
+			// CP-89 Task-453: the entry child's prompt = forward text pinned
+			// intact + the settled chat transcript, oldest material degrading
+			// first, under the entry node's hard context budget.
+			pkg, perr := s.buildForwardPromptPackage(rs, in.Prompt,
+				s.forwardEntryBudgetTokens(context.Background(), flowRef))
+			if perr != nil {
+				rs.turnInFlight = false
+				s.mu.Unlock()
+				return "", perr
+			}
+			s.flowDiagLog(runID, "forward_prompt_packed",
+				"forward entry prompt packed",
+				"turns_included", pkg.TurnsIncluded,
+				"bytes", pkg.Bytes,
+				"degraded", pkg.Degraded)
+			flowStartOnly = true
+			go s.startResolvedFlow(context.Background(), runID, flowRef, pkg.Prompt)
+		} else if rs.turnCount == 0 {
 			if changeType := normalizeChangeType(in.ChangeType); changeType != "" {
 				rs.changeType = changeType
 			}
-			rs.sourceDocID = resolveSourceDocID(rs.workspaceCwd, rs.changeType, in.SourceDocID)
+			// CP-89: a create-pinned SourceDocID (StartRunInput.SourceDocID)
+			// stays when this turn doesn't name one — the pin must survive to
+			// the forward-time ingest fence. An explicit turn value still wins.
+			if resolved := resolveSourceDocID(rs.workspaceCwd, rs.changeType, in.SourceDocID); resolved != "" {
+				rs.sourceDocID = resolved
+			}
 			// CP-42/Task-177: a validated flowRef on the first turn starts the
 			// built-in flow's entry node(s) deterministically instead of relying on
 			// the hub's own AI judgement to decide whether to spawn a review loop.
@@ -10552,7 +10691,10 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 			// manifest, which still restore with turnCount==0. flowEngineDriven is
 			// already restored by reconstructRun (via ActiveFlowNodes), so skipping
 			// here does not demote a restored hub to a plain chat.
-			if flowRef := strings.TrimSpace(in.FlowRef); flowRef != "" && strings.TrimSpace(rs.restoredFrom) == "" {
+			// CP-89 Task-451/452: only an immediate-armed run auto-starts a
+			// pinned flow on its first turn. A pending run MUST NOT start here —
+			// explicit forwardFlow is the only signal that flips the latch.
+			if flowRef := strings.TrimSpace(in.FlowRef); flowRef != "" && rs.flowArm == FlowArmImmediate && strings.TrimSpace(rs.restoredFrom) == "" {
 				flowStartOnly = true
 				rs.flowEngineDriven = true
 				// BUG-299 residual: chat-mode Review Loop (and any explicit flowRef)

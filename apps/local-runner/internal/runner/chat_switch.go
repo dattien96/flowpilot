@@ -347,6 +347,19 @@ func (s *InteractiveService) switchChatLeg(ctx context.Context, chatID string, r
 		// Task-449: a quota-committed switch carries the target account pin so
 		// the new leg never re-resolves the machine-global active account.
 		ProviderAccountID: req.ProviderAccountID,
+		// CP-89 Task-451: flowArm + the pin are run-scoped — the new leg
+		// inherits them so a pending latch survives a provider switch. The pin
+		// rides FlowRefFallback (internal carrier, never a user mount) so vibe
+		// markers stay governed by the latch, and the parent's working mode
+		// travels with it (a vibe pending run must stay vibe on the new leg).
+		FlowArm:         string(src.flowArm),
+		FlowRefFallback: src.chatFlowRef,
+		WorkingMode:     src.workingMode,
+		// The leg is engine-minted, not a user mount — the client and
+		// start-family gates were validated on the source leg's own create.
+		// (Without this the propagated vibe mode would hit CheckClient's
+		// user-facing "vibe is Desktop/TUI only" gate with no client header.)
+		SpawnedInternally: true,
 	}
 	if req.YoloMode != nil {
 		createInput.YoloMode = *req.YoloMode

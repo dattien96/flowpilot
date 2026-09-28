@@ -6,7 +6,7 @@
 - Title: `Flow launch — immediate start or chat-then-forward`
 - Kind: `note`
 - Date: `2026-09-27`
-- Status: `reviewed` — findings merged (§8); task breakdown: Task-451, Task-452, Task-453, CP-89-Test-Steps
+- Status: `done` — Task-451/452/453 shipped; L-1..L-13 executed (10 PASS + 3 named skips), see CP-89-Test-Steps §5
 - Related: CP-42 (flow start trên turn đầu), CP-60 (working mode), CP-59 (chat SSOT), `note/CP-89-review.md`
 
 ## 1. Issue

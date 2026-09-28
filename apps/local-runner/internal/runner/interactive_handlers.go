@@ -472,6 +472,12 @@ type turnBody struct {
 	// workflow-picker launch.
 	SubMode string `json:"subMode,omitempty"`
 	FlowRef string `json:"flowRef,omitempty"`
+	// ForwardFlow is the CP-89 explicit forward signal (Task-452): a bare
+	// {"forwardFlow":true} turn on a flowArm=pending run starts the pinned
+	// flow. It is the ONLY way pending flips to started — never model
+	// inference or prompt wording. Counts as actionable content for BUG-509's
+	// empty-body guard.
+	ForwardFlow bool `json:"forwardFlow,omitempty"`
 }
 
 func (s *InteractiveService) handleStartTurn(w http.ResponseWriter, r *http.Request) {
@@ -503,7 +509,8 @@ func (s *InteractiveService) handleStartTurn(w http.ResponseWriter, r *http.Requ
 	// model — so the content check is the guard.
 	if strings.TrimSpace(body.Prompt) == "" && len(body.Attachments) == 0 &&
 		strings.TrimSpace(body.FlowRef) == "" && strings.TrimSpace(body.SubMode) == "" &&
-		strings.TrimSpace(body.SourceDocID) == "" && strings.TrimSpace(body.ChangeType) == "" {
+		strings.TrimSpace(body.SourceDocID) == "" && strings.TrimSpace(body.ChangeType) == "" &&
+		!body.ForwardFlow {
 		writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "invalid_request", "prompt is required"))
 		return
 	}
@@ -570,7 +577,7 @@ func (s *InteractiveService) handleStartTurn(w http.ResponseWriter, r *http.Requ
 	}
 	turnID, e := s.startTurn(
 		r.PathValue("runId"),
-		TurnInput{StepID: body.StepID, Prompt: body.Prompt, ChangeType: body.ChangeType, SourceDocID: body.SourceDocID, SelectedSkills: body.SelectedSkills, ReasoningEffort: body.ReasoningEffort, Model: body.Model, YoloMode: body.YoloMode, ChatPosture: body.ChatPosture, Attachments: body.Attachments, SubMode: body.SubMode, FlowRef: body.FlowRef},
+		TurnInput{StepID: body.StepID, Prompt: body.Prompt, ChangeType: body.ChangeType, SourceDocID: body.SourceDocID, SelectedSkills: body.SelectedSkills, ReasoningEffort: body.ReasoningEffort, Model: body.Model, YoloMode: body.YoloMode, ChatPosture: body.ChatPosture, Attachments: body.Attachments, SubMode: body.SubMode, FlowRef: body.FlowRef, ForwardFlow: body.ForwardFlow},
 		body.Scenario,
 		r.Header.Get("Idempotency-Key"),
 	)
@@ -972,6 +979,18 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 		runKind = "chat"
 	}
 
+	// CP-89 Task-451: the flowArm latch is validated at create (pin time) —
+	// pending requires a flow pin and unknown values fail closed. `internal`
+	// (spawned children, switch legs) may carry "started"; a client may not.
+	hasFlowPin := strings.TrimSpace(in.FlowRef) != "" ||
+		strings.TrimSpace(in.FlowRefFallback) != "" ||
+		strings.TrimSpace(in.WorkflowID) != ""
+	flowArm, armErr := parseFlowArm(in.FlowArm, hasFlowPin,
+		in.SpawnedInternally || strings.TrimSpace(in.SwitchFromRunID) != "")
+	if armErr != nil {
+		return RunHandle{}, armErr
+	}
+
 	seedSteps := []RuntimeWorkflowStep{{
 		ID:               stepID,
 		StepType:         stepID,
@@ -1237,11 +1256,16 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 		subs:              map[int64]chan ProviderEvent{},
 		idempotency:       map[string]string{},
 		quotaRouting:      quotaSnapshot,
+		flowArm:           flowArm,
+		sourceDocID:       strings.TrimSpace(in.SourceDocID),
 	}
 	if ref := strings.TrimSpace(in.FlowRef); ref != "" {
 		rs.chatFlowRef = ref
+		// CP-89 F-3: pinning a flow and arming flow execution are separate —
+		// a pending run stamps chatFlowRef but keeps the vibe start markers
+		// off until the explicit forward turn (Task-452).
 		id := workingmode.BareFlowID(ref)
-		if id == vibeCpIngestFlowID || id == vibeIngestFlowID {
+		if flowArm == FlowArmImmediate && (id == vibeCpIngestFlowID || id == vibeIngestFlowID) {
 			rs.vibeAwaitingLock = true
 			rs.vibeSprintBudget = defaultVibeSprintBudget
 		}
@@ -1298,6 +1322,7 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 		Yolo:              resolvedYolo,
 		WorkingMode:       in.WorkingMode,
 		ChatFlowRef:       rs.chatFlowRef,
+		FlowArm:           string(rs.flowArm),
 		QuotaRouting:      quotaSnapshot,
 	}
 	worktreeFieldsToSession(&st, rs.worktree)

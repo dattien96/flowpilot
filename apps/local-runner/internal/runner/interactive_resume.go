@@ -932,6 +932,14 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 	if restoredWorkspaceCwd == "" && s.runner != nil {
 		restoredWorkspaceCwd = strings.TrimSpace(s.runner.workspace)
 	}
+	// CP-89 Task-451: restore the run-scoped flowArm latch. Empty (legacy row)
+	// resolves immediate; pending restores as a chat run — the pin stays but
+	// no flow machinery arms; started must not re-arm. A corrupt value fails
+	// closed — never a zero-value resume.
+	restoredFlowArm, armErr := parsePersistedFlowArm(st.FlowArm)
+	if armErr != nil {
+		return nil, armErr
+	}
 	rs := &interactiveRun{
 		id:                     st.RunID,
 		projectID:              st.ProjectID,
@@ -1039,6 +1047,7 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 		activeFlowNodes:                 append([]agentpack.FlowNode(nil), st.ActiveFlowNodes...),
 		chatSubMode:                     st.ChatSubMode,
 		chatFlowRef:                     inferPackFlowRefFromNodes(st.ActiveFlowNodes, st.ChatFlowRef),
+		flowArm:                         restoredFlowArm,
 		workingMode:                     st.WorkingMode,
 		vibeAwaitingLock:                st.VibeAwaitingLock,
 		vibeTaskPlan:                    append([]string(nil), st.VibeTaskPlan...),
@@ -1091,6 +1100,14 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 		preflightDraftResult:      st.PreflightDraftResult,
 		lastFailedDelegateNodeID:  st.LastFailedDelegateNodeID,
 		lastEscalatedInlineNodeID: st.LastEscalatedInlineNodeID,
+	}
+	// CP-89 Task-451: a pending run reconstructs as chat — the pin stays but
+	// vibe start markers stay off (pin ≠ arm). A legacy/corrupt row carrying
+	// both pending AND armed markers normalizes toward the latch, which is
+	// authoritative (markers are derived state, the latch is the contract).
+	if restoredFlowArm == FlowArmPending {
+		rs.vibeAwaitingLock = false
+		rs.vibeSprintBudget = 0
 	}
 	if !rs.accountPinned {
 		if claim, ok := s.activeQuotaClaimForRun(rs.id, rs.providerKey); ok {
