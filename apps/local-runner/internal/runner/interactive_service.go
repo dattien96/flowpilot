@@ -2446,7 +2446,20 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 		return st
 	})
 	if !wasBlocked {
-		return snap, nil
+		// BUG-551 seam 1 (live run-15525): an already-"running" loop can be
+		// dead — a cap-blocked reinvoke or a turn cancelled by the escalate
+		// freeze leaves loop=running with zero in-flight work and zero armed
+		// intents. Early-returning here made continue/feedback inert forever.
+		// Carry the operator feedback into pendingAgentContext so the
+		// redriven hub turn consumes it (startTurn drains it atomically),
+		// then fall through to the same quiet-redrive seam resumePendingLoopWork
+		// owns; redriveQuietFlowLoop self-gates on flow topology + the full
+		// quiet predicate, so a busy loop is untouched.
+		if feedback != "" {
+			s.appendPendingAgentContext(parentRunID, "Operator feedback: "+feedback)
+		}
+		s.redriveQuietFlowLoop(parentRunID)
+		return s.agentGraphSnapshot(parentRunID), nil
 	}
 
 	// BUG-284: a hub.notify reinvoke that was blocked (re-armed in
@@ -3778,6 +3791,12 @@ func (s *InteractiveService) maybeAutoReinvokeHubWithNote(parentRunID, cohortNot
 		s.flowDiagLog(parentRunID, "hub_reinvoke_cap_blocked", "hub reinvoke blocked by round cap",
 			"cohort_note_len", len(strings.TrimSpace(cohortNote)),
 		)
+		// BUG-551 adjacent (same class as run-220036): the reinvoke was
+		// silently dropped on a still-"running" loop and nothing re-arms —
+		// this is exactly how the escalate→cap wedge went quiet in the live
+		// run. Arm the hub watchdog so the dead loop re-surfaces as an
+		// actionable hub_stalled card (continue/extend-cap can then unblock).
+		s.maybeScheduleHubStallCheck(parentRunID)
 		return
 	}
 	stepID := s.nextID("step")
@@ -3889,6 +3908,10 @@ func (s *InteractiveService) maybeAutoReinvokeHubWithPrompt(parentRunID, prompt 
 		parent.pendingHubReinvokePrompt = prompt
 		s.mu.Unlock()
 		s.flowDiagLog(parentRunID, "hub_notify_reinvoke_cap_blocked", "hub.notify reinvoke blocked by round cap; re-armed for resume")
+		// BUG-551 adjacent: the armed RAM intent blocks the quiet predicate
+		// but nothing will drain it while no turn is in flight — arm the
+		// watchdog so the wedged loop re-surfaces as hub_stalled.
+		s.maybeScheduleHubStallCheck(parentRunID)
 		return
 	}
 	stepID := s.nextID("step")
@@ -4590,11 +4613,19 @@ func (s *InteractiveService) redriveQuietFlowLoop(parentRunID string) {
 		s.mu.Unlock()
 		return
 	}
+	// BUG-551 seam 2 (live run-15525): pendingAgentContext is NOT evidence of
+	// work-in-flight — it is input FOR the hub turn. Every predicate that
+	// proves a turn is already armed to drain it (turnInFlight,
+	// reinvokeInFlight, pendingRestart*, pendingHubReinvoke, pendingResume*,
+	// pendingFlowGateSettle) is checked separately above. When none of those
+	// hold, the note is ORPHANED — its owning turn was cancelled by an
+	// escalate freeze or cap-blocked drop — and re-driving the hub is exactly
+	// how it gets consumed. Treating it as "a turn is coming" made the wedge
+	// durable: quiet=false forever, no turn ever dispatched.
 	quiet := !rs.turnInFlight && !rs.reinvokeInFlight &&
 		rs.pendingRestartRunID == "" && rs.pendingGateRepromptPrompt == "" &&
 		rs.pendingResumePrompt == "" && !rs.pendingHubReinvoke &&
 		!rs.pendingFlowGateSettle && rs.pendingApprovalID == "" && rs.pendingQuestionID == "" &&
-		len(rs.pendingAgentContext) == 0 &&
 		!rs.vibeAwaitingLock && !rs.vibeResumeConfirm && !rs.vibeSprintBoundaryPending &&
 		!rs.vibeSprintStartInFlight && !rs.vibeSprintBoundaryDeclined
 	if quiet {

@@ -1781,6 +1781,21 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 			}
 		}
 	}
+	// BUG-551 seam 3 (live run-15525): the hub-stall watchdog is in-memory —
+	// a rehydrated flow root whose durable loop is still "running" but whose
+	// turn died with the old process never re-arms it, so the recovery path
+	// that re-blocks a running-but-dead loop (and thereby gives continue a
+	// real surface) is lost on restart. Re-arm whenever the reconstructed
+	// root is non-terminal; maybeScheduleHubStallCheck self-gates on
+	// flowEngineDriven + loop status, and checkAndBlockStalledHub re-arms
+	// itself while real work is in flight — a healthy run pays one timer.
+	s.mu.Lock()
+	live := rs.parentRunID == "" && rs.status != RunStatusCompleted &&
+		rs.status != RunStatusFailed && rs.status != RunStatusCancelled
+	s.mu.Unlock()
+	if live {
+		s.maybeScheduleHubStallCheck(rs.id)
+	}
 	return rs, nil
 }
 

@@ -1,7 +1,10 @@
 # BUG-551 — resume-path quiet wedge: escalate park + cap-blocked reinvoke leaves loop "running" with no turn
 
 ## Status
-OPEN — filed from live run-15525 verification (CA-1062/1063/1064), no fix yet.
+RESOLVED — CA-1066. All three seams + the adjacent cap-blocked watchdog
+hole are fixed; 4 regression tests in
+`internal/runner/bug551_quiet_wedge_recovery_test.go` (RED→GREEN
+verified).
 
 ## Live-found during
 Post-fix live verification on `:4421` (runner v3, `/tmp/fp-vibe-item2`
