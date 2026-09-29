@@ -3,6 +3,7 @@ package runner
 import (
 	"testing"
 
+	"flowpilot-runner/internal/agentpack"
 	"flowpilot-runner/internal/flowgate"
 	"flowpilot-runner/internal/workingmode"
 )
@@ -113,6 +114,94 @@ func TestStashVibeFlowForDebate_ClearsDriftLadderActions(t *testing.T) {
 	if st.pendingNote != "" || st.pendingNarrow {
 		t.Fatalf("pending ladder actions must be dropped before a debate turn: note=%q narrow=%v",
 			st.pendingNote, st.pendingNarrow)
+	}
+}
+
+// CA-1063: drift-only escalation must not re-mount the owner debate while the
+// hub is already inside it. Debate turns are deliberation — zero file deltas
+// is their normal outcome, so zero_delta_progress-driven drift re-mounts loop
+// remediation forever and the interrupted sprint node never resumes (live
+// run-15525: scores 80→100 mounted a fresh debate on every debate_synthesis
+// turn; parked_gated_run_ids consumed without the chain ever advancing).
+func TestVibeDriftOnlyResolver_SuppressedInsideDebate(t *testing.T) {
+	t.Setenv("FLOWPILOT_ENABLE_DRIFT_DETECTOR", "1")
+	svc, _ := newTestServer(t)
+	parent, err := svc.createRun(StartRunInput{
+		ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex,
+		WorkingMode: "vibe", Client: "tui",
+	})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	svc.mu.Lock()
+	rs := svc.runs[parent.RunID]
+	rs.vibeParkedNodes = []agentpack.FlowNode{{ID: "tdd"}}
+	svc.mu.Unlock()
+
+	st := driftStateFor(svc, parent.RunID)
+	st.mu.Lock()
+	st.lastScore = 95
+	st.mu.Unlock()
+
+	if svc.applyVibeDriftOnlyResolver(parent.RunID, "", rs) {
+		t.Fatal("drift-only resolver must not re-mount the owner debate while the hub is already inside it")
+	}
+}
+
+// Same suppression when the flagged turn is the debate flow itself — the
+// sprint topology was already restored/cleared but the debate ref is still
+// the active chat flow (synthesis turn settling before its done edge).
+func TestVibeDriftOnlyResolver_SuppressedOnDebateFlowTurn(t *testing.T) {
+	t.Setenv("FLOWPILOT_ENABLE_DRIFT_DETECTOR", "1")
+	svc, _ := newTestServer(t)
+	parent, err := svc.createRun(StartRunInput{
+		ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex,
+		WorkingMode: "vibe", Client: "tui",
+	})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	svc.mu.Lock()
+	rs := svc.runs[parent.RunID]
+	rs.chatFlowRef = workingmode.PackPrefix + vibeOwnerDebateFlowID
+	svc.mu.Unlock()
+
+	st := driftStateFor(svc, parent.RunID)
+	st.mu.Lock()
+	st.lastScore = 95
+	st.mu.Unlock()
+
+	if svc.applyVibeDriftOnlyResolver(parent.RunID, "", rs) {
+		t.Fatal("drift-only resolver must not mount on a turn of the debate flow itself")
+	}
+}
+
+// Child-turn surface: a vibe child's clean-gate drift routes through the hub —
+// suppress by the HUB's debate state, not the child's own flow ref.
+func TestVibeDriftOnlyResolver_ChildSuppressedWhenHubInDebate(t *testing.T) {
+	t.Setenv("FLOWPILOT_ENABLE_DRIFT_DETECTOR", "1")
+	svc, _ := newTestServer(t)
+	parent, err := svc.createRun(StartRunInput{
+		ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex,
+		WorkingMode: "vibe", Client: "tui",
+	})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	svc.mu.Lock()
+	parentRs := svc.runs[parent.RunID]
+	parentRs.vibeParkedNodes = []agentpack.FlowNode{{ID: "tdd"}}
+	svc.mu.Unlock()
+
+	childID := "run-vibe-drift-child"
+	childRs := &interactiveRun{id: childID, parentRunID: parent.RunID, workingMode: workingmode.Vibe}
+	st := driftStateFor(svc, childID)
+	st.mu.Lock()
+	st.lastScore = 95
+	st.mu.Unlock()
+
+	if svc.applyVibeDriftOnlyResolver(childID, parent.RunID, childRs) {
+		t.Fatal("drift-only resolver must suppress a child turn while the hub is inside the owner debate")
 	}
 }
 
