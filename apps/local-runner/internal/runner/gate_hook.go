@@ -2168,7 +2168,17 @@ func (s *InteractiveService) SubmitGateDecision(runID, option, customText string
 	rs := s.runs[runID]
 	if rs == nil {
 		s.mu.Unlock()
-		return newAPIErr(404, "run_not_found", "workflow run not found")
+		// Post-restart the run may exist durably without being resident yet —
+		// reconstruct it before answering run_not_found.
+		if _, aerr := s.ensureRunResident(runID); aerr != nil {
+			return aerr
+		}
+		s.mu.Lock()
+		rs = s.runs[runID]
+		if rs == nil {
+			s.mu.Unlock()
+			return newAPIErr(404, "run_not_found", "workflow run not found")
+		}
 	}
 	if rs.vibeSprintBoundaryPending {
 		opt := strings.ToLower(strings.TrimSpace(option))

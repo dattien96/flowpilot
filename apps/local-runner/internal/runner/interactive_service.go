@@ -2353,11 +2353,8 @@ func upstreamCodeWriterForNode(edges []agentpack.FlowEdge, nodes []agentpack.Flo
 // again (the desktop form reappears). No-op (returns the current snapshot,
 // no error) if the loop is not currently blocked — safe to call more than once.
 func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string) (AgentGraphSnapshot, error) {
-	s.mu.Lock()
-	_, runExists := s.runs[parentRunID]
-	s.mu.Unlock()
-	if !runExists {
-		return AgentGraphSnapshot{}, fmt.Errorf("resumeFlowWithFeedback: run %q not found", parentRunID)
+	if _, aerr := s.ensureRunResident(parentRunID); aerr != nil {
+		return AgentGraphSnapshot{}, aerr
 	}
 
 	feedback = strings.TrimSpace(feedback)

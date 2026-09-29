@@ -2218,11 +2218,8 @@ func (s *InteractiveService) handleSubmitFlowControl(w http.ResponseWriter, r *h
 			return
 		}
 	}
-	s.mu.Lock()
-	_, runExists := s.runs[runID]
-	s.mu.Unlock()
-	if !runExists {
-		writeInteractiveError(w, newAPIErr(http.StatusNotFound, "run_not_found", "workflow run not found"))
+	if _, aerr := s.ensureRunResident(runID); aerr != nil {
+		writeInteractiveError(w, aerr)
 		return
 	}
 	// CP-67 P-1: the coder's batch is buffered record-only for the
@@ -2307,6 +2304,14 @@ func (s *InteractiveService) handleContinueFlow(w http.ResponseWriter, r *http.R
 	feedback := body.Feedback
 	if strings.TrimSpace(feedback) == "" {
 		feedback = body.Text
+	}
+	// Post-restart the run may exist durably without being resident yet —
+	// reconstruct it up front so memberAction/captureDecisionChoice and the
+	// resume all see the same run instead of answering run_not_found (or
+	// silently no-op'ing the member action) on a run that exists.
+	if _, aerr := s.ensureRunResident(runID); aerr != nil {
+		writeInteractiveError(w, aerr)
+		return
 	}
 	if strings.TrimSpace(body.MemberAction.Action) != "" {
 		snap, handled, err := s.handleMemberAction(runID, body.MemberAction)

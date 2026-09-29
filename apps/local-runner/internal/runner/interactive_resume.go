@@ -5642,6 +5642,22 @@ func relocateGeminiProjectConfig(srcPath, targetHome, projectID string) (string,
 	return dstPath, nil
 }
 
+// ensureRunResident resolves a run for mutation endpoints: resident first,
+// then the durable session row — post-restart a durably parked/blocked run is
+// not in s.runs yet but still exists, so run_not_found for it is a lie
+// (R.2 item 5; live run-1 404'd on continue while durably blocked). Absent
+// row → run_not_found; unreadable store → workflow_state_unavailable (the
+// loadPersistedRun contract). Not safe to call while holding s.mu.
+func (s *InteractiveService) ensureRunResident(runID string) (*interactiveRun, *apiErr) {
+	s.mu.Lock()
+	rs := s.runs[runID]
+	s.mu.Unlock()
+	if rs != nil {
+		return rs, nil
+	}
+	return s.loadPersistedRun(runID)
+}
+
 func (s *InteractiveService) loadPersistedRun(runID string) (*interactiveRun, *apiErr) {
 	reader, ok := s.workflowStore.(SessionHistoryReader)
 	if !ok {
