@@ -290,3 +290,103 @@ Assertion-red reproductions first, then production fixes (see
 Tests: `cp89_review5_test.go` — 6 tests, all assertion-red before the fixes.
 Verification: focused + `-race` green on the CP-89 set; live re-run on the
 rebuilt binary recorded in the review note.
+
+## Review pass 6 (R6-*) — restore merge + evidence correction
+
+Two findings, both reproduced assertion-red before fixing:
+
+1. **Local-ahead Drive restore regressed the latch (R6-1, Critical).**
+   `applyLocalAheadSessionFields` now also preserves `flowArm`,
+   `sourceDocID`, `workingMode`, `changeType`, `chatSubMode`,
+   `vibeLockedCP`, `vibeCpDocID` when the local rollout is ahead — a
+   synced-pending-then-forwarded chat no longer restores the stale
+   manifest's `pending` (which would let a retry double-launch a flow with
+   live children). Non-empty guards match the existing merge convention.
+2. **Transition evidence without a child wedged the run (R6-2, Important —
+   corrects R5-5).** The R5-5 evidence extension kept `started` on a
+   transition-only row, but the resume machinery only continues existing
+   children — zero child rows meant nothing resumed and forward wedged on
+   `flow_already_started`. Reverted to child-row-only launch evidence
+   (child row = synchronous spawn commit); transition-only rows heal to
+   pending and retry relaunches. The `TestR5_StepTransitionEvidence
+   KeepsStarted` assertion was repinned as
+   `TestR5_StepRowEvidenceWithoutChildHealsPending` (step-row variant of the
+   same contract); the transition-line variant is
+   `TestR6_TransitionEvidenceWithoutChildHealsPending`.
+
+Tests: `cp89_review6_test.go` (2 new red-first tests) + repinned step-row
+test. Focused + `-race` green; live suite re-run recorded in the review note.
+
+## Review pass 7 (R7-*) — same-file re-restore + unengaged child evidence
+
+Two findings, both reproduced assertion-red before fixing:
+
+1. **Byte-identical provider file disabled the local-ahead merge (R7-1,
+   Critical).** The merge was gated on the rollout FILE extending the
+   synced snapshot, but a forward turn commits durable latch state without
+   appending provider bytes — a synced-pending-then-forwarded chat
+   re-restores with a byte-identical file and regressed the local
+   `started` latch back to the stale manifest's `pending` (double-launch
+   exposure). The merge now also runs when the manifest is THIS machine's
+   own snapshot resolving onto the existing local row (`selfRerestore`) —
+   the local row is never behind a snapshot this machine wrote. Foreign
+   manifests still skip the merge: the remote lineage owner may
+   legitimately be newer. Test: `TestR7_SameFileReRestoreKeepsLocalAhead
+   FlowArm`.
+2. **Minted-but-never-engaged child row counted as launch proof (R7-2,
+   Critical).** spawnChildRun persists the child row before scheduling its
+   first turn; a kill in the gap leaves an idle TurnCount=0 row that no
+   recovery path can re-drive (first prompt is not durable). The parent
+   wedged `started` with forward answering `flow_already_started`. The
+   durable evidence path now requires engagement
+   (`flowEntryChildRowEngaged`): TurnCount>0, non-idle status,
+   dependency-parked wait, or pending durable intent. Unengaged rows heal
+   the parent to pending so the retry relaunches. Tests:
+   `TestR7_IdleEntryChildRowDoesNotProveLaunch`,
+   `TestR7_WaitingDependencyChildKeepsStarted` (control).
+
+Residual (documented): a manually spawned child deliberately labeled with
+a flow node id that actually ran still counts as evidence — its work is
+real, so treating it as the entry is defensible.
+
+Tests: `cp89_review7_test.go` (3 new red-first tests). Focused + `-race`
+green; restore/sync sweep green standalone.
+
+## Review pass 8 (R8-*) — regression audit: switch-leg ref, heal veto, monotonic latch
+
+Three findings, all reproduced assertion-red before fixing:
+
+1. **Switched leg re-launched an already-running flow (R8-1, Critical —
+   regression from the Task-451 pin ride).** FlowRefFallback carried
+   src.chatFlowRef unconditionally; a launched flow (flowEngineDriven) on a
+   new turnCount=0 leg resolved as a first-turn mount in
+   resolveWorkflowFlowRef whenever the seed turn failed/never ran —
+   re-running the whole flow on the switched leg. Fix: the ref rides only
+   while the launch is still possible (`switchLegFlowRefFallback` drops it
+   once flowEngineDriven is set; pending latch keeps its forward target).
+   The flowArm+driven pair is snapshotted under s.mu to prevent a torn
+   read while a forward commits mid-switch. Tests:
+   `TestR8_SwitchedLegDoesNotRelaunchLaunchedFlow`,
+   `TestR8_SwitchedLegKeepsPendingForwardTarget` (control).
+2. **R7-2 heal wiped mid-topology-swap vibe progress (R8-2, Critical).**
+   A sprint/debate swap leaves the parent row on the NEW topology while
+   engaged children carry PARKED node ids and the new entry child is still
+   minted-idle — the current-topology evidence scan found nothing, healed
+   to pending, and pending normalization wiped lock/plan/index/parked
+   topology. Fix: VibeParkedNodes/VibeTaskPlan are post-launch progress
+   markers that veto the heal; the in-memory scan now applies the same
+   engagement check (`flowEntryRunEngaged`) closing the R7-2 asymmetry.
+   Test: `TestR8_TopologySwapEngagedChildKeepsStartedAndProgress`.
+3. **Foreign re-restore downgraded a committed latch (R8-3, Important —
+   R7-1 residual).** A restored copy of ANOTHER machine's chat that
+   forwarded locally hit neither localAhead nor selfRerestore, so the
+   foreign stale pending manifest overwrote `started`. Fix: the latch is
+   monotonic — an existing local `started` row can never be downgraded by
+   any manifest; `preserveCommittedFlowLatch` carries the latch + adopted
+   pin/mode + committed topology + turn count. Test:
+   `TestR8_ForeignRerestoreKeepsCommittedFlowLatch`.
+
+Tests: `cp89_review8_test.go` (4 new red-first tests). Focused + `-race`
+green on the CP-89 set; the only sweep flakes reproduce on baseline
+(pre-existing test-infra races / provider-accounts config clobber).
+Live re-verification recorded in the review note.

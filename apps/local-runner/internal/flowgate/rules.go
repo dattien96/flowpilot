@@ -167,14 +167,22 @@ type TurnResult struct {
 	CoderRenegotiating bool `json:"coder_renegotiating,omitempty"`
 	// ScaffoldExpected arms r-scaffold-red for a scaffold turn;
 	// ScaffoldCompileFailed carries the suite-output classification.
-	ScaffoldExpected       bool `json:"scaffold_expected,omitempty"`
-	ScaffoldCompileFailed  bool `json:"scaffold_compile_failed,omitempty"`
+	ScaffoldExpected      bool `json:"scaffold_expected,omitempty"`
+	ScaffoldCompileFailed bool `json:"scaffold_compile_failed,omitempty"`
 	// CP-67 P-2b (Task-383, B-11): static stub-body whitelist signals.
 	// ScaffoldBodyNonStub is true when any declared symbol's body sits
 	// outside the stub whitelist; NonStubSymbols names them as
 	// "symbol:line" for the reprompt.
 	ScaffoldBodyNonStub bool     `json:"scaffold_body_non_stub,omitempty"`
 	NonStubSymbols      []string `json:"non_stub_symbols,omitempty"`
+	// ScaffoldRedWaived marks a scaffold turn whose declared contract
+	// (requirements/.flowpilot/vibe/tdd-signatures.md) records a zero-red
+	// expectation — "red_tests: []" AND "failure_type: none" — e.g. an
+	// adjudicated pre-existing implementation the node must accept and
+	// verify, not churn back into stubs. The waiver only suppresses the
+	// must-be-RED/must-be-stub requirements; the suite still has to compile,
+	// run, and be green.
+	ScaffoldRedWaived bool `json:"scaffold_red_waived,omitempty"`
 }
 
 // DodExplanation is the schema'd or-explained payload for r-dod-complete

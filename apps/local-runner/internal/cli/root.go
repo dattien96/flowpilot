@@ -159,6 +159,10 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 				// no longer needs a restart to converge.
 				interactive.StartSettleSweep(ctx)
 			}
+			// BUG-543 residual: in-session leg-claim sweep — reclaims stale
+			// active legs whose parent loop sealed mid-session (boot sweep
+			// runs in AttachRunner below).
+			interactive.StartLegClaimSweep(ctx)
 			interactive.AttachRunner(instance)
 			// CP-87 Task-447: bridge the per-account quota probe into the
 			// runner's routing seam (loadAccountLaunchMetadata lives in cli —

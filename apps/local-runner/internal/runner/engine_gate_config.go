@@ -57,6 +57,19 @@ func writeGateMode(dotFP string, mode string) error {
 	return os.WriteFile(filepath.Join(settingsDir, "gate-config.json"), data, 0o644)
 }
 
+// effectiveGateMode resolves the mode a run actually gates under. Task-455:
+// only a genuinely flow-driven run honors the persisted gate_mode — the
+// flowEngineDriven latch set when a flow really launches, or a spawned child
+// (children exist only under flow machinery). Everything else — plain chat
+// AND a flow-mode run still chatting without an attached flowRef — gates as
+// "warn": violations surface inline but never reprompt or block.
+func effectiveGateMode(dotFP string, rs *interactiveRun) string {
+	if rs == nil || rs.parentRunID != "" || rs.flowEngineDriven {
+		return loadGateMode(dotFP)
+	}
+	return "warn"
+}
+
 // writeDefaultGateConfig writes gate-config.json with gate_mode:"enforce" only
 // when the file does not exist yet (first init). Existing user choices are kept.
 func writeDefaultGateConfig(dotFP string) {

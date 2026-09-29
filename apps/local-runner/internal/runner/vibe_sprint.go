@@ -67,6 +67,35 @@ func hasVibeTddSignatures(cwd string) bool {
 	return vibeWorkspaceFileExists(cwd, vibeTddSignaturesRel)
 }
 
+// vibeScaffoldRedWaived reports whether the sprint's declared TDD contract
+// waives the RED requirement: the tdd-signatures.md "RED gate expectation"
+// section records an empty red_tests list AND failure_type "none". That is
+// the shape owner-debate remediation writes when a pre-existing
+// implementation is adjudicated as the accepted artifact (live run-17384) —
+// the suite is then EXPECTED all-green, so r-scaffold-red must not demand
+// stub bodies. Both keys must hold; the last declared value for each wins.
+func vibeScaffoldRedWaived(cwd string) bool {
+	raw, err := os.ReadFile(filepath.Join(cwd, filepath.FromSlash(vibeTddSignaturesRel)))
+	if err != nil {
+		return false
+	}
+	emptyRed, noneType := false, false
+	for _, line := range strings.Split(string(raw), "\n") {
+		f := strings.FieldsFunc(line, func(r rune) bool {
+			return r == ' ' || r == '\t' || r == '`' || r == '-'
+		})
+		for i := 0; i < len(f)-1; i++ {
+			switch f[i] {
+			case "red_tests:":
+				emptyRed = f[i+1] == "[]"
+			case "failure_type:":
+				noneType = f[i+1] == "none"
+			}
+		}
+	}
+	return emptyRed && noneType
+}
+
 // hasVibeTddOutput is the coder spawn gate. The pack writes
 // tdd-signatures.md; harness-style empty TestX frames in *_test.go also
 // count when git-new (untracked/added). Full-body tests (t.Fatal/assert)

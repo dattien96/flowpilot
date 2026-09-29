@@ -1,45 +1,24 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useStore } from "@/state/store";
 import type { RunHistoryItem } from "@/types/contract";
-import { filterVisibleHistory, isAgentHistoryItem, isSyncableRun } from "@/components/navigatorHistory";
+import { filterVisibleHistory, formatRelativeTime, historyStatusTag, isSyncableRun } from "@/components/navigatorHistory";
 import { flattenGroupedHistory, groupRunsByChatId } from "../state/chatHistory";
 import { CloseIcon, DisclosureCaret, GlobeIcon, PlusIcon } from "@/components/icons";
 import { RemoteSyncPanel } from "@/components/RemoteSyncPanel";
 
 const HISTORY_LIMIT = 5;
 
-const RUN_TIME_FORMAT = new Intl.DateTimeFormat(undefined, {
-  month: "short",
-  day: "numeric",
-  hour: "2-digit",
-  minute: "2-digit",
-});
+/** CA-1049: sentinel row rendered while the first send is still waiting for
+ *  the runner to mint a runId — the new chat shows in the sidebar instantly
+ *  instead of appearing only after the next history poll. */
+const PENDING_CHAT_ROW_ID = "__pending_chat__";
 
-const RUN_LABEL: Record<RunHistoryItem["status"], string> = {
-  idle: "Idle",
-  starting: "Starting",
-  running: "Running",
-  waiting_approval: "Waiting · approval",
-  waiting_user_approval: "Waiting · your approval",
-  waiting_question: "Waiting · question",
-  // BUG-231: a persisted RunHistoryItem's status is sourced from the Go
-  // runner's own RunStatus enum, which has no "blocked" value (only the
-  // separate, live-only AgentLoopState can be "blocked") — this key exists
-  // purely to satisfy the exhaustive Record since RunHistoryItem shares the
-  // RunStatus type, and should never actually be hit at runtime.
-  blocked: "Waiting · your input",
-  completed: "Completed",
-  failed: "Failed",
-  cancelled: "Cancelled",
-};
-
+/** Task-455: full ISO time stays on the row's tooltip; the row itself is a
+ *  single line — icon, optional terminal tag, truncated title, compact
+ *  relative time. */
 function runTitle(text?: string): string {
   if (!text) return "Untitled run";
   return text.length > 68 ? `${text.slice(0, 65)}...` : text;
-}
-
-function runTypeLabel(item: RunHistoryItem, statusOverride?: RunHistoryItem["status"]): string {
-  return isAgentHistoryItem(item) ? `Agent · ${item.agentName || item.role || "sub-agent"}` : RUN_LABEL[statusOverride ?? item.status];
 }
 
 // Circular-arrow glyph for the manual refresh button.
@@ -121,6 +100,8 @@ export function Navigator(): React.ReactElement {
   const attentionItems = useStore((s) => s.attentionItems);
   const resetRun = useStore((s) => s.resetRun);
   const deleteHistoryRun = useStore((s) => s.deleteHistoryRun);
+  const historyOpeningRunId = useStore((s) => s.historyOpeningRunId);
+  const pendingChatStart = useStore((s) => s.pendingChatStart);
   const visibleRunHistory = useMemo(() => filterVisibleHistory(runHistory), [runHistory]);
   const gateBlockedRunIds = useStore((s) => s._gateBlockedRunIds);
 
@@ -131,7 +112,26 @@ export function Navigator(): React.ReactElement {
   const [newlyCompleted, setNewlyCompleted] = useState<Set<string>>(new Set());
   const [recentProjectIds, setRecentProjectIds] = useState<string[]>([]);
   const [expandedHistoryIds, setExpandedHistoryIds] = useState<Set<string>>(new Set());
+  // Default: collapse every project group except the selected one ("open the
+  // current only"). Manual toggles are respected after first paint.
   const [collapsedProjectIds, setCollapsedProjectIds] = useState<Set<string>>(new Set());
+  const collapseInitialized = useRef(false);
+  useEffect(() => {
+    if (collapseInitialized.current || projects.length === 0) return;
+    collapseInitialized.current = true;
+    setCollapsedProjectIds(new Set(projects.filter((p) => p.id !== selectedProjectId).map((p) => p.id)));
+  }, [projects, selectedProjectId]);
+  // The current project must always be expanded — switching via group name,
+  // peek-row click, or programmatic select re-opens it.
+  useEffect(() => {
+    if (!selectedProjectId) return;
+    setCollapsedProjectIds((current) => {
+      if (!current.has(selectedProjectId)) return current;
+      const next = new Set(current);
+      next.delete(selectedProjectId);
+      return next;
+    });
+  }, [selectedProjectId]);
   // Per-project collapse state for the History sub-section inside a group body.
   const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set());
   const [selectionModeProjectId, setSelectionModeProjectId] = useState<string | null>(null);
@@ -269,16 +269,33 @@ export function Navigator(): React.ReactElement {
 
   // CP-59 Task-316 (DOD-5): one row per logical chat — provider-switch legs
   // collapse under the chat head (latest leg) with a leg-count chip.
+  // CA-1049: while the first send waits for its runId the pending skeleton row
+  // leads the list; the minted run's own row replaces it on handle-land.
+  const pendingRow = useMemo((): (RunHistoryItem & { legsCount?: number }) | null => {
+    if (!pendingChatStart || pendingChatStart.projectId !== selectedProjectId) return null;
+    const at = new Date(pendingChatStart.startedAt).toISOString();
+    return {
+      runId: PENDING_CHAT_ROW_ID,
+      projectId: pendingChatStart.projectId,
+      providerKey: "codex",
+      status: "starting",
+      startedAt: at,
+      updatedAt: at,
+      lastPrompt: pendingChatStart.prompt,
+      runKind: "chat",
+    };
+  }, [pendingChatStart, selectedProjectId]);
   const activeHistory = useMemo(() => {
     const base = selectedProjectId ? (projectHistoryById[selectedProjectId] ?? []) : [];
-    return flattenGroupedHistory(groupRunsByChatId(filterVisibleHistory(sortByRecent(base))));
-  }, [selectedProjectId, projectHistoryById]);
+    const flattened = flattenGroupedHistory(groupRunsByChatId(filterVisibleHistory(sortByRecent(base))));
+    return pendingRow ? [pendingRow, ...flattened] : flattened;
+  }, [selectedProjectId, projectHistoryById, pendingRow]);
   const showAllHistory = expandedHistoryIds.has(selectedProjectId ?? "");
   const visibleHistory = showAllHistory ? activeHistory : activeHistory.slice(0, HISTORY_LIMIT);
   // CP-85: local-flag-only hint for the Open Sync badge — no remote list is
   // fetched here, so this can over-count vs the Drive index; the sync panel
   // recomputes against the fresh remote list once opened.
-  const unsyncedCount = activeHistory.filter((item) => isSyncableRun(item)).length;
+  const unsyncedCount = activeHistory.filter((item) => item.runId !== PENDING_CHAT_ROW_ID && isSyncableRun(item)).length;
 
   const toggleShowAllHistory = (projectId: string) => {
     setExpandedHistoryIds((current) => {
@@ -503,8 +520,20 @@ export function Navigator(): React.ReactElement {
             )}
 
             {visibleHistory.map((item) => {
+              if (item.runId === PENDING_CHAT_ROW_ID) {
+                return (
+                  <div key={item.runId} className="project-history-item-row" aria-busy="true">
+                    <div className="project-history-item project-history-item--pending">
+                      <span className="history-status-spinner" aria-hidden="true" />
+                      <span className="project-history-item-title">{runTitle(item.lastPrompt)}</span>
+                      <span className="project-history-item-meta">Starting…</span>
+                    </div>
+                  </div>
+                );
+              }
               const isNew = newlyCompleted.has(item.runId);
               const isActive = item.runId === runId;
+              const isOpening = item.runId === historyOpeningRunId;
               // A gate-blocked run is treated as "completed" whether or not it is the
               // active chat. The runner keeps such a run in "running" state until the user
               // re-prompts, so both the polled runHistory ("running") AND the live store
@@ -514,11 +543,11 @@ export function Navigator(): React.ReactElement {
               // spinner for a genuine new turn. (CP-35 BUG-137)
               // Otherwise: the active chat trusts the live store status (the polled snapshot
               // can lag a just-completed turn); inactive chats use the polled status.
-              const effectiveStatus = gateBlockedRunIds[item.runId]
+              const effectiveStatus = isOpening
+                ? "starting"
+                : gateBlockedRunIds[item.runId]
                 ? "completed"
                 : (isActive ? status : item.status);
-              const hasIcon = isNew || effectiveStatus === "running" || effectiveStatus === "starting" ||
-                effectiveStatus === "waiting_approval" || effectiveStatus === "waiting_question";
               const isUnavailable = Boolean(item.unavailableReason);
               const isSyncing = item.syncStatus === "syncing";
               const inSelectionMode = selectionModeProjectId === selectedProjectId;
@@ -541,25 +570,28 @@ export function Navigator(): React.ReactElement {
                       aria-label={`Select ${runTitle(item.lastPrompt || item.lastMessage)}`}
                     />
                     <div className="project-history-item project-history-item--selectable">
-                      <span className="project-history-item-top">
-                        <HistoryStatusIcon status={item.status} isNew={isNew} />
-                        <span className="project-history-item-title">
-                          {runTitle(item.lastPrompt || item.lastMessage)}
-                          {item.legsCount && item.legsCount > 1 ? (
-                            <span className="project-history-legs-count">{item.legsCount} legs</span>
-                          ) : null}
-                          {item.worktreeState ? (
-                            <span
-                              className="project-history-worktree-badge"
-                              title={`Isolated worktree (${item.worktreeState})${item.worktreeSlug ? ` — ${item.worktreeSlug}` : ""}`}
-                            >
-                              ⎇ {item.worktreeSlug ?? "worktree"}
-                            </span>
-                          ) : null}
+                      <HistoryStatusIcon status={item.status} isNew={isNew} />
+                      {historyStatusTag(item.status) ? (
+                        <span className={`project-history-item-tag${item.status === "failed" ? " project-history-item-tag--warn" : ""}`}>
+                          [{historyStatusTag(item.status)}]
                         </span>
+                      ) : null}
+                      <span className="project-history-item-title">
+                        {runTitle(item.lastPrompt || item.lastMessage)}
+                        {item.legsCount && item.legsCount > 1 ? (
+                          <span className="project-history-legs-count">{item.legsCount} legs</span>
+                        ) : null}
+                        {item.worktreeState ? (
+                          <span
+                            className="project-history-worktree-badge"
+                            title={`Isolated worktree (${item.worktreeState})${item.worktreeSlug ? ` — ${item.worktreeSlug}` : ""}`}
+                          >
+                            ⎇ {item.worktreeSlug ?? "worktree"}
+                          </span>
+                        ) : null}
                       </span>
                       <span className="project-history-item-meta">
-                        {runTypeLabel(item)} · {RUN_TIME_FORMAT.format(new Date(item.updatedAt))}
+                        {formatRelativeTime(item.updatedAt)}
                       </span>
                     </div>
                     <div className="project-history-item-actions">
@@ -581,13 +613,13 @@ export function Navigator(): React.ReactElement {
                 <div
                   key={item.runId}
                   className={`project-history-item-row${isUnavailable ? " project-history-item-row--disabled" : ""}`}
-                  title={item.unavailableReason || item.runId}
+                  title={item.unavailableReason || item.lastPrompt || item.lastMessage || item.runId}
                 >
                   <button
                     type="button"
-                    className={`project-history-item${hasIcon ? " project-history-item--has-icon" : ""}${isUnavailable ? " project-history-item--disabled" : ""}${isActive ? " project-history-item--active" : ""}`}
+                    className={`project-history-item${isUnavailable ? " project-history-item--disabled" : ""}${isActive || isOpening ? " project-history-item--active" : ""}`}
                     disabled={isUnavailable}
-                    aria-current={isActive ? "true" : undefined}
+                    aria-current={isActive || isOpening ? "true" : undefined}
                     onPointerDown={() => startLongPress(item, selectedProjectId!)}
                     onPointerUp={cancelLongPress}
                     onPointerLeave={cancelLongPress}
@@ -596,22 +628,25 @@ export function Navigator(): React.ReactElement {
                       void openHistoryRun(item.runId);
                     }}
                   >
-                    <span className="project-history-item-top">
-                      {showRowSpinner ? <span className="history-status-spinner" aria-hidden="true" /> : <HistoryStatusIcon status={effectiveStatus} isNew={isNew} />}
-                      <span className="project-history-item-title">
-                        {runTitle(item.lastPrompt || item.lastMessage)}
-                        {item.worktreeState ? (
-                          <span
-                            className="project-history-worktree-badge"
-                            title={`Isolated worktree (${item.worktreeState})${item.worktreeSlug ? ` — ${item.worktreeSlug}` : ""}`}
-                          >
-                            ⎇ {item.worktreeSlug ?? "worktree"}
-                          </span>
-                        ) : null}
+                    {showRowSpinner ? <span className="history-status-spinner" aria-hidden="true" /> : <HistoryStatusIcon status={effectiveStatus} isNew={isNew} />}
+                    {historyStatusTag(effectiveStatus) ? (
+                      <span className={`project-history-item-tag${effectiveStatus === "failed" ? " project-history-item-tag--warn" : ""}`}>
+                        [{historyStatusTag(effectiveStatus)}]
                       </span>
+                    ) : null}
+                    <span className="project-history-item-title">
+                      {runTitle(item.lastPrompt || item.lastMessage)}
+                      {item.worktreeState ? (
+                        <span
+                          className="project-history-worktree-badge"
+                          title={`Isolated worktree (${item.worktreeState})${item.worktreeSlug ? ` — ${item.worktreeSlug}` : ""}`}
+                        >
+                          ⎇ {item.worktreeSlug ?? "worktree"}
+                        </span>
+                      ) : null}
                     </span>
                     <span className="project-history-item-meta">
-                      {isSyncing ? "Syncing to Drive…" : runTypeLabel(item, isActive ? status : undefined)} · {RUN_TIME_FORMAT.format(new Date(item.updatedAt))}
+                      {isSyncing ? "Syncing…" : formatRelativeTime(item.updatedAt)}
                     </span>
                   </button>
                 </div>
@@ -661,7 +696,7 @@ export function Navigator(): React.ReactElement {
                               <div
                                 key={item.runId}
                                 className={`project-history-item-row${item.unavailableReason ? " project-history-item-row--disabled" : ""}`}
-                                title={item.unavailableReason || item.runId}
+                                title={item.unavailableReason || item.lastPrompt || item.lastMessage || item.runId}
                               >
                                 <button
                                   type="button"
@@ -669,17 +704,20 @@ export function Navigator(): React.ReactElement {
                                   disabled={Boolean(item.unavailableReason)}
                                   onClick={() => openChatInProject(project.id, item)}
                                 >
-                                  <span className="project-history-item-top">
-                                    <HistoryStatusIcon status={item.status} />
-                                    <span className="project-history-item-title">
-                                      {runTitle(item.lastPrompt || item.lastMessage)}
-                                      {item.legsCount && item.legsCount > 1 ? (
-                                        <span className="project-history-legs-count">{item.legsCount} legs</span>
-                                      ) : null}
+                                  <HistoryStatusIcon status={item.status} />
+                                  {historyStatusTag(item.status) ? (
+                                    <span className={`project-history-item-tag${item.status === "failed" ? " project-history-item-tag--warn" : ""}`}>
+                                      [{historyStatusTag(item.status)}]
                                     </span>
+                                  ) : null}
+                                  <span className="project-history-item-title">
+                                    {runTitle(item.lastPrompt || item.lastMessage)}
+                                    {item.legsCount && item.legsCount > 1 ? (
+                                      <span className="project-history-legs-count">{item.legsCount} legs</span>
+                                    ) : null}
                                   </span>
                                   <span className="project-history-item-meta">
-                                    {runTypeLabel(item)} · {RUN_TIME_FORMAT.format(new Date(item.updatedAt))}
+                                    {formatRelativeTime(item.updatedAt)}
                                   </span>
                                 </button>
                               </div>

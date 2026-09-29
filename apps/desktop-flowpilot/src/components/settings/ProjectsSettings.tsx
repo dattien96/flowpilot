@@ -20,10 +20,12 @@ import {
   autoInitProjectEngine,
 } from "@/components/settings/projectEngine";
 import { ScaffoldActivity } from "@/components/settings/ScaffoldActivity";
+import { ProjectEnginePanel, type ScaffoldLaunchInput } from "@/components/settings/ProjectEnginePanel";
+import { useStore } from "@/state/store";
 
 type BindingDraft = Pick<ProjectWorkspaceBinding, "id" | "localPath" | "label"> & { persisted: boolean };
 type ProjectTargetSection = "teams" | "workflows" | "artifacts" | "google-drive" | "jira-mcp";
-type ProjectPanelKey = "overview" | "bindings" | "teams" | "mcp" | "runs" | "artifacts" | "chatSync" | "canonicalHead";
+type ProjectPanelKey = "overview" | "bindings" | "engine" | "teams" | "mcp" | "runs" | "artifacts" | "chatSync" | "canonicalHead";
 
 interface ChatSyncGoogleDriveAccountStatus {
   accountId: string;
@@ -122,6 +124,9 @@ interface StepContractResult {
 
 interface ProjectsSettingsProps {
   onNavigateSection?: (section: ProjectTargetSection) => void;
+  /** CA-1000: switch the authenticated view back to Chat — used by the engine
+   *  panel so "Run AI Scaffold" opens the chat where its transcript streams. */
+  onOpenChat?: () => void;
 }
 
 // Each option installs the common skill pack plus its same-named skill folder.
@@ -176,6 +181,7 @@ function defaultExpandedPanels(): Record<ProjectPanelKey, boolean> {
   return {
     overview: true,
     bindings: false,
+    engine: true,
     teams: false,
     mcp: false,
     runs: false,
@@ -208,7 +214,7 @@ function chooseMcpTarget(linkedIntegrationIds: Record<string, string>, integrati
   return "jira-mcp";
 }
 
-export function ProjectsSettings({ onNavigateSection }: ProjectsSettingsProps): React.ReactElement {
+export function ProjectsSettings({ onNavigateSection, onOpenChat }: ProjectsSettingsProps): React.ReactElement {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -727,6 +733,15 @@ export function ProjectsSettings({ onNavigateSection }: ProjectsSettingsProps): 
     onNavigateSection?.(section);
   };
 
+  // CA-1000: "Run AI Scaffold" leaves Settings, opens Chat, and starts a fresh
+  // scaffold transcript there (prompt row + streamed provider output), matching
+  // the TUI /init experience. The store action dispatches the runner POST and
+  // polls the persisted progress feed itself.
+  const launchScaffold = (input: ScaffoldLaunchInput) => {
+    onOpenChat?.();
+    void useStore.getState().runScaffoldChat(input);
+  };
+
   const renderCollapsibleSection = (
     panel: ProjectPanelKey,
     title: string,
@@ -906,6 +921,18 @@ export function ProjectsSettings({ onNavigateSection }: ProjectsSettingsProps): 
                       ))}
                     </div>
                   </>,
+                )}
+
+                {renderCollapsibleSection(
+                  "engine",
+                  "Engine / Skill Pack",
+                  "Skill-pack state, capability, and AI scaffold for the selected binding.",
+                  null,
+                  <ProjectEnginePanel
+                    project={selectedProject}
+                    bindings={bindings.filter((binding) => binding.persisted)}
+                    onRunScaffold={launchScaffold}
+                  />,
                 )}
 
                 {renderCollapsibleSection(

@@ -442,6 +442,7 @@ export function App(): React.ReactElement {
           activeSection={settingsSection}
           busy={busy}
           onApplySupabaseMigrations={handleApplySupabaseMigrations}
+          onOpenChat={() => setAuthenticatedView("chat")}
           onSaveSupabase={handleSaveSupabase}
           onSelectSection={setSettingsSection}
           onValidateSupabase={handleValidateSupabase}

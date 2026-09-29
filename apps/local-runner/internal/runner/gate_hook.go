@@ -412,7 +412,7 @@ func (s *InteractiveService) runFlowGateAtEpoch(
 	violations := flowgate.Evaluate(tr, rules)
 	hasCA := flowgate.HasChangeAuditNote(diff)
 	hasCode := flowgate.HasCodeChanges(diff)
-	log.Printf("[gate] violations=%d gateMode=%q hasCode=%v hasCA=%v", len(violations), loadGateMode(dotFP), hasCode, hasCA)
+	log.Printf("[gate] violations=%d gateMode=%q hasCode=%v hasCA=%v", len(violations), effectiveGateMode(dotFP, rs), hasCode, hasCA)
 
 	// 8a. Proposal-turn exemption (Task-155 opt-2): the AI just proposed a requirement
 	// change and has not fixed code yet; tests are expected to still fail. Suppress
@@ -512,7 +512,9 @@ func (s *InteractiveService) runFlowGateAtEpoch(
 		return false
 	}
 
-	gateMode := loadGateMode(dotFP)
+	// Task-455: chat-surface runs gate as warn regardless of the persisted
+	// gate_mode — enforce/reprompt actions only apply to flow-context runs.
+	gateMode := effectiveGateMode(dotFP, rs)
 	result := flowgate.Enforce(violations, gateMode)
 	s.recordGateEnforceMetric(dotFP, rs, turnID, gateMode, result)
 	if s.applyVibeGateResolver(runID, rs.parentRunID, turnID, rs, result) {
@@ -1413,6 +1415,11 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 		nonStub, syms := s.scaffoldStaticBodyViolations(cwd, tr.WrittenPaths)
 		tr.ScaffoldBodyNonStub = nonStub
 		tr.NonStubSymbols = syms
+		// Declared zero-red contract (live wedge run-17384): remediation may
+		// adjudicate a pre-existing implementation as the accepted artifact —
+		// tdd-signatures.md then records red_tests:[] + failure_type:none, and
+		// the gate must verify green instead of demanding stub bodies.
+		tr.ScaffoldRedWaived = vibeScaffoldRedWaived(cwd)
 	}
 	if coderSignaturesLocked {
 		tr.SignatureHashBefore = coderFrozenRec.SignatureHash
@@ -2166,7 +2173,17 @@ func (s *InteractiveService) SubmitGateDecision(runID, option, customText string
 	rs := s.runs[runID]
 	if rs == nil {
 		s.mu.Unlock()
-		return newAPIErr(404, "run_not_found", "workflow run not found")
+		// Post-restart the run may exist durably without being resident yet —
+		// reconstruct it before answering run_not_found.
+		if _, aerr := s.ensureRunResident(runID); aerr != nil {
+			return aerr
+		}
+		s.mu.Lock()
+		rs = s.runs[runID]
+		if rs == nil {
+			s.mu.Unlock()
+			return newAPIErr(404, "run_not_found", "workflow run not found")
+		}
 	}
 	if rs.vibeSprintBoundaryPending {
 		opt := strings.ToLower(strings.TrimSpace(option))

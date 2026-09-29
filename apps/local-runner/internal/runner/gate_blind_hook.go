@@ -36,7 +36,9 @@ func (s *InteractiveService) gateBlindBlocksTurn(
 			contractFirstRed = false
 		}
 	}
-	gateMode := loadGateMode(dotFP)
+	// Task-455: chat-surface runs gate as warn regardless of the persisted
+	// gate_mode — a blind block never interrupts a plain chat turn.
+	gateMode := effectiveGateMode(dotFP, rs)
 	msg := flowgate.GateBlindMessage(reason)
 	status := "warn"
 	if gateMode == "enforce" && !contractFirstRed {

@@ -48,15 +48,50 @@ func EnabledScaffoldRules(base []Rule, expected bool) []Rule {
 
 // ScaffoldSatisfied reports whether a scaffold turn meets the gate shape:
 // suite ran, compiled, at least one RED test, and every stub body inside the
-// static whitelist.
+// static whitelist. A waived turn (declared zero-red contract) is satisfied
+// by a green suite instead — the accepted artifact is the contract.
 func ScaffoldSatisfied(tr TurnResult) bool {
-	return tr.ScaffoldExpected && tr.Tests.Ran && !tr.ScaffoldCompileFailed && len(tr.Tests.Failed) > 0 && !tr.ScaffoldBodyNonStub
+	if !tr.ScaffoldExpected || !tr.Tests.Ran || tr.ScaffoldCompileFailed {
+		return false
+	}
+	if tr.ScaffoldRedWaived {
+		return len(tr.Tests.Failed) == 0
+	}
+	return len(tr.Tests.Failed) > 0 && !tr.ScaffoldBodyNonStub
 }
 
 // checkScaffoldRedRule is the r-scaffold-red evaluator. Opt-in — it never
 // fires outside a scaffold turn even if a stored rules file lists it.
 func checkScaffoldRedRule(rule Rule, tr TurnResult) *Violation {
 	if !tr.ScaffoldExpected {
+		return nil
+	}
+	// Declared zero-red contract (live wedge run-15525/run-17384): the
+	// node's tdd-signatures.md records "red_tests: []" + "failure_type:
+	// none" — an adjudicated pre-existing implementation IS the accepted
+	// artifact, so the suite is EXPECTED all-green and non-stub bodies are
+	// the contract, not smuggled logic. Reverting it to stubs would break
+	// the green baseline the contract pins. Still violated: the suite must
+	// compile, must run, and must be green — a RED suite means the accepted
+	// artifact is broken.
+	if tr.ScaffoldRedWaived {
+		switch {
+		case tr.ScaffoldCompileFailed:
+			return &Violation{
+				Rule:   rule,
+				Detail: "the scaffold test suite does not compile — fix the compile errors so the declared verify command builds and runs green",
+			}
+		case !tr.Tests.Ran:
+			return &Violation{
+				Rule:   rule,
+				Detail: "no test run was observed for this scaffold turn — run the declared verify command so the gate sees the accepted artifact is green",
+			}
+		case len(tr.Tests.Failed) > 0:
+			return &Violation{
+				Rule:   rule,
+				Detail: "Tests failed: " + strings.Join(tr.Tests.Failed, ", ") + " — the declared zero-red contract accepts the existing implementation, which must therefore be green; fix the implementation, not the tests",
+			}
+		}
 		return nil
 	}
 	// Signal 3 (B-11): static whitelist. Deterministic — fires even when the

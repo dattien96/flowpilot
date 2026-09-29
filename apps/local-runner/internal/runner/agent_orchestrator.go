@@ -121,12 +121,24 @@ func (o *AgentOrchestrator) appendCohortResult(parentRunID, cohortID string, e c
 		return
 	}
 	if label := strings.TrimSpace(e.Label); label != "" {
-		for _, existing := range o.cohort[k] {
-			if strings.TrimSpace(existing.Label) == label {
+		for i, existing := range o.cohort[k] {
+			if strings.TrimSpace(existing.Label) != label {
+				continue
+			}
+			// BUG-553: a park-cancelled entry is a released-seat placeholder,
+			// not a real result — when the frozen member is later revived
+			// (reprompt/resume intent) and produces a real result, the real
+			// result must replace the placeholder rather than be deduped
+			// away (CA-1062's gated-child reprompt depends on it).
+			if existing.Status == "cancelled" && e.Status != "cancelled" {
+				o.cohort[k][i] = e
+				cohortDiagLog("appendCohortResult replace-cancelled parent=%q cohort=%q label=%q status=%q",
+					parentRunID, cohortID, label, e.Status)
+			} else {
 				cohortDiagLog("appendCohortResult skip-duplicate parent=%q cohort=%q label=%q",
 					parentRunID, cohortID, label)
-				return
 			}
+			return
 		}
 	}
 	o.cohort[k] = append(o.cohort[k], e)

@@ -1528,7 +1528,77 @@ func (s *InteractiveService) applyLocalAheadSessionFields(ctx context.Context, s
 	if strings.TrimSpace(local.FlowCohortID) != "" {
 		session.FlowCohortID = local.FlowCohortID
 	}
+	// CP-89 R6-1: the latch + pin fields also mutate over a run's lifetime —
+	// a forward flips pending→started and adopts the turn's sourceDocID/
+	// changeType/subMode, and the flip stamps the vibe lock fields. A chat
+	// that synced while pending then forwarded locally must keep the local
+	// latch: restoring the stale manifest's "pending" lets the next turn
+	// double-launch a flow that already has children. Non-empty guard (not
+	// unconditional copy): an old-build local row that never recorded these
+	// fields keeps the manifest's value rather than wiping it.
+	if strings.TrimSpace(local.FlowArm) != "" {
+		session.FlowArm = local.FlowArm
+	}
+	if strings.TrimSpace(local.SourceDocID) != "" {
+		session.SourceDocID = local.SourceDocID
+	}
+	if strings.TrimSpace(local.WorkingMode) != "" {
+		session.WorkingMode = local.WorkingMode
+	}
+	if strings.TrimSpace(local.ChangeType) != "" {
+		session.ChangeType = local.ChangeType
+	}
+	if strings.TrimSpace(local.ChatSubMode) != "" {
+		session.ChatSubMode = local.ChatSubMode
+	}
+	if strings.TrimSpace(local.VibeLockedCP) != "" {
+		session.VibeLockedCP = local.VibeLockedCP
+	}
+	if strings.TrimSpace(local.VibeCpDocID) != "" {
+		session.VibeCpDocID = local.VibeCpDocID
+	}
 	return nil
+}
+
+// preserveCommittedFlowLatch carries the CP-89 forward-commit unit — the
+// latch, the pin/mode context the flip adopted, and the committed topology —
+// from the live local row onto a restore that would otherwise regress it.
+// Unlike applyLocalAheadSessionFields this runs regardless of lineage: the
+// latch is monotonic, and a remote `pending` provably predates the local
+// commit (the forward already minted its children on this machine). Non-empty
+// guards keep a torn/pre-topology local row from wiping manifest fields.
+func preserveCommittedFlowLatch(session *ProviderSessionState, local ProviderSessionState) {
+	session.FlowArm = local.FlowArm
+	if strings.TrimSpace(local.ChatFlowRef) != "" {
+		session.ChatFlowRef = local.ChatFlowRef
+	}
+	if strings.TrimSpace(local.SourceDocID) != "" {
+		session.SourceDocID = local.SourceDocID
+	}
+	if strings.TrimSpace(local.WorkingMode) != "" {
+		session.WorkingMode = local.WorkingMode
+	}
+	if strings.TrimSpace(local.ChangeType) != "" {
+		session.ChangeType = local.ChangeType
+	}
+	if strings.TrimSpace(local.ChatSubMode) != "" {
+		session.ChatSubMode = local.ChatSubMode
+	}
+	if strings.TrimSpace(local.VibeLockedCP) != "" {
+		session.VibeLockedCP = local.VibeLockedCP
+	}
+	if strings.TrimSpace(local.VibeCpDocID) != "" {
+		session.VibeCpDocID = local.VibeCpDocID
+	}
+	if len(local.ActiveFlowNodes) > 0 {
+		session.ActiveFlowNodes = append([]agentpack.FlowNode(nil), local.ActiveFlowNodes...)
+	}
+	if len(local.ActiveFlowEdges) > 0 {
+		session.ActiveFlowEdges = append([]agentpack.FlowEdge(nil), local.ActiveFlowEdges...)
+	}
+	if local.TurnCount > session.TurnCount {
+		session.TurnCount = local.TurnCount
+	}
 }
 
 func (s *InteractiveService) restoreChatRunFromDrive(ctx context.Context, req ChatSessionRestoreRequest) (ChatSessionRestoreResult, *apiErr) {
@@ -1913,14 +1983,56 @@ func (s *InteractiveService) restoreChatRunTreeFromDrive(ctx context.Context, re
 			session.SwitchFromRunID = src
 		}
 	}
-	if localAhead {
+	// R7-1: localAhead only detects provider-FILE growth, but a CP-89 forward
+	// commits durable latch state (flowArm=started, adopted sourceDocID,
+	// turnCount++) without appending a single provider byte — a re-restore of
+	// this machine's own snapshot can hit a byte-identical file while the
+	// local row is strictly ahead. When the manifest is this machine's OWN
+	// record and resolveRestoredRunID mapped it back onto the existing local
+	// row, that row is never behind the snapshot (syncs only ever snapshot
+	// local state, and local state only advances afterward), so the mutable-
+	// field merge must run regardless of the file delta. A manifest written
+	// by a DIFFERENT machine skips this: the remote lineage owner may
+	// legitimately be newer than a stale local restore copy.
+	// The existing local row (when this restore resolves onto one) decides
+	// both the self-restore merge below and the monotonic latch guard after
+	// it. BUG-492: a read error here is not "no local record" — abort the
+	// restore rather than write remote-stale fields over live local state.
+	var existing ProviderSessionState
+	existingFound := false
+	if reader, ok := s.workflowStore.(SessionHistoryReader); ok {
+		ex, found, rerr := reader.GetProviderSession(ctx, localRunID)
+		if rerr != nil {
+			return ChatSessionRestoreResult{}, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", rerr.Error())
+		}
+		existing, existingFound = ex, found
+	}
+	selfRerestore := false
+	if storeDir := s.chatSessionStoreDir(); strings.TrimSpace(storeDir) != "" {
+		if identity, identErr := loadOrCreateMachineIdentity(storeDir); identErr == nil && identity.MachineID == manifest.SourceMachineID {
+			selfRerestore = existingFound &&
+				existing.SourceMachineID == manifest.SourceMachineID &&
+				existing.SourceRunID == manifest.SourceRunID
+		}
+	}
+	if localAhead || selfRerestore {
 		// The local rollout file is ahead of the restored snapshot, so the older
 		// remote manifest must not downgrade the local conversation metadata. (BUG-091)
-		// BUG-492: a read error here is not "no local record" — abort the restore
-		// rather than write remote-stale fields over live local state.
 		if err := s.applyLocalAheadSessionFields(ctx, &session, localRunID); err != nil {
 			return ChatSessionRestoreResult{}, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
 		}
+	}
+	// CP-89 review R8-3: the flowArm latch is monotonic. localAhead and
+	// selfRerestore only cover this machine's OWN lineage — a manifest from
+	// ANOTHER machine skips the merge entirely by design (the remote lineage
+	// owner may legitimately be newer). But when this machine's restored copy
+	// already committed `started` (a local forward that spawned real children
+	// and appended zero provider bytes), a re-restore of the foreign owner's
+	// stale pre-forward manifest still says `pending`. Downgrading the latch
+	// re-arms a flow that already ran and the next forward double-launches.
+	if existingFound && existing.FlowArm == string(FlowArmStarted) &&
+		session.FlowArm != string(FlowArmStarted) {
+		preserveCommittedFlowLatch(&session, existing)
 	}
 	// Restore every child transcript referenced by the parent manifest and persist its
 	// relationship metadata. Loading summaries alone made the panel look correct only

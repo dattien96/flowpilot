@@ -500,6 +500,7 @@ export class HttpWsRunnerClient implements RunnerClient {
         attachments: input.attachments,
         subMode: input.subMode,
         flowRef: input.flowRef,
+        forwardFlow: input.forwardFlow,
         scenario: this.scenario,
       },
       input.idempotencyKey ? { "Idempotency-Key": input.idempotencyKey } : undefined,

@@ -316,12 +316,12 @@ func TestR4_OversizedForwardTextRejected(t *testing.T) {
 	rs := &interactiveRun{}
 	// ~400 tokens of forward text against a 100-token entry budget.
 	big := strings.Repeat("implement the full migration plan ", 50)
-	_, e := svc.buildForwardPromptPackage(rs, big, 100)
+	_, e := svc.buildForwardPromptPackage(rs, big, 100, nil)
 	if e == nil || e.code != "forward_prompt_too_large" {
 		t.Fatalf("oversized forward text must be a typed rejection, got %v", e)
 	}
 	// In-budget forward still packs.
-	pkg, e := svc.buildForwardPromptPackage(rs, "do it", 100)
+	pkg, e := svc.buildForwardPromptPackage(rs, "do it", 100, nil)
 	if e != nil {
 		t.Fatalf("in-budget forward must pack, got %v", e)
 	}

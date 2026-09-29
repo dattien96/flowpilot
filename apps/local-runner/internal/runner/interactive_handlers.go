@@ -1199,6 +1199,7 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 	// adoption reads resident runs (same resolve-before-lock pattern as
 	// stampAccount above). Always ON for chat runs on dev branch.
 	chatID, legSeq, switchFrom := "", 0, ""
+	var prevLeg *ProviderSessionState
 	if runKind == "chat" {
 		var idErr error
 		chatID, legSeq, switchFrom, idErr = s.resolveChatIdentity(in)
@@ -1206,6 +1207,25 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 			return RunHandle{}, newAPIErr(http.StatusBadGateway, "chat_identity_unprovable", idErr.Error())
 		}
 		s.ensureChatTranscriptWriter()
+		// CP-89 reattach fix: read the newest PRIOR leg's armed state while
+		// still unlocked — the durable row is the latch's source of truth.
+		// Without it a restarted/reattached pending chat mints a fresh leg
+		// with no pin (forward 422s while the UI still shows armed), and a
+		// chat whose flow already started could be re-armed into a second
+		// launch. Fail closed on scan error like the legSeq scan above.
+		if in.ChatID != "" && chatID != "" {
+			if reader, ok := s.workflowStore.(ChatSessionReader); ok {
+				rows, rerr := reader.ListProviderSessionsByChat(context.Background(), chatID)
+				if rerr != nil {
+					return RunHandle{}, newAPIErr(http.StatusBadGateway, "chat_identity_unprovable", rerr.Error())
+				}
+				for i := range rows {
+					if prevLeg == nil || rows[i].LegSeq > prevLeg.LegSeq {
+						prevLeg = &rows[i]
+					}
+				}
+			}
+		}
 	}
 
 	s.mu.Lock()
@@ -1284,6 +1304,48 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 		rs.switchFromRunID = switchFrom
 		s.chatRuns.register(runID, chatID)
 	}
+	// CP-89 reattach (desktop review fix): inherit the newest prior leg's
+	// armed state — durable row wins (prevLeg), resident source leg is the
+	// fallback for the switchFromRunID-only path. A pending pin survives the
+	// leg hop; an already-started chat can never be re-armed into a second
+	// launch (the client's pin/arm is neutralized: a stamped chatFlowRef on
+	// an immediate arm would auto-launch at this leg's turnCount==0).
+	if runKind == "chat" {
+		var src *ProviderSessionState
+		if prevLeg != nil {
+			src = prevLeg
+		} else if switchFrom != "" {
+			if live := s.runs[switchFrom]; live != nil {
+				snap := sessionStateOf(live)
+				src = &snap
+			}
+		}
+		if src != nil {
+			switch strings.TrimSpace(src.FlowArm) {
+			case "pending":
+				if rs.flowArm != FlowArmPending {
+					rs.flowArm = FlowArmPending
+				}
+				if strings.TrimSpace(rs.chatFlowRef) == "" {
+					rs.chatFlowRef = strings.TrimSpace(src.ChatFlowRef)
+				}
+				if strings.TrimSpace(rs.sourceDocID) == "" {
+					rs.sourceDocID = strings.TrimSpace(src.SourceDocID)
+				}
+			case "started":
+				rs.flowArm = FlowArmStarted
+				rs.flowEngineDriven = true
+				rs.chatFlowRef = strings.TrimSpace(src.ChatFlowRef)
+				rs.workflowID = strings.TrimSpace(src.WorkflowID)
+				if strings.TrimSpace(rs.sourceDocID) == "" {
+					rs.sourceDocID = strings.TrimSpace(src.SourceDocID)
+				}
+			}
+			if strings.TrimSpace(rs.workingMode) == "" {
+				rs.workingMode = strings.TrimSpace(src.WorkingMode)
+			}
+		}
+	}
 	// CP-71 (SS-23/SD-27 D-8): chat owner = chatID, flow owner = runID. A new
 	// leg in a chat with a live binding inherits it (binding wins over an
 	// unset flag so legs never silently escape isolation).
@@ -1336,7 +1398,7 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 		delete(s.runs, runID)
 		return RunHandle{}, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
 	}
-	handle := RunHandle{RunID: runID, ProviderSessionID: sessionID, ProviderKey: providerKey, Status: rs.status, StepID: stepID, RunKind: runKind, ChatID: chatID, LegSeq: legSeq}
+	handle := RunHandle{RunID: runID, ProviderSessionID: sessionID, ProviderKey: providerKey, Status: rs.status, StepID: stepID, RunKind: runKind, ChatID: chatID, LegSeq: legSeq, FlowRef: rs.chatFlowRef, FlowArm: string(rs.flowArm), SourceDocID: rs.sourceDocID}
 	if rs.worktree != nil {
 		handle.WorktreeState = rs.worktree.State
 		handle.WorktreeSlug = rs.worktree.Slug
@@ -1430,6 +1492,8 @@ func (s *InteractiveService) resumeRun(runID string) (RunHandle, *apiErr) {
 		RunKind:           rs.runKind,
 		WorkflowID:        rs.workflowID,
 		FlowRef:           rs.chatFlowRef,
+		FlowArm:           string(rs.flowArm),
+		SourceDocID:       rs.sourceDocID,
 		ChatID:            rs.chatID,
 		LegSeq:            rs.legSeq,
 	}
@@ -1520,6 +1584,13 @@ type runHistoryItem struct {
 	// selection instead of silently falling back to "Normal".
 	SubMode string `json:"subMode,omitempty"`
 	FlowRef string `json:"flowRef,omitempty"`
+	// FlowArm exposes the CP-89 chat-then-forward latch so a client reopening
+	// this chat from history can restore the armed "start flow" affordance.
+	// "pending" = pinned but not launched; omitted on runs with no pin.
+	FlowArm string `json:"flowArm,omitempty"`
+	// SourceDocID echoes the CP-89 source-document pin so a reopened armed
+	// chat restores the CP path into its forward affordance.
+	SourceDocID string `json:"sourceDocId,omitempty"`
 	// CP-71 worktree badge fields (omitempty — absent for normal runs).
 	WorktreeState string `json:"worktreeState,omitempty"`
 	WorktreeSlug  string `json:"worktreeSlug,omitempty"`
@@ -1582,6 +1653,8 @@ func (s *InteractiveService) projectRunHistory(projectID string) ([]runHistoryIt
 			AgentStatus: rs.agentStatus,
 			SubMode:     rs.chatSubMode,
 			FlowRef:     rs.chatFlowRef,
+			FlowArm:     string(rs.flowArm),
+			SourceDocID: rs.sourceDocID,
 		}
 		if rs.worktree != nil {
 			item.WorktreeState = rs.worktree.State
@@ -1643,6 +1716,8 @@ func (s *InteractiveService) projectRunHistory(projectID string) ([]runHistoryIt
 					AgentStatus:     sess.AgentStatus,
 					SubMode:         sess.ChatSubMode,
 					FlowRef:         sess.ChatFlowRef,
+					FlowArm:         sess.FlowArm,
+					SourceDocID:     sess.SourceDocID,
 					WorktreeState:   sess.WorktreeState,
 					WorktreeSlug:    sess.WorktreeSlug,
 					WorktreePath:    sess.WorktreePath,
@@ -2143,11 +2218,8 @@ func (s *InteractiveService) handleSubmitFlowControl(w http.ResponseWriter, r *h
 			return
 		}
 	}
-	s.mu.Lock()
-	_, runExists := s.runs[runID]
-	s.mu.Unlock()
-	if !runExists {
-		writeInteractiveError(w, newAPIErr(http.StatusNotFound, "run_not_found", "workflow run not found"))
+	if _, aerr := s.ensureRunResident(runID); aerr != nil {
+		writeInteractiveError(w, aerr)
 		return
 	}
 	// CP-67 P-1: the coder's batch is buffered record-only for the
@@ -2232,6 +2304,14 @@ func (s *InteractiveService) handleContinueFlow(w http.ResponseWriter, r *http.R
 	feedback := body.Feedback
 	if strings.TrimSpace(feedback) == "" {
 		feedback = body.Text
+	}
+	// Post-restart the run may exist durably without being resident yet —
+	// reconstruct it up front so memberAction/captureDecisionChoice and the
+	// resume all see the same run instead of answering run_not_found (or
+	// silently no-op'ing the member action) on a run that exists.
+	if _, aerr := s.ensureRunResident(runID); aerr != nil {
+		writeInteractiveError(w, aerr)
+		return
 	}
 	if strings.TrimSpace(body.MemberAction.Action) != "" {
 		snap, handled, err := s.handleMemberAction(runID, body.MemberAction)

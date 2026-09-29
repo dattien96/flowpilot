@@ -20,9 +20,13 @@ const IDLE_POLLS_BEFORE_HIDE = 6;
 
 interface Props {
   projectId: string | null | undefined;
+  // BUG-549: when the caller knows which binding is selected (Engine Settings),
+  // scope the feed to that workspace so a run dispatched on binding A never
+  // renders under binding B. Omitted = legacy project-level feed.
+  workingDirectory?: string | null;
 }
 
-export function ScaffoldActivity({ projectId }: Props): React.ReactElement | null {
+export function ScaffoldActivity({ projectId, workingDirectory }: Props): React.ReactElement | null {
   const [feed, setFeed] = useState<ScaffoldFeedState>(emptyScaffoldFeed);
   const outputRef = useRef<HTMLPreElement | null>(null);
 
@@ -31,6 +35,9 @@ export function ScaffoldActivity({ projectId }: Props): React.ReactElement | nul
       setFeed(emptyScaffoldFeed);
       return;
     }
+    // Drop the previous binding's transcript immediately instead of waiting
+    // for the first scoped poll to land.
+    setFeed(emptyScaffoldFeed);
     const ctrl = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     let idlePolls = 0;
@@ -38,7 +45,7 @@ export function ScaffoldActivity({ projectId }: Props): React.ReactElement | nul
     const feedRef = { current: emptyScaffoldFeed };
     const tick = async () => {
       try {
-        const snap = await fetchScaffoldProgress(projectId, feedRef.current.cursor, ctrl.signal);
+        const snap = await fetchScaffoldProgress(projectId, feedRef.current.cursor, ctrl.signal, workingDirectory);
         feedRef.current = applyScaffoldSnapshot(feedRef.current, snap);
         setFeed(feedRef.current);
       } catch {
@@ -58,7 +65,7 @@ export function ScaffoldActivity({ projectId }: Props): React.ReactElement | nul
       if (timer) clearTimeout(timer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId]);
+  }, [projectId, workingDirectory]);
 
   useEffect(() => {
     const el = outputRef.current;

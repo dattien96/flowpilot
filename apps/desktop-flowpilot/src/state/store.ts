@@ -19,6 +19,7 @@ import type {
   PromptAttachment,
   QuotaRoutingSettings,
   RemoteChatSessionSummary,
+  RunHandle,
   RunHistoryItem,
   RunRealtimeProjection,
   RunStatus,
@@ -40,6 +41,11 @@ import { getAdminUseCases } from "@/clientCore";
 import { ADMIN_WEB_URL } from "@/config";
 import { isSyncableRun } from "@/components/navigatorHistory";
 import { attentionQueue, type AttentionItem } from "@/state/attentionQueue";
+import {
+  dispatchScaffold,
+  fetchScaffoldProgress,
+  type ScaffoldRunResult,
+} from "@/components/settings/projectEngine";
 import {
   draftKeyFor,
   isEmptyDraft,
@@ -152,6 +158,28 @@ function resetTimelineWindow(): Pick<AppState, "timelineHasOlder" | "_timelineAn
     _timelineEvictedIds: new Set<string>(),
   };
 }
+
+// A follow-up turn sent the instant a flow *looks* done can race the hub's own
+// final turn: the loop is marked "done" (which unblocks the composer via
+// deriveOrchestrationRunStatus) from INSIDE that turn, while the turn's
+// provider stream is still open — so the runner still holds turnInFlight and
+// rejects POST /turns with 409 turn_in_progress. gate_in_progress (post-turn
+// gate settling) and hub_parked (children still active) are the sibling
+// transient windows. All three are rejected BEFORE a turn is minted, so
+// re-POSTing is side-effect-free and can never duplicate a turn. Retry briefly
+// until the turn clears instead of dropping the user's message with a raw
+// error and forcing a re-type (the pre-fix symptom on flow completion).
+const TRANSIENT_SEND_CODES = new Set(["turn_in_progress", "gate_in_progress", "hub_parked"]);
+const TRANSIENT_SEND_MAX_RETRIES = 6;
+const TRANSIENT_SEND_RETRY_MS = 700;
+// A send that lands inside a runner restart window dies at the socket
+// ("Failed to fetch") — retry those too. The Idempotency-Key on turnInput
+// makes a re-POST side-effect-free: the runner replays the minted turnId.
+// AbortError (user-driven cancel) is deliberately not retried.
+const isConnectionFailure = (err: unknown) =>
+  !(err instanceof RunnerApiError) && !(err instanceof Error && err.name === "AbortError");
+const CONN_SEND_MAX_RETRIES = 5;
+const CONN_SEND_RETRY_MS = 1500;
 
 let loadProjectsInFlight: Promise<void> | null = null;
 // Dedupe for loadProjectHistory cache-warmer — one fetch per project at a time.
@@ -525,6 +553,21 @@ export interface AppState {
    */
   flowRef?: string;
   builtinOrchestrationOptions: BuiltinFlowOption[];
+  /**
+   * CP-89 chat-then-forward (Task-452): the current chat's run was created with
+   * a pinned flow + flowArm:"pending" — chat turns stay plain until the user
+   * explicitly forwards. Undefined when the focused chat has no armed flow.
+   * sourceDocId preserves the create-time CP pin so a leg hop (reattach) can
+   * re-declare it and the forward-time ingest fence still validates.
+   */
+  pendingFlowArm?: { flowRef: string; sourceDocId?: string };
+  /**
+   * CP-89: the focused chat's flow latch already flipped to "started" — the
+   * armed affordance hides and the late-attach picker never reappears. Set
+   * on forward success and restored from the durable latch echo
+   * (handle/history flowArm === "started") on reopen/switch/reattach.
+   */
+  flowStarted?: boolean;
 
   // run
   runId?: string;
@@ -624,6 +667,21 @@ export interface AppState {
     message: string;
     providerKey?: ProviderKey;
   };
+  /** CA-1049: runId of the chat open currently in flight — the Navigator
+   *  highlights and spins the target row the instant it is clicked, before
+   *  the resume/transcript fetches land. */
+  historyOpeningRunId?: string;
+  /** CA-1049: stale-response guard for openHistoryRun — every open, resetRun,
+   *  or sendPrompt bumps it; late resume/timeline responses from an older
+   *  click are discarded instead of stealing focus back. */
+  _historyOpenSeq: number;
+  /** CA-1049: rows for runs minted by this client that the authoritative
+   *  history poll has not echoed yet — merged into every server list so a
+   *  fresh chat's row cannot flicker out between the POST and the next tick. */
+  _locallyStartedRuns: Record<string, RunHistoryItem>;
+  /** CA-1049: first-send window before the runner mints a runId — the
+   *  Navigator renders it as a "New chat…" skeleton row immediately. */
+  pendingChatStart?: { projectId: string; prompt: string; startedAt: number };
 
   // internal: id of the assistant bubble currently accumulating deltas
   _streamingAssistantId?: string;
@@ -651,6 +709,18 @@ export interface AppState {
   _streamRunSeq: number;
   // separate generation for the live parent orchestration stream
   _orchestrationStreamSeq: number;
+  // CA-1000: live AI-scaffold watch session. When set, the Chat timeline is a
+  // scaffold transcript (prompt row + streamed assistant bubble + phase lines)
+  // rather than a durable run — the server-side scaffold turn keeps running if
+  // the user navigates away; resetRun/openHistoryRun just stop the watcher.
+  scaffoldSession?: {
+    token: number;
+    projectId: string;
+    workingDirectory: string;
+    active: boolean;
+    phase: string;
+    attempt: number;
+  };
 
   // actions
   loadProjects(): Promise<void>;
@@ -658,6 +728,17 @@ export interface AppState {
   loadLocalProviders(): Promise<void>;
   loadSkills(provider: string, cwd?: string): Promise<void>;
   selectProject(projectId: string): Promise<void>;
+  /** CA-1000: dispatch a manual AI scaffold and render it as a live Chat
+   *  transcript ("/init" parity with the TUI). Opens a fresh chat surface for
+   *  the project, streams provider output into one assistant bubble, and
+   *  resolves when the scaffold turn reaches a terminal result. */
+  runScaffoldChat(input: {
+    projectId: string;
+    workingDirectory: string;
+    platform?: string;
+    modelName?: string;
+    force?: boolean;
+  }): Promise<void>;
   setLaunchMode(mode: LaunchMode): void;
   setChatMode(mode: ChatMode): void;
   selectProvider(provider?: ProviderKey): void;
@@ -755,7 +836,7 @@ export interface AppState {
   backToMainRun(): void;
   openOrchestrationBoard(): void;
   closeOrchestrationBoard(): void;
-  appendSystemMessage(text: string, tone?: "info" | "error"): void;
+  appendSystemMessage(text: string, tone?: "info" | "error" | "warn"): void;
   openAgentSpawnGuide(agentName?: string): void;
   clearAgentSpawnGuide(): void;
   syncHistoryRun(runId: string, projectId?: string): Promise<void>;
@@ -779,6 +860,16 @@ export interface AppState {
   setDraft(key: string, draft: DraftState): void;
   clearDraft(key: string): void;
   resetRun(): void;
+  /**
+   * CP-89/Task-452: explicitly start the armed pending flow on the focused
+   * chat — sends a forwardFlow turn (the only signal that flips the pending
+   * latch to started). forwardText rides into the flow's entry prompt.
+   * opts.flowRef is the user's FINAL flow choice — it overrides the
+   * provisional create-time pin or supplies the pin outright on a chat that
+   * was never armed (late-attach). opts.sourceDocId feeds the cp-ingest
+   * fence when the final choice is vibe-cp-ingest.
+   */
+  forwardArmedFlow(forwardText?: string, opts?: { flowRef?: string; sourceDocId?: string }): Promise<void>;
   openInIde(path: string, line?: number): void;
   openAdminWeb(): void;
   restartSystem(): Promise<void>;
@@ -883,6 +974,10 @@ export const useStore = create<AppState>((set, get) => ({
   workspaceMainView: "chat",
   _historyReplaying: false,
   _historyLoadSeq: 0,
+  historyOpeningRunId: undefined,
+  _historyOpenSeq: 0,
+  _locallyStartedRuns: {},
+  pendingChatStart: undefined,
   _remoteHistoryLoadSeq: 0,
   _agentRunsLoadSeq: 0,
   _agentGraphLoadSeq: 0,
@@ -1577,6 +1672,23 @@ export const useStore = create<AppState>((set, get) => ({
           accountSwitchLoading: false,
           pendingProviderSwitch: undefined,
           providerSwitchLoading: false,
+          // CP-89: the switch minted a fresh leg — restore the armed
+          // affordance from the NEW handle (runner copies the latch onto the
+          // leg), falling back to the pre-switch state when the runner
+          // predates the echo fields.
+          pendingFlowArm:
+            (resp.handle.flowArm ?? "") === "pending"
+              ? {
+                  flowRef: resp.handle.flowRef || state.pendingFlowArm?.flowRef || "",
+                  sourceDocId: resp.handle.sourceDocId || state.pendingFlowArm?.sourceDocId,
+                }
+              : undefined,
+          flowStarted:
+            (resp.handle.flowArm ?? "") === "started"
+              ? true
+              : (resp.handle.flowArm ?? "") === ""
+                ? state.flowStarted
+                : false,
           _accountSwitchTriedIds: [],
           _streamingAssistantId: undefined,
           agentRuns: [],
@@ -1638,6 +1750,8 @@ export const useStore = create<AppState>((set, get) => ({
         accountSwitchLoading: false,
         pendingProviderSwitch: undefined,
         providerSwitchLoading: false,
+        pendingFlowArm: undefined,
+        flowStarted: false,
         _accountSwitchTriedIds: [],
         _streamingAssistantId: undefined,
         agentRuns: [],
@@ -2142,6 +2256,14 @@ export const useStore = create<AppState>((set, get) => ({
     } = get();
     const focusedRunId = get().activeAgentRunId;
     const mainRunId = get().mainRunId ?? get().runId;
+    // CA-1000: while an AI scaffold streams into this chat surface a normal
+    // send would start a second provider turn writing the same workspace —
+    // TUI blocks the composer during scaffold; mirror that here for any
+    // programmatic caller too.
+    if (get().scaffoldSession?.active) {
+      get().appendSystemMessage("AI scaffold is still running — wait for it to finish before sending.", "warn");
+      return;
+    }
     if (chatMode === "normal_chat" && focusedRunId && mainRunId && focusedRunId !== mainRunId) {
       get().appendSystemMessage("Child transcript is read-only. Return to the main chat to send prompts.");
       return;
@@ -2176,11 +2298,23 @@ export const useStore = create<AppState>((set, get) => ({
     // provider → 422 provider_unavailable) we must not be left with a blank screen and
     // no record of what the user typed (BUG-050). The catch below replaces the thinking
     // bubble with a visible error instead of failing silently.
+    // CA-1049: _streamRunSeq bumps at send time (not when startRun lands) so a
+    // slow first mint can never steal focus back from a chat the user opened
+    // meanwhile; pendingChatStart drives the Navigator's skeleton row.
+    const sendSeq = get()._streamRunSeq + 1;
     set((s) => ({
       recoverable: false,
       latestTokenUsage: undefined, contextNotice: undefined,
       status: "running",
       _streamingAssistantId: undefined,
+      _streamRunSeq: sendSeq,
+      _historyOpenSeq: s._historyOpenSeq + 1,
+      // CA-1049: this send supersedes any in-flight history open — drop its
+      // Navigator spinner along with the seq bump that discards the response.
+      historyOpeningRunId: undefined,
+      pendingChatStart: s.runId || !selectedProjectId
+        ? s.pendingChatStart
+        : { projectId: selectedProjectId, prompt: prompt.slice(0, 140), startedAt: Date.now() },
       timeline: [
         ...s.timeline,
         {
@@ -2232,6 +2366,10 @@ export const useStore = create<AppState>((set, get) => ({
         throw lastErr;
       };
       if (isDetachedReattach) {
+        // CP-89: the armed pin/latch must travel to the replacement leg —
+        // the runner adopts the prior leg's durable row when it can, but the
+        // client fields keep the arm intact when no prior leg is resolvable.
+        const armed = get().pendingFlowArm;
         const handle = await startRunWithRetry({
           projectId: selectedProjectId!,
           providerKey: selectedProvider,
@@ -2244,19 +2382,54 @@ export const useStore = create<AppState>((set, get) => ({
           chatId: existingChatId!,
           switchFromRunId: runId!,
           worktree: get().worktreeEnabled,
+          flowRef: armed?.flowRef || undefined,
+          // flow_arm_requires_flow rejects a pending arm with no pin — only
+          // re-declare the latch when a ref actually travels with it.
+          flowArm: armed?.flowRef ? "pending" : undefined,
+          sourceDocId: armed?.sourceDocId,
         });
         runId = handle.runId;
         if (handle.stepId) {
           turnStepId = handle.stepId;
         }
-        set({
-          mainRunId: handle.runId,
+        // CA-1049: the mint may land after the user opened another chat — keep
+        // the focus writes gated on the send's seq. The run itself always gets
+        // a local history row regardless of focus.
+        if (get()._streamRunSeq === sendSeq) {
+          // The new leg echoes the latch it actually adopted (CP-89 reattach):
+          // "pending" keeps the affordance armed, "started" means the flow
+          // already launched on a prior leg — re-arming must not resurface,
+          // and a stale "pending" from before that flip must not linger.
+          const armEcho = handle.flowArm ?? "";
+          set({
+            mainRunId: handle.runId,
+            chatId: handle.chatId ?? existingChatId,
+            chatDetached: false,
+            activeAgentRunId: undefined,
+            activeWorktreePath: handle.worktreePath ?? "",
+            ...(armEcho === "pending"
+              ? {
+                  pendingFlowArm: {
+                    flowRef: handle.flowRef || armed?.flowRef || "",
+                    sourceDocId: handle.sourceDocId || armed?.sourceDocId,
+                  },
+                  flowStarted: false,
+                }
+              : armEcho === "started"
+                ? { pendingFlowArm: undefined, flowStarted: true }
+                : {}),
+          });
+          if (get().worktreeEnabled) set({ activeWorktreeState: "active" });
+        }
+        noteLocallyStartedRun(set, mintedRunHistoryRow(handle, {
+          projectId: selectedProjectId!,
+          providerKey: selectedProvider ?? "codex",
+          runKind: "chat",
+          prompt,
           chatId: handle.chatId ?? existingChatId,
-          chatDetached: false,
-          activeAgentRunId: undefined,
-          activeWorktreePath: handle.worktreePath ?? "",
-        });
-        if (get().worktreeEnabled) set({ activeWorktreeState: "active" });
+          subMode: chatStartMode === "bugfix" ? "bug" : undefined,
+          flowRef: chatStartMode === "bugfix" ? flowRef : undefined,
+        }));
       } else if (!runId) {
         const handle = await startRunWithRetry(
           chatMode === "normal_chat"
@@ -2268,6 +2441,14 @@ export const useStore = create<AppState>((set, get) => ({
                 yoloMode,
                 workingMode,
                 flowRef: vibeEntry?.flowRef,
+                // CP-89 chat-then-forward: a vibe-armed chat pins the flow but
+                // does NOT launch on the first turn — the user discusses with
+                // the AI (SS/SD/CP drafts land in the workspace), then presses
+                // "Start flow" to send the forwardFlow turn (Task-452). The
+                // source doc pin lives on the run so the forward-time ingest
+                // fence validates without a repaste.
+                flowArm: vibeEntry ? "pending" : undefined,
+                sourceDocId: vibeEntry?.sourceDocId || undefined,
                 chatMode: "normal_chat",
                 cwd,
                 worktree: get().worktreeEnabled,
@@ -2286,14 +2467,32 @@ export const useStore = create<AppState>((set, get) => ({
         if (handle.stepId) {
           turnStepId = handle.stepId;
         }
-        set({
-          mainRunId: handle.runId,
+        if (get()._streamRunSeq === sendSeq) {
+          set({
+            mainRunId: handle.runId,
+            chatId: handle.chatId,
+            chatDetached: false,
+            activeAgentRunId: undefined,
+            activeWorktreePath: handle.worktreePath ?? "",
+            // CP-89: surface the armed affordance — the vibe flow is pinned
+            // pending and waits for the explicit forward turn.
+            pendingFlowArm: vibeEntry
+              ? { flowRef: vibeEntry.flowRef, sourceDocId: vibeEntry.sourceDocId || undefined }
+              : undefined,
+            flowStarted: false,
+          });
+          if (get().worktreeEnabled) set({ activeWorktreeState: "active" });
+        }
+        noteLocallyStartedRun(set, mintedRunHistoryRow(handle, {
+          projectId: selectedProjectId!,
+          providerKey: selectedProvider ?? "codex",
+          runKind: chatMode === "normal_chat" ? "chat" : "workflow",
+          prompt,
           chatId: handle.chatId,
-          chatDetached: false,
-          activeAgentRunId: undefined,
-          activeWorktreePath: handle.worktreePath ?? "",
-        });
-        if (get().worktreeEnabled) set({ activeWorktreeState: "active" });
+          subMode: chatStartMode === "bugfix" ? "bug" : undefined,
+          flowRef: chatStartMode === "bugfix" ? flowRef : undefined,
+          flowArm: vibeEntry ? "pending" : undefined,
+        }));
       }
 
       const turnInput: TurnInput = {
@@ -2347,32 +2546,19 @@ export const useStore = create<AppState>((set, get) => ({
         // turnId instead of minting a duplicate turn.
         idempotencyKey: `turn-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
       };
-      set({ runId, lastTurnInput: turnInput, activeStepId: turnStepId, _streamRunSeq: get()._streamRunSeq + 1 });
-      cancelHistoryReplayStream();
-      cancelOrchestrationStream();
-      cancelAgentFocusStream();
+      // CA-1049: seq moved while startRun/sendTurn was in flight means the user
+      // already navigated to another chat — the minted run keeps streaming
+      // server-side (consumeStream self-stales) but must not refocus here.
+      const stillFocused = get()._streamRunSeq === sendSeq;
+      if (stillFocused) {
+        set({ runId, lastTurnInput: turnInput, activeStepId: turnStepId });
+        cancelHistoryReplayStream();
+        cancelOrchestrationStream();
+        cancelAgentFocusStream();
+      }
 
-      // A follow-up sent the instant a flow *looks* done can race the hub's own
-      // final turn: the loop is marked "done" (which unblocks the composer via
-      // deriveOrchestrationRunStatus) from INSIDE that turn, while the turn's
-      // provider stream is still open — so the runner still holds turnInFlight and
-      // rejects POST /turns with 409 turn_in_progress. gate_in_progress (post-turn
-      // gate settling) and hub_parked (children still active) are the sibling
-      // transient windows. All three are rejected BEFORE a turn is minted, so
-      // re-POSTing is side-effect-free and can never duplicate a turn. Retry briefly
-      // until the turn clears instead of dropping the user's message with a raw
-      // error and forcing a re-type (the pre-fix symptom on flow completion).
-      const TRANSIENT_SEND_CODES = new Set(["turn_in_progress", "gate_in_progress", "hub_parked"]);
-      const TRANSIENT_SEND_MAX_RETRIES = 6;
-      const TRANSIENT_SEND_RETRY_MS = 700;
-      // A send that lands inside a runner restart window dies at the socket
-      // ("Failed to fetch") — retry those too. The Idempotency-Key on turnInput
-      // makes a re-POST side-effect-free: the runner replays the minted turnId.
-      // AbortError (user-driven cancel) is deliberately not retried.
-      const isConnectionFailure = (err: unknown) =>
-        !(err instanceof RunnerApiError) && !(err instanceof Error && err.name === "AbortError");
-      const CONN_SEND_MAX_RETRIES = 5;
-      const CONN_SEND_RETRY_MS = 1500;
+      // Retry constants live at module scope (TRANSIENT_SEND_* / CONN_SEND_* —
+      // shared with forwardArmedFlow).
       let connAttempts = 0;
       for (let attempt = 0; ; attempt++) {
         try {
@@ -2410,6 +2596,7 @@ export const useStore = create<AppState>((set, get) => ({
     // under. Other lanes' drafts are untouched.
     get().clearDraft(draftKeyAtSend);
     } catch (err) {
+      set({ pendingChatStart: undefined });
       // eslint-disable-next-line no-console
       console.error("[FlowPilot] sendPrompt failed:", err);
       // Task-432: the composer cleared optimistically before the call — put the
@@ -2463,6 +2650,121 @@ export const useStore = create<AppState>((set, get) => ({
         timeline: [
           ...s.timeline.filter((it) => it.kind !== "thinking"),
           { kind: "system", id: `err-run-${s.timeline.length}`, text: runErrorMessage(err), tone: "error" },
+        ],
+      }));
+    } finally {
+      void get().loadRunHistory();
+    }
+  },
+
+  async forwardArmedFlow(forwardText, opts) {
+    const { client, runId, pendingFlowArm, activeStepId, status } = get();
+    // The affordance exists when the runner can still launch: either the run
+    // carries a pinned pending arm, or the forward turn itself supplies the
+    // user's FINAL flow choice (CP-89 late-attach — an unpinned, never-
+    // launched chat armed only now, validated by the same runner gate).
+    const armedFlowRef = (opts?.flowRef ?? "").trim() || pendingFlowArm?.flowRef;
+    if (!client || !runId || !armedFlowRef) return;
+    if (status === "running" || status === "waiting_approval" || status === "waiting_question") return;
+    const prompt = (forwardText ?? "").trim();
+    // Capture the draft lane + stream seq BEFORE the optimistic mutation —
+    // a failed forward restores the composed text under the same key, and a
+    // late result must never stamp state onto a chat the user switched to.
+    const draftKeyAtSend = draftKeyFor(get().chatId ?? null, runId, get().selectedProjectId ?? null);
+    const sendSeq = get()._streamRunSeq + 1;
+    const turnInput: TurnInput = {
+      runId,
+      stepId: activeStepId ?? "",
+      prompt,
+      // CP-89 Task-452: the ONLY signal that flips a pending arm to started —
+      // the runner carries this text + the settled chat transcript into the
+      // flow's entry leg.
+      forwardFlow: true,
+      // The turn-level ref is the final selection: it overrides the
+      // provisional create-time pin (or is the pin outright on a chat that
+      // was never armed). Runner validates + commits it atomically.
+      flowRef: armedFlowRef,
+      sourceDocId: opts?.sourceDocId?.trim() || undefined,
+      // One key per forward send: retries after a connection failure replay
+      // the same turnId — without it a post-commit retry hits
+      // flow_already_started on a latch the runner already flipped.
+      idempotencyKey: `fwd-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+    };
+    set((s) => ({
+      pendingFlowArm: undefined,
+      status: "running",
+      recoverable: false,
+      // Same supersede contract as sendPrompt (CA-1049): bump the stream seq
+      // so in-flight events and any late result from THIS forward cannot
+      // corrupt a chat the user opened meanwhile.
+      _streamRunSeq: sendSeq,
+      timeline: [
+        ...s.timeline.filter((it) => it.kind !== "thinking"),
+        {
+          kind: "prompt",
+          id: `prompt-forward-${s.timeline.length}`,
+          text: prompt || `Start flow: ${armedFlowRef}`,
+        },
+        { kind: "thinking", id: `thinking-${s.timeline.length + 1}`, text: "Thinking..." },
+      ],
+    }));
+    const stillOurs = () => shouldApplyRunEvent(get().runId, runId) && get()._streamRunSeq === sendSeq;
+    let connAttempts = 0;
+    try {
+      for (let attempt = 0; ; attempt++) {
+        try {
+          await consumeStream(runId, client.sendTurn(turnInput), set, get);
+          break;
+        } catch (err) {
+          if (isConnectionFailure(err) && connAttempts < CONN_SEND_MAX_RETRIES && stillOurs()) {
+            connAttempts++;
+            await new Promise((r) => setTimeout(r, CONN_SEND_RETRY_MS));
+            continue;
+          }
+          const transient = err instanceof RunnerApiError && TRANSIENT_SEND_CODES.has(err.code ?? "");
+          if (!transient || attempt >= TRANSIENT_SEND_MAX_RETRIES || !stillOurs()) {
+            throw err;
+          }
+          await new Promise((r) => setTimeout(r, TRANSIENT_SEND_RETRY_MS));
+        }
+      }
+      // Forward accepted — the latch is durable started now; hide the armed
+      // affordance + late-attach picker for this chat, and drop the draft
+      // lane the text was composed under.
+      if (stillOurs()) set({ flowStarted: true });
+      get().clearDraft(draftKeyAtSend);
+      const orchestrationRunId = get().mainRunId ?? runId;
+      if (orchestrationRunId && stillOurs()) {
+        startOrchestrationStream(orchestrationRunId, client, set, get);
+      }
+      void get().refreshAgentRuns();
+      void get().refreshWorkflowStepRuntime();
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[FlowPilot] forwardArmedFlow failed:", err);
+      // Stale guard FIRST: a forward that resolves after the user switched
+      // chats must not mark the focused run failed or re-arm another chat's
+      // flow affordance. The retry invariants live runner-side anyway.
+      if (!stillOurs()) {
+        return;
+      }
+      // Restore the composed text — the composer cleared optimistically and
+      // a rejected forward must not make the user retype the final ask. A
+      // draft the user re-typed mid-flight (same key) wins over the restore.
+      if (!get().drafts[draftKeyAtSend]) {
+        get().setDraft(draftKeyAtSend, { text: prompt, updatedAt: Date.now() });
+      }
+      // The runner rolls the latch back to pending when the forward is
+      // rejected (Task-452) — restore the affordance so the user can retry.
+      // A rejected LATE-ATTACH never had an arm to begin with — restoring a
+      // synthesized one would mislabel the picker as an armed pin.
+      set((s) => ({
+        pendingFlowArm: s.pendingFlowArm ?? pendingFlowArm,
+        status: "failed",
+        recoverable: true,
+        timeline: [
+          ...s.timeline.filter((it) => it.kind !== "thinking"),
+          { kind: "system", id: `err-fwd-${s.timeline.length}`, text: runErrorMessage(err), tone: "error" },
         ],
       }));
     } finally {
@@ -2870,10 +3172,15 @@ export const useStore = create<AppState>((set, get) => ({
     try {
       const runHistory = await client.listRunHistory(selectedProjectId);
       if (get()._historyLoadSeq !== seq) return;
-      attentionQueue.ingestHistory(runHistory, selectedProjectId);
+      // CA-1049: rows minted by this client since the last poll must survive
+      // the authoritative list — a poll fetched mid-POST doesn't know the new
+      // run exists yet and would otherwise blank its sidebar row.
+      const merged = mergeLocallyStartedRuns(get()._locallyStartedRuns, selectedProjectId, runHistory);
+      attentionQueue.ingestHistory(merged.items, selectedProjectId);
       set((s) => ({
-        runHistory,
-        projectHistoryById: { ...s.projectHistoryById, [selectedProjectId]: runHistory },
+        runHistory: merged.items,
+        projectHistoryById: { ...s.projectHistoryById, [selectedProjectId]: merged.items },
+        _locallyStartedRuns: merged.local,
         historyLoading: false,
         historyLoadError: undefined,
       }));
@@ -2892,13 +3199,15 @@ export const useStore = create<AppState>((set, get) => ({
     projectHistoryInflight.add(projectId);
     try {
       const items = await client.listRunHistory(projectId);
-      attentionQueue.ingestHistory(items, projectId);
+      const merged = mergeLocallyStartedRuns(get()._locallyStartedRuns, projectId, items);
+      attentionQueue.ingestHistory(merged.items, projectId);
       set((s) => ({
-        projectHistoryById: { ...s.projectHistoryById, [projectId]: items },
+        projectHistoryById: { ...s.projectHistoryById, [projectId]: merged.items },
+        _locallyStartedRuns: merged.local,
         // The active project's slice also feeds runHistory — keep it in sync
         // when a stale cache warmer resolves after the user switched to it.
         ...(s.selectedProjectId === projectId && s.runHistory.length === 0 && !s.historyLoading
-          ? { runHistory: items }
+          ? { runHistory: merged.items }
           : {}),
       }));
     } catch {
@@ -3092,7 +3401,15 @@ export const useStore = create<AppState>((set, get) => ({
       return { _runSnapshots: next };
     });
     // Optimistically remove from local history so the UI responds immediately.
-    set((s) => ({ runHistory: s.runHistory.filter((item) => item.runId !== runId) }));
+    // CA-1049: drop the not-yet-polled local row too — otherwise the next
+    // merge would resurrect a deleted chat.
+    set((s) => {
+      const { [runId]: _dropped, ...remainingLocal } = s._locallyStartedRuns;
+      return {
+        runHistory: s.runHistory.filter((item) => item.runId !== runId),
+        _locallyStartedRuns: remainingLocal,
+      };
+    });
     // If the deleted run was the active session, reset the whole workspace back to
     // an empty new chat — reuse resetRun() (not a hand-rolled subset) so Flow Timeline
     // and Agents panel state (mainRunId, agentRuns, workflowStepRuntime, etc.) and the
@@ -3183,6 +3500,9 @@ export const useStore = create<AppState>((set, get) => ({
 
   async openHistoryRun(runId, itemOverride) {
     const { client } = get();
+    // CA-1049: clicking the already-focused row is a no-op — a redundant resume
+    // only round-trips the runner without changing the view.
+    if (runId === get().runId && !get().historyOpeningRunId) return;
     // Task-433: cache the outgoing run BEFORE switching so switching back
     // paints instantly; the reopened run's own snapshot seeds the timeline and
     // is then revalidated by the replay below (authority always wins).
@@ -3206,6 +3526,12 @@ export const useStore = create<AppState>((set, get) => ({
     if (get().spectatorRunId === runId) {
       set({ spectatorRunId: null, spectatorProjectId: null });
     }
+    // CA-1049: the click gets instant feedback — the Navigator marks the row
+    // as opening while the resume round-trips. Every open/reset/send bumps
+    // _historyOpenSeq so a late resume/timeline response can never steal
+    // focus back.
+    const openSeq = get()._historyOpenSeq + 1;
+    set({ _historyOpenSeq: openSeq, historyOpeningRunId: runId, pendingChatStart: undefined });
     let handle;
     try {
       handle = await client.resumeRun(runId);
@@ -3226,12 +3552,17 @@ export const useStore = create<AppState>((set, get) => ({
           ...((err.code === "account_not_signed_in" || err.code === "account_unavailable")
             ? { historyOpenError: { code: err.code, message: err.message, providerKey: historyProvider } }
             : {}),
+          ...(s._historyOpenSeq === openSeq ? { historyOpeningRunId: undefined } : {}),
         }));
         return;
       }
       console.error("[FlowPilot][history-open] unexpected resume failure", { runId, error: err });
+      set((s) => (s._historyOpenSeq === openSeq ? { historyOpeningRunId: undefined } : {}));
       throw err;
     }
+    // CA-1049: a newer open/reset/send superseded this click — discard the
+    // response instead of swapping the timeline under the user's feet.
+    if (get()._historyOpenSeq !== openSeq) return;
     console.info("[FlowPilot][history-open] resume succeeded", {
       requestedRunId: runId,
       runId: handle.runId,
@@ -3243,27 +3574,20 @@ export const useStore = create<AppState>((set, get) => ({
     // CP-59 F4 / CA-699: hydrate prior legs from chatTimeline (provider-agnostic,
     // chatId only). Best effort: timeline fetch failures keep current-leg replay.
     // Fallback to historyItem.chatId when ResumeRun's handle lacks it (BUG-338).
-    let priorTimeline: TimelineItem[] = [];
     // Task-421: fetch only the transcript TAIL page on open — the durable
     // store is the source of truth and older pages are pulled on demand via
     // loadEarlierTimeline. Keeps reopen memory bounded for long chats.
-    let timelineAnchorSeq: number | undefined;
-    let timelineHasOlder = false;
+    // CA-1049: the fetch is kicked off BEFORE the focus set below — the chat
+    // switches on resume, and the tail page merges in when it resolves.
     const effectiveChatId = (handle.chatId as string) || (historyItem?.chatId as string) || "";
-    if (effectiveChatId && historyItem?.runKind !== "workflow" && (handle as { runKind?: string }).runKind !== "workflow") {
-      try {
-        const tl = await client.chatTimeline(effectiveChatId, undefined, TIMELINE_TRANSCRIPT_PAGE, -1);
-        const records = tl.records ?? [];
-        timelineAnchorSeq = records.length > 0 ? records[0].chatSeq : undefined;
-        timelineHasOlder = tl.truncated === true;
-        priorTimeline = applyTimelineWindow(
-          buildPriorChatTimeline(records, handle.runId),
-          undefined,
-        ).timeline;
-      } catch (e) {
-        console.warn("[FlowPilot][history-open] chatTimeline failed, falling back to single-leg replay", e);
-      }
-    }
+    const handleRunKind = (handle as { runKind?: string }).runKind;
+    const tailPromise =
+      effectiveChatId && historyItem?.runKind !== "workflow" && handleRunKind !== "workflow"
+        ? client.chatTimeline(effectiveChatId, undefined, TIMELINE_TRANSCRIPT_PAGE, -1).catch((e) => {
+            console.warn("[FlowPilot][history-open] chatTimeline failed, falling back to single-leg replay", e);
+            return null;
+          })
+        : null;
     // BUG-170: restore the mode this run actually was, not whatever the UI happened to be
     // in before the user clicked a history item. Without this, reopening a workflow/flow-
     // mode run left chatMode stuck (often "normal_chat"), so the reopened run rendered
@@ -3273,7 +3597,6 @@ export const useStore = create<AppState>((set, get) => ({
     // BUG-340 follow-up: when the history row is missing entirely (restored/terminal
     // chat resumed without a row), fall back to the handle's runKind so a terminal chat
     // with a chatId still marks detached — a workflow handle never carries a chatId.
-    const handleRunKind = (handle as { runKind?: string }).runKind;
     const isWorkflowHistoryItem = historyItem === undefined
       ? handleRunKind === "workflow"
       : historyItem.runKind !== "chat";
@@ -3295,6 +3618,9 @@ export const useStore = create<AppState>((set, get) => ({
       chatDetached: isDetached,
       mainRunId: handle.runId,
       activeAgentRunId: undefined,
+      // CA-1000: opening a real run detaches the scaffold watcher — the
+      // server-side scaffold turn keeps running and can be re-watched.
+      scaffoldSession: undefined,
       status: handle.status,
       activeStepId: handle.stepId,
       // CP-71: restore the per-chat toggle from the opened run's binding —
@@ -3309,17 +3635,32 @@ export const useStore = create<AppState>((set, get) => ({
         : {}),
       chatStartMode,
       flowRef: chatStartMode === "bugfix" ? historyItem?.flowRef : undefined,
+      // CP-89 Task-452: reopening an armed chat restores the pending affordance
+      // — the runner-side latch is durable, so the resume handle (or the
+      // history row when the handle predates the field) is the authority.
+      pendingFlowArm:
+        (handle.flowArm ?? historyItem?.flowArm) === "pending"
+          ? {
+              flowRef: handle.flowRef || historyItem?.flowRef || "",
+              sourceDocId: handle.sourceDocId || historyItem?.sourceDocId,
+            }
+          : undefined,
+      flowStarted: (handle.flowArm ?? historyItem?.flowArm) === "started",
       // Task-433: a cached snapshot of THIS run paints instantly (transient
       // optimistic rows dropped — replay re-appends them with durable ids);
       // the replay stream below remains the authority and revalidates it.
+      // CA-1049: without a cache the timeline starts empty — the tail page
+      // fired above prepends prior legs when it lands, and the replay fills
+      // the current leg; neither blocks the focus switch.
       timeline: cached
         ? cached.timeline.filter((it) => !it.id.startsWith("prompt-local-") && it.kind !== "thinking")
-        : priorTimeline,
-      timelineHasOlder: cached?.timelineHasOlder ?? timelineHasOlder,
-      _timelineAnchorSeq: cached?._timelineAnchorSeq ?? timelineAnchorSeq,
+        : [],
+      timelineHasOlder: cached?.timelineHasOlder ?? false,
+      _timelineAnchorSeq: cached?._timelineAnchorSeq,
       _timelineLoadingEarlier: false,
       _timelineEvictedIds: new Set(cached?._timelineEvictedIds ?? []),
       artifacts: cached?.artifacts ?? [],
+      historyOpeningRunId: undefined,
       pendingApprovals: [],
       pendingQuestions: [],
       gateBlock: undefined,
@@ -3355,6 +3696,29 @@ export const useStore = create<AppState>((set, get) => ({
         item.runId === runId ? { ...item, unavailableReason: undefined } : item
       ),
     });
+    // CA-1049: the transcript tail page resolves after the focus set — prepend
+    // prior-leg rows (id-deduped) so ordering stays transcript-before-live
+    // even when a cached snapshot or early replay rows already painted.
+    const tl = tailPromise ? await tailPromise : null;
+    if (get()._historyOpenSeq !== openSeq) return;
+    if (tl) {
+      const records = tl.records ?? [];
+      const hydrated = applyTimelineWindow(
+        buildPriorChatTimeline(records, handle.runId),
+        undefined,
+      ).timeline;
+      set((s) => {
+        const seen = new Set(s.timeline.map((it) => it.id));
+        const fresh = hydrated.filter((it) => !seen.has(it.id));
+        const win = applyTimelineWindow([...fresh, ...s.timeline], s._timelineEvictedIds);
+        return {
+          timeline: win.timeline,
+          _timelineEvictedIds: win.evictedIds,
+          _timelineAnchorSeq: records.length > 0 ? records[0].chatSeq : s._timelineAnchorSeq,
+          timelineHasOlder: tl.truncated === true,
+        };
+      });
+    }
     if (historyProvider) {
       void get().loadSkills(historyProvider);
     }
@@ -3453,6 +3817,8 @@ export const useStore = create<AppState>((set, get) => ({
       chatSourceDocId: "",
       flowRef: undefined,
       builtinOrchestrationOptions: [],
+      pendingFlowArm: undefined,
+      flowStarted: false,
       // worktreeEnabled intentionally survives reset: the toggle is a next-run
       // intent (like yoloMode/workingMode), not per-run state — clearing it here
       // silently dropped worktree:true when "New run"/new-chat called resetRun
@@ -3461,7 +3827,46 @@ export const useStore = create<AppState>((set, get) => ({
       activeWorktreePath: "",
       activeWorktreeState: "",
       selectedModel: pickDefaultModel(selectedProvider, supportedModels),
+      // CA-1000: stop watching a scaffold transcript — the server-side turn is
+      // unaffected and keeps writing to .flowpilot/scaffold-progress.ndjson.
+      scaffoldSession: undefined,
+      // CA-1049: a fresh chat supersedes any in-flight history open or pending
+      // first send — seq bumps make their late responses no-op.
+      historyOpeningRunId: undefined,
+      pendingChatStart: undefined,
+      _historyOpenSeq: get()._historyOpenSeq + 1,
+      _streamRunSeq: get()._streamRunSeq + 1,
     });
+  },
+
+  async runScaffoldChat(input) {
+    const { projectId, workingDirectory, platform, modelName, force } = input;
+    if (!projectId || !workingDirectory) return;
+    if (get().scaffoldSession?.active) return;
+    if (get().selectedProjectId !== projectId) {
+      // selectProject already resets the run state on a project change.
+      await get().selectProject(projectId);
+    } else {
+      get().resetRun();
+    }
+    const token = ++scaffoldChatTokenCounter;
+    const assistantId = `scaffold-assistant-${token}`;
+    const session = { token, projectId, workingDirectory, active: true, phase: "dispatch", attempt: 1 };
+    set((s) => ({
+      scaffoldSession: session,
+      timeline: [
+        ...s.timeline,
+        { kind: "prompt", id: `scaffold-prompt-${token}`, text: "Run AI Scaffold" },
+        {
+          kind: "system",
+          id: `scaffold-intro-${token}`,
+          text: `AI scaffold running for ${workingDirectory} — provider output streams below. The turn continues on the runner if you leave this chat.`,
+          tone: "info",
+        },
+        { kind: "assistant", id: assistantId, text: "", finalized: false },
+      ],
+    }));
+    await pumpScaffoldChat(set, get, session, assistantId, { platform, modelName, force });
   },
 
   toggleTerminal() {
@@ -4113,6 +4518,195 @@ function startOrchestrationStream(
 }
 
 // ---- CP-84 (Task-429 T-5/T-6): multiplexed lane stream --------------------
+// CA-1000: scaffold-chat watch loop. The scaffold POST blocks for the whole
+// AI turn, so live rendering comes from the CA-916 progress feed — the same
+// persisted NDJSON the TUI replays. The pump is a pure watcher: it exits when
+// scaffoldSession is cleared (resetRun / openHistoryRun / project switch) and
+// never cancels the server-side turn.
+const SCAFFOLD_CHAT_POLL_MS = 700;
+// After the dispatch POST settles, keep polling briefly so a result event that
+// is still being flushed to the feed wins over the HTTP response body. The
+// runner emits the result event before the handler returns, so two polls are
+// plenty — this counter is just the bound for a dead feed.
+const SCAFFOLD_CHAT_DRAIN_POLLS = 3;
+let scaffoldChatTokenCounter = 0;
+
+// Test seam (mirrors runUpdatesLoopTestHooks): unit tests shrink the waits so
+// a full pump cycle takes milliseconds instead of the production cadence.
+export const scaffoldChatTestHooks = {
+  settleDelayMs: 300,
+  pollMs: SCAFFOLD_CHAT_POLL_MS,
+};
+
+type ScaffoldSet = (fn: (s: AppState) => Partial<AppState>) => void;
+
+interface ScaffoldChatSessionRef {
+  token: number;
+  projectId: string;
+  workingDirectory: string;
+}
+
+function scaffoldChatActive(get: () => AppState, token: number): boolean {
+  return get().scaffoldSession?.token === token;
+}
+
+function scaffoldChatAppend(
+  set: ScaffoldSet,
+  get: () => AppState,
+  session: ScaffoldChatSessionRef,
+  assistantId: string,
+  fold: {
+    outputDelta?: string;
+    phases?: Array<{ text: string; phase: string; attempt: number }>;
+    result?: ScaffoldRunResult | null;
+  },
+): void {
+  if (!scaffoldChatActive(get, session.token)) return;
+  const items: TimelineItem[] = [];
+  for (const milestone of fold.phases ?? []) {
+    items.push({
+      kind: "system",
+      id: `scaffold-phase-${session.token}-${milestone.phase}-${milestone.attempt}-${items.length}`,
+      text: `▸ ${milestone.text}`,
+      tone: "info",
+    });
+  }
+  let terminalText = "";
+  let terminalTone: "info" | "warn" | "error" = "info";
+  const result = fold.result ?? null;
+  if (result) {
+    terminalTone = result.status === "error" ? "error" : result.status === "skipped" ? "warn" : "info";
+    terminalText =
+      result.message?.trim() ||
+      (result.status === "done"
+        ? "AI scaffold completed."
+        : result.status === "skipped"
+          ? "AI scaffold skipped."
+          : "AI scaffold failed.");
+    items.push({ kind: "system", id: `scaffold-end-${session.token}`, text: terminalText, tone: terminalTone });
+  }
+  set((s) => {
+    if (s.scaffoldSession?.token !== session.token) return {};
+    const timeline = s.timeline.map((it) => {
+      if (it.id !== assistantId || it.kind !== "assistant") return it;
+      const text = it.text + (fold.outputDelta ?? "");
+      // A scaffold that ends without any provider output (skipped, early
+      // error) would otherwise render as an empty bubble.
+      if (result && text.trim() === "") {
+        return { ...it, text: "*(no provider output)*", finalized: true };
+      }
+      return { ...it, text, finalized: it.finalized || Boolean(result) };
+    });
+    return {
+      timeline: [...timeline, ...items],
+      scaffoldSession:
+        result || (fold.phases?.length ?? 0) > 0
+          ? {
+              ...s.scaffoldSession,
+              active: !result,
+              phase: result?.status ?? fold.phases?.at(-1)?.phase ?? s.scaffoldSession.phase,
+              attempt: fold.phases?.at(-1)?.attempt ?? s.scaffoldSession.attempt,
+            }
+          : s.scaffoldSession,
+    };
+  });
+}
+
+async function pumpScaffoldChat(
+  set: ScaffoldSet,
+  get: () => AppState,
+  session: ScaffoldChatSessionRef,
+  assistantId: string,
+  dispatchOptions: { platform?: string; modelName?: string; force?: boolean },
+): Promise<void> {
+  let cursor = 0;
+  let sawStarted = false;
+  let postSettled = false;
+  let postResult: ScaffoldRunResult | null = null;
+  let postError: string | null = null;
+  const postDone = dispatchScaffold(session.projectId, session.workingDirectory, dispatchOptions)
+    .then((result) => {
+      postResult = result;
+    })
+    .catch((error) => {
+      postError = error instanceof Error ? error.message : String(error);
+    })
+    .finally(() => {
+      postSettled = true;
+    });
+
+  // Let the POST land first — the runner emits "started" synchronously at
+  // dispatch begin, so a poll that arrives earlier would replay the previous
+  // run's persisted tail and render stale output in the fresh transcript.
+  await new Promise((resolve) => setTimeout(resolve, scaffoldChatTestHooks.settleDelayMs));
+
+  let drainPolls = 0;
+  for (;;) {
+    // Watcher detached (resetRun / history open / project switch) — the POST
+    // continues server-side; the pump must not hang waiting on it.
+    if (!scaffoldChatActive(get, session.token)) return;
+    let snap;
+    try {
+      snap = await fetchScaffoldProgress(session.projectId, cursor, undefined, session.workingDirectory);
+    } catch {
+      if (postSettled) break;
+      await new Promise((resolve) => setTimeout(resolve, scaffoldChatTestHooks.pollMs));
+      continue;
+    }
+    if (!scaffoldChatActive(get, session.token)) return;
+    // The runner clears the hub at dispatch begin, so an ACTIVE snapshot only
+    // ever carries this run's events; after begin was observed (sawStarted)
+    // the hub still holds only this run, so post-end snapshots keep folding.
+    // An INACTIVE snapshot before begin is still serving the PREVIOUS run's
+    // events/result — skip them entirely so a stale tail never renders.
+    const foldable = sawStarted || snap.active;
+    const phases: Array<{ text: string; phase: string; attempt: number }> = [];
+    let outputDelta = "";
+    let result: ScaffoldRunResult | null = null;
+    if (foldable) {
+      for (const ev of snap.events) {
+        if (ev.seq <= cursor) continue;
+        if (ev.kind === "phase" && ev.phase === "started") {
+          sawStarted = true;
+          continue;
+        }
+        if (ev.kind === "output" && ev.text) {
+          outputDelta += ev.text;
+        } else if (ev.kind === "phase" && ev.phase && ev.text) {
+          phases.push({ text: ev.text, phase: ev.phase, attempt: ev.attempt ?? 1 });
+        } else if (ev.kind === "result" && ev.result) {
+          result = ev.result;
+        }
+      }
+    }
+    // Advance past anything skipped so stale events are never re-served.
+    cursor = Math.max(cursor, snap.nextSeq - 1);
+    if (outputDelta || phases.length > 0 || result) {
+      scaffoldChatAppend(set, get, session, assistantId, { outputDelta, phases, result });
+    }
+    if (result) {
+      await postDone.catch(() => {});
+      return;
+    }
+    if (sawStarted && snap.result) {
+      scaffoldChatAppend(set, get, session, assistantId, { result: snap.result });
+      await postDone.catch(() => {});
+      return;
+    }
+    if (postSettled) {
+      // POST resolution is authoritative and always follows the feed's
+      // terminal event — bound the drain so a dead feed can't hang the pump.
+      if (++drainPolls >= SCAFFOLD_CHAT_DRAIN_POLLS) break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, scaffoldChatTestHooks.pollMs));
+  }
+  await postDone.catch(() => {});
+  if (!scaffoldChatActive(get, session.token)) return;
+  scaffoldChatAppend(set, get, session, assistantId, {
+    result: postResult ?? { status: "error", message: postError ?? "AI scaffold ended without a result." },
+  });
+}
+
 // One app-lifetime controller — deliberately NOT cancelled by resetRun(),
 // project switches, or chat focus changes. The stream is level-triggered:
 // every reconnect starts from a chunked authoritative snapshot; the 30s
@@ -4219,6 +4813,90 @@ function patchHistoryLane(set: (fn: (s: AppState) => Partial<AppState>) => void,
       ...(s.selectedProjectId === lane.projectId ? { runHistory: next } : {}),
     };
   });
+}
+
+/** CA-1049: insert a just-minted run into the Navigator's local history lanes.
+ *  The authoritative poll lags up to 3s (running) / 10s (idle); without this
+ *  the fresh chat is invisible in the sidebar until the next tick. The row
+ *  stays in _locallyStartedRuns until a server list echoes the runId. */
+function noteLocallyStartedRun(
+  set: (fn: (s: AppState) => Partial<AppState>) => void,
+  row: RunHistoryItem,
+): void {
+  if (!row.projectId) {
+    set(() => ({ pendingChatStart: undefined }));
+    return;
+  }
+  set((s) => {
+    const items = s.projectHistoryById[row.projectId] ?? [];
+    const next = items.some((it) => it.runId === row.runId)
+      ? items.map((it) => (it.runId === row.runId ? { ...it, ...row } : it))
+      : [...items, row];
+    return {
+      _locallyStartedRuns: { ...s._locallyStartedRuns, [row.runId]: row },
+      pendingChatStart: undefined,
+      projectHistoryById: { ...s.projectHistoryById, [row.projectId]: next },
+      ...(s.selectedProjectId === row.projectId ? { runHistory: next } : {}),
+    };
+  });
+}
+
+/** CA-1049: fold locally-started rows into a fresh server list — keeps rows
+ *  for runs the poll hasn't caught yet and prunes entries it now echoes. */
+function mergeLocallyStartedRuns(
+  local: Record<string, RunHistoryItem>,
+  projectId: string,
+  items: RunHistoryItem[],
+): { items: RunHistoryItem[]; local: Record<string, RunHistoryItem> } {
+  const echoed = new Set(items.map((it) => it.runId));
+  const merged = [...items];
+  const nextLocal = { ...local };
+  for (const row of Object.values(local)) {
+    if (row.projectId !== projectId) continue;
+    if (echoed.has(row.runId)) {
+      delete nextLocal[row.runId];
+    } else {
+      merged.push(row);
+    }
+  }
+  return { items: merged, local: nextLocal };
+}
+
+/** CA-1049: RunHistoryItem for a run minted by this send — built from the
+ *  values captured AT SEND TIME (the user may have switched chat/project
+ *  while startRun was in flight). The next poll replaces it wholesale, so
+ *  only sidebar-visible fields are worth carrying. */
+function mintedRunHistoryRow(
+  handle: RunHandle,
+  ctx: {
+    projectId: string;
+    providerKey: ProviderKey;
+    runKind: string;
+    prompt: string;
+    chatId?: string;
+    subMode?: string;
+    flowRef?: string;
+    flowArm?: string;
+  },
+): RunHistoryItem {
+  const now = new Date().toISOString();
+  return {
+    runId: handle.runId,
+    projectId: ctx.projectId,
+    chatId: ctx.chatId ?? handle.chatId,
+    providerKey: ctx.providerKey,
+    status: "running",
+    startedAt: now,
+    updatedAt: now,
+    lastPrompt: ctx.prompt,
+    runKind: ctx.runKind,
+    subMode: ctx.subMode,
+    flowRef: ctx.flowRef,
+    flowArm: ctx.flowArm,
+    worktreeState: handle.worktreeState,
+    worktreeSlug: handle.worktreeSlug,
+    worktreePath: handle.worktreePath,
+  };
 }
 
 /** Synthesize a bounded RunHistoryItem from projection fields only. Server-
@@ -4590,9 +5268,17 @@ function snapshotRunState(state: AppState): RunSnapshot {
 function restoreRunSnapshot(snapshot: RunSnapshot): Partial<AppState> {
   const pending = sanitizePendingSnapshotState(snapshot.status, snapshot.pendingApprovals, snapshot.pendingQuestions);
   // Clone mutable collections on restore too — the cached copy must not alias
-  // live state the reducer will mutate next.
+  // live state the reducer will mutate next. CP-89 caret fix: any assistant
+  // bubble still marked unfinalized in a CACHED snapshot is stale — the live
+  // stream that owned it died when the snapshot was taken, and providers that
+  // close a turn without a plain message_completed left finalized:false
+  // behind (the blinking ▌ caret on historical replies). Finalize them all:
+  // if the run is genuinely still streaming, the replay's message_delta
+  // re-opens the same bubble id in place, so nothing live is lost.
   return {
-    timeline: [...snapshot.timeline],
+    timeline: snapshot.timeline.map((it) =>
+      it.kind === "assistant" && !it.finalized ? { ...it, finalized: true } : it,
+    ),
     artifacts: [...snapshot.artifacts],
     status: snapshot.status,
     pendingApprovals: [...pending.pendingApprovals],
@@ -4601,7 +5287,10 @@ function restoreRunSnapshot(snapshot: RunSnapshot): Partial<AppState> {
     contextNotice: snapshot.contextNotice,
     lastTurnInput: snapshot.lastTurnInput,
     recoverable: snapshot.recoverable,
-    _streamingAssistantId: snapshot._streamingAssistantId,
+    // Cleared with the finalize-all above — a replayed delta re-binds by
+    // event id; keeping the stale id would append replayed text onto the
+    // already-complete bubble instead of rebuilding it.
+    _streamingAssistantId: undefined,
     activeStepId: snapshot.activeStepId,
     timelineHasOlder: snapshot.timelineHasOlder ?? false,
     _timelineAnchorSeq: snapshot._timelineAnchorSeq,

@@ -98,6 +98,12 @@ const (
 	EventApprovalExpired ProviderEventType = "approval_expired"
 	// BUG-507 twin for ask_user questions expiring unanswered.
 	EventQuestionExpired ProviderEventType = "question_expired"
+	// EventLegClaimReclaimed (BUG-543 residual): the leg-claim sweep closed a
+	// stale active leg whose parent loop is provably sealed or gone. Durable
+	// via the flow-events sidecar so the reclaim is auditable post-restart —
+	// the session row's leg_closed_reason=claim_reclaimed state is the twin
+	// record on the claim itself.
+	EventLegClaimReclaimed ProviderEventType = "leg_claim_reclaimed"
 )
 
 // ProviderLimitKind is the normalized provider-limit taxonomy (Task-445 T-1).
@@ -356,6 +362,13 @@ type AgentLoopState struct {
 	// deliberately does NOT apply here.
 	NegotiationRound int `json:"negotiationRound,omitempty"`
 	NegotiationCap   int `json:"negotiationCap,omitempty"`
+	// CompletionKind records HOW a done loop completed (R.2-2): "" for a
+	// generic completion vs "plan_complete" when the vibe sprint plan
+	// drained — the distinction run summaries and the UI surface so a
+	// fully-delivered run is not read as a wedged slicer park. Meaningful
+	// only while Status=="done"; a resumed loop may carry a stale value, so
+	// renderers must gate on Status.
+	CompletionKind string `json:"completionKind,omitempty"`
 }
 
 type AgentGraphSnapshot struct {
@@ -412,6 +425,15 @@ type RunHandle struct {
 	RunKind    string `json:"runKind,omitempty"`
 	WorkflowID string `json:"workflowId,omitempty"`
 	FlowRef    string `json:"flowRef,omitempty"`
+	// FlowArm is the CP-89 launch latch echo ("pending" = chat-then-forward armed,
+	// flow not started yet). Clients use it to restore the armed affordance on a
+	// reopened chat; "immediate"/"started" are informational only. Omitted on
+	// runs with no flow pin.
+	FlowArm string `json:"flowArm,omitempty"`
+	// SourceDocID echoes the CP-89 source-document pin (e.g. the CP doc a
+	// vibe-cp-ingest run ingests). Clients need it on the handle so a reopened
+	// or reattached armed chat can re-render the doc path without repaste.
+	SourceDocID string `json:"sourceDocId,omitempty"`
 	// Chat SSOT (CP-59 / SD-26 §5.1): the logical chat this run belongs to and
 	// its leg ordinal. Omitted for workflow runs and when the flag is off.
 	ChatID string `json:"chatId,omitempty"`

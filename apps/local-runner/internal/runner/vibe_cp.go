@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -30,6 +31,11 @@ const (
 	vibeSprintSlicerNodeID    = "sprint_slicer"
 	vibeCpWriterNodeID        = "cp_writer"
 	vibeDebateSynthesisNodeID = "debate_synthesis"
+	// vibeCompletionPlanComplete is the AgentLoopState.CompletionKind stamped
+	// when a vibe run settles with its sprint plan fully consumed — the
+	// typed "plan_complete" terminal that distinguishes "all planned tasks
+	// delivered" from a wedged slicer park (R.2-2).
+	vibeCompletionPlanComplete = "plan_complete"
 )
 
 // inferPackFlowRefFromNodes corrects a stale ChatFlowRef after overlay
@@ -151,6 +157,65 @@ func (s *InteractiveService) takeNextVibeSprintLocked(rs *interactiveRun) vibeSp
 	return d
 }
 
+// vibePlanDrainedLocked reports whether every task in the run's sprint plan
+// has been started and finished — the cursor advanced past the plan. Callers
+// must hold s.mu. An empty plan is NOT drained: a run that never sliced has
+// nothing delivered (that is the slicer-failure shape, not plan_complete).
+func vibePlanDrainedLocked(rs *interactiveRun) bool {
+	return rs != nil && len(rs.vibeTaskPlan) > 0 && rs.vibeSprintIndex >= len(rs.vibeTaskPlan)
+}
+
+// settleVibePlanComplete lands the run on the typed terminal state
+// (R.2-2): loop done + CompletionKind "plan_complete", run status completed.
+// It exists so "todo/ drained, every sprint delivered" is distinguishable
+// from a wedged slicer park — a plan-exhausted flow used to either silent-
+// return (maybeStartNextVibeSprint swallowed d.Done) or park
+// flow_parked_awaiting_user looking identical to a failure, with Continue
+// swallowed. Conditional like every other settle seam: a stopped/paused loop
+// keeps its operator verdict — the loop mutate runs BEFORE the run-status
+// flip so a Stop landing in the window is never overwritten to completed.
+func (s *InteractiveService) settleVibePlanComplete(parentRunID, summary string) {
+	s.mu.Lock()
+	rs := s.runs[parentRunID]
+	if rs == nil || !vibePlanDrainedLocked(rs) {
+		s.mu.Unlock()
+		return
+	}
+	s.mu.Unlock()
+	// Operator verdict wins: the loop settle is conditional BEFORE any
+	// run-status flip — markFlowRunComplete only runs once the loop actually
+	// sealed, so a Stop landing in the window is never overwritten to
+	// completed (same contract as parkVibeSprintBudget's conditional mutate).
+	settled := false
+	snap := s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
+		if st.Status == "stopped" || st.Status == "paused" {
+			return st
+		}
+		if st.Status == "done" && st.CompletionKind == vibeCompletionPlanComplete {
+			return st // already stamped — re-settle is a no-op
+		}
+		st.Status = "done"
+		st.BlockReason = ""
+		st.GateReason = ""
+		st.OpenIssues = 0
+		st.CompletionKind = vibeCompletionPlanComplete
+		settled = true
+		return st
+	})
+	if !settled {
+		return
+	}
+	if s.isFlowEngineDriven(parentRunID) {
+		s.markFlowRunComplete(context.Background(), parentRunID)
+	} else {
+		s.settleParentRunOnFlowDone(parentRunID)
+	}
+	s.appendPendingAgentContext(parentRunID, strings.TrimSpace("Vibe sprint plan complete — all planned tasks delivered. "+summary))
+	s.emitAgentGraph(parentRunID, snap)
+	s.persistParentSession(parentRunID)
+	s.flowDiagLog(parentRunID, "vibe_plan_complete", "vibe sprint plan drained; run settled plan_complete")
+}
+
 func (s *InteractiveService) parkVibeSprintBudget(parentRunID string) {
 	// Conditional mutate: a Stop/done landing between the caller's sealed
 	// check and here must win instead of being overwritten to blocked/budget.
@@ -212,6 +277,13 @@ func (s *InteractiveService) maybeStartNextVibeSprint(parentRunID string) {
 		return
 	}
 	if !d.Start {
+		if d.Done {
+			// R.2-2: the chain decision's typed terminal was previously
+			// swallowed here — the loop stayed "running" forever after the
+			// last sprint delivered. Land it as plan_complete so "nothing
+			// left to sprint" is distinguishable from a wedged slicer.
+			s.settleVibePlanComplete(parentRunID, "sprint chain exhausted")
+		}
 		return
 	}
 	ref := workingmode.PackPrefix + vibeSprintFlowID
@@ -378,6 +450,14 @@ func (s *InteractiveService) maybeParkVibeCpJoinResume(parentRunID string) bool 
 		return false
 	}
 	if rs.vibeResumeConfirm || rs.vibeAwaitingLock || rs.vibeSprintBoundaryPending || rs.vibeSprintBoundaryDeclined {
+		s.mu.Unlock()
+		return false
+	}
+	if vibePlanDrainedLocked(rs) {
+		// R.2-2: a fully-delivered plan with an empty todo/ is the drained
+		// terminal state, not "CP written but never sliced". Offering the
+		// cp_writer → task_slicer resume here would re-park the finished run
+		// behind a zero-task failure card on every reopen.
 		s.mu.Unlock()
 		return false
 	}
@@ -783,11 +863,20 @@ func collectVibeSprintPlan(cwd string) []string {
 	return out
 }
 
-func (s *InteractiveService) stashVibeFlowForDebate(parentRunID string) {
+func (s *InteractiveService) stashVibeFlowForDebate(parentRunID, gatedRunID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rs := s.runs[parentRunID]
-	if rs == nil || len(rs.vibeParkedNodes) > 0 {
+	if rs == nil {
+		return
+	}
+	// Record the interrupted child even when the topology is already parked
+	// (a second gate fire mid-debate): every diverted node completion owes a
+	// resume reprompt once the debate resolves.
+	if gatedRunID != "" && gatedRunID != parentRunID && !slices.Contains(rs.vibeParkedGatedRunIDs, gatedRunID) {
+		rs.vibeParkedGatedRunIDs = append(rs.vibeParkedGatedRunIDs, gatedRunID)
+	}
+	if len(rs.vibeParkedNodes) > 0 {
 		return
 	}
 	rs.vibeParkedNodes = append([]agentpack.FlowNode(nil), rs.activeFlowNodes...)
@@ -819,16 +908,104 @@ func (s *InteractiveService) restoreVibeFlowAfterDebate(parentRunID string) bool
 		rs.chatFlowRef = rs.vibeParkedFlowRef
 	}
 	nodes := append([]agentpack.FlowNode(nil), rs.activeFlowNodes...)
+	gatedIDs := append([]string(nil), rs.vibeParkedGatedRunIDs...)
 	rs.vibeParkedNodes = nil
 	rs.vibeParkedEdges = nil
 	rs.vibeParkedAcceptance = nil
 	rs.vibeParkedFlowRef = ""
+	rs.vibeParkedGatedRunIDs = nil
+	verdicts := append([]VerdictRow(nil), rs.lastFlowVerdicts...)
+	// The gate diverted each gated child's node completion into the debate
+	// before tryAdvanceFlowFromNode could fire its done-edge — the debate then
+	// ran on the parent hub, so the child's own session never saw the verdict.
+	// Arm the standard gate-reprompt intent on each gated child with the
+	// verdict carried inline: its re-completion re-runs the post-turn gate and
+	// advances the restored sprint chain through the normal completion path.
+	type gatedReprompt struct {
+		runID  string
+		stepID string
+		prompt string
+		gen    int64
+	}
+	var reprompts []gatedReprompt
+	var childSnaps []ProviderSessionState
+	for _, gid := range gatedIDs {
+		if gid == "" || gid == parentRunID {
+			continue
+		}
+		ch := s.runs[gid]
+		if ch == nil || ch.legState == LegStateClosed || ch.status == RunStatusCancelled {
+			continue
+		}
+		stepID := strings.TrimSpace(ch.lastTurnStepID)
+		if stepID == "" {
+			stepID = strings.TrimSpace(ch.label)
+		}
+		prompt := vibeDebateResumeRepromptPrompt(verdicts)
+		ch.pendingGateRepromptPrompt = prompt
+		ch.pendingGateRepromptStepID = stepID
+		ch.pendingGateRepromptGen++
+		reprompts = append(reprompts, gatedReprompt{gid, stepID, prompt, ch.pendingGateRepromptGen})
+		childSnaps = append(childSnaps, sessionStateOf(ch))
+	}
+	parentSnap := sessionStateOf(rs)
+	if rs.parentRunID == "" {
+		parentSnap.LoopState = s.agentOrchestrator.loopStateFor(rs.id)
+	}
 	s.mu.Unlock()
 	if s.isFlowEngineDriven(parentRunID) {
 		s.reseedFlowStepRuntime(parentRunID, nodes)
 	}
+	// Durable-first: the cleared parked topology and the armed reprompts must
+	// both survive a restart landing between restore and dispatch.
+	_ = s.persistProviderSession(parentSnap)
+	for _, snap := range childSnaps {
+		_ = s.persistProviderSession(snap)
+	}
+	if len(reprompts) == 0 {
+		// No gated child recorded (drift-only debate on the hub, or the child
+		// row is gone) — fall back to the hub continuation so the restored
+		// loop still has work in flight instead of stalling (run-136/9597).
+		s.maybeAutoReinvokeHubWithPrompt(parentRunID, vibeDebateResumePrompt)
+		return true
+	}
+	for _, rp := range reprompts {
+		go s.startTurnClearingIntent(rp.runID, rp.stepID, rp.prompt, "reprompt", rp.gen)
+	}
 	return true
 }
+
+// vibeDebateResumeRepromptPrompt builds the gated child's remediation
+// reprompt. The owner debate ran on the parent hub, so the verdict rows are
+// carried inline; the child's re-completion then fires the interrupted
+// node's done-edge through the normal completion path.
+func vibeDebateResumeRepromptPrompt(verdicts []VerdictRow) string {
+	const base = "[flow-engine] The post-turn gate on your last turn was routed to the owner-debate remediation flow, which has now resolved. Re-examine your output for this node against the remediation verdict — apply the decided rework, or confirm the output already satisfies the node's contract — then complete normally so the sprint chain advances."
+	if len(verdicts) == 0 {
+		return base
+	}
+	var b strings.Builder
+	b.WriteString(base)
+	b.WriteString(" Debate verdict:")
+	for _, v := range verdicts {
+		b.WriteString(" [")
+		b.WriteString(strings.TrimSpace(v.ACID))
+		b.WriteString("] ")
+		b.WriteString(strings.TrimSpace(v.Verdict))
+		if note := strings.TrimSpace(v.Note); note != "" {
+			b.WriteString(" — ")
+			b.WriteString(note)
+		}
+		b.WriteString(";")
+	}
+	return b.String()
+}
+
+// vibeDebateResumePrompt is the hub prompt used when the parked sprint flow
+// is restored after an owner-debate completes but no gated child was
+// recorded — the re-invoked hub re-evaluates the interrupted node with the
+// remediation verdict and drives the restored chain via flow_control.
+const vibeDebateResumePrompt = "[flow-engine] The owner-debate remediation resolved and the parked sprint flow is restored. Re-evaluate the interrupted node's outcome with the debate verdict applied, then call submit_review_outcome / flow_control to advance the sprint chain — re-run the gated work only if the verdict requires rework."
 
 func (s *InteractiveService) onVibeCpNodeDone(parentRunID, completedNodeID string) {
 	switch completedNodeID {
@@ -854,9 +1031,11 @@ func (s *InteractiveService) onVibeCpNodeDone(parentRunID, completedNodeID strin
 		// unchanged (pinned by CA-783).
 		s.mu.Lock()
 		var cwd, cpID string
+		drained := false
 		if rs := s.runs[parentRunID]; rs != nil {
 			cwd = rs.workspaceCwd
 			cpID = rs.vibeCpDocID
+			drained = vibePlanDrainedLocked(rs)
 		}
 		s.mu.Unlock()
 		if strings.TrimSpace(cwd) != "" && len(collectVibeTaskPlanForCP(cwd, cpID)) == 0 {
@@ -868,6 +1047,14 @@ func (s *InteractiveService) onVibeCpNodeDone(parentRunID, completedNodeID strin
 			// run-640953). Mirrors the cohort self-settle and the :1203
 			// terminal write. Unlocked variant: s.mu is not held here.
 			s.setFlowStepStatus(context.Background(), parentRunID, completedNodeID, StepStatusDone)
+			if drained {
+				// R.2-2: a late/stale slicer completion on a fully-delivered
+				// plan is NOT a slicer failure — the empty todo/ is the
+				// drained state. Land the typed terminal instead of parking
+				// the finished run behind a "produced no Task files" card.
+				s.settleVibePlanComplete(parentRunID, "task_slicer produced no new Task files; sprint plan already delivered")
+				return
+			}
 			reason := "task_slicer produced no Task files under requirements/08-Task/todo/; refusing to sprint from fallback"
 			if strings.TrimSpace(cpID) != "" {
 				reason = fmt.Sprintf("task_slicer produced no Task files parented to %s under requirements/08-Task/todo/; refusing to sprint foreign/stale tasks", cpID)

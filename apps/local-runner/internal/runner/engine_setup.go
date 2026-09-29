@@ -345,7 +345,7 @@ func (s *InteractiveService) runEngineInit(
 			buildEngineStep(
 				"skillpack_install",
 				installErr,
-				fmt.Sprintf("%d installed, %d skipped, %d install errors", len(installResult.Installed), len(installResult.Skipped), len(installResult.Errors)),
+				fmt.Sprintf("%d installed, %d already current, %d install errors", len(installResult.Installed), len(installResult.Skipped), len(installResult.Errors)),
 			),
 			buildEngineStep("gitignore_ai_rules", gitignoreErr, gitignoreDetail),
 			buildEngineStep("tooling_check", toolingErr, fmt.Sprintf("%d tool entries refreshed", len(statuses))),
@@ -382,7 +382,7 @@ func (s *InteractiveService) runEngineInit(
 		buildEngineStep(
 			"skillpack_install",
 			installErr,
-			fmt.Sprintf("%d installed, %d skipped, %d install errors", len(installResult.Installed), len(installResult.Skipped), len(installResult.Errors)),
+			fmt.Sprintf("%d installed, %d already current, %d install errors", len(installResult.Installed), len(installResult.Skipped), len(installResult.Errors)),
 		),
 		buildEngineStep("tooling_check", toolingErr, fmt.Sprintf("%d tool entries refreshed", len(statuses))),
 		buildEngineStep("req_scaffold", scaffoldErr, scaffoldDetail),

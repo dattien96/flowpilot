@@ -190,7 +190,7 @@ func TestR5_ForwardPackageAssembledWithinBudget(t *testing.T) {
 	// Forward text sized so the ASSEMBLED prompt (headers + sections) still
 	// fits the hard cap — the invariant this test pins.
 	fwd := strings.Repeat("y", int(budget)*4-256)
-	pkg, e := svc.buildForwardPromptPackage(rs, fwd, budget)
+	pkg, e := svc.buildForwardPromptPackage(rs, fwd, budget, nil)
 	if e != nil {
 		t.Fatalf("in-budget forward must pack, got %v", e)
 	}
@@ -200,19 +200,24 @@ func TestR5_ForwardPackageAssembledWithinBudget(t *testing.T) {
 	// The over-cap case: a forward text that fits the content budget but not
 	// the assembled cap must be rejected, not shipped oversize.
 	edge := strings.Repeat("y", int(budget)*4-64)
-	if _, e := svc.buildForwardPromptPackage(rs, edge, budget); e == nil ||
+	if _, e := svc.buildForwardPromptPackage(rs, edge, budget, nil); e == nil ||
 		e.code != "forward_prompt_too_large" {
 		t.Fatalf("over-cap assembled prompt must reject typed, got %v", e)
 	}
 }
 
-// ---- R5-5: executor-progress evidence beyond a child row -------------------
+// ---- R5-5: executor-progress evidence without a child ----------------------
 //
-// A child row proves a spawn committed, but the executor also writes durable
-// step transitions when it reaches a node (setFlowStepStatus → transition
-// log). A started+topology row with transition evidence but a missing child
-// row is mid-flight flow work — the flow resume machinery owns it, healing to
-// pending would double-dispatch.
+// A child row is the only launch commit — the spawn persists it
+// synchronously. The executor ALSO writes durable step transitions/step rows
+// before the delegate spawn commit (inline-entry DONE, entry RUNNING), so
+// transition/step evidence with NO child row is a partially-engaged launch,
+// not a running flow. The original version of this test pinned "evidence →
+// stays started"; R6-2 review showed that is the wedged outcome (nothing to
+// resume + forward blocked on flow_already_started), so the corrected
+// contract is: evidence without a child heals to pending so the forward
+// retry relaunches. This test pins the step-row variant of the same rule
+// (the transition-line variant lives in cp89_review6_test.go).
 type r5TransitionStore struct {
 	*fakeWorkflowStore
 	lines map[string][]stepTransitionLine
@@ -235,18 +240,19 @@ func (s *r5TransitionStore) DeleteStepTransitions(_ context.Context, runID strin
 	return nil
 }
 
-func TestR5_StepTransitionEvidenceKeepsStarted(t *testing.T) {
+func TestR5_StepRowEvidenceWithoutChildHealsPending(t *testing.T) {
 	store := &r5TransitionStore{fakeWorkflowStore: newFakeWorkflowStore()}
 	svc := task451ServiceWithStore(t, store)
-	// Executor progress the crash left behind: the entry node transitioned
-	// RUNNING, but the child row is absent (kill between the transition and
-	// the spawn commit — or the child row lives on another backend).
-	store.lines = map[string][]stepTransitionLine{
-		"run-r5s": {{RunID: "run-r5s", NodeID: "n1", Status: string(StepStatusRunning), TS: "2026-01-01T00:00:00Z"}},
-	}
+	// Executor progress the crash left behind: the entry node's step row shows
+	// real work (status DONE + StartedAt), but the child row is absent — kill
+	// between the inline dispatch and the delegate spawn commit.
+	store.seed("run-r5s", []RuntimeWorkflowStep{{
+		ID: "n1", Status: StepStatusDone, StartedAt: "2026-01-01T00:00:00Z",
+	}})
 	rs, err := svc.reconstructRun(ProviderSessionState{
 		RunID: "run-r5s", ProjectID: "proj", RunKind: "chat",
-		ProviderKey: ProviderKeyCodex, Status: RunStatusRunning,
+		ProviderKey: ProviderKeyCodex, Status: RunStatusCompleted,
+		ProviderAccountID: "default",
 		ChatFlowRef:     "task-harness",
 		FlowArm:         "started", TurnCount: 1,
 		ActiveFlowNodes: []agentpack.FlowNode{{ID: "n1"}},
@@ -254,7 +260,7 @@ func TestR5_StepTransitionEvidenceKeepsStarted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reconstructRun: %v", err)
 	}
-	if rs.flowArm != FlowArmStarted {
-		t.Fatalf("step-transition evidence proves the executor ran — must stay started, arm=%q", rs.flowArm)
+	if rs.flowArm != FlowArmPending {
+		t.Fatalf("step-row evidence with no child row must heal to pending — staying started wedges with nothing to resume, arm=%q", rs.flowArm)
 	}
 }

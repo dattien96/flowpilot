@@ -5,23 +5,17 @@ import { LIBRETRANSLATE_URL } from "@/config";
 import { formatTimestamp, toErrorMessage } from "@/components/settings/settingsHelpers";
 import { QuotaRoutingSettings } from "@/components/settings/QuotaRoutingSettings";
 import {
-  dispatchScaffold,
   engineTone,
   fetchApprovalAllowlist,
   fetchGlobalEngineToolingStatus,
   fetchProjectEngineStatus,
-  fetchScaffoldStatus,
-  initProjectEngine,
   installLibreTranslateTool,
   removeApprovalAllowRule,
   saveProjectEngineGateMode,
-  summarizeProjectEngineInit,
   type GlobalEngineToolingStatus,
   type LibreTranslateInstallResult,
   type ProjectEngineStatus,
-  type ScaffoldStatusResult,
 } from "@/components/settings/projectEngine";
-import { ScaffoldActivity } from "@/components/settings/ScaffoldActivity";
 
 interface EngineProjectEntry {
   project: Project;
@@ -47,8 +41,7 @@ export function EngineSettings(): React.ReactElement {
   const libreTranslatePort = LIBRETRANSLATE_URL.split(":").at(-1) ?? "5001";
   const [loading, setLoading] = useState(true);
   const [toolingBusy, setToolingBusy] = useState(false);
-  const [projectBusyAction, setProjectBusyAction] = useState<"refresh" | "init" | "scaffold" | null>(null);
-  const [scaffoldStatus, setScaffoldStatus] = useState<ScaffoldStatusResult | null>(null);
+  const [projectBusyAction, setProjectBusyAction] = useState<"refresh" | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [entries, setEntries] = useState<EngineProjectEntry[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState("");
@@ -126,15 +119,9 @@ export function EngineSettings(): React.ReactElement {
     if (!selectedProjectId || !selectedBindingPath) {
       setProjectStatus(null);
       setApprovalAllowlist([]);
-      setScaffoldStatus(null);
       return;
     }
     let active = true;
-    // CA-917: load scaffold capability alongside engine status so the manual
-    // "Run AI Scaffold" affordance reflects the selected project.
-    void fetchScaffoldStatus(selectedProjectId, selectedBindingPath, selectedEntry?.project.platform)
-      .then((s) => { if (active) setScaffoldStatus(s); })
-      .catch(() => { if (active) setScaffoldStatus(null); });
     void (async () => {
       try {
         const status = await fetchProjectEngineStatus(selectedProjectId, selectedBindingPath, selectedEntry?.project.platform);
@@ -230,51 +217,6 @@ export function EngineSettings(): React.ReactElement {
     } finally {
       setProjectBusyAction(null);
     }
-    // CA-917: capability check for the manual "Run AI Scaffold" affordance —
-    // best-effort so a status failure never blocks the engine panel.
-    fetchScaffoldStatus(selectedProjectId, selectedBindingPath, selectedEntry?.project.platform)
-      .then(setScaffoldStatus)
-      .catch(() => setScaffoldStatus(null));
-  };
-
-  const initSelectedProject = async () => {
-    if (!selectedProjectId || !selectedBindingPath) return;
-    setProjectBusyAction("init");
-    setMessage(null);
-    try {
-      const status = await initProjectEngine(selectedProjectId, selectedBindingPath, "manual", selectedEntry?.project.platform);
-      setProjectStatus(status);
-      setMessage(summarizeProjectEngineInit(status.lastInit));
-    } catch (error) {
-      setMessage(toErrorMessage(error, "Unable to initialize the selected project engine."));
-    } finally {
-      setProjectBusyAction(null);
-    }
-  };
-
-  // CA-917: TUI `/init` parity — Desktop can dispatch the AI scaffold turn
-  // manually. The POST blocks for the whole turn; the ScaffoldActivity card
-  // renders live progress via the CA-916 feed while it runs.
-  const runScaffold = async () => {
-    if (!selectedProjectId || !selectedBindingPath) return;
-    setProjectBusyAction("scaffold");
-    setMessage(null);
-    const alreadyDone = scaffoldStatus?.scaffoldStatus?.status === "done";
-    try {
-      const result = await dispatchScaffold(selectedProjectId, selectedBindingPath, {
-        platform: selectedEntry?.project.platform,
-        modelName: selectedEntry?.project.defaultModel ?? undefined,
-        force: alreadyDone,
-      });
-      setMessage(result.message ?? `scaffold: ${result.status}`);
-      fetchScaffoldStatus(selectedProjectId, selectedBindingPath, selectedEntry?.project.platform)
-        .then(setScaffoldStatus)
-        .catch(() => {});
-    } catch (error) {
-      setMessage(toErrorMessage(error, "Unable to run AI scaffold."));
-    } finally {
-      setProjectBusyAction(null);
-    }
   };
 
   const saveGateMode = async () => {
@@ -300,8 +242,9 @@ export function EngineSettings(): React.ReactElement {
           <div className="settings-eyebrow">Engine</div>
           <h2>Engine Setup</h2>
           <p>
-            Tooling is machine-global. Skill pack, capability, and initialization state are
-            shown for the selected project binding.
+            Tooling is machine-global. Flow gate and auto-approve rules apply to the selected
+            project binding — skill-pack status, init, and AI scaffold live in each project's
+            Engine panel on the Projects page.
           </p>
         </div>
       </div>
@@ -409,8 +352,11 @@ export function EngineSettings(): React.ReactElement {
       <div className="settings-subpanel">
         <div className="settings-panel-head">
           <div>
-            <h3>Project Skill Pack</h3>
-            <p>Select a project binding to inspect capability, skill-pack state, and last init.</p>
+            {/* CA-1000: this picker only scopes the Flow Gate + auto-approve
+                rules below — skill-pack status, Initialize, and AI Scaffold
+                live in the project's own Engine panel on the Projects page. */}
+            <h3>Project</h3>
+            <p>Select the project binding the gate and auto-approve rules below apply to.</p>
           </div>
           <div className="settings-actions" style={{ marginTop: 0 }}>
             <button
@@ -419,31 +365,8 @@ export function EngineSettings(): React.ReactElement {
               onClick={() => void refreshProjectStatus()}
               type="button"
             >
-              {projectBusyAction === "refresh" ? "Refreshing..." : "Refresh Project"}
+              {projectBusyAction === "refresh" ? "Refreshing..." : "Refresh"}
             </button>
-            <button
-              className="secondary-btn"
-              disabled={!selectedProjectId || !selectedBindingPath || projectBusyAction !== null}
-              onClick={() => void initSelectedProject()}
-              type="button"
-            >
-              {projectBusyAction === "init" ? "Running..." : "Initialize / Re-sync Project"}
-            </button>
-            {scaffoldStatus?.capable ? (
-              <button
-                className="secondary-btn"
-                disabled={!selectedProjectId || !selectedBindingPath || projectBusyAction !== null}
-                onClick={() => void runScaffold()}
-                title={scaffoldStatus.verificationCommand ? `Gate: ${scaffoldStatus.verificationCommand}` : undefined}
-                type="button"
-              >
-                {projectBusyAction === "scaffold"
-                  ? "Scaffolding…"
-                  : scaffoldStatus.scaffoldStatus?.status === "done"
-                    ? "Re-run AI Scaffold"
-                    : "Run AI Scaffold"}
-              </button>
-            ) : null}
           </div>
         </div>
 
@@ -481,86 +404,16 @@ export function EngineSettings(): React.ReactElement {
         </div>
 
         {!selectedEntry ? (
-          <div className="settings-empty" style={{ marginTop: 16 }}>Create a project first to manage its skill pack.</div>
+          <div className="settings-empty" style={{ marginTop: 16 }}>Create a project first.</div>
         ) : !selectedBindingPath ? (
           <div className="settings-empty" style={{ marginTop: 16 }}>
             The selected project has no saved directory binding yet.
           </div>
-        ) : projectStatus ? (
-          <div className="project-inline-list" style={{ marginTop: 16 }}>
-            <div className="project-inline-card">
-              <strong>Binding Summary</strong>
-              <div className="project-inline-row"><span>Project</span><span>{selectedEntry.project.name}</span></div>
-              <div className="project-inline-row"><span>Working directory</span><span>{projectStatus.workingDirectory}</span></div>
-              <div className="project-inline-row"><span>Initialized</span><span>{projectStatus.initialized ? "yes" : "no"}</span></div>
-              {projectStatus.warnings?.length ? (
-                <div className="settings-feedback" style={{ marginTop: 12 }}>
-                  {projectStatus.warnings.join(" ")}
-                </div>
-              ) : null}
-            </div>
-
-            <div className="project-inline-card">
-              <strong>Capability</strong>
-              <div className="project-inline-row"><span>Structure tier</span><span>{projectStatus.capability.structureTier}</span></div>
-              <div className="project-inline-row"><span>Decision tier</span><span>{projectStatus.capability.decisionTier}</span></div>
-              <div className="project-inline-row"><span>Tests detected</span><span>{projectStatus.capability.hasTests ? "yes" : "no"}</span></div>
-              <div className="project-inline-row"><span>Specs detected</span><span>{projectStatus.capability.hasSpecs ? "yes" : "no"}</span></div>
-              <div className="project-inline-row"><span>Languages</span><span>{projectStatus.capability.languages.join(", ") || "none detected"}</span></div>
-            </div>
-
-            <div className="project-inline-card">
-              <strong>Skill Pack</strong>
-              <div className="project-inline-row"><span>Pack version</span><span>{projectStatus.skillPack.packVersion}</span></div>
-              <div className="project-inline-row"><span>Installed</span><span>{projectStatus.skillPack.installed ? "yes" : "no"}</span></div>
-              <div className="project-inline-row"><span>Current</span><span>{projectStatus.skillPack.current ? "yes" : "no"}</span></div>
-              <div className="settings-list" style={{ marginTop: 12 }}>
-                {projectStatus.skillPack.skills.map((skill) => (
-                  <div className="settings-list-item static" key={skill.name}>
-                    <div>
-                      <strong>{skill.name}</strong>
-                      <span>
-                        {skill.providers.map((provider) => `${provider.provider}:${provider.present ? (provider.current ? "current" : "stale") : "missing"}`).join(" · ")}
-                      </span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div className="project-inline-card">
-              <strong>Last Init</strong>
-              <div className="project-inline-row"><span>Summary</span><span>{summarizeProjectEngineInit(projectStatus.lastInit)}</span></div>
-              {projectStatus.lastInit ? (
-                <>
-                  <div className="project-inline-row"><span>Trigger</span><span>{projectStatus.lastInit.trigger}</span></div>
-                  <div className="project-inline-row"><span>Status</span><span>{projectStatus.lastInit.status}</span></div>
-                  <div className="project-inline-row"><span>Attempted</span><span>{formatTimestamp(projectStatus.lastInit.attemptedAt)}</span></div>
-                  <div className="project-inline-row"><span>Completed</span><span>{formatTimestamp(projectStatus.lastInit.completedAt)}</span></div>
-                  <div className="settings-validation" style={{ marginTop: 12 }}>
-                    {projectStatus.lastInit.steps.map((step) => (
-                      <div className={`validation-row ${engineTone(step.outcome)}`} key={`${step.step}:${step.outcome}`}>
-                        <span>{step.step}</span>
-                        <span>{step.detail || step.errorMessage || step.outcome}</span>
-                      </div>
-                    ))}
-                  </div>
-                </>
-              ) : (
-                <div className="settings-empty" style={{ marginTop: 12 }}>
-                  No engine init has been recorded yet.
-                </div>
-              )}
-            </div>
+        ) : projectStatus?.warnings?.length ? (
+          <div className="settings-feedback" style={{ marginTop: 16 }}>
+            {projectStatus.warnings.join(" ")}
           </div>
-        ) : (
-          <div className="settings-empty" style={{ marginTop: 16 }}>
-            No project engine status is available for the selected binding yet.
-          </div>
-        )}
-        {/* CA-916: live AI scaffold transcript for the selected project —
-            self-hides when the runner reports no scaffold activity. */}
-        <ScaffoldActivity projectId={selectedProjectId || null} />
+        ) : null}
       </div>
       <div className="settings-subpanel">
         <div className="settings-panel-head">
@@ -568,7 +421,8 @@ export function EngineSettings(): React.ReactElement {
             <h3>Flow Gate</h3>
             <p>
               The gate runs after every AI turn. Enforce activates reprompt and block actions.
-              Warn logs violations without interrupting the step.
+              Warn logs violations without interrupting the step. This mode applies to flow
+              runs — chat-mode turns always warn.
             </p>
           </div>
           <div className="settings-actions" style={{ marginTop: 0 }}>

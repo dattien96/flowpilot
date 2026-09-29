@@ -303,6 +303,10 @@ type AgentLoopState struct {
 	VibeTaskIndex int    `json:"vibeTaskIndex,omitempty"`
 	VibeTaskTotal int    `json:"vibeTaskTotal,omitempty"`
 	VibeTaskName  string `json:"vibeTaskName,omitempty"`
+	// CompletionKind is how a done loop completed (R.2-2): "plan_complete"
+	// when the vibe sprint plan drained — distinguishes "all planned tasks
+	// delivered" from a wedged slicer park. Meaningful only when Status=="done".
+	CompletionKind string `json:"completionKind,omitempty"`
 }
 
 // AgentGraphSnapshot carries the current agent graph for an agent_graph_updated event.

@@ -165,6 +165,12 @@ export interface AgentLoopState {
   vibeTaskIndex?: number;
   vibeTaskTotal?: number;
   vibeTaskName?: string;
+  /**
+   * How a done loop completed (R.2-2): "plan_complete" when the vibe sprint
+   * plan drained — distinguishes "all planned tasks delivered" from a wedged
+   * slicer park. Meaningful only while status === "done".
+   */
+  completionKind?: string;
 }
 
 export interface AgentGraphSnapshot {
@@ -342,6 +348,18 @@ export interface StartRunInput {
   /** Task-326 wire enum. "dev" | "vibe". Never "normal". Empty → runner defaults to dev. */
   workingMode?: "dev" | "vibe";
   flowRef?: string;
+  /**
+   * CP-89 chat-then-forward latch: "pending" pins flowRef WITHOUT starting it —
+   * chat turns stay plain until an explicit forwardFlow turn (Task-452). Omit
+   * for the legacy immediate launch.
+   */
+  flowArm?: "pending" | "chat_then_forward";
+  /**
+   * CP-89: pin the run's source document at create time so the forward-time
+   * ingest fence validates against the pin without a repaste on the forward
+   * turn (e.g. the picked CP path for vibe-cp-ingest).
+   */
+  sourceDocId?: string;
   /** "normal_chat" signals provider-chat mode; the runner tags the run as chat and mints a synthetic step. */
   chatMode?: string;
   /** Active project binding path used as the provider working directory. */
@@ -374,6 +392,14 @@ export interface RunHandle {
   worktreeSlug?: string;
   /** Task-426 (CP-83): absolute bound-worktree dir for terminal cwd. */
   worktreePath?: string;
+  /** CP-89: pinned flow ref echo — present when the run carries a flow pin. */
+  flowRef?: string;
+  /** CP-89: launch latch echo — "pending" means the pinned flow is armed but
+   *  not launched; the chat-then-forward affordance should render. */
+  flowArm?: string;
+  /** CP-89: source-document pin echo (vibe-cp-ingest CP path) so a reopened or
+   *  reattached armed chat can re-render the doc path without repaste. */
+  sourceDocId?: string;
 }
 
 export interface RunHistoryItem {
@@ -406,6 +432,14 @@ export interface RunHistoryItem {
    */
   subMode?: string;
   flowRef?: string;
+  /**
+   * CP-89 launch latch on the run ("pending" = pinned via chat-then-forward,
+   * not yet launched). Restores the armed "Start flow" affordance when the
+   * chat is reopened from history.
+   */
+  flowArm?: string;
+  /** CP-89: source-document pin persisted on the run (vibe-cp-ingest path). */
+  sourceDocId?: string;
   /** CP-71: present when the run owns/shares a worktree binding. */
   worktreeState?: string;
   worktreeSlug?: string;
@@ -552,6 +586,13 @@ export interface TurnInput {
    */
   subMode?: string;
   flowRef?: string;
+  /**
+   * CP-89 explicit forward signal (Task-452): a {"forwardFlow":true} turn on a
+   * run created with flowArm:"pending" launches the pinned flow, carrying this
+   * prompt as the forward text plus the settled chat transcript. This is the
+   * ONLY way a pending latch flips to started.
+   */
+  forwardFlow?: boolean;
   /**
    * Client-generated Idempotency-Key header value for POST /turns. Generated
    * once per user send; retries after a connection-level failure ("Failed to

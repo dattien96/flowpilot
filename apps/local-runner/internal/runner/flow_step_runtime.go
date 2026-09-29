@@ -585,7 +585,7 @@ func (s *InteractiveService) reconcileChildRunsOnFlowDone(parentRunID string) {
 			child.legState = LegStateClosed
 			child.legClosedReason = LegClosedReasonFlowDone
 		}
-		clearIntentFieldsLocked(child, "resume")
+		clearClosedLegPendingLocked(child)
 		settledSnaps = append(settledSnaps, sessionStateOf(child))
 		changed = true
 	}

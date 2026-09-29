@@ -45,6 +45,9 @@ interface SettingsShellProps {
     input: SupabaseSchemaApplyInput,
   ) => Promise<SupabaseSchemaApplyResult>;
   visibleSections?: readonly SettingsSection[];
+  /** CA-1000: only meaningful in the authenticated shell — switches back to
+   *  the Chat view so project actions (AI scaffold) can stream there. */
+  onOpenChat?: () => void;
 }
 
 const defaultSectionOrder: readonly SettingsSection[] = [
@@ -73,6 +76,7 @@ export function SettingsShell({
   onSaveSupabase,
   onApplySupabaseMigrations,
   visibleSections,
+  onOpenChat,
 }: SettingsShellProps): React.ReactElement {
   const runnerOffline = !runtimeStatus.runnerReachable;
   const sectionDisabled = (section: SettingsSection) =>
@@ -173,7 +177,7 @@ export function SettingsShell({
         ) : currentSection === "engine" ? (
           <EngineSettings />
         ) : currentSection === "projects" ? (
-          <ProjectsSettings onNavigateSection={onSelectSection} />
+          <ProjectsSettings onNavigateSection={onSelectSection} onOpenChat={onOpenChat} />
         ) : currentSection === "workflows" ? (
           <WorkflowsSettings />
         ) : currentSection === "teams" ? (

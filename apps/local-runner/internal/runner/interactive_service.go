@@ -280,6 +280,7 @@ type interactiveRun struct {
 	vibeParkedEdges         []agentpack.FlowEdge
 	vibeParkedAcceptance    []string
 	vibeParkedFlowRef       string
+	vibeParkedGatedRunIDs   []string
 	vibeOwnerFailRetries    int
 	vibeOwnerSettleInFlight bool
 	vibeCoderResumeInFlight bool
@@ -1900,8 +1901,10 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 		// would wedge the run (decline can never complete).
 		s.mu.Lock()
 		sprintRemaining := 0
+		planDrained := false
 		if rs := s.runs[parentRunID]; rs != nil {
 			sprintRemaining = len(rs.vibeTaskPlan) - rs.vibeSprintIndex
+			planDrained = vibePlanDrainedLocked(rs)
 		}
 		s.mu.Unlock()
 		if sprintRemaining > 0 && in.agentInitiated {
@@ -1932,9 +1935,19 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 			st.Status = "done"
 			st.OpenIssues = 0
 			st.GateReason = ""
+			if planDrained {
+				// R.2-2: every sprint task delivered — tag the terminal so
+				// "plan complete" is distinguishable from a generic done and
+				// from a wedged slicer park.
+				st.CompletionKind = vibeCompletionPlanComplete
+			}
 			return st
 		})
-		s.appendPendingAgentContext(parentRunID, strings.TrimSpace("Flow completed. "+in.Summary))
+		doneNote := "Flow completed. "
+		if planDrained {
+			doneNote = "Vibe sprint plan complete — all planned tasks delivered. "
+		}
+		s.appendPendingAgentContext(parentRunID, strings.TrimSpace(doneNote+in.Summary))
 		s.emitAgentGraph(parentRunID, snap)
 		// BUG-StaleCancel: persist synchronously here (not go goroutine) so the
 		// completed state is guaranteed to land in the NDJSON session file before
@@ -2353,11 +2366,8 @@ func upstreamCodeWriterForNode(edges []agentpack.FlowEdge, nodes []agentpack.Flo
 // again (the desktop form reappears). No-op (returns the current snapshot,
 // no error) if the loop is not currently blocked — safe to call more than once.
 func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string) (AgentGraphSnapshot, error) {
-	s.mu.Lock()
-	_, runExists := s.runs[parentRunID]
-	s.mu.Unlock()
-	if !runExists {
-		return AgentGraphSnapshot{}, fmt.Errorf("resumeFlowWithFeedback: run %q not found", parentRunID)
+	if _, aerr := s.ensureRunResident(parentRunID); aerr != nil {
+		return AgentGraphSnapshot{}, aerr
 	}
 
 	feedback = strings.TrimSpace(feedback)
@@ -2419,6 +2429,17 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 		return s.resumeTournamentChoice(parentRunID, tournamentChosen, feedback)
 	}
 
+	// BUG-552 (live run-15525): record operator feedback durably BEFORE any
+	// dispatch — a routed gate-decision or continue note that only rode the
+	// dispatched turn's prompt was swallowed whenever a later park cancelled
+	// that turn, or an orphan-redrive answered with its own generic prompt.
+	// pendingAgentContext persists and is drained by whichever turn next
+	// runs on this run, so the decision is delivered exactly once even
+	// across re-parks and restarts.
+	if feedback != "" {
+		s.appendPendingAgentContext(parentRunID, "Operator feedback: "+feedback)
+	}
+
 	snap := s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
 		if st.Status != "blocked" {
 			return st
@@ -2436,7 +2457,17 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 		return st
 	})
 	if !wasBlocked {
-		return snap, nil
+		// BUG-551 seam 1 (live run-15525): an already-"running" loop can be
+		// dead — a cap-blocked reinvoke or a turn cancelled by the escalate
+		// freeze leaves loop=running with zero in-flight work and zero armed
+		// intents. Early-returning here made continue/feedback inert forever.
+		// The durable note appended above is what the redriven hub turn
+		// consumes (startTurn drains it atomically); fall through to the
+		// same quiet-redrive seam resumePendingLoopWork owns —
+		// redriveQuietFlowLoop self-gates on flow topology + the full quiet
+		// predicate, so a busy loop is untouched.
+		s.redriveQuietFlowLoop(parentRunID)
+		return s.agentGraphSnapshot(parentRunID), nil
 	}
 
 	// BUG-284: a hub.notify reinvoke that was blocked (re-armed in
@@ -2761,7 +2792,7 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 	// and leaves the loop "running" with no turn — the composer soft-locks.
 	// "Confirm to continue" on a chat run means re-drive its work: dispatch a
 	// real turn carrying the feedback as the prompt.
-	if prevBlockReason == DriftPauseBlockReason && s.resumeDriftParkedChat(parentRunID, feedback) {
+	if prevBlockReason == DriftPauseBlockReason && s.resumeParkedPlainChat(parentRunID, feedback, prevBlockReason) {
 		return snap, nil
 	}
 
@@ -2837,6 +2868,32 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 		return snap, nil
 	}
 
+	// BUG-550 (live run-2012663): a gate-reprompt-exhausted escalate parks a
+	// PLAIN chat run too — no hub, no flow nodes, no children for the sweep
+	// above to flush — so the generic tail's maybeAutoReinvokeHubWithNote
+	// no-ops on autoOrchestrate=false and the hub-stall watchdog refuses
+	// non-flow runs (!rs.flowEngineDriven). Retry flipped the loop to running
+	// and emitted agent_graph_updated, then stranded it with no turn — a
+	// silent composer soft-lock. When the sweep dispatched nothing, re-drive
+	// a real turn on the run itself; the parked gate violation rides the
+	// prompt so a bare Retry does not re-violate blind and burn straight
+	// back into escalate.
+	if prevBlockReason == "escalate" && len(resumeIDs) == 0 {
+		resumePrompt := feedback
+		if violation := strings.TrimPrefix(strings.TrimSpace(prevGateReason), "Gate reprompt exhausted: "); violation != "" {
+			note := "[flow-engine] Resumed after a gate escalation. Outstanding gate violation: " + violation +
+				"\n\nResolve the violation first, then continue."
+			if strings.TrimSpace(resumePrompt) != "" {
+				resumePrompt = strings.TrimSpace(resumePrompt) + "\n\n---\n\n" + note
+			} else {
+				resumePrompt = note
+			}
+		}
+		if s.resumeParkedPlainChat(parentRunID, resumePrompt, prevBlockReason) {
+			return snap, nil
+		}
+	}
+
 	resumeNote := ""
 	if feedback != "" {
 		resumeNote = "[flow-engine] The flow was paused awaiting your input. User guidance:\n" + feedback +
@@ -2847,18 +2904,24 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 
 }
 
-// resumeDriftParkedChat re-drives a drift-parked plain chat run: Continue is
-// the human's "confirmed" answer, so the run resumes by starting a real turn
-// whose prompt is the feedback (bare Continue becomes a neutral continue).
+// resumeParkedPlainChat re-drives a parked plain chat run (drift pause, or a
+// gate-reprompt-exhausted escalate — BUG-550): Continue is the human's
+// "confirmed" answer, so the run resumes by starting a real turn whose prompt
+// is the feedback (bare Continue becomes a neutral continue). blockReason is
+// the park's own reason, re-stamped verbatim if the re-drive must re-park.
 // Flow-driven parents return false — their hub reinvoke tail owns the resume
 // (autoOrchestrate is re-armed for activeFlowNodes above). On dispatch failure
 // the loop re-parks with the reason so the composer never soft-locks on a
 // dead "running" loop.
-func (s *InteractiveService) resumeDriftParkedChat(parentRunID, feedback string) bool {
+func (s *InteractiveService) resumeParkedPlainChat(parentRunID, feedback, blockReason string) bool {
 	s.mu.Lock()
 	rs := s.runs[parentRunID]
+	// BUG-550 / run-203966: only a live run may re-drive — a terminal root is
+	// a real outcome, not park poison to resurrect (the Cancelled-heal above
+	// already restored park-poisoned runs to Running before this point).
 	plainChat := rs != nil && rs.parentRunID == "" && !rs.flowEngineDriven &&
-		len(rs.activeFlowNodes) == 0 && !rs.autoOrchestrate
+		len(rs.activeFlowNodes) == 0 && !rs.autoOrchestrate &&
+		rs.status != RunStatusFailed && rs.status != RunStatusCancelled && rs.status != RunStatusCompleted
 	stepID := durableResumeStepID(rs)
 	s.mu.Unlock()
 	if !plainChat || stepID == "" {
@@ -2869,17 +2932,20 @@ func (s *InteractiveService) resumeDriftParkedChat(parentRunID, feedback string)
 		prompt = "continue"
 	}
 	if _, aerr := s.startTurn(parentRunID, TurnInput{StepID: stepID, Prompt: prompt}, "", ""); aerr != nil {
+		if strings.TrimSpace(blockReason) == "" {
+			blockReason = DriftPauseBlockReason
+		}
 		snap := s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
 			if st.Status != "running" {
 				return st
 			}
 			st.Status = "blocked"
-			st.BlockReason = DriftPauseBlockReason
+			st.BlockReason = blockReason
 			st.GateReason = "continue failed to dispatch: " + aerr.Error()
 			return st
 		})
 		s.emitAgentGraph(parentRunID, snap)
-		s.flowDiagLog(parentRunID, "drift_resume_dispatch_failed", "drift-parked chat continue could not start a turn", "error", aerr.Error())
+		s.flowDiagLog(parentRunID, "drift_resume_dispatch_failed", "parked chat continue could not start a turn", "error", aerr.Error())
 	}
 	return true
 }
@@ -3162,6 +3228,7 @@ func (s *InteractiveService) parkFlowForAwaitingUser(parentRunID string, opts ..
 			}
 		}
 	}
+	s.releaseParkedCohortSeatsLocked(parentRunID)
 	s.mu.Unlock()
 	// CA-811: never cancel while holding s.mu — finishTurn/emitLocked need it
 	// (/open run-220036 held the mutex and hung "Opening chat…").
@@ -3172,6 +3239,43 @@ func (s *InteractiveService) parkFlowForAwaitingUser(parentRunID string, opts ..
 	}
 	s.flowDiagLog(parentRunID, "flow_parked_awaiting_user",
 		"flow frozen for human decision form; cancelled in-flight turns and dropped auto-intents")
+}
+
+// releaseParkedCohortSeatsLocked buffers a terminal "cancelled" cohort
+// result for every child still holding a cohort seat this park just
+// froze — the same contract the Stop path applies to cancelled members
+// (Task-241 B1) — and drains each barrier that completes. Without it the
+// frozen member's seat stays held forever (live run-15525: parked
+// `waiting_user_approval` children kept `hasOpenCohort` true and
+// `flow-control done` soft-deferred indefinitely). A member later revived
+// by a reprompt/resume intent still counts: appendCohortResult replaces
+// the cancelled placeholder with its real result. Caller holds s.mu.
+func (s *InteractiveService) releaseParkedCohortSeatsLocked(parentRunID string) {
+	var touched []string
+	for _, childID := range s.agentOrchestrator.listChildren(parentRunID) {
+		child := s.runs[childID]
+		if child == nil || strings.TrimSpace(child.flowCohortId) == "" {
+			continue
+		}
+		switch child.status {
+		case RunStatusCompleted, RunStatusFailed, RunStatusCancelled:
+			continue
+		}
+		s.agentOrchestrator.appendCohortResult(parentRunID, child.flowCohortId, cohortEntry{
+			Label:    child.label,
+			Provider: string(child.providerKey),
+			Status:   "cancelled",
+		})
+		touched = append(touched, child.flowCohortId)
+	}
+	for _, cohortID := range touched {
+		if s.agentOrchestrator.cohortComplete(parentRunID, cohortID) {
+			s.agentOrchestrator.drainCohort(parentRunID, cohortID)
+			s.flowDiagLog(parentRunID, "park_cohort_seats_released",
+				"park-cancelled cohort members released; drained completed barrier",
+				"cohort_id", cohortID)
+		}
+	}
 }
 
 // parkFlowForAwaitingUserLocked is like parkFlowForAwaitingUser but caller
@@ -3273,6 +3377,7 @@ func (s *InteractiveService) parkFlowForAwaitingUserLocked(parentRunID string) {
 			}
 		}
 	}
+	s.releaseParkedCohortSeatsLocked(parentRunID)
 	s.flowDiagLog(parentRunID, "flow_parked_awaiting_user",
 		"flow frozen for human decision form; cancelled in-flight turns and dropped auto-intents")
 }
@@ -3482,6 +3587,7 @@ func (s *InteractiveService) handleChildStartTurnFailure(childRunID, parentRunID
 			child.legState = LegStateClosed
 			child.legClosedReason = LegClosedReasonDispatchFailed
 		}
+		clearClosedLegPendingLocked(child)
 		failedSnap = sessionStateOf(child)
 		// run-43831: stamp hub progress under s.mu before unlock / cohort join /
 		// async reinvoke so pre-adapter start failures do not leave a stale
@@ -3732,6 +3838,12 @@ func (s *InteractiveService) maybeAutoReinvokeHubWithNote(parentRunID, cohortNot
 		s.flowDiagLog(parentRunID, "hub_reinvoke_cap_blocked", "hub reinvoke blocked by round cap",
 			"cohort_note_len", len(strings.TrimSpace(cohortNote)),
 		)
+		// BUG-551 adjacent (same class as run-220036): the reinvoke was
+		// silently dropped on a still-"running" loop and nothing re-arms —
+		// this is exactly how the escalate→cap wedge went quiet in the live
+		// run. Arm the hub watchdog so the dead loop re-surfaces as an
+		// actionable hub_stalled card (continue/extend-cap can then unblock).
+		s.maybeScheduleHubStallCheck(parentRunID)
 		return
 	}
 	stepID := s.nextID("step")
@@ -3843,6 +3955,10 @@ func (s *InteractiveService) maybeAutoReinvokeHubWithPrompt(parentRunID, prompt 
 		parent.pendingHubReinvokePrompt = prompt
 		s.mu.Unlock()
 		s.flowDiagLog(parentRunID, "hub_notify_reinvoke_cap_blocked", "hub.notify reinvoke blocked by round cap; re-armed for resume")
+		// BUG-551 adjacent: the armed RAM intent blocks the quiet predicate
+		// but nothing will drain it while no turn is in flight — arm the
+		// watchdog so the wedged loop re-surfaces as hub_stalled.
+		s.maybeScheduleHubStallCheck(parentRunID)
 		return
 	}
 	stepID := s.nextID("step")
@@ -4544,11 +4660,19 @@ func (s *InteractiveService) redriveQuietFlowLoop(parentRunID string) {
 		s.mu.Unlock()
 		return
 	}
+	// BUG-551 seam 2 (live run-15525): pendingAgentContext is NOT evidence of
+	// work-in-flight — it is input FOR the hub turn. Every predicate that
+	// proves a turn is already armed to drain it (turnInFlight,
+	// reinvokeInFlight, pendingRestart*, pendingHubReinvoke, pendingResume*,
+	// pendingFlowGateSettle) is checked separately above. When none of those
+	// hold, the note is ORPHANED — its owning turn was cancelled by an
+	// escalate freeze or cap-blocked drop — and re-driving the hub is exactly
+	// how it gets consumed. Treating it as "a turn is coming" made the wedge
+	// durable: quiet=false forever, no turn ever dispatched.
 	quiet := !rs.turnInFlight && !rs.reinvokeInFlight &&
 		rs.pendingRestartRunID == "" && rs.pendingGateRepromptPrompt == "" &&
 		rs.pendingResumePrompt == "" && !rs.pendingHubReinvoke &&
 		!rs.pendingFlowGateSettle && rs.pendingApprovalID == "" && rs.pendingQuestionID == "" &&
-		len(rs.pendingAgentContext) == 0 &&
 		!rs.vibeAwaitingLock && !rs.vibeResumeConfirm && !rs.vibeSprintBoundaryPending &&
 		!rs.vibeSprintStartInFlight && !rs.vibeSprintBoundaryDeclined
 	if quiet {
@@ -4943,6 +5067,10 @@ func (s *InteractiveService) AttachRunner(r *Runner) {
 	s.mu.Unlock()
 	// CP-71: boot-time worktree GC runs off-lock after s.runner is set.
 	go s.sweepOrphanedWorktrees(context.Background())
+	// BUG-543 residual: boot-time leg-claim sweep reclaims stale active legs
+	// whose parent loop is provably sealed or gone. Conservative — see
+	// leg_claim_sweep.go for the full predicate.
+	go s.sweepStaleLegClaims(context.Background())
 }
 
 // SetFlowDefinitionStore attaches the FlowDefinitionStore startResolvedFlow
@@ -5091,6 +5219,7 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 		VibeParkedEdges:                 append([]agentpack.FlowEdge(nil), rs.vibeParkedEdges...),
 		VibeParkedAcceptance:            append([]string(nil), rs.vibeParkedAcceptance...),
 		VibeParkedFlowRef:               rs.vibeParkedFlowRef,
+		VibeParkedGatedRunIDs:           append([]string(nil), rs.vibeParkedGatedRunIDs...),
 		PendingBatchSignatureByStep:     copyBatchSignatureMap(rs.pendingBatchSignatureByStep),
 		FlowStartGitHead:                rs.flowStartGitHead,
 		PendingFlowGateSettle:           rs.pendingFlowGateSettle,
@@ -5395,6 +5524,11 @@ func (s *InteractiveService) rehydratePendingGatesLocked(runID string) {
 	}
 	rs := s.runs[runID]
 	if rs == nil {
+		return
+	}
+	// A closed leg can never serve a decision — its pending cards are dead
+	// residue that must not rehydrate as actionable.
+	if rs.legState == LegStateClosed {
 		return
 	}
 	// Truly terminal outcomes never rehydrate.
@@ -7947,6 +8081,26 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 		}
 	}
 
+	// R.3#3 (option c, approved): an agent-name that is actually a flow
+	// definition — bare ("vibe-sprint") or pack-qualified — must be refused,
+	// never silently minted. Before this guard the catalog miss above left
+	// agentDef nil and the child spawned as a plain chat run LABELLED
+	// "vibe-sprint": no flow mount, no contract freeze, no gate chain — a
+	// second, ungated "sprint" execution mode presented as equivalent to the
+	// engine-driven one. Gated flows stay engine-only; spawn_agent accepts
+	// agent names only. Resolution errors (store down, unknown id) are NOT
+	// refusals — only a positively-resolved flow ref is.
+	if agentDef == nil && in.AgentDefOverride == nil {
+		if _, err := NewFlowDefinitionResolver(s.flowDefinitionStore).ResolveFlowRef(ctx, in.Agent); err == nil {
+			return SpawnAgentResult{}, fmt.Errorf("%q is a flow definition, not an agent — spawn_agent only accepts agent names; gated flows are mounted by the flow engine", in.Agent)
+		} else {
+			var invalid *ErrFlowDefinitionInvalid
+			if errors.As(err, &invalid) {
+				return SpawnAgentResult{}, fmt.Errorf("%q is a flow definition, not an agent — spawn_agent only accepts agent names; gated flows are mounted by the flow engine", in.Agent)
+			}
+		}
+	}
+
 	// Determine provider. BUG-228: in.Model — a flow node's own step-configured
 	// model, set by the flow executor for an agent.delegate node with a
 	// purpose-named step_definitions row — is authoritative over any
@@ -8018,8 +8172,8 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 		// UUID is unreachable (transient catalog outage dead-parked the flow).
 		// FlowRefFallback, not FlowRef — FlowRef is a user-declared mount
 		// validated by enforceWorkingModeStart (a child must not re-declare).
-		FlowRefFallback:   parentFlowRef,
-		ChatMode:          "normal_chat",
+		FlowRefFallback: parentFlowRef,
+		ChatMode:        "normal_chat",
 		// BUG-547: internal child spawn, not a user mount — skip the
 		// start-family/client gates; inherit the parent's working mode so
 		// vibe parents spawn vibe children (vibe flows otherwise dead-end
@@ -8360,13 +8514,18 @@ func (s *InteractiveService) listAgentRunSummaries(parentRunID string) ([]AgentR
 					// flow node by id -- falling back to AgentName/Role risks an
 					// ambiguous match when two nodes share the same agent (e.g. two
 					// reviewer nodes in one flow).
-					Label:       session.Label,
-					Role:        session.Role,
-					Status:      normalizeResumedStatus(session.Status),
+					Label: session.Label,
+					Role:  session.Role,
+					// 2026-09-29 live anomaly: pending_resume/pending_gate_reprompt
+					// intents keep the run non-terminal on reconstruct
+					// (normalizeResumedFlowStatus), so the read surface must use the
+					// same pending-aware projection — otherwise a parked successor
+					// reads "cancelled" here while armed to re-drive.
+					Status:      normalizeResumedFlowStatus(session),
 					ParentRunID: session.ParentRunID,
 					CreatedAt:   session.StartedAt,
 					DependsOn:   append([]string(nil), session.DependsOn...),
-					AgentStatus: string(normalizeResumedStatus(RunStatus(session.AgentStatus))),
+					AgentStatus: string(agentStatusFromSession(session)),
 					ProviderKey: string(session.ProviderKey),
 					ModelName:   session.ModelName,
 				})
@@ -10177,11 +10336,32 @@ func (s *InteractiveService) forwardPinnedFlow(ctx context.Context, rs *interact
 		return "", newAPIErr(http.StatusUnprocessableEntity, "forward_requires_root_run",
 			"forwardFlow is only valid on a chat-root run")
 	}
-	flowRef, pinErr := resolvePinnedFlowRefForForward(rs)
-	if pinErr != nil {
-		return "", pinErr
+	// CP-89 desktop wiring: the forward turn may carry the user's FINAL flow
+	// choice. A chat armed at create time pins a provisional ref (e.g. the
+	// vibe-ingest guess), but the discussion may produce a CP doc afterwards —
+	// the explicit turn-level ref then overrides/ completes the pin and is
+	// stamped onto rs.chatFlowRef atomically at commitPendingFlowStartLocked.
+	flowRef := strings.TrimSpace(in.FlowRef)
+	if flowRef == "" {
+		var pinErr *apiErr
+		flowRef, pinErr = resolvePinnedFlowRefForForward(rs)
+		if pinErr != nil {
+			return "", pinErr
+		}
 	}
-	if rs.flowArm != FlowArmPending {
+	if rs.flowArm == FlowArmPending {
+		// The CP-89 latch path: an armed run's forward flips pending→started.
+	} else if rs.flowArm == FlowArmImmediate &&
+		strings.TrimSpace(rs.chatFlowRef) == "" &&
+		strings.TrimSpace(rs.workflowID) == "" &&
+		!rs.flowEngineDriven &&
+		strings.TrimSpace(in.FlowRef) != "" {
+		// Late arm+forward: an unpinned, never-launched chat's explicit
+		// "start flow" — the turn's flowRef IS the pin being committed now.
+		// Still an explicit deterministic user signal, fenced identically;
+		// a pinned immediate run (chatFlowRef set) or an already-driven run
+		// keeps failing closed below.
+	} else {
 		return "", newAPIErr(http.StatusUnprocessableEntity, "flow_already_started",
 			"this run's flow is not pending — it already started or never armed forward")
 	}
@@ -10197,6 +10377,16 @@ func (s *InteractiveService) forwardPinnedFlow(ctx context.Context, rs *interact
 // launch (R5-1). Caller holds s.mu.
 func (s *InteractiveService) commitPendingFlowStartLocked(rs *interactiveRun, flowRef string) {
 	rs.setFlowArmStartedLocked()
+	if rs.flowArm == FlowArmImmediate {
+		// Late arm+forward (desktop CP-89 fix): forwardPinnedFlow admitted an
+		// unpinned, never-launched chat whose turn carried the explicit final
+		// flowRef — there is no pending latch to flip, so stamp started
+		// directly. setFlowArmStartedLocked keeps its pending-only guard;
+		// every other arm state still cannot reach this point (the gate
+		// rejects started/driven/pinned-immediate before commit).
+		rs.flowArm = FlowArmStarted
+		rs.updatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	}
 	rs.flowEngineDriven = true
 	// Flow-start turns lock YOLO=true before the async entry spawn so children
 	// inherit the product posture — same contract as the immediate first-turn
@@ -10647,11 +10837,12 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 	// (BUG-288 prepared intents): the flowArm latch itself is the idempotency
 	// key. A relaunched forward whose flip already committed (arm=started)
 	// completes synthetically — re-spawning would duplicate the flow; a
-	// relaunched forward on a still-pending latch runs the full fence+flip
-	// path because the first attempt never reached the launch.
+	// relaunched forward on ANY uncommitted latch (pending, or the late-arm
+	// immediate shape) re-runs the full fence+flip path because the first
+	// attempt never reached the launch — the gate re-validates inside.
 	if in.ForwardFlow && isPreparedRelaunch && rs.flowArm == FlowArmStarted {
 		flowStartOnly = true
-	} else if in.ForwardFlow && (!isPreparedRelaunch || rs.flowArm == FlowArmPending) {
+	} else if in.ForwardFlow && (!isPreparedRelaunch || rs.flowArm != FlowArmStarted) {
 		// Same first-turn adoption the immediate block does — the forward IS
 		// this run's launch turn, so a turn-level changeType/sourceDocID/
 		// subMode must land on the run before the fences read it (and before
@@ -10698,13 +10889,50 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 			s.mu.Unlock()
 			return "", e
 		}
+		// CP-89 Task-453 R-fix: the transcript the entry child needs is
+		// CHAT-scoped — a reattach or provider switch mints a fresh leg whose
+		// rs.events start empty, so a leg-scoped read would silently drop
+		// the whole pre-switch discussion. That read is chat-store I/O and
+		// must never extend s.mu (SD26-S-2), so it runs in a lock gap.
+		// turnInFlight stays set across the gap so a concurrent turn still
+		// fences on it; the relock revalidates before anything commits.
+		chatID := rs.chatID
+		s.mu.Unlock()
+		fwdTurns := s.forwardChatTranscriptTurns(context.Background(), chatID)
+		s.mu.Lock()
+		if s.runs[runID] != rs {
+			// Deleted while the lock was dropped — nothing has committed;
+			// abort before any latch flip or spawn (mirrors the post-persist
+			// gap below).
+			rs.turnInFlight = false
+			s.mu.Unlock()
+			return "", newAPIErr(http.StatusNotFound, "run_not_found",
+				"run deleted while preparing the forward")
+		}
+		if rs.status == RunStatusFailed || rs.status == RunStatusCancelled {
+			// Stopped while the lock was dropped — the forward is superseded
+			// and nothing committed, so surface a typed retryable conflict
+			// rather than ack a launch that never happened.
+			rollbackRejectedForward()
+			s.mu.Unlock()
+			return "", newAPIErr(http.StatusConflict, "forward_superseded",
+				"run was stopped while preparing the forward")
+		}
+		// Re-run the latch gate after the unlocked gap — fences are pure
+		// validation; a state change that landed mid-read must not inherit
+		// a stale admit.
+		if _, reErr := s.forwardPinnedFlow(context.Background(), rs, in); reErr != nil {
+			rollbackRejectedForward()
+			s.mu.Unlock()
+			return "", reErr
+		}
 		// CP-89 Task-453: the entry child's prompt = forward text pinned
 		// intact + the settled chat transcript, oldest material degrading
 		// first, under the entry node's hard context budget. The pack runs
 		// BEFORE the flip (R5-1): a pack rejection must not consume the
 		// latch.
 		pkg, perr := s.buildForwardPromptPackage(rs, in.Prompt,
-			s.forwardEntryBudgetTokens(context.Background(), flowRef))
+			s.forwardEntryBudgetTokens(context.Background(), flowRef), fwdTurns)
 		if perr != nil {
 			rollbackRejectedForward()
 			s.mu.Unlock()

@@ -123,7 +123,7 @@ func (s *InteractiveService) applyVibeGateResolver(runID, parentID, turnID strin
 				driftScore, vibeDriftDebateThreshold)
 		}
 		log.Printf("[vibe-gate] start vibe-owner-debate hub=%s child=%s drift=%d", hub, runID, driftScore)
-		s.startVibeOwnerDebate(hub, message)
+		s.startVibeOwnerDebate(hub, runID, message)
 		return true
 	default:
 		return false
@@ -133,8 +133,10 @@ func (s *InteractiveService) applyVibeGateResolver(runID, parentID, turnID strin
 // startVibeOwnerDebate stashes the parked flow and starts the debate flow
 // (CP-62 P-1). The stash also drops any pending drift-ladder context
 // reduction so the debate turn assembles with the full violation context (T-3).
-func (s *InteractiveService) startVibeOwnerDebate(hub, message string) {
-	s.stashVibeFlowForDebate(hub)
+// gatedRunID is the run whose post-turn gate was diverted into the debate
+// (empty when the resolver had no gated child — e.g. drift-only on the hub).
+func (s *InteractiveService) startVibeOwnerDebate(hub, gatedRunID, message string) {
+	s.stashVibeFlowForDebate(hub, gatedRunID)
 	go s.startResolvedFlow(context.Background(), hub, workingmode.PackPrefix+vibeOwnerDebateFlowID, message)
 }
 
@@ -167,8 +169,28 @@ func (s *InteractiveService) applyVibeDriftOnlyResolver(runID, parentID string, 
 	if parentID != "" {
 		hub = parentID
 	}
+	// CA-1063: never re-mount the owner debate while the hub is already inside
+	// it (sprint topology parked for the debate, or the debate flow still the
+	// active chat flow). Debate turns are deliberation — zero file deltas is
+	// their normal outcome — so a zero_delta_progress-driven drift score
+	// re-mounts the debate on every debate_synthesis turn, loops remediation
+	// forever, and the parked sprint chain never resumes (live run-15525:
+	// scores 80→100 mounted a fresh debate on every synthesis turn until the
+	// operator interrupted).
+	s.mu.Lock()
+	hubRs := rs
+	if hub != runID {
+		hubRs = s.runs[hub]
+	}
+	inDebate := hubRs != nil && (len(hubRs.vibeParkedNodes) > 0 ||
+		workingmode.BareFlowID(hubRs.chatFlowRef) == vibeOwnerDebateFlowID)
+	s.mu.Unlock()
+	if inDebate {
+		log.Printf("[vibe-gate] drift-only escalation suppressed run=%s score=%d: owner debate already active", hub, driftScore)
+		return false
+	}
 	log.Printf("[vibe-gate] drift-only escalation run=%s score=%d -> owner debate", hub, driftScore)
-	s.startVibeOwnerDebate(hub, fmt.Sprintf(
+	s.startVibeOwnerDebate(hub, runID, fmt.Sprintf(
 		"vibe drift score %d (>= %d) on a clean gate: owner debate to choose remediation",
 		driftScore, vibeDriftDebateThreshold))
 	return true

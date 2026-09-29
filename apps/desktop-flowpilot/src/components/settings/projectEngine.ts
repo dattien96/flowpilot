@@ -297,7 +297,10 @@ export function summarizeProjectEngineInit(
       : result.status === "partial"
         ? "Completed with warnings"
         : "Failed";
-  return `${state}: ${installed} installed, ${skipped} skipped, ${errors} errors.`;
+  if (!result.skipped && installed === 0 && skipped > 0 && errors === 0) {
+    return `${state}: all ${skipped} file(s) already current.`;
+  }
+  return `${state}: ${installed} installed, ${skipped} already current, ${errors} errors.`;
 }
 
 export function engineTone(status: string): "passed" | "warn" | "fail" {
@@ -553,10 +556,15 @@ export async function fetchScaffoldProgress(
   projectId: string,
   after = 0,
   signal?: AbortSignal,
+  workingDirectory?: string | null,
 ): Promise<ScaffoldProgressSnapshot> {
+  // BUG-549: an optional workingDirectory scopes the feed to that binding; the
+  // runner keeps the project-level feed when the param is absent.
+  const params = new URLSearchParams({ after: String(after) });
+  if (workingDirectory) params.set("workingDirectory", workingDirectory);
   const response = await fetch(
     new URL(
-      `/client/projects/${encodeURIComponent(projectId)}/scaffold/progress?after=${after}`,
+      `/client/projects/${encodeURIComponent(projectId)}/scaffold/progress?${params.toString()}`,
       RUNNER_URL,
     ).toString(),
     { cache: "no-store", signal },

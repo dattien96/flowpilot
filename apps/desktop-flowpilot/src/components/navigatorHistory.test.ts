@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { filterVisibleHistory, isProjectSyncing, isSyncableRun } from "./navigatorHistory";
+import { filterVisibleHistory, formatRelativeTime, historyStatusTag, isProjectSyncing, isSyncableRun } from "./navigatorHistory";
 import type { RemoteChatSessionSummary, RunHistoryItem } from "@/types/contract";
 
 function makeItem(overrides: Partial<RunHistoryItem> = {}): RunHistoryItem {
@@ -115,4 +115,36 @@ test("isSyncableRun does not reconcile a run that has never actually synced", ()
   ];
 
   assert.equal(isSyncableRun(item, remoteChatSessions), true);
+});
+
+test("formatRelativeTime renders compact now/minutes/hours", () => {
+  const now = new Date("2026-09-29T12:00:00Z").getTime();
+  assert.equal(formatRelativeTime("2026-09-29T12:00:00Z", now), "now");
+  assert.equal(formatRelativeTime("2026-09-29T11:59:30Z", now), "now");
+  assert.equal(formatRelativeTime("2026-09-29T11:59:00Z", now), "1m");
+  assert.equal(formatRelativeTime("2026-09-29T11:58:00Z", now), "2m");
+  assert.equal(formatRelativeTime("2026-09-29T11:00:00Z", now), "1h");
+  assert.equal(formatRelativeTime("2026-09-29T10:00:00Z", now), "2h");
+});
+
+test("formatRelativeTime renders days, months and years", () => {
+  const now = new Date("2026-09-29T12:00:00Z").getTime();
+  assert.equal(formatRelativeTime("2026-09-26T12:00:00Z", now), "3d");
+  assert.equal(formatRelativeTime("2026-05-15T12:00:00Z", now), "4mon");
+  assert.equal(formatRelativeTime("2025-09-29T12:00:00Z", now), "1y");
+});
+
+test("formatRelativeTime clamps future timestamps and survives invalid input", () => {
+  const now = new Date("2026-09-29T12:00:00Z").getTime();
+  assert.equal(formatRelativeTime("2026-09-29T13:00:00Z", now), "now");
+  assert.equal(formatRelativeTime("not-a-date", now), "");
+  assert.equal(formatRelativeTime("", now), "");
+});
+
+test("historyStatusTag marks terminal rows and leaves live states untagged", () => {
+  assert.equal(historyStatusTag("cancelled"), "Cancelled");
+  assert.equal(historyStatusTag("failed"), "Failed");
+  assert.equal(historyStatusTag("completed"), undefined);
+  assert.equal(historyStatusTag("running"), undefined);
+  assert.equal(historyStatusTag("starting"), undefined);
 });

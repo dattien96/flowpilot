@@ -324,3 +324,172 @@ Live re-verification on the pass-5 build (`7b533d29`): `LIVE=1 TestCP89Live`
 L-3 (forward starts flow, 5.31s), L-9/L-10 (restart pending/started), and
 L-14 (switch keeps CP source pin → quota_route_required, never
 invalid_cp_source) all re-verified end-to-end through the rebuilt binary.
+
+## Review pass 6 (post-R5 deeper sweep) — 2 findings, fixed
+
+Capture pass found two concrete paths; both reproduced red, fixed, and
+live-verified. NOTE: R6-2 corrects the R5-5 fix — the transition/step
+evidence extension turned out to be the wedged outcome, not the safe one.
+
+- **R6-1 — local-ahead Drive restore regressed the latch (Critical).**
+  `applyLocalAheadSessionFields` preserved TurnCount/LoopState/topology but
+  not the CP-89 latch or pin fields, so a chat synced while pending then
+  forwarded locally restored the STALE manifest's `pending` — the next
+  forward turn could double-launch a flow that already has children. The
+  local-ahead merge now also carries `flowArm`, `sourceDocID`,
+  `workingMode`, `changeType`, `chatSubMode`, and the flip-stamped
+  `vibeLockedCP`/`vibeCpDocID` (non-empty guards, same convention as the
+  other preserved fields — an old-build local row that never recorded them
+  keeps the manifest value). Test:
+  `TestR6_LocalAheadRestoreKeepsFlowArmAndPin` (asserts the latch AND the
+  forward-adopted source pin survive a stale re-restore).
+- **R6-2 — transition evidence without a child wedged the run (Important;
+  corrects R5-5).** The R5-5 extension let step-transition/step-row evidence
+  keep `started` with zero child rows — but the child row IS the launch
+  commit (the spawn persists it synchronously), and the resume machinery only
+  continues EXISTING children. A transition-only row (inline-entry DONE /
+  entry RUNNING written before the spawn commit) therefore wedged: nothing
+  resumed it and forward retry answered flow_already_started. Reverted to
+  child-row-only evidence; such rows heal to pending and the retry
+  relaunches (the re-run inline dispatch is deterministic context
+  production). Unreadable session index still fails closed to started.
+  Tests: `TestR6_TransitionEvidenceWithoutChildHealsPending` (transition
+  line, assert heal + retry launch), `TestR5_StepRowEvidenceWithoutChild
+  HealsPending` (step-row variant; renamed from the original
+  `...KeepsStarted` assertion).
+
+Verification: `TestR6_*` (2) + `TestR5_StepRow*` + `TestR4_*` +
+`TestTask45[123]` + `TestRestore*`/`TestSync*`/`TestBug49*` green; `-race`
+green on the CP-89 + restore set.
+
+Live re-verification on the pass-6 build (`e8b124a5`): `LIVE=1 -v
+TestCP89Live` **PASS 307.5s — 11 PASS + 3 named skips**, identical to the
+pre-R6 matrix. PASS: L-1..L-4, L-6..L-10, L-13, L-14. Skips: L-5
+(`hub_parked` while the flow remains active — unit-covered), L-11 (grok
+quota — latch ride verified), L-12 (`go:embed`; no runtime file to corrupt).
+
+## Review pass 7 (post-R6 deeper sweep) — 2 findings, fixed
+
+Capture pass found two more concrete crash/restore windows; both reproduced
+red, fixed, and pending live re-verification.
+
+- **R7-1 — byte-identical provider file disabled the local merge
+  (Critical).** R6-1 gated the local-ahead merge on the rollout FILE
+  extending the synced snapshot. A CP-89 forward is a synthetic turn: it
+  commits durable latch state (flowArm=started, adopted sourceDocID,
+  turnCount++) without appending any provider bytes. A chat synced while
+  pending then forwarded locally re-restores with a byte-identical provider
+  file, so localAhead stayed false, the merge never ran, and the stale
+  manifest's pending latch overwrote the local started latch — the next
+  forward double-launches a flow that already has children. Fix: when the
+  manifest is this machine's OWN snapshot and resolveRestoredRunID maps it
+  onto the existing local row, the local row is never behind a snapshot this
+  machine wrote, so the mutable-field merge runs regardless of the file
+  delta. Manifests written by a DIFFERENT machine still skip the merge —
+  the remote lineage owner may legitimately be newer than a stale local
+  restore copy. Test: `TestR7_SameFileReRestoreKeepsLocalAheadFlowArm`
+  (identical-file re-restore keeps started latch + adopted pin + vibe mode).
+- **R7-2 — a minted-but-never-engaged child row was counted as launch proof
+  (Critical).** spawnChildRun persists the child row BEFORE scheduling its
+  first-turn goroutine. A kill in that window leaves an idle TurnCount=0
+  agentStatus=spawned row — but reconstructPendingChildSessions only
+  re-drives children with pending gate/cohort/continuation markers, and the
+  child's first prompt exists only in the lost goroutine, so nothing can
+  ever run it: the parent wedged "started" with a dead child while forward
+  retry answered flow_already_started. Fix: `flowEntryChildRowEngaged` —
+  the durable index path counts a child only when it shows engagement past
+  minting (TurnCount>0, non-idle status, dependency-parked wait, or a
+  pending durable intent). An idle minted row heals the parent to pending;
+  the forward retry re-packs and re-spawns a fresh entry child (the orphan
+  row stays as an honest never-ran record). In-memory children keep the
+  label-only rule — a live rs is mid-launch in this process. Tests:
+  `TestR7_IdleEntryChildRowDoesNotProveLaunch` (idle+spawned+TC0 heals and
+  the retry relaunches) and `TestR7_WaitingDependencyChildKeepsStarted`
+  (waiting_dependency+DependsOn control stays started).
+
+Note on the third capture item (non-flow child whose label collides with a
+node id): the engagement gate already narrows it — a never-ran lookalike no
+longer counts. Residual: a deliberately node-labeled manual spawn that DID
+run still counts as evidence — acceptable (that child did real work under
+that label); documented, not fixed.
+
+Verification: `TestR7_*` (3) + `TestR4/R5/R6` + `TestTask45[123]` +
+`TestRestore*`/`TestSync*`/`TestBug32*`/`TestBug49*` green; `-race` green on
+the CP-89 set. Two sweep flakes observed were pre-existing cross-test
+provider-accounts timing noise (different tests each run, both pass
+standalone; untouched code).
+
+Live re-verification on the pass-7 build (`c8af0145`): `LIVE=1 -v
+TestCP89Live` **PASS 308.2s — 11 PASS + 3 named skips**, identical matrix.
+PASS: L-1..L-4, L-6..L-10, L-13, L-14. Skips: L-5 (`hub_parked` while the
+flow remains active — unit-covered), L-11 (grok quota — latch ride
+verified), L-12 (`go:embed`; no runtime file to corrupt).
+
+## Review pass 8 (R8-*) — regression audit; 3 findings reproduced red, fixed
+
+Post-R7 regression sweep. Three findings, each reproduced assertion-red on
+HEAD (two also verified green on the pre-fix commit), then fixed:
+
+- **R8-1 — a provider-switched leg could re-launch a flow that already ran
+  (Critical regression from Task-451's pin ride).** Every switch stamped
+  FlowRefFallback=src.chatFlowRef so a pending latch keeps its forward
+  target — but the ref also rode when the flow had ALREADY launched
+  (flowEngineDriven set by the immediate first-turn or a committed
+  forward). The new leg restarts at turnCount=0, so when the seed turn
+  failed or was never sent, the first plain follow-up resolved the carried
+  ref as a first-turn mount and re-ran the whole flow on the switched leg.
+  Fix: `switchLegFlowRefFallback` — the ref rides only while the launch is
+  still possible (pending latch needs the forward target; an immediate
+  mount that never ran keeps its intent); once flowEngineDriven is set the
+  fallback is dropped. The latch pair (flowArm + flowEngineDriven) is
+  snapshotted under s.mu so a forward committing mid-switch cannot hand
+  the leg a torn pending+ref pair. Tests:
+  `TestR8_SwitchedLegDoesNotRelaunchLaunchedFlow` (immediate+flowEngineDriven
+  leg minted with empty chatFlowRef; resolver never hands a flowRef),
+  `TestR8_SwitchedLegKeepsPendingForwardTarget` (control: pending leg still
+  carries latch + ref).
+- **R8-2 — the R7-2 heal wiped a mid-topology-swap run's progress
+  (Critical).** Vibe sprint/debate replace ActiveFlowNodes mid-run and park
+  the old topology on the parent row. In the swap window the row carries
+  the NEW topology while its minted child is still idle and the engaged
+  children carry PARKED node ids — the current-topology-only evidence scan
+  found nothing engaged, healed the latch to pending, and the pending
+  normalization then wiped vibeLockedCP/task plan/sprint index/parked
+  topology (a retry would also re-launch the WRONG flow — chatFlowRef is
+  vibe-sprint post-swap, not the pinned ref). Fix: parked nodes and the
+  task plan are themselves post-launch progress markers, so their presence
+  vetoes the heal entirely. Also closed the R7-2 asymmetry: the in-memory
+  scan now applies the same engagement check (`flowEntryRunEngaged`) — a
+  reconstructed minted-idle row in s.runs no longer counts as proof either.
+  Test: `TestR8_TopologySwapEngagedChildKeepsStartedAndProgress` (engaged
+  parked-topology child + minted-idle new-topology child keeps started and
+  preserves all vibe progress fields).
+- **R8-3 — a foreign manifest re-restore downgraded a committed latch
+  (Important — R7-1 residual).** R7-1 covered only this machine's own
+  snapshot; a manifest from ANOTHER machine still skipped the merge by
+  design. But a restored copy of a foreign chat that forwarded locally
+  (zero provider bytes appended) hit neither localAhead nor selfRerestore —
+  re-restoring the owner's stale pending manifest persisted `pending` over
+  the local `started`. Fix: the latch is monotonic — once this machine's
+  row durably committed started, no manifest may downgrade it; when the
+  existing local row is started and the incoming session is not,
+  `preserveCommittedFlowLatch` carries the latch + adopted pin/mode +
+  committed topology + turn count from the local row. Test:
+  `TestR8_ForeignRerestoreKeepsCommittedFlowLatch` (foreign machine-A
+  manifest over a locally-forwarded copy keeps started + adopted pin +
+  vibe mode).
+
+Verification: `TestR8_*` (4) red on HEAD / green post-fix +
+`TestR[4567]_`/`TestTask45[123]`/`TestSwitch*`/`TestRestore*`/`TestSync*`
+sweep green. `-race` green on the CP-89 set; two pre-existing flakes
+observed under -race sweep reproduce on BASELINE too
+(`TestSwitchNeverHoldsLockAcrossCreateRun` — fakeAdapterDelay global vs the
+fire-and-forget seed goroutine; provider-accounts cross-test config
+clobber hitting syncChatRunToDrive in R6/R7 tests — all pass standalone;
+untouched code).
+Live re-verification on the pass-8 build (`789ac4bf`): `LIVE=1 -v
+TestCP89Live` **PASS 309.0s — 11 PASS + 3 named skips**, identical matrix.
+PASS: L-1..L-4, L-6..L-10, L-13, L-14 (pin rode the leg; forward blocked
+only by the alt quota route, not invalid_cp_source). Skips: L-5
+(`hub_parked` while the flow remains active — unit-covered), L-11 (grok
+quota), L-12 (`go:embed`; no runtime file to corrupt).

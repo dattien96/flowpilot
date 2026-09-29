@@ -17,6 +17,7 @@ import {
 import { supportsVisionFor } from "./visionProviders";
 import { ContextNotice, UsageFigures } from "./ContextUsageNotice";
 import { draftKeyFor } from "@/state/drafts";
+import { flowPickerOptions } from "@/state/workingMode";
 import { BotIcon, CaretIcon, CheckIcon, CloseIcon, MenuIcon, PaperclipIcon, SendIcon } from "@/components/icons";
 
 function CodexIcon(): React.ReactElement {
@@ -353,9 +354,18 @@ export function ChatInput(): React.ReactElement {
   const providerSwitchLoading = useStore((s) => s.providerSwitchLoading);
   const requestManualAccountSwitch = useStore((s) => s.requestManualAccountSwitch);
   const backToMainRun = useStore((s) => s.backToMainRun);
+  const pendingFlowArm = useStore((s) => s.pendingFlowArm);
+  const flowStarted = useStore((s) => s.flowStarted);
+  const forwardArmedFlow = useStore((s) => s.forwardArmedFlow);
 
   const [text, setText] = useState("");
   const [clearSeq, setClearSeq] = useState(0);
+  // CP-89: the armed banner's flow picker — the pinned ref is the default,
+  // but the discussion may produce a CP doc afterwards, so the user can
+  // re-point the FINAL choice (e.g. vibe-ingest → vibe-cp-ingest) before
+  // pressing Start flow. The chosen ref rides the forward turn.
+  const [armedFlowChoice, setArmedFlowChoice] = useState("");
+  const [armedSourceDoc, setArmedSourceDoc] = useState("");
   const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
   const [pickerSortSelection, setPickerSortSelection] = useState<string[]>([]);
   const [pickerSearch, setPickerSearch] = useState("");
@@ -593,6 +603,13 @@ export function ChatInput(): React.ReactElement {
   const draftKey = draftKeyFor(chatId ?? null, runId ?? null, selectedProjectId ?? null);
   const suppressMirrorKeyRef = useRef<string | null>(null);
 
+  // CP-89: re-seed the flow picker's choice whenever the armed state (or the
+  // focused chat) changes — a history reopen carries its own pin.
+  useEffect(() => {
+    setArmedFlowChoice(pendingFlowArm?.flowRef ?? "");
+    setArmedSourceDoc(pendingFlowArm?.sourceDocId ?? "");
+  }, [pendingFlowArm?.flowRef, pendingFlowArm?.sourceDocId, chatId]);
+
   useEffect(() => {
     const draft = useStore.getState().drafts[draftKey];
     // Tell the mirror effect below to skip the stale write that would fire in
@@ -622,19 +639,44 @@ export function ChatInput(): React.ReactElement {
 
   // Mirror composer → draft. Empty drafts are dropped by setDraft (clearComposer
   // on send naturally removes the entry; a failed send re-populates it from
-  // sendPrompt's catch path).
+  // sendPrompt's catch path). The written object is recorded in ownDrafts so
+  // the restore effect below can tell a store-side write-back (failed send /
+  // forward) apart from this mirror's own echo — the laneDraft prop lags one
+  // render behind, and a stale self-written object must never clobber
+  // in-progress typing.
+  const ownDraftsRef = useRef(new WeakSet<object>());
   useEffect(() => {
     if (suppressMirrorKeyRef.current === draftKey) {
       suppressMirrorKeyRef.current = null;
       return;
     }
-    setDraft(draftKey, {
+    const next = {
       text,
       selectedSkills: selectedSkills.length > 0 ? [...selectedSkills] : undefined,
       attachments: attachments.length > 0 ? attachments.map(toWire) : undefined,
       updatedAt: Date.now(),
-    });
+    };
+    ownDraftsRef.current.add(next);
+    setDraft(draftKey, next);
   }, [draftKey, text, selectedSkills, attachments, setDraft]);
+
+  // A draft written back out-of-band — the sendPrompt/forwardArmedFlow catch
+  // path after an optimistic clear — repopulates the composer immediately.
+  // Without this the lane effect above only applies drafts on a draftKey
+  // change, so a rejected send looked like it swallowed the typed prompt.
+  const laneDraft = useStore((s) => s.drafts[draftKey]);
+  useEffect(() => {
+    if (!laneDraft || ownDraftsRef.current.has(laneDraft)) return;
+    suppressMirrorKeyRef.current = draftKey;
+    setText(laneDraft.text);
+    setSelectedSkills(laneDraft.selectedSkills ?? []);
+    setAttachments(
+      (laneDraft.attachments ?? []).map((a) => ({
+        ...a,
+        previewUrl: `data:${a.mimeType};base64,${a.data}`,
+      })),
+    );
+  }, [laneDraft, draftKey]);
 
   const hasBetterAccount = useMemo(
     () =>
@@ -677,14 +719,21 @@ export function ChatInput(): React.ReactElement {
     }
   }, [activeConnectedProviders, installedProviders, isChatMode, readyProviders, runId, selectProvider, selectedProvider]);
 
+  // CA-1000: an active scaffold watch also blocks the composer — the scaffold
+  // turn is writing the workspace, so a concurrent chat turn must not start
+  // (TUI parity). It is NOT a stoppable run, so the toolbar shows a status
+  // pill instead of the Stop button while only the scaffold blocks.
+  const scaffoldSession = useStore((s) => s.scaffoldSession);
+  const scaffoldActive = scaffoldSession?.active === true;
   // Include "blocked" (flow awaiting user / escalate) so Stop stays available on
   // the main composer — previously only RunStatus / FlowAwaitingUserCard had Stop
   // while status=blocked, and dual gate UI made main Stop hard to reach (CP-51 A1).
-  const blocked =
+  const runBlocked =
     status === "running" ||
     status === "waiting_approval" ||
     status === "waiting_question" ||
     status === "blocked";
+  const blocked = runBlocked || scaffoldActive;
   // The manual "Gen summary" control is available only for an existing chat that
   // is idle/completed (never mid-turn) — mirrors the runner's busy guard.
   const canGenerateSummary = isChatMode && !!runId && timeline.length > 0 && !blocked && !summaryGenerating;
@@ -975,7 +1024,9 @@ export function ChatInput(): React.ReactElement {
     }
   };
 
-  const placeholder = hasBlockingChild && !blocked
+  const placeholder = !runBlocked && scaffoldActive
+    ? "AI Scaffold is running — chat is paused until it finishes…"
+    : hasBlockingChild && !blocked
     ? "Waiting for a sub-agent (wait=true) to finish…"
     : blocked
     ? "Waiting for the current turn..."
@@ -1392,6 +1443,63 @@ export function ChatInput(): React.ReactElement {
           </>
         ) : (
           <>
+            {isChatMode && runId && !flowStarted && (pendingFlowArm || workingMode === "vibe") && (() => {
+              // CP-89: the forward turn carries the user's FINAL flow choice.
+              // An armed chat defaults to its pin; a never-armed vibe chat
+              // can late-attach (runner gate validates + commits atomically).
+              const options = flowPickerOptions(workingMode);
+              const rawChoice = armedFlowChoice || pendingFlowArm?.flowRef || options[0] || "";
+              // History/handle refs can be pack-prefixed ("<pack>/<id>") while
+              // the picker lists bare ids — match by suffix so the select
+              // never renders blank.
+              const choice = options.find((f) => rawChoice === f || rawChoice.endsWith(`/${f}`)) ?? rawChoice;
+              const needsSourceDoc = /(^|\/)vibe-cp-ingest$/.test(choice);
+              return (
+                <div className="composer-armed-flow" role="status">
+                  <span className="composer-armed-label">
+                    {pendingFlowArm ? "Flow armed:" : "Start a flow:"}
+                    <select
+                      className="composer-armed-select"
+                      value={choice}
+                      onChange={(e) => setArmedFlowChoice(e.target.value)}
+                      aria-label="Flow to start"
+                    >
+                      {options.map((f) => (
+                        <option key={f} value={f}>{f}</option>
+                      ))}
+                    </select>
+                    {needsSourceDoc && (
+                      <input
+                        className="composer-armed-source"
+                        value={armedSourceDoc}
+                        onChange={(e) => setArmedSourceDoc(e.target.value)}
+                        placeholder="CP doc path (requirements/07-Coding-Plan/CP-*.md)"
+                        spellCheck={false}
+                      />
+                    )}
+                    {pendingFlowArm && !needsSourceDoc
+                      ? " — chat freely, then start the flow when ready."
+                      : null}
+                  </span>
+                  <button
+                    type="button"
+                    className="composer-main-btn composer-start-flow"
+                    onClick={() => {
+                      const forwardText = text.trim();
+                      clearComposer();
+                      void forwardArmedFlow(forwardText, {
+                        flowRef: choice,
+                        sourceDocId: armedSourceDoc.trim() || undefined,
+                      });
+                    }}
+                    disabled={blocked || !choice || (needsSourceDoc && !armedSourceDoc.trim())}
+                    title="Start the flow — the discussion so far rides in as context"
+                  >
+                    Start flow
+                  </button>
+                </div>
+              );
+            })()}
             <div className={`text-area-wrapper${isChatMode && mentionSpans.length > 0 ? " has-highlights" : ""}`}>
               {isChatMode && mentionSpans.length > 0 && (
                 <div className="text-area-backdrop" aria-hidden="true">
@@ -1474,9 +1582,17 @@ export function ChatInput(): React.ReactElement {
               )}
               <span className="composer-spacer" />
               {blocked ? (
+                // CA-1000: a scaffold-only block is not a stoppable run — show
+                // its phase instead of a Stop button that could never land.
+                !runBlocked && scaffoldActive ? (
+                  <span className="composer-scaffold-status" role="status" aria-live="polite">
+                    AI Scaffold{scaffoldSession?.phase && scaffoldSession.phase !== "dispatch" ? ` · ${scaffoldSession.phase}` : ""} running…
+                  </span>
+                ) : (
                 <button type="button" className="icon-btn composer-send composer-send-stop" onClick={() => void stop()} aria-label="Stop AI">
                   <StopIcon />
                 </button>
+                )
               ) : (
                 <button type="button" className="icon-btn composer-send" onClick={send} disabled={!canSend} aria-label="Send">
                   <SendIcon size={15} />

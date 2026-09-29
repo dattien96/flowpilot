@@ -515,8 +515,27 @@ func resumedFlowRunIncomplete(st ProviderSessionState) bool {
 	return true
 }
 
-func resumedChildRunStepStatus(status RunStatus) RuntimeWorkflowStepStatus {
-	switch normalizeResumedStatus(status) {
+func resumedChildRunStepStatus(st ProviderSessionState) RuntimeWorkflowStepStatus {
+	// A closed leg never re-drives: armed intents are dead residue, so project
+	// the closure directly (same rule as normalizeResumedFlowStatus).
+	if st.LegState == LegStateClosed {
+		switch normalizeResumedStatus(st.Status) {
+		case RunStatusCompleted:
+			return StepStatusDone
+		case RunStatusFailed:
+			return StepStatusFailed
+		default:
+			return StepStatusCanceled
+		}
+	}
+	// A durable resume/reprompt intent means the child is armed to re-drive —
+	// the step stays pending rather than reading canceled (same pending-aware
+	// rule as normalizeResumedFlowStatus / agentStatusFromSession).
+	if strings.TrimSpace(st.PendingResumePrompt) != "" ||
+		strings.TrimSpace(st.PendingGateRepromptPrompt) != "" {
+		return StepStatusPending
+	}
+	switch normalizeResumedStatus(st.Status) {
 	case RunStatusCompleted:
 		return StepStatusDone
 	case RunStatusFailed:
@@ -777,7 +796,7 @@ func (s *InteractiveService) resumedFlowStepRows(rs *interactiveRun, st Provider
 				if row == nil {
 					continue
 				}
-				switch resumedChildRunStepStatus(session.Status) {
+				switch resumedChildRunStepStatus(session) {
 				case StepStatusDone:
 					row.Status = StepStatusDone
 				case StepStatusFailed:
@@ -852,6 +871,39 @@ func normalizeResumedStatus(status RunStatus) RunStatus {
 	}
 }
 
+// closedLegResumedStatus projects a closed leg's run status: waiting-* cards
+// and armed intents are dead residue — the leg can never serve a decision or
+// flush an intent — so non-terminal statuses collapse to cancelled, the same
+// "in-flight on a dead owner" rule normalizeResumedStatus applies to
+// running/starting.
+func closedLegResumedStatus(status RunStatus) RunStatus {
+	switch n := normalizeResumedStatus(status); n {
+	case RunStatusWaitingApproval, RunStatusWaitingQuestion, RunStatusWaitingUserApr:
+		return RunStatusCancelled
+	default:
+		return n
+	}
+}
+
+// agentStatusFromSession projects a persisted child row's AgentStatus for the
+// listAgentRunSummaries disk fallback. normalizeResumedStatus cancels in-flight
+// values (correct for crash residue), but a durable resume/reprompt intent
+// means the child is armed to re-drive — keep the persisted value so the badge
+// agrees with the pending-aware Status projection on the same row.
+func agentStatusFromSession(st ProviderSessionState) RunStatus {
+	if st.LegState == LegStateClosed {
+		return closedLegResumedStatus(RunStatus(st.AgentStatus))
+	}
+	if strings.TrimSpace(st.PendingResumePrompt) != "" ||
+		strings.TrimSpace(st.PendingGateRepromptPrompt) != "" {
+		if st.AgentStatus == "" {
+			return RunStatusRunning
+		}
+		return RunStatus(st.AgentStatus)
+	}
+	return normalizeResumedStatus(RunStatus(st.AgentStatus))
+}
+
 func normalizeResumedFlowStatus(st ProviderSessionState) RunStatus {
 	// Loop status is authoritative for flow hubs. Do not require ActiveFlowNodes:
 	// a completed run may still have empty/stale node lists while LoopState is
@@ -878,6 +930,12 @@ func normalizeResumedFlowStatus(st ProviderSessionState) RunStatus {
 			return st.Status
 		}
 		return RunStatus("blocked")
+	}
+	// A closed leg never re-drives: armed intents and waiting-* cards are dead
+	// residue (live run-945 kept waiting_user_approval + pending_resume_* after
+	// the switch), so the row projects terminal — not running/waiting.
+	if st.LegState == LegStateClosed {
+		return closedLegResumedStatus(st.Status)
 	}
 	// V10 P0: gate-pending child must stay Running so resume re-evaluates gate
 	// instead of normalizing to cancelled.
@@ -921,7 +979,18 @@ func (s *InteractiveService) flowEntryChildExists(runID string, nodes []agentpac
 				if strings.TrimSpace(sess.ParentRunID) != runID {
 					continue
 				}
-				if _, hit := wanted[strings.TrimSpace(sess.Label)]; hit {
+				if _, hit := wanted[strings.TrimSpace(sess.Label)]; !hit {
+					continue
+				}
+				// R7-2: spawnChildRun persists the child row BEFORE scheduling
+				// its first-turn goroutine, so a kill in that window leaves a
+				// minted-but-never-engaged row. Counting the bare row wedges the
+				// parent "started" forever — reconstructPendingChildSessions
+				// only re-drives children carrying pending gate/cohort/
+				// continuation markers, and the child's first prompt is not
+				// durable, so nothing can ever run it. Only an engaged row
+				// proves the launch produced resumable work.
+				if flowEntryChildRowEngaged(sess) {
 					return true
 				}
 			}
@@ -933,7 +1002,12 @@ func (s *InteractiveService) flowEntryChildExists(runID string, nodes []agentpac
 		if c == nil || strings.TrimSpace(c.parentRunID) != runID {
 			continue
 		}
-		if _, hit := wanted[strings.TrimSpace(c.label)]; hit {
+		if _, hit := wanted[strings.TrimSpace(c.label)]; !hit {
+			continue
+		}
+		// Same engagement contract as the index scan: a reconstructed
+		// minted-but-idle row is not launch proof either.
+		if flowEntryRunEngaged(c) {
 			found = true
 			break
 		}
@@ -942,41 +1016,72 @@ func (s *InteractiveService) flowEntryChildExists(runID string, nodes []agentpac
 	if found {
 		return true
 	}
-	// R5-5: a child row is not the only launch evidence. The executor writes a
-	// durable step-transition line the moment it reaches a node (entry status
-	// RUNNING before the spawn commit, node DONE inside inline-entry chains
-	// before the delegate spawn). A started row whose transition log shows the
-	// executor progressed — even without a surviving child row — is mid-flight
-	// flow work owned by the resume machinery, not a never-launched crash row.
-	// Reseeded PENDING step rows are deliberately NOT evidence: reseed runs at
-	// executor start AND at resume, so they cannot distinguish.
-	if tlog, ok := s.workflowStore.(StepTransitionLogStore); ok {
-		lines, lerr := tlog.LoadStepTransitions(context.Background(), runID)
-		if lerr != nil {
-			// Evidence unreadable — same fail-closed contract as an unreadable
-			// session index: keep started rather than risk a duplicate launch.
-			return true
-		}
-		for _, l := range lines {
-			if _, hit := wanted[strings.TrimSpace(l.NodeID)]; hit {
-				return true
-			}
-		}
-	}
-	if steps, serr := s.workflowStore.LoadRunSteps(context.Background(), runID); serr == nil {
-		for _, step := range steps {
-			if _, hit := wanted[strings.TrimSpace(step.ID)]; !hit {
-				continue
-			}
-			if (step.Status != "" && step.Status != StepStatusPending) || strings.TrimSpace(step.StartedAt) != "" {
-				return true
-			}
-		}
-	}
-	// Neither the durable index nor live memory shows a launched child. When
-	// the index itself was never readable, stay fail-closed: claim the launch
-	// happened rather than risk a duplicate.
+	// R6-2 (corrects R5-5): the child row is the ONLY launch commit — the
+	// spawn persists it synchronously. Step transitions/step rows are weaker:
+	// the executor writes them before the delegate spawn commit (inline-entry
+	// DONE, entry RUNNING), so a transition-without-child row proves executor
+	// engagement but zero resumable work. Keeping such a row started wedges
+	// it — no child exists for the resume machinery and forward retry answers
+	// flow_already_started — while healing to pending stays safely-retryable:
+	// the retry re-runs the deterministic inline dispatch and re-spawns.
+	// When the index itself was never readable, stay fail-closed: claim the
+	// launch happened rather than risk a duplicate.
 	if !indexRead {
+		return true
+	}
+	return false
+}
+
+// flowEntryChildRowEngaged reports whether a durable child row shows the
+// launch actually RAN, not merely minted (R7-2). spawnChildRun persists the
+// row before scheduling the child's first turn, so a kill in that window
+// leaves an idle TurnCount=0 agentStatus=spawned row forever — nothing
+// resumable was produced, and the child's first prompt exists only in the
+// lost goroutine. Engagement = any durable signal the child moved past
+// minting: a completed turn (TurnCount), a lifecycle status past idle
+// (running/completed/failed/cancelled — the row was touched by real work or
+// a real decision), a deliberately parked dependency wait (the flow owns
+// re-firing it — healing would double-spawn), or a pending continuation
+// intent the resume machinery re-drives.
+func flowEntryChildRowEngaged(sess ProviderSessionState) bool {
+	if sess.TurnCount > 0 {
+		return true
+	}
+	switch sess.Status {
+	case "", RunStatusIdle:
+		// minted only — no durable turn evidence yet
+	default:
+		return true
+	}
+	if len(sess.DependsOn) > 0 || strings.TrimSpace(sess.AgentStatus) == "waiting_dependency" {
+		return true
+	}
+	if sess.PendingFlowGateSettle || len(sess.PendingAgentContext) > 0 ||
+		strings.TrimSpace(sess.PendingResumePrompt) != "" ||
+		strings.TrimSpace(sess.PendingGateRepromptPrompt) != "" {
+		return true
+	}
+	return false
+}
+
+// flowEntryRunEngaged mirrors flowEntryChildRowEngaged for the in-memory run
+// table (called under s.mu): the same durable signals on the live run fields.
+func flowEntryRunEngaged(c *interactiveRun) bool {
+	if c.turnCount > 0 {
+		return true
+	}
+	switch c.status {
+	case "", RunStatusIdle:
+		// minted only — no durable turn evidence yet
+	default:
+		return true
+	}
+	if len(c.dependsOn) > 0 || strings.TrimSpace(c.agentStatus) == "waiting_dependency" {
+		return true
+	}
+	if c.pendingFlowGateSettle || len(c.pendingAgentContext) > 0 ||
+		strings.TrimSpace(c.pendingResumePrompt) != "" ||
+		strings.TrimSpace(c.pendingGateRepromptPrompt) != "" {
 		return true
 	}
 	return false
@@ -1046,7 +1151,16 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 	// cleanly instead of wedging on flow_already_started with a flow that
 	// never ran. An unreadable session index fails closed toward keeping
 	// started — a wrong heal would double-launch.
-	if restoredFlowArm == FlowArmStarted && strings.TrimSpace(st.SwitchFromRunID) == "" &&
+	// CP-89 review R8-2: parked topology / a task plan are post-launch
+	// progress markers — the vibe engine only writes them once nodes have
+	// already run (a mid-run sprint/debate swap mints the NEW topology's
+	// entry child before it can engage, while the engaged children still
+	// carry PARKED node ids a current-topology-only scan cannot see).
+	// Their presence vetoes the heal: this is not a launch that never ran,
+	// and healing would also wipe the progress in the pending normalization
+	// below before a retry re-launches the wrong flow.
+	vibeFlowProgress := len(st.VibeParkedNodes) > 0 || len(st.VibeTaskPlan) > 0
+	if restoredFlowArm == FlowArmStarted && strings.TrimSpace(st.SwitchFromRunID) == "" && !vibeFlowProgress &&
 		(len(st.ActiveFlowNodes) == 0 || !s.flowEntryChildExists(st.RunID, st.ActiveFlowNodes)) {
 		restoredFlowArm = FlowArmPending
 	}
@@ -1187,10 +1301,11 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 		// BUG-404: restore the debate-parked sprint topology + buffered coder
 		// batches — previously RAM-only, so a restart mid-negotiation lost them
 		// and the debate_synthesis done verdict settled the whole flow.
-		vibeParkedNodes:      append([]agentpack.FlowNode(nil), st.VibeParkedNodes...),
-		vibeParkedEdges:      append([]agentpack.FlowEdge(nil), st.VibeParkedEdges...),
-		vibeParkedAcceptance: append([]string(nil), st.VibeParkedAcceptance...),
-		vibeParkedFlowRef:    st.VibeParkedFlowRef,
+		vibeParkedNodes:       append([]agentpack.FlowNode(nil), st.VibeParkedNodes...),
+		vibeParkedEdges:       append([]agentpack.FlowEdge(nil), st.VibeParkedEdges...),
+		vibeParkedAcceptance:  append([]string(nil), st.VibeParkedAcceptance...),
+		vibeParkedFlowRef:     st.VibeParkedFlowRef,
+		vibeParkedGatedRunIDs: append([]string(nil), st.VibeParkedGatedRunIDs...),
 		// BUG-478: parked merge card + patch snapshots were RAM-only — a
 		// restart dropped every actionable alternate.
 		tournamentWinner:            st.TournamentWinner,
@@ -1248,6 +1363,7 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 		rs.vibeParkedEdges = nil
 		rs.vibeParkedAcceptance = nil
 		rs.vibeParkedFlowRef = ""
+		rs.vibeParkedGatedRunIDs = nil
 		rs.vibeSprintBoundaryPending = false
 		rs.vibeResumeConfirm = false
 		rs.vibeResumeFromNode = ""
@@ -1665,6 +1781,21 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 			}
 		}
 	}
+	// BUG-551 seam 3 (live run-15525): the hub-stall watchdog is in-memory —
+	// a rehydrated flow root whose durable loop is still "running" but whose
+	// turn died with the old process never re-arms it, so the recovery path
+	// that re-blocks a running-but-dead loop (and thereby gives continue a
+	// real surface) is lost on restart. Re-arm whenever the reconstructed
+	// root is non-terminal; maybeScheduleHubStallCheck self-gates on
+	// flowEngineDriven + loop status, and checkAndBlockStalledHub re-arms
+	// itself while real work is in flight — a healthy run pays one timer.
+	s.mu.Lock()
+	live := rs.parentRunID == "" && rs.status != RunStatusCompleted &&
+		rs.status != RunStatusFailed && rs.status != RunStatusCancelled
+	s.mu.Unlock()
+	if live {
+		s.maybeScheduleHubStallCheck(rs.id)
+	}
 	return rs, nil
 }
 
@@ -1903,6 +2034,69 @@ func clearIntentFieldsLocked(rs *interactiveRun, kind string) {
 		rs.pendingResumeFailGen = 0
 		rs.pendingResumeApprovalID = ""
 		rs.pendingResumeDecision = ""
+	}
+}
+
+// clearClosedLegPendingLocked drops the durable "armed" state a closed leg can
+// never flush — continuation intents, a parked flow-gate settle, the buffered
+// turn prompt, and live card handles — and collapses a waiting-* status to
+// cancelled (the card died with the leg). Gen high-water marks stay for
+// idempotency; legState/legClosedReason keep the closure audit. Without this a
+// closed row keeps reading actionable (live run-945: provider-switched leg
+// kept waiting_user_approval + pending_resume_*), and read paths that never
+// consulted legState resurrected it on parent resume. Caller holds s.mu.
+// Keep field-for-field in sync with clearClosedLegPendingSession.
+func clearClosedLegPendingLocked(rs *interactiveRun) {
+	if rs == nil {
+		return
+	}
+	clearIntentFieldsLocked(rs, "resume")
+	clearIntentFieldsLocked(rs, "reprompt")
+	rs.pendingFlowGateSettle = false
+	rs.pendingFlowGateFinalMsg = ""
+	rs.pendingFlowGateOccurredAt = ""
+	rs.pendingFlowGateTurnID = ""
+	rs.pendingGateChangedFiles = nil
+	rs.pendingTurnPrompt = ""
+	switch rs.status {
+	case RunStatusWaitingApproval, RunStatusWaitingQuestion, RunStatusWaitingUserApr:
+		rs.status = RunStatusCancelled
+		rs.agentStatus = string(RunStatusCancelled)
+	}
+	rs.pendingApprovalID = ""
+	rs.pendingQuestionID = ""
+}
+
+// clearClosedLegPendingSession is the ProviderSessionState twin of
+// clearClosedLegPendingLocked for the non-resident durable-row sweep — a dead
+// run's row never lands in s.runs, so the in-memory helper cannot reach it.
+func clearClosedLegPendingSession(st *ProviderSessionState) {
+	if st == nil {
+		return
+	}
+	st.PendingResumePrompt = ""
+	st.PendingResumeStepID = ""
+	st.PendingResumeDeliveredGen = 0
+	st.PendingResumeAcceptedTurn = ""
+	st.PendingResumeFailCount = 0
+	st.PendingResumeFailGen = 0
+	st.PendingResumeApprovalID = ""
+	st.PendingResumeDecision = ""
+	st.PendingGateRepromptPrompt = ""
+	st.PendingGateRepromptStepID = ""
+	st.PendingGateRepromptDeliveredGen = 0
+	st.PendingGateRepromptAcceptedTurn = ""
+	st.PendingGateRepromptFailCount = 0
+	st.PendingGateRepromptFailGen = 0
+	st.PendingFlowGateSettle = false
+	st.PendingFlowGateFinalMsg = ""
+	st.PendingFlowGateOccurredAt = ""
+	st.PendingFlowGateTurnID = ""
+	st.PendingGateChangedFiles = nil
+	switch st.Status {
+	case RunStatusWaitingApproval, RunStatusWaitingQuestion, RunStatusWaitingUserApr:
+		st.Status = RunStatusCancelled
+		st.AgentStatus = string(RunStatusCancelled)
 	}
 }
 
@@ -2399,6 +2593,12 @@ func (s *InteractiveService) reconstructPendingChildSessions(parentRunID string)
 
 	// Also recover durable continuation intents (approval resume / gate reprompt).
 	needSessionWithIntent := func(session ProviderSessionState) bool {
+		// A closed leg is dead: its armed intents and pending cards can never
+		// be flushed or answered on it — loading only resurrects residue (the
+		// leg_closed guard at startTurn would refuse the dispatch anyway).
+		if session.LegState == LegStateClosed {
+			return false
+		}
 		if needSession(session) {
 			return true
 		}
@@ -5457,6 +5657,22 @@ func relocateGeminiProjectConfig(srcPath, targetHome, projectID string) (string,
 		return "", err
 	}
 	return dstPath, nil
+}
+
+// ensureRunResident resolves a run for mutation endpoints: resident first,
+// then the durable session row — post-restart a durably parked/blocked run is
+// not in s.runs yet but still exists, so run_not_found for it is a lie
+// (R.2 item 5; live run-1 404'd on continue while durably blocked). Absent
+// row → run_not_found; unreadable store → workflow_state_unavailable (the
+// loadPersistedRun contract). Not safe to call while holding s.mu.
+func (s *InteractiveService) ensureRunResident(runID string) (*interactiveRun, *apiErr) {
+	s.mu.Lock()
+	rs := s.runs[runID]
+	s.mu.Unlock()
+	if rs != nil {
+		return rs, nil
+	}
+	return s.loadPersistedRun(runID)
 }
 
 func (s *InteractiveService) loadPersistedRun(runID string) (*interactiveRun, *apiErr) {
