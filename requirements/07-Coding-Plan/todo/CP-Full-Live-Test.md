@@ -373,7 +373,7 @@ marked `UI` — backend evidence still required where noted.
 | A-58-1 | task-harness happy path | `/flow task-harness` + GCD-style prompt (calc-core) → scout→context→plan_writer→plan_reviewer→plan_synthesis→freeze→test_signatures→implement→validate→reviewer→synthesis→audit→done. Writer/reviewer prompts contain "Templated file outputs" / "Bound input artifacts"; reviewer calls `submit_review_outcome` | e2e in runner suite | ☑ run-6893: full chain DONE→audit 03:11:01Z; audit draft persisted (str-utils). run-94: through `implement`, validate dead-parked → BUG-455 (fixed, CA-952) |
 | A-58-2 | Plan loop reject→re-entry same session | Force `changes_requested` (ask plan to include benchmark) → `flow_control_hub_done_continue_on_review_verdict`, writer re-enters **same** child; context/freeze stay DONE | `TestCP61HubDone/plan_synthesis_changes_requested_continues` | ☑ run-94: reviewer `changes_requested` → `plan_writer` re-entered on same child run-235 (rounds 2–4), `context`/freeze untouched |
 | A-58-3 | Code loop isolated from plan loop | Force code reject → implement re-entry; `plan_*` + freeze remain DONE | unit matrix | ☑ unit `TestE2EReviewLoopMultiRoundChangesThenApprovedCompletes` (synthesis continue → coder re-entry, loop completes on round-2 approve) + `TestCP61HubDone` cohort matrix — green |
-| A-58-4 | Round cap 3 → escalate | Force 3 rejects → `blocked`/escalate card, no 4th round (was never forced live) | `agent_orchestrator_test.go` cap | ☑ unit `TestAgentOrchestratorRoundCapTerminates` green; live leg deferred (needs 3 real rejects) |
+| A-58-4 | Round cap 3 → escalate | Force 3 rejects → `blocked`/escalate card, no 4th round (was never forced live) | `agent_orchestrator_test.go` cap | ☑ unit `TestAgentOrchestratorRoundCapTerminates` green; **R17 ☑ LIVE `run-63271`: organic reviewer rejects ×3 → `tournament_escalated` at cap=3** |
 | A-58-5 | cp-harness slice-only | `/flow cp-harness` → `cp_plan_writer→cp_reviewer→cp_synthesis→task_splitter→audit→done`; exactly N Task files, additive, no implement nodes | `bug356_slice_audit_test.go` | ☑ unit `TestBug356_*` (slice-only diff → audit passes via slice-outputs verification; no validate node required) — green |
 | A-58-6 | cp-harness-smoke (clone) | Clone → run: continues through implement chain; `acceptance_nodes` preserved | — | ⚠ ENV-BLOCKED + fail-closed verified (2026-09-29 assessment): **no local clone surface exists** — `CloneBuiltin` requires a `FlowDefinitionStore` and `FlowDefinitionStoreFor` returns nil without Supabase service-role config; on the fake-catalog bed clones simply cannot be created. Embedded `cp-harness-smoke` resolves+executes through the pack fallback (vibe-ingest chain proven live 2026-09-29: `run-313` flow → children dispatched/settled). Unresolvable clone refs fail closed `invalid_flow_ref` (verified live in CP-89 drills); legacy stored fixtures also fail closed. The clone→run leg needs a Supabase-backed bed — same class as B-59/BUG-500 env blocks. |
 | A-58-7 | Regression canary | `rag-harness` + `review-loop` behave as pre-CP-58 | F3 test cmds §F | ☑ post-rebase flows live-verified: run-6893 task-harness full chain DONE→audit, run-37268 vibe-ingest, run-81618 task-harness full chain DONE→audit (grok), run-86157 task-harness full chain incl. amend→v2→resume→audit DONE (grok), run-71117 context.produce + ranked history correct — no canary regression observed; run-100134 cp-harness full chain (contract→context→cp_plan_writer→cp_reviewer approve→synthesis→task_splitter Q-1 surface→audit) on b469 — no canary regression observed; dedicated rag-harness/review-loop re-runs IMPOSSIBLE BY DESIGN — both carry `selectableIn: []` (clone-only templates, hidden from /flow picker); live launch attempt run-116450 rejected `invalid_flow_ref` fail-closed as intended. Canary coverage via post-rebase harness chains stands |
@@ -424,7 +424,7 @@ marked `UI` — backend evidence still required where noted.
 | A-65-1 | Standalone 2-provider cohort | devin + opencode candidates → isolated worktrees → arbiter → winner merges clean via `ApplyPatch` (never reached arbiter live before) | `tournament_*` suites | ☑ run-25153: grok+devin cohort, 3 rounds of isolated worktrees, human card pick `candidate-a` → merge DONE, patch landed (`strutil.go` GB3-5 fix + `strutil_crlf_test.go` + CA-004), `go test`/`go vet` green. run-20041: auto-pick topology live but empty winner exposed BUG-459 (fixed CA-956); run-21364 exposed BUG-460 worktree autoindex pollution (fixed CA-957); run-23455 verified empty-winner escalate |
 | A-65-2 | Cap→auto-escalate | review cap → `tournament_escalation` child runs to completion (resumable, BUG-412); dedup — no `-2/-3` dup children (BUG-413/446) | `bug446_453_*`, cluster-h | ☑ unit `bug446_453_tournament_test.go` (dedup + escalation child) green; live adjacent: run-25153 arbiter retry×2 bounded → escalate card → merge DONE (cap→escalate leg proven on real provider turns) |
 | A-65-3 | Tie → decision card | card `[]any` payload; choice routes: candidate→merge / retry→fresh cohort / ask→park (BUG-414) | `TestTournamentTie*` | ☑ run-25153: round-3 tie 1.0000 → escalate card parked `WAITING_USER_APPROVAL` → `continue` feedback `candidate-a` captured via `captureDecisionChoice` → `resumeTournamentChoice` routed to `merge_and_audit` → stored snapshot patch applied, DONE. run-19067: same card path → `candidate-b` choice → escalate "no mergeable diff" (BUG-453 path live) |
-| A-65-4 | Retry ≤2 → parent resume | back-edge bounded; parent resumes after tournament | `TestTournamentEscalation*`, `TestResumeParentAfterTournament` | ☑ run-25153: arbiter `retry` ×2 (tie 1.0000 each) → `parallel_rollout` back-edge re-spawned fresh cohorts with distilled failure brief in prompts (`Tournament attempt N failed: tie …` observed verbatim in round-2/3 candidate prompts) → bounded by `max_attempts` → round-3 escalate card → post-card `merge_and_audit` DONE = flow settled terminal. Parent-resume leg still unproven (standalone run, no parent) |
+| A-65-4 | Retry ≤2 → parent resume | back-edge bounded; parent resumes after tournament | `TestTournamentEscalation*`, `TestResumeParentAfterTournament` | ☑ run-25153: arbiter `retry` ×2 (tie 1.0000 each) → `parallel_rollout` back-edge re-spawned fresh cohorts with distilled failure brief in prompts (`Tournament attempt N failed: tie …` observed verbatim in round-2/3 candidate prompts) → bounded by `max_attempts` → round-3 escalate card → post-card `merge_and_audit` DONE = flow settled terminal. **R17 ☑ LIVE `run-63271`: `tournament_resumed` fired on parent (`resumeParentAfterTournament`) — full chain proven** |
 | A-65-5 | `.flowpilot` exclusion | candidate diff/patch excludes runner metadata dir (manager.go union — verify post-rebase) | worktree tests | ☑ run-25153: merged winner patch = `strutil.go`+`strutil_crlf_test.go`+`CA-004.md` only; candidate worktree `.flowpilot/contracts`/`canonical-pending` writes excluded by `:(exclude).flowpilot` pathspec (manager.go:258/270). AGENTS/CLAUDE autoindex stamps additionally blocked by BUG-460 guard |
 
 ### A-7 CP-41 — RAG harness flow mode
@@ -1180,3 +1180,40 @@ unreachable through the current seams (documented why) or environment-blocked
     fixture coverage is correct for a path real providers trigger
     nondeterministically; a controlled injection seam is the honest way to get
     a live leg later. Document fixture-only as the intended state.
+
+### R.3 Verdicts (2026-09-29, user-approved)
+
+| # | Verdict | Record |
+|---|---------|--------|
+| 1 | **Resolved** — `tournamentMergeDecisionCard` (BUG-478/CA-979) already ships exactly this design: options = every candidate with a non-empty patch + `retry`/`discard`/`ask` + operator-paste-diff via `extractOperatorPatch`; live-verified run-478live, run-1269 | closed |
+| 2 | **Approved — queued** | pending implementation |
+| 3 | **Pending product decision** — options: (a) `spawn_agent` resolves flow IDs through the flow engine (breaks `wait=true` semantics, opens system-only flows to agents); (b) document agent-child as lightweight mode; (c) fail closed — reject flow IDs passed as agent names, gated sprint stays engine-only [recommended] | pending decision |
+| 4 | **Resolved** — CA-1055 made every read surface pending-aware; remaining `running`/`starting` → `cancelled` collapse is the intended fail-closed rule for rows with no durable intent | closed |
+| 5 | **Approved — queued** | pending implementation |
+| 6 | **Documented direction** — escape hatch is sufficient baseline; no code without product sign-off | closed |
+| 7 | **Approved — queued** | pending implementation |
+| 8 | **Resolved** — CA-1057 (`46d1f397`): all three `quota_route_*` types now persist to the flow-events sidecar; `quota_route_sidecar_test.go` pins replay | closed |
+| 9 | **Resolved** — CA-1058 (`635c6c4f`): `clearClosedLegPendingLocked`/`…Session` clear armed residue at every leg-close site (`waiting_*` → `cancelled`, gens kept as high-water); `needSessionWithIntent`, `rehydratePendingGatesLocked`, and the three projection paths all gate on `legState == closed` — a closed-but-armed row can no longer resurrect or render actionable | closed |
+| 10 | **Intended** — fixture coverage is the contract for soft-threshold quota | closed |
+| 11 | **Intended** — fixture-only is the contract for nondeterministic provider telemetry | closed |
+
+#### Anomaly verdicts (2026-09-29)
+
+- **`pending_resume_delivered_gen` cleared with the intent — INTENTIONAL.**
+  `clearIntentFieldsLocked` zeroes delivered/accepted markers while keeping the
+  `gen` high-water so a re-armed intent mints a fresh idempotency key
+  (`durable-<run>-<kind>-<gen>`); the audit trail lives in the turn log, not in
+  retained markers.
+- **SIGTERM needs a second signal on a busy runner — BY DESIGN.** The first
+  TERM prints the in-flight inventory and arms a short confirm window; a second
+  TERM force-drains (F-6 warn-then-force contract). Not a hang.
+
+#### Change-audit trail for this campaign
+
+- CA-1054 `436f1ff1` — BUG-498 live drills + runbook closure.
+- CA-1055 `d9054820` — pending-intent rows read non-terminal on all read
+  surfaces (`listAgentRunSummaries`, step projection).
+- CA-1056 `017ea2c0` — engine re-init reports "already current" instead of
+  misleading `skipped` counts (runner step detail, TUI, desktop summary).
+- CA-1057 `46d1f397` — quota route decisions persist to the flow sidecar.
+- CA-1058 `635c6c4f` — closed-leg armed-residue clearing + read guards.
