@@ -1179,11 +1179,18 @@ func (s *localFileSessionStore) flowEventsPath(runID string) (string, error) {
 // approve/deny/expired resolution is tracked separately via
 // ProviderApprovalState (UpsertApproval) and merged onto this replayed event
 // in reconstructRun.
+//
+// The quota route family (committed/stopped/blocked) is included for the same
+// reason: they are runner-emitted routing decisions with no provider
+// representation — without the sidecar a post-restart replay loses the
+// repin/stop/no-candidate evidence even though session rows still carry the
+// resulting binding (R2-§8).
 func isFlowSidecarEventType(t ProviderEventType) bool {
 	switch t {
 	case EventFlowContextPackage, EventFlowValidationResult,
 		EventFlowValidationRetry, EventFlowAuditDraft,
-		EventUserQuestionRequired, EventPermissionRequired:
+		EventUserQuestionRequired, EventPermissionRequired,
+		EventQuotaRouteCommitted, EventQuotaRouteStopped, EventQuotaRouteBlocked:
 		return true
 	}
 	return false
