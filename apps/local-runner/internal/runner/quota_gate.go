@@ -703,6 +703,7 @@ func (s *InteractiveService) ResumeQuotaGate(ctx context.Context, runID, decisio
 			if cur.legState == LegStateActive {
 				cur.legState = LegStateClosed
 				cur.legClosedReason = LegClosedReasonProviderSwitch
+				clearClosedLegPendingLocked(cur)
 				stopSnap = sessionStateOf(cur)
 				haveStopSnap = true
 			}

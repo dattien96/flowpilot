@@ -519,6 +519,7 @@ func (s *InteractiveService) closeLegsBoundToWorktree(dir string) {
 		if c.legState == LegStateActive && c.workspaceCwd == dir {
 			c.legState = LegStateClosed
 			c.legClosedReason = LegClosedReasonWorktreeSwept
+			clearClosedLegPendingLocked(c)
 			swept = append(swept, c)
 		}
 	}
@@ -552,6 +553,7 @@ func (s *InteractiveService) closeLegsBoundToWorktree(dir string) {
 		}
 		sess.LegState = LegStateClosed
 		sess.LegClosedReason = LegClosedReasonWorktreeSwept
+		clearClosedLegPendingSession(&sess)
 		if err := s.persistProviderSession(sess); err != nil {
 			log.Printf("[tournament] persist swept durable leg %q: %v", sess.RunID, err)
 		}

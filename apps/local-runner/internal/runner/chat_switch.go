@@ -124,6 +124,7 @@ func (s *InteractiveService) healChatLegsLocked(chatID string) {
 		// the source, append the missing record.
 		oldLeg.legState = LegStateClosed
 		oldLeg.legClosedReason = LegClosedReasonProviderSwitch
+		clearClosedLegPendingLocked(oldLeg)
 		s.appendChatSwitchRecordOnce(chatID, oldLeg, newLeg)
 	case newLeg != nil && closedSrc != nil && closedSrc.id == newLeg.switchFromRunID:
 		// Closed-no-record window (review C-3): phase C's record write was
@@ -421,6 +422,7 @@ func (s *InteractiveService) switchChatLeg(ctx context.Context, chatID string, r
 					nl.agentStatus = string(RunStatusFailed)
 					nl.legState = LegStateClosed
 					nl.legClosedReason = LegClosedReasonDispatchFailed
+					clearClosedLegPendingLocked(nl)
 				}
 				src.switchFromRunID = ""
 				delete(s.chatSwitchInFlight, chatID)
@@ -458,6 +460,10 @@ func (s *InteractiveService) switchChatLeg(ctx context.Context, chatID string, r
 	if allowSameProvider {
 		src.legClosedReason = LegClosedReasonContextReset
 	}
+	// A closed leg can never flush armed intents or answer a parked card —
+	// drop the transient pending state so the durable row stops reading
+	// actionable (live run-945 residue).
+	clearClosedLegPendingLocked(src)
 	s.persistSwitchLegCloseLocked(src)
 	if newLeg != nil {
 		s.appendChatSwitchRecord(chatID, src, newLeg, env.Stats)

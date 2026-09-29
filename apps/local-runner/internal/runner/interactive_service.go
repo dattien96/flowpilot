@@ -3517,6 +3517,7 @@ func (s *InteractiveService) handleChildStartTurnFailure(childRunID, parentRunID
 			child.legState = LegStateClosed
 			child.legClosedReason = LegClosedReasonDispatchFailed
 		}
+		clearClosedLegPendingLocked(child)
 		failedSnap = sessionStateOf(child)
 		// run-43831: stamp hub progress under s.mu before unlock / cohort join /
 		// async reinvoke so pre-adapter start failures do not leave a stale
@@ -5430,6 +5431,11 @@ func (s *InteractiveService) rehydratePendingGatesLocked(runID string) {
 	}
 	rs := s.runs[runID]
 	if rs == nil {
+		return
+	}
+	// A closed leg can never serve a decision — its pending cards are dead
+	// residue that must not rehydrate as actionable.
+	if rs.legState == LegStateClosed {
 		return
 	}
 	// Truly terminal outcomes never rehydrate.

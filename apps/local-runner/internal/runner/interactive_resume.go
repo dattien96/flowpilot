@@ -516,6 +516,18 @@ func resumedFlowRunIncomplete(st ProviderSessionState) bool {
 }
 
 func resumedChildRunStepStatus(st ProviderSessionState) RuntimeWorkflowStepStatus {
+	// A closed leg never re-drives: armed intents are dead residue, so project
+	// the closure directly (same rule as normalizeResumedFlowStatus).
+	if st.LegState == LegStateClosed {
+		switch normalizeResumedStatus(st.Status) {
+		case RunStatusCompleted:
+			return StepStatusDone
+		case RunStatusFailed:
+			return StepStatusFailed
+		default:
+			return StepStatusCanceled
+		}
+	}
 	// A durable resume/reprompt intent means the child is armed to re-drive —
 	// the step stays pending rather than reading canceled (same pending-aware
 	// rule as normalizeResumedFlowStatus / agentStatusFromSession).
@@ -859,12 +871,29 @@ func normalizeResumedStatus(status RunStatus) RunStatus {
 	}
 }
 
+// closedLegResumedStatus projects a closed leg's run status: waiting-* cards
+// and armed intents are dead residue — the leg can never serve a decision or
+// flush an intent — so non-terminal statuses collapse to cancelled, the same
+// "in-flight on a dead owner" rule normalizeResumedStatus applies to
+// running/starting.
+func closedLegResumedStatus(status RunStatus) RunStatus {
+	switch n := normalizeResumedStatus(status); n {
+	case RunStatusWaitingApproval, RunStatusWaitingQuestion, RunStatusWaitingUserApr:
+		return RunStatusCancelled
+	default:
+		return n
+	}
+}
+
 // agentStatusFromSession projects a persisted child row's AgentStatus for the
 // listAgentRunSummaries disk fallback. normalizeResumedStatus cancels in-flight
 // values (correct for crash residue), but a durable resume/reprompt intent
 // means the child is armed to re-drive — keep the persisted value so the badge
 // agrees with the pending-aware Status projection on the same row.
 func agentStatusFromSession(st ProviderSessionState) RunStatus {
+	if st.LegState == LegStateClosed {
+		return closedLegResumedStatus(RunStatus(st.AgentStatus))
+	}
 	if strings.TrimSpace(st.PendingResumePrompt) != "" ||
 		strings.TrimSpace(st.PendingGateRepromptPrompt) != "" {
 		if st.AgentStatus == "" {
@@ -901,6 +930,12 @@ func normalizeResumedFlowStatus(st ProviderSessionState) RunStatus {
 			return st.Status
 		}
 		return RunStatus("blocked")
+	}
+	// A closed leg never re-drives: armed intents and waiting-* cards are dead
+	// residue (live run-945 kept waiting_user_approval + pending_resume_* after
+	// the switch), so the row projects terminal — not running/waiting.
+	if st.LegState == LegStateClosed {
+		return closedLegResumedStatus(st.Status)
 	}
 	// V10 P0: gate-pending child must stay Running so resume re-evaluates gate
 	// instead of normalizing to cancelled.
@@ -1985,6 +2020,69 @@ func clearIntentFieldsLocked(rs *interactiveRun, kind string) {
 	}
 }
 
+// clearClosedLegPendingLocked drops the durable "armed" state a closed leg can
+// never flush — continuation intents, a parked flow-gate settle, the buffered
+// turn prompt, and live card handles — and collapses a waiting-* status to
+// cancelled (the card died with the leg). Gen high-water marks stay for
+// idempotency; legState/legClosedReason keep the closure audit. Without this a
+// closed row keeps reading actionable (live run-945: provider-switched leg
+// kept waiting_user_approval + pending_resume_*), and read paths that never
+// consulted legState resurrected it on parent resume. Caller holds s.mu.
+// Keep field-for-field in sync with clearClosedLegPendingSession.
+func clearClosedLegPendingLocked(rs *interactiveRun) {
+	if rs == nil {
+		return
+	}
+	clearIntentFieldsLocked(rs, "resume")
+	clearIntentFieldsLocked(rs, "reprompt")
+	rs.pendingFlowGateSettle = false
+	rs.pendingFlowGateFinalMsg = ""
+	rs.pendingFlowGateOccurredAt = ""
+	rs.pendingFlowGateTurnID = ""
+	rs.pendingGateChangedFiles = nil
+	rs.pendingTurnPrompt = ""
+	switch rs.status {
+	case RunStatusWaitingApproval, RunStatusWaitingQuestion, RunStatusWaitingUserApr:
+		rs.status = RunStatusCancelled
+		rs.agentStatus = string(RunStatusCancelled)
+	}
+	rs.pendingApprovalID = ""
+	rs.pendingQuestionID = ""
+}
+
+// clearClosedLegPendingSession is the ProviderSessionState twin of
+// clearClosedLegPendingLocked for the non-resident durable-row sweep — a dead
+// run's row never lands in s.runs, so the in-memory helper cannot reach it.
+func clearClosedLegPendingSession(st *ProviderSessionState) {
+	if st == nil {
+		return
+	}
+	st.PendingResumePrompt = ""
+	st.PendingResumeStepID = ""
+	st.PendingResumeDeliveredGen = 0
+	st.PendingResumeAcceptedTurn = ""
+	st.PendingResumeFailCount = 0
+	st.PendingResumeFailGen = 0
+	st.PendingResumeApprovalID = ""
+	st.PendingResumeDecision = ""
+	st.PendingGateRepromptPrompt = ""
+	st.PendingGateRepromptStepID = ""
+	st.PendingGateRepromptDeliveredGen = 0
+	st.PendingGateRepromptAcceptedTurn = ""
+	st.PendingGateRepromptFailCount = 0
+	st.PendingGateRepromptFailGen = 0
+	st.PendingFlowGateSettle = false
+	st.PendingFlowGateFinalMsg = ""
+	st.PendingFlowGateOccurredAt = ""
+	st.PendingFlowGateTurnID = ""
+	st.PendingGateChangedFiles = nil
+	switch st.Status {
+	case RunStatusWaitingApproval, RunStatusWaitingQuestion, RunStatusWaitingUserApr:
+		st.Status = RunStatusCancelled
+		st.AgentStatus = string(RunStatusCancelled)
+	}
+}
+
 // claimDurableIntentLocked atomically leases a durable intent generation before
 // startTurn so duplicate flush/retry cannot create two turns. Stale leases
 // (older than durableIntentLease) are reclaimable after crash-equivalent hang.
@@ -2478,6 +2576,12 @@ func (s *InteractiveService) reconstructPendingChildSessions(parentRunID string)
 
 	// Also recover durable continuation intents (approval resume / gate reprompt).
 	needSessionWithIntent := func(session ProviderSessionState) bool {
+		// A closed leg is dead: its armed intents and pending cards can never
+		// be flushed or answered on it — loading only resurrects residue (the
+		// leg_closed guard at startTurn would refuse the dispatch anyway).
+		if session.LegState == LegStateClosed {
+			return false
+		}
 		if needSession(session) {
 			return true
 		}
