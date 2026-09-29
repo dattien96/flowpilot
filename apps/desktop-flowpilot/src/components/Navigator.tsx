@@ -112,7 +112,26 @@ export function Navigator(): React.ReactElement {
   const [newlyCompleted, setNewlyCompleted] = useState<Set<string>>(new Set());
   const [recentProjectIds, setRecentProjectIds] = useState<string[]>([]);
   const [expandedHistoryIds, setExpandedHistoryIds] = useState<Set<string>>(new Set());
+  // Default: collapse every project group except the selected one ("open the
+  // current only"). Manual toggles are respected after first paint.
   const [collapsedProjectIds, setCollapsedProjectIds] = useState<Set<string>>(new Set());
+  const collapseInitialized = useRef(false);
+  useEffect(() => {
+    if (collapseInitialized.current || projects.length === 0) return;
+    collapseInitialized.current = true;
+    setCollapsedProjectIds(new Set(projects.filter((p) => p.id !== selectedProjectId).map((p) => p.id)));
+  }, [projects, selectedProjectId]);
+  // The current project must always be expanded — switching via group name,
+  // peek-row click, or programmatic select re-opens it.
+  useEffect(() => {
+    if (!selectedProjectId) return;
+    setCollapsedProjectIds((current) => {
+      if (!current.has(selectedProjectId)) return current;
+      const next = new Set(current);
+      next.delete(selectedProjectId);
+      return next;
+    });
+  }, [selectedProjectId]);
   // Per-project collapse state for the History sub-section inside a group body.
   const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set());
   const [selectionModeProjectId, setSelectionModeProjectId] = useState<string | null>(null);
