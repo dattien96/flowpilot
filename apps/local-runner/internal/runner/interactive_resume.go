@@ -515,8 +515,15 @@ func resumedFlowRunIncomplete(st ProviderSessionState) bool {
 	return true
 }
 
-func resumedChildRunStepStatus(status RunStatus) RuntimeWorkflowStepStatus {
-	switch normalizeResumedStatus(status) {
+func resumedChildRunStepStatus(st ProviderSessionState) RuntimeWorkflowStepStatus {
+	// A durable resume/reprompt intent means the child is armed to re-drive —
+	// the step stays pending rather than reading canceled (same pending-aware
+	// rule as normalizeResumedFlowStatus / agentStatusFromSession).
+	if strings.TrimSpace(st.PendingResumePrompt) != "" ||
+		strings.TrimSpace(st.PendingGateRepromptPrompt) != "" {
+		return StepStatusPending
+	}
+	switch normalizeResumedStatus(st.Status) {
 	case RunStatusCompleted:
 		return StepStatusDone
 	case RunStatusFailed:
@@ -777,7 +784,7 @@ func (s *InteractiveService) resumedFlowStepRows(rs *interactiveRun, st Provider
 				if row == nil {
 					continue
 				}
-				switch resumedChildRunStepStatus(session.Status) {
+				switch resumedChildRunStepStatus(session) {
 				case StepStatusDone:
 					row.Status = StepStatusDone
 				case StepStatusFailed:
@@ -850,6 +857,22 @@ func normalizeResumedStatus(status RunStatus) RunStatus {
 	default:
 		return status
 	}
+}
+
+// agentStatusFromSession projects a persisted child row's AgentStatus for the
+// listAgentRunSummaries disk fallback. normalizeResumedStatus cancels in-flight
+// values (correct for crash residue), but a durable resume/reprompt intent
+// means the child is armed to re-drive — keep the persisted value so the badge
+// agrees with the pending-aware Status projection on the same row.
+func agentStatusFromSession(st ProviderSessionState) RunStatus {
+	if strings.TrimSpace(st.PendingResumePrompt) != "" ||
+		strings.TrimSpace(st.PendingGateRepromptPrompt) != "" {
+		if st.AgentStatus == "" {
+			return RunStatusRunning
+		}
+		return RunStatus(st.AgentStatus)
+	}
+	return normalizeResumedStatus(RunStatus(st.AgentStatus))
 }
 
 func normalizeResumedFlowStatus(st ProviderSessionState) RunStatus {

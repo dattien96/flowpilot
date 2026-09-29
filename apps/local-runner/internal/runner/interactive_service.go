@@ -8395,13 +8395,18 @@ func (s *InteractiveService) listAgentRunSummaries(parentRunID string) ([]AgentR
 					// flow node by id -- falling back to AgentName/Role risks an
 					// ambiguous match when two nodes share the same agent (e.g. two
 					// reviewer nodes in one flow).
-					Label:       session.Label,
-					Role:        session.Role,
-					Status:      normalizeResumedStatus(session.Status),
+					Label: session.Label,
+					Role:  session.Role,
+					// 2026-09-29 live anomaly: pending_resume/pending_gate_reprompt
+					// intents keep the run non-terminal on reconstruct
+					// (normalizeResumedFlowStatus), so the read surface must use the
+					// same pending-aware projection — otherwise a parked successor
+					// reads "cancelled" here while armed to re-drive.
+					Status:      normalizeResumedFlowStatus(session),
 					ParentRunID: session.ParentRunID,
 					CreatedAt:   session.StartedAt,
 					DependsOn:   append([]string(nil), session.DependsOn...),
-					AgentStatus: string(normalizeResumedStatus(RunStatus(session.AgentStatus))),
+					AgentStatus: string(agentStatusFromSession(session)),
 					ProviderKey: string(session.ProviderKey),
 					ModelName:   session.ModelName,
 				})
