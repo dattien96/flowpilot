@@ -375,7 +375,7 @@ marked `UI` — backend evidence still required where noted.
 | A-58-3 | Code loop isolated from plan loop | Force code reject → implement re-entry; `plan_*` + freeze remain DONE | unit matrix | ☑ unit `TestE2EReviewLoopMultiRoundChangesThenApprovedCompletes` (synthesis continue → coder re-entry, loop completes on round-2 approve) + `TestCP61HubDone` cohort matrix — green |
 | A-58-4 | Round cap 3 → escalate | Force 3 rejects → `blocked`/escalate card, no 4th round (was never forced live) | `agent_orchestrator_test.go` cap | ☑ unit `TestAgentOrchestratorRoundCapTerminates` green; live leg deferred (needs 3 real rejects) |
 | A-58-5 | cp-harness slice-only | `/flow cp-harness` → `cp_plan_writer→cp_reviewer→cp_synthesis→task_splitter→audit→done`; exactly N Task files, additive, no implement nodes | `bug356_slice_audit_test.go` | ☑ unit `TestBug356_*` (slice-only diff → audit passes via slice-outputs verification; no validate node required) — green |
-| A-58-6 | cp-harness-smoke (clone) | Clone → run: continues through implement chain; `acceptance_nodes` preserved | — | ◑ start attempt live: stored clone workflow refused `flow is not startable` (fail-closed, no corrupt execution). Legacy stored fixtures (`rag-harness (history-only test)`, `Review Loop (clone)`) also fail closed on stale definitions — unknown context source / bad entry node — validation works, no silent run. Fresh pack flows unaffected (run-81618/86157 task-harness full chain DONE). |
+| A-58-6 | cp-harness-smoke (clone) | Clone → run: continues through implement chain; `acceptance_nodes` preserved | — | ⚠ ENV-BLOCKED + fail-closed verified (2026-09-29 assessment): **no local clone surface exists** — `CloneBuiltin` requires a `FlowDefinitionStore` and `FlowDefinitionStoreFor` returns nil without Supabase service-role config; on the fake-catalog bed clones simply cannot be created. Embedded `cp-harness-smoke` resolves+executes through the pack fallback (vibe-ingest chain proven live 2026-09-29: `run-313` flow → children dispatched/settled). Unresolvable clone refs fail closed `invalid_flow_ref` (verified live in CP-89 drills); legacy stored fixtures also fail closed. The clone→run leg needs a Supabase-backed bed — same class as B-59/BUG-500 env blocks. |
 | A-58-7 | Regression canary | `rag-harness` + `review-loop` behave as pre-CP-58 | F3 test cmds §F | ☑ post-rebase flows live-verified: run-6893 task-harness full chain DONE→audit, run-37268 vibe-ingest, run-81618 task-harness full chain DONE→audit (grok), run-86157 task-harness full chain incl. amend→v2→resume→audit DONE (grok), run-71117 context.produce + ranked history correct — no canary regression observed; run-100134 cp-harness full chain (contract→context→cp_plan_writer→cp_reviewer approve→synthesis→task_splitter Q-1 surface→audit) on b469 — no canary regression observed; dedicated rag-harness/review-loop re-runs IMPOSSIBLE BY DESIGN — both carry `selectableIn: []` (clone-only templates, hidden from /flow picker); live launch attempt run-116450 rejected `invalid_flow_ref` fail-closed as intended. Canary coverage via post-rebase harness chains stands |
 
 ### A-2 CP-61 — done-verdict gate (machine PASS, not self-grade)
@@ -567,21 +567,21 @@ does not prove the live path.
 | BUG-483 | Drive index download failure preservation (CA-976) | Drive read fault → index untouched | ☐ BLOCKED (env): same — no Drive-connected project on this bed. |
 | BUG-477 | durable knowledge-update ledger (CA-978) | audit update → kill -9 → restart → replay | ☑ LIVE 2026-09-25: seeded `pending-updates.json` (2 intents) → `POST /client/workflow-runs` → replay consumed intents → `intents:[]` (commit after write). Corrupt ledger → `[knowledge]` full rebuild → all 3 `knowledge/*.md` rewritten + ledger removed (fail-closed to rebuild, not silent-fresh). |
 | BUG-478 | merge card alternates + discard (CA-979) | tournament empty winner → card + discard | ☑ VERIFIED 2026-09-25 live `run-478live` (build b486): seeded durable tournament merge card (`decision_card` kind=tournament, alternates candidate-a/b + retry/discard/ask, `tournament_patches` both non-empty, empty winner) + real git worktrees `candidate-candidate-{a,b}` → resume restored card → generic Continue `feedback:"discard"` → `captureDecisionChoice` → `resumeTournamentChoice` → `discardTournamentMerge`: both worktrees swept (`git worktree list` empty), `tournament_patches`/`decision_card` cleared in record, run `completed` (no fake merge). Card-render options-from-non-empty-patches arm remains unit-covered (`bug478` tests). |
-| BUG-479 | mux unseen-lane → history insert (CA-980) | SSE consumer observes upsert for unseen run | ◐ LIVE-PARTIAL 2026-09-25: real `/client/events/stream` wire verified — snapshot (5 runs) then 26 `upsert` frames for `run-130763`/`run-129348` **absent from snapshot** = the exact unseen-lane input. Client-side lane insertion is unit-covered (`muxUpsertBug479.test.ts`). |
+| BUG-479 | mux unseen-lane → history insert (CA-980) | SSE consumer observes upsert for unseen run | ☑ LIVE 2026-09-29 (runner :4317, ws /tmp/fp-live): full chain on the real wire — live `/client/events/stream` → compiled `HttpWsRunnerClient.streamRunUpdates` parser (tsx) → real consumer loop → store. Fresh `run-187` upsert frame arrived for a run **absent from the snapshot** → lane inserted into state with correct projection. Earlier 2026-09-25 leg: 26 `upsert` frames for unseen `run-130763`/`run-129348`. Client insertion also unit-covered (`muxUpsertBug479.test.ts`). |
 | BUG-480 | vibeResumeConfirm via gate-decision (CA-981) | vibe park → generic Continue → gate consumed | ☑ VERIFIED 2026-09-25 live `run-480live2` (build b486, ws480 fixture: SS+CP-481, no Task/tdd-signatures → real `maybeParkVibeCpJoinResume` arm). (a) Resume parked `blocked`/`paused` gateReason=`Resume confirmation (cp_writer → task_slicer)`; (b) ambiguous-prose Continue → **409 `pending_gate_decision`**, park stayed mounted (pre-fix unblocked loop while gate mounted); (c) generic Continue → routed `SubmitGateDecision(ok)` → confirm consumed → `forceStartVibeTaskSlicer` spawned `run-195144` (grok doc-writer) → loop running. Both fix arms live-proven. |
-| BUG-482 | malformed SSE frame → resync (CA-982) | corrupted frame on live mux stream | ◐ CLIENT-SIDE: wire verified live (well-formed `snapshot`/`upsert`/`remove`/`resync` frames observed on real stream); malformed-authoritative-frame → stream-fail is parser-side, unit-covered (`streamRunUpdatesBug482.test.ts`). Server never emits malformed frames — no live injection seam. |
+| BUG-482 | malformed SSE frame → resync (CA-982) | corrupted frame on live mux stream | ☑ LIVE 2026-09-29 (runner :4317, ws /tmp/fp-live): MITM proxy in front of the real `/client/events/stream` injected a malformed `data:` frame mid-stream → real `streamRunUpdates` parser threw typed `stream_protocol_error` ("malformed SSE data frame") → consumer loop dropped the stream and reconnected → fresh snapshot healed state (no silent stale lanes). Server-side frames remain well-formed; the injection seam is client-side MITM, which is where corrupt data can actually appear (proxy/LB mangling). |
 | BUG-487 | transcript/scaffold loaders 4MB scanner cap (CA-986) | >4MB NDJSON line + valid line after it | ☑ LIVE 2026-09-25 (build b487): appended 5MB line + sentinel `{"seq":900002,...,"BUG487-LIVE-SENTINEL"}` to real `.flowpilot/scaffold-progress.ndjson` → `GET /client/projects/{id}/scaffold/progress` returned both events (`n:2`, `phase:"drill"` — post-fat line read). Pre-fix: scanner cap dropped both silently. Claude/Codex/Grok transcript loaders same helper — unit-covered per provider. |
 | BUG-488 | reattach legSeq on unreadable store (CA-987) | sessions.ndjson → directory → create chat run | ☑ LIVE 2026-09-25 (build b487): fault-boot → `POST /client/workflow-runs` `chatId=cht_6ad8feede479` → **502 `chat_identity_unprovable`** ("persisted leg scan failed"). Pre-fix: silent duplicate legSeq. |
-| BUG-489 | closed-leg persist failure → dual-active (CA-988) | write fault at switch | ◐ LIVE-PARTIAL 2026-09-25: healthy boot → chat leg `run-215483` → sessions.ndjson→dir → `POST /chats/cht_bug489drill/switch-provider` → **502 `workflow_state_unavailable`** (Phase-A intent persist fails closed — no new leg created). Phase-C closed-leg retry+degraded arm needs a mid-handler write fault (impossible externally) — unit-covered (`bug489_leg_close_persist_test.go`). |
+| BUG-489 | closed-leg persist failure → dual-active (CA-988) | write fault at switch | ◐ LIVE-PARTIAL 2026-09-25: healthy boot → chat leg `run-215483` → sessions.ndjson→dir → `POST /chats/cht_bug489drill/switch-provider` → **502 `workflow_state_unavailable`** (Phase-A intent persist fails closed — no new leg created). Phase-C closed-leg retry+degraded arm — 2026-09-29 update (runner :4317): mid-handler write fault IS injectable — `chmod 555 .flowpilot/chats` during a live turn produced `persistProviderSession: durable write failed run_id="run-442" status="running": open ... sessions.ndjson: permission denied` in the runner log; fault surfaced honestly, run consistent post-restore, both turns durable, no corruption. The specific **closed-leg retry composition** is still unreachable via the public surface on a provider-less bed: a resident leg can only close via provider switch (no accounts), and disk-fabricated `leg_state=closed` does not propagate to the authoritative in-memory run — remains unit-covered (`bug489_leg_close_persist_test.go`). |
 | BUG-490 | worktree binding read swallow (CA-989) | same fault → create chat run | ☑ LIVE 2026-09-25 (build b487): `POST /client/workflow-runs` new chat → **502 `worktree_binding_unprovable`** (leg scan failed → no second worktree provisioned). |
 | BUG-491 | session enumeration swallows (CA-990) | fault → resume / agents list | ☑ LIVE 2026-09-25 (build b487): `POST /workflow-runs/run-480live2/resume` → **502 `workflow_state_unavailable`**; `GET /workflow-runs/run-130763/agents` → **502 `session_index_unavailable`** ("session index unreadable"). Boot under fault logged `seedIDCounter: session index unreadable` (loud, not silent). |
 | BUG-492 | Drive restore reader errors (CA-991) | collision probe / local-ahead fault | ☐ BLOCKED (env): no Drive-connected project (`google_drive_not_connected`); `sync-chat` on drill leg → 409 `session_unavailable` (placeholder session). Unit-covered (`bug492_restore_reader_errors_test.go`). |
-| BUG-493 | history/timeline partial views (CA-992) | fault → history + agents endpoints | ☑ LIVE 2026-09-25 (build b487): `GET /client/projects/fp-beds-full/workflow-runs` → **502 `run_history_unavailable`**; agents endpoint → 502. Chat/run-timeline 502 arms unreachable live: file store loads once at boot (sticky `sessionsLoadErr`), so a poisoned store never co-occurs with resident legs — unit-covered (`bug493_history_view_swallow_test.go`). |
-| BUG-494 | live stream scanner Err() unchecked (CA-993) | >10MB provider line / read fault | ◐ LIVE-PARTIAL 2026-09-25: `POST /compat/deep` exercised the modified probe paths on real binaries — `codex app-server initialize` → warn (capabilities absent, goroutine path works), `claude stream-json` → fail (`claude -p` exit 1, env auth — pre-existing path). Capture-goroutine >10MB-line arm unit-covered (`bug494_stream_scanner_err_test.go`); all provider stream readers (claude_stream/grok/devin/opencode/codex_appserver) already checked `Err()`. |
+| BUG-493 | history/timeline partial views (CA-992) | fault → history + agents endpoints | ☑ LIVE 2026-09-25 (build b487): `GET /client/projects/fp-beds-full/workflow-runs` → **502 `run_history_unavailable`**; agents endpoint → 502. Chat/run-timeline arms — 2026-09-29 update (runner :4317): transcript-read fault **live-verified** — chat transcript file replaced by a directory → `GET /client/chats/{chatId}/timeline` → **500 `chat_timeline_unavailable`** ("transcript.ndjson: is a directory"), never a partial healthy render. The `chat_legs_unavailable` 502 arm confirmed **unreachable by construction**: `chatRuns` is lazily nil on a fresh process, so a fault-boot with no resident legs returns `404 chat_not_found` before the poisoned session reader is ever consulted — a per-request reader fault would need an injectable seam that doesn't exist. Unit-covered (`bug493_history_view_swallow_test.go`). |
+| BUG-494 | live stream scanner Err() unchecked (CA-993) | >10MB provider line / read fault | ☑ LIVE 2026-09-29 (runner :4317, ws /tmp/fp-live): `FLOWPILOT_CLAUDE_BIN`/`FLOWPILOT_CODEX_BIN` stub binaries emitting a single >8MB line → `POST /compat/deep` → **both** live probes report fail with the real scanner error: `claude stream-json live probe` → `"stdout read error: bufio.Scanner: token too long"`, `codex app-server initialize` → `"initialize read error: bufio.Scanner: token too long"`. Scanner Err surfaces as an honest fail — never a clean pass. Earlier 2026-09-25 leg exercised the same probe paths on real binaries. All provider stream readers check `Err()` (`bug494_stream_scanner_err_test.go`). |
 | BUG-495 | pending-gate sidecar read swallows on resume (CA-994) | fault → resume parked gate run | ☑ LIVE 2026-09-28 (:4322): `questions.ndjson` → directory (stat ok, open fails) → restart → boot `[session-store] load incomplete` + `questionsLoadErr` stored → `POST run-40835/resume` (flow run, activeFlowNodes) → **502 `gate_state_unavailable`** — fail-closed, never past an unverifiable gate; restore+restart → resume 200. Boot-reconstruct tolerates the same fault (logs `resuming without question state`, run normalizes `cancelled` — terminal, still fail-closed direction) |
 | BUG-496 | Drive index merge scans cap 64KB (CA-995) | >64KB index line in remote merge | ☐ BLOCKED (env): no Drive-connected project; same class as BUG-483/476. Unit-covered: real >64KB-line drop reproduced pre-fix in test, `readNDJSONLines` uncapped post-fix. |
 | BUG-497 | contract store load swallows open/scan errors (CA-996) | permission-denied contract file → gate enforcement blind | ☑ LIVE 2026-09-28 (:4322): `GET /client/workflow-runs/run-40835/steps/cp_reader/contract` is a public load surface — baseline `found:false` → `contracts.ndjson`→directory → **500 `contract_store_unavailable`** (error reaches HTTP, not silent empty store) → ~5MiB line + valid tail row → `found:true` tail contract + scope diff (uncapped reader, no silent truncate) |
-| BUG-498 | oracle / TUI SSE unchecked scanner Err (CA-997) | >4MB suite-name line / truncated SSE | ◐ UNIT-ONLY 2026-09-25: oracle parse is invoked by gate hooks during real gate runs (needs a configured suite emitting >4MB name lines — no gate suite on this bed); TUI SSE path is client-side. `bug498_*` tests cover both arms. |
+| BUG-498 | oracle / TUI SSE unchecked scanner Err (CA-997) | >4MB suite-name line / truncated SSE | ◑ SPLIT-VERDICT 2026-09-29: **TUI arm — live-style PASS**: `TestBug498_TUIStreamOverCapLineLogsScanError` (new, `internal/tui/client/bug498_stream_scan_err_test.go`) — real `httptest.Server` SSE stream emits a line >8MB → `scanner.Err()` logged before close, stream does not report clean end. **Oracle arm — proven structurally unreachable**: `TestBug498_OracleScanErrArmUnreachableViaTailCap` (new, `internal/flowgate/bug498_oracle_reachability_test.go`) — gate output is tail-capped (64KB) below the scanner max token, so a >4MB suite-name line can never reach the scanner through the current production path; the `Err()` check is defense-in-depth, correctly in place. |
 | BUG-499 | session/dispatch store memory-commit before durable write (CA-998) | write fault → mutation rejected → memory must stay clean → retry must succeed | ☑ LIVE 2026-09-25 (build b499): fault `dispatch.ndjson`→directory → `POST /client/workflow-runs/run-77530/dispatches/turn-77535/resolve` → **error** (`dispatch_operator_error: is a directory`); GET during fault → **rev 28 / uncertain** — memory unchanged (pre-fix ordering would show rev 29); audit shows seq 182 only — **no phantom seq burned**. Restore → same `expectedRev:28` retry → **200 `terminal_completed`, rev 29, seq 183 on disk** — retryable contract preserved end-to-end (the rejected latch design would have deadlocked the store here). |
 | BUG-500 | Supabase store missing gate readers → structural fail-open (CA-999) | Supabase backend reconstruct → pending gates lost | ☐ BLOCKED (env): Supabase store has no production wiring yet (only tests + opt-in path) — no live Supabase backend on this bed. Mock-HTTP unit tests verify `ListApprovalsByRun`/`ListQuestionsByRun` against real migration schema shape; compile-time assertions pin the reader surface on both stores. Write-side schema drift recorded as tracked residual in BUG-500 doc. |
 | CA-1000 | dispatch operator 502s logged server-side | fault → `POST resolve` → 502 + log line | ☑ LIVE 2026-09-25 (build b500): fault on fp-beds-full `dispatch.ndjson` → resolve → 502 + `[dispatch] operator mutation failed` in runner log; GET → rev 25/uncertain (memory clean); restore → retry → `terminal_failed` settle_pending. |
@@ -931,7 +931,7 @@ fresh tournaments mounted via run-level `flowRef`.
 | BUG-538 durable residue | ☑ LIVE: `run-1651` (`failed`, `leg_state=active` on `candidate-candidate-a`, run never reloadable) was closed `worktree_swept` by a real `spawnTournamentCandidates` sweep — `closeLegsBoundToWorktree` now scans the durable session index, not only `s.runs` |
 | BUG-535 live-claimant park | ☑ LIVE: `run-3240`'s tournament tried `candidate-a` while `run-1663`'s leg `run-2830` still claimed it → spawn refused, loop parked `blocked/escalate` honestly — no sweep of a live claim |
 | BUG-536 binding skip (live again) | ☑ `run-1663` bound devin×2 while grok was ledger-blocked |
-| BUG-538 parked-successor path | ◐ unit-verified end-to-end (park → durable intent → `continue`-path flush → exactly-once dispatch); organic live repro needs a quota-veto→respawn window — grok cleared for the drill but `run-3240` was still park-blocked at drill end |
+| BUG-538 parked-successor path | ☑ LIVE 2026-09-29 (runner :4317, ws /tmp/fp-live, fake codex): **organic arm** — `run-400` (vibe-intake successor of `run-313`) spawned with `blockedStart=false`, first dispatch refused by the re-blocked loop → parked `waiting_user_approval` on durable `pending_resume_gen=1`; `POST /agent-loop/resume` → `resumePendingLoopWork` → `flushDurableTurnIntents` → dispatched `turn-406` **exactly once** → `completed`, no double dispatch, no stranded claim. **Restart arm** — seeded `pending_resume_*` on successor row `run-334` → kill + restart → `resume` reconstruct → intent flushed once (`turn-361`), prompt cleared. (Earlier 2026-09-27 leg: unit-verified end-to-end; quota-veto window was the only missing piece — the spawn-refusal window hit organically via the fast fake-provider dispatch gap.) |
 
 ### R10 residuals
 
@@ -1094,3 +1094,89 @@ Two new defects found and fixed during BUG-544 tournament verification:
 | BUG-495 fault drill | ☑ LIVE (:4322): `questions.ndjson`→directory → restart → boot `load incomplete`/`questionsLoadErr` → `POST run-40835/resume` → **502 `gate_state_unavailable`** — resume aborts rather than promoting a durably waiting gate; restore → resume 200. Boot-reconstruct tolerant path normalizes `cancelled` (terminal, still fail-closed) |
 | BUG-497 fault drill | ☑ LIVE (:4322): `GET …/steps/cp_reader/contract` — baseline `found:false` → `contracts.ndjson`→directory → **500 `contract_store_unavailable`** (load error reaches HTTP) → ~5MiB line + valid tail → `found:true` tail contract + scope diff (uncapped reader) |
 | Remaining fault-leg feasibility | assessed: BUG-479/482 stageable via real-wire client harness + MITM proxy (client-side parsers); BUG-494 via `FLOWPILOT_*_BIN` stub emitting >10MB line; BUG-498 oracle arm via `.flowpilot/settings/test-config.json` stub `test_command` emitting >4MB suite-name lines; BUG-489 Phase-C needs a mid-handler write fault on a shared file — not reliably stageable externally |
+
+## R. 2026-09-29 closure campaign — remaining fault legs + design recommendations
+
+Bed: runner :4317, isolated HOME `/tmp/fp-live/home`, workspace `/tmp/fp-live/ws`,
+fake catalog (`proj-3`), fake codex adapter (`FLOWPILOT_CODEX_APPSERVER` unset),
+stub `FLOWPILOT_CLAUDE_BIN`/`FLOWPILOT_CODEX_BIN` under `/tmp/fp-live/bin`.
+Build `525fdec1+dirty` (post-`30043af1` CP-89).
+
+### R.1 Section-C closure results
+
+| Item | 2026-09-29 result |
+|------|-------------------|
+| BUG-479 | ☑ LIVE — real SSE wire → compiled client parser → real consumer loop: unseen-lane `run-187` upsert inserted into store (row G updated) |
+| BUG-482 | ☑ LIVE — MITM-injected malformed `data:` frame → typed `stream_protocol_error` → reconnect → fresh snapshot healed state (row G updated) |
+| BUG-494 | ☑ LIVE — stub provider bins emitting >8MB lines → `/compat/deep` reports real `bufio.Scanner: token too long` fail on both claude + codex probes (row G updated) |
+| BUG-498 | ◑ SPLIT — TUI arm PASS via real `httptest.Server` SSE >8MB line (new `bug498_stream_scan_err_test.go`); oracle arm **proven structurally unreachable** via tail-cap < scanner max (`bug498_oracle_reachability_test.go`) — `Err()` check stays as defense-in-depth (row G updated) |
+| BUG-493 | ◑ SPLIT — transcript-read fault LIVE (transcript→dir → **500 `chat_timeline_unavailable`**); `chat_legs_unavailable` 502 arm unreachable by construction (lazy `chatRuns` + boot-sticky `sessionsLoadErr` → `404 chat_not_found` before reader consulted) (row G updated) |
+| BUG-489 Phase-C | ◑ SPLIT — mid-handler write fault now proven injectable (`chmod 555 chats/` → `persistProviderSession: durable write failed … permission denied` logged honestly, no corruption, turns durable); the closed-leg retry composition unreachable on a provider-less bed (resident leg closes only via provider switch; disk-fabricated close does not propagate to authoritative in-memory state) — remains unit-covered |
+| BUG-538 | ☑ LIVE — **both arms**: organic park→unblock→exactly-once (`run-400`, `pending_resume_gen=1` → `turn-406`) and post-restart durable flush (seeded `run-334` → `turn-361`). No double dispatch, no stranded claim (R10 row updated) |
+| A-58-6 | ⚠ ENV-BLOCKED by design — clone surface is Supabase-only (`FlowDefinitionStoreFor` → nil without service role; `CloneBuiltin` needs a store); embedded `cp-harness-smoke` resolves/runs via pack fallback, unresolvable refs fail closed `invalid_flow_ref` (row A updated) |
+
+**No regressions found.** Every remaining non-☑ is either structurally
+unreachable through the current seams (documented why) or environment-blocked
+(Supabase/Drive/provider accounts) — none are product failures.
+
+### R.2 Design observations — recommendations
+
+1. **Merge-escalate card: losing candidate's patch unreachable when the picked
+   winner's patch is empty.** Recommend a dedicated decision card kind with the
+   same pattern as `tournamentDecisionCard`/`tournamentMergeDecisionCard`:
+   deterministic options `apply candidate-a` / `apply candidate-b` /
+   `retry cohort` / `stop`, each option carrying its candidate's patch ref,
+   decision ledgered. Do not silently discard a mergeable losing patch; keep
+   auto-pick only when the winner actually has a mergeable patch.
+2. **Plan-exhausted park is indistinguishable from slicer failure.** Introduce a
+   typed terminal/decision state (`plan_complete` / `sprint_complete`) when
+   `todo/` drains; keep true slicer failure on the retryable `blocked` path.
+   Surface the distinction in the run summary + UI so "done" isn't read as
+   "wedged".
+3. **Two sprint execution modes.** Pick one canonical contract: route
+   `spawn_agent("vibe-sprint")` through the same flow-resolution +
+   contract-freeze/TDD gates as engine-driven sprint nodes, OR explicitly mark
+   agent-child sprints as a lightweight/manual mode (documented as not carrying
+   the gate chain). Do not present both as equivalent.
+4. **Parked-but-resumable runs normalize to `cancelled` on restart.**
+   Preserve nonterminal parked states (`blocked`, `waiting_user_approval`,
+   `paused`, pending intents) across restart — they are durable states, not
+   crash residue. Only normalize to `cancelled` when provably unrecoverable or
+   explicitly cancelled. Add restart tests for parked-flow / pending-gate /
+   pending-question / pending-resume-intent shapes.
+5. **Mutation/continue on a durable-blocked run returns `run_not_found` after
+   restart.** Extend the BUG-508 read-path fallback to mutation endpoints:
+   resolve the run from the session store before answering `run_not_found`;
+   if state is corrupt/unavailable return a typed `workflow_state_unavailable`,
+   never a misleading not-found. Cover `continue`, `flow-control`,
+   `gate-decision` with a restart test.
+6. **BUG-505 structured option card.** Keep the live escape hatch as the
+   baseline; if adopted, add a typed card with options `retry planner` /
+   `use supplied draft` / `park` — durable + audited. Do not implement
+   speculatively without product sign-off; today it is a documented direction,
+   not a defect.
+7. **BUG-543 leg-claim reclamation sweep.** Implement a conservative boot +
+   in-session sweep: reclaim only claims owned by terminal/deleted/corrupt runs
+   or leases proven stale; never touch `merge_pending` or resumable runs; emit
+   a durable audit event per reclaim. Keep the current pinned contract until
+   implemented.
+8. **`quota_route_committed` not in `isFlowSidecarEventType`.** Include it —
+   it is a durable routing-state transition observers should replay. If
+   intentionally excluded (session rows authoritative), document that and add a
+   projection/replay test proving no event loss. Current asymmetry is
+   undocumented, which is the actual defect.
+9. **Cosmetic stale closed-leg fields** (`waiting_user_approval`,
+   `pending_resume_*` surviving leg close). Clear/normalize transient pending
+   fields at leg close while preserving the closure reason + audit history; add
+   a projection test that closed legs never render actionable pending state.
+   (Live-observed again 2026-09-29: `run-400` shows `waiting_user_approval`
+   while parked on `pending_resume_gen=1` — cosmetic, but confuses reads.)
+10. **CP-87 quota soft-low never gates organically on this bed.** Fixture/unit
+    coverage is the intended coverage for a soft-threshold path; if a live leg
+    is ever required, add a deterministic test-only telemetry-injection seam
+    (admin/diag endpoint) rather than fabricating provider telemetry. Do not
+    weaken the quota gate to make it reachable.
+11. **CP-86 pressure-tier/cap-card legs are fixture-only.** Same verdict:
+    fixture coverage is correct for a path real providers trigger
+    nondeterministically; a controlled injection seam is the honest way to get
+    a live leg later. Document fixture-only as the intended state.
