@@ -1301,10 +1301,11 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 		// BUG-404: restore the debate-parked sprint topology + buffered coder
 		// batches — previously RAM-only, so a restart mid-negotiation lost them
 		// and the debate_synthesis done verdict settled the whole flow.
-		vibeParkedNodes:      append([]agentpack.FlowNode(nil), st.VibeParkedNodes...),
-		vibeParkedEdges:      append([]agentpack.FlowEdge(nil), st.VibeParkedEdges...),
-		vibeParkedAcceptance: append([]string(nil), st.VibeParkedAcceptance...),
-		vibeParkedFlowRef:    st.VibeParkedFlowRef,
+		vibeParkedNodes:       append([]agentpack.FlowNode(nil), st.VibeParkedNodes...),
+		vibeParkedEdges:       append([]agentpack.FlowEdge(nil), st.VibeParkedEdges...),
+		vibeParkedAcceptance:  append([]string(nil), st.VibeParkedAcceptance...),
+		vibeParkedFlowRef:     st.VibeParkedFlowRef,
+		vibeParkedGatedRunIDs: append([]string(nil), st.VibeParkedGatedRunIDs...),
 		// BUG-478: parked merge card + patch snapshots were RAM-only — a
 		// restart dropped every actionable alternate.
 		tournamentWinner:            st.TournamentWinner,
@@ -1362,6 +1363,7 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 		rs.vibeParkedEdges = nil
 		rs.vibeParkedAcceptance = nil
 		rs.vibeParkedFlowRef = ""
+		rs.vibeParkedGatedRunIDs = nil
 		rs.vibeSprintBoundaryPending = false
 		rs.vibeResumeConfirm = false
 		rs.vibeResumeFromNode = ""

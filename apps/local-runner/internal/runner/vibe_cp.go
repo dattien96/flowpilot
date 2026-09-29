@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -862,11 +863,20 @@ func collectVibeSprintPlan(cwd string) []string {
 	return out
 }
 
-func (s *InteractiveService) stashVibeFlowForDebate(parentRunID string) {
+func (s *InteractiveService) stashVibeFlowForDebate(parentRunID, gatedRunID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rs := s.runs[parentRunID]
-	if rs == nil || len(rs.vibeParkedNodes) > 0 {
+	if rs == nil {
+		return
+	}
+	// Record the interrupted child even when the topology is already parked
+	// (a second gate fire mid-debate): every diverted node completion owes a
+	// resume reprompt once the debate resolves.
+	if gatedRunID != "" && gatedRunID != parentRunID && !slices.Contains(rs.vibeParkedGatedRunIDs, gatedRunID) {
+		rs.vibeParkedGatedRunIDs = append(rs.vibeParkedGatedRunIDs, gatedRunID)
+	}
+	if len(rs.vibeParkedNodes) > 0 {
 		return
 	}
 	rs.vibeParkedNodes = append([]agentpack.FlowNode(nil), rs.activeFlowNodes...)
@@ -898,16 +908,104 @@ func (s *InteractiveService) restoreVibeFlowAfterDebate(parentRunID string) bool
 		rs.chatFlowRef = rs.vibeParkedFlowRef
 	}
 	nodes := append([]agentpack.FlowNode(nil), rs.activeFlowNodes...)
+	gatedIDs := append([]string(nil), rs.vibeParkedGatedRunIDs...)
 	rs.vibeParkedNodes = nil
 	rs.vibeParkedEdges = nil
 	rs.vibeParkedAcceptance = nil
 	rs.vibeParkedFlowRef = ""
+	rs.vibeParkedGatedRunIDs = nil
+	verdicts := append([]VerdictRow(nil), rs.lastFlowVerdicts...)
+	// The gate diverted each gated child's node completion into the debate
+	// before tryAdvanceFlowFromNode could fire its done-edge — the debate then
+	// ran on the parent hub, so the child's own session never saw the verdict.
+	// Arm the standard gate-reprompt intent on each gated child with the
+	// verdict carried inline: its re-completion re-runs the post-turn gate and
+	// advances the restored sprint chain through the normal completion path.
+	type gatedReprompt struct {
+		runID  string
+		stepID string
+		prompt string
+		gen    int64
+	}
+	var reprompts []gatedReprompt
+	var childSnaps []ProviderSessionState
+	for _, gid := range gatedIDs {
+		if gid == "" || gid == parentRunID {
+			continue
+		}
+		ch := s.runs[gid]
+		if ch == nil || ch.legState == LegStateClosed || ch.status == RunStatusCancelled {
+			continue
+		}
+		stepID := strings.TrimSpace(ch.lastTurnStepID)
+		if stepID == "" {
+			stepID = strings.TrimSpace(ch.label)
+		}
+		prompt := vibeDebateResumeRepromptPrompt(verdicts)
+		ch.pendingGateRepromptPrompt = prompt
+		ch.pendingGateRepromptStepID = stepID
+		ch.pendingGateRepromptGen++
+		reprompts = append(reprompts, gatedReprompt{gid, stepID, prompt, ch.pendingGateRepromptGen})
+		childSnaps = append(childSnaps, sessionStateOf(ch))
+	}
+	parentSnap := sessionStateOf(rs)
+	if rs.parentRunID == "" {
+		parentSnap.LoopState = s.agentOrchestrator.loopStateFor(rs.id)
+	}
 	s.mu.Unlock()
 	if s.isFlowEngineDriven(parentRunID) {
 		s.reseedFlowStepRuntime(parentRunID, nodes)
 	}
+	// Durable-first: the cleared parked topology and the armed reprompts must
+	// both survive a restart landing between restore and dispatch.
+	_ = s.persistProviderSession(parentSnap)
+	for _, snap := range childSnaps {
+		_ = s.persistProviderSession(snap)
+	}
+	if len(reprompts) == 0 {
+		// No gated child recorded (drift-only debate on the hub, or the child
+		// row is gone) — fall back to the hub continuation so the restored
+		// loop still has work in flight instead of stalling (run-136/9597).
+		s.maybeAutoReinvokeHubWithPrompt(parentRunID, vibeDebateResumePrompt)
+		return true
+	}
+	for _, rp := range reprompts {
+		go s.startTurnClearingIntent(rp.runID, rp.stepID, rp.prompt, "reprompt", rp.gen)
+	}
 	return true
 }
+
+// vibeDebateResumeRepromptPrompt builds the gated child's remediation
+// reprompt. The owner debate ran on the parent hub, so the verdict rows are
+// carried inline; the child's re-completion then fires the interrupted
+// node's done-edge through the normal completion path.
+func vibeDebateResumeRepromptPrompt(verdicts []VerdictRow) string {
+	const base = "[flow-engine] The post-turn gate on your last turn was routed to the owner-debate remediation flow, which has now resolved. Re-examine your output for this node against the remediation verdict — apply the decided rework, or confirm the output already satisfies the node's contract — then complete normally so the sprint chain advances."
+	if len(verdicts) == 0 {
+		return base
+	}
+	var b strings.Builder
+	b.WriteString(base)
+	b.WriteString(" Debate verdict:")
+	for _, v := range verdicts {
+		b.WriteString(" [")
+		b.WriteString(strings.TrimSpace(v.ACID))
+		b.WriteString("] ")
+		b.WriteString(strings.TrimSpace(v.Verdict))
+		if note := strings.TrimSpace(v.Note); note != "" {
+			b.WriteString(" — ")
+			b.WriteString(note)
+		}
+		b.WriteString(";")
+	}
+	return b.String()
+}
+
+// vibeDebateResumePrompt is the hub prompt used when the parked sprint flow
+// is restored after an owner-debate completes but no gated child was
+// recorded — the re-invoked hub re-evaluates the interrupted node with the
+// remediation verdict and drives the restored chain via flow_control.
+const vibeDebateResumePrompt = "[flow-engine] The owner-debate remediation resolved and the parked sprint flow is restored. Re-evaluate the interrupted node's outcome with the debate verdict applied, then call submit_review_outcome / flow_control to advance the sprint chain — re-run the gated work only if the verdict requires rework."
 
 func (s *InteractiveService) onVibeCpNodeDone(parentRunID, completedNodeID string) {
 	switch completedNodeID {

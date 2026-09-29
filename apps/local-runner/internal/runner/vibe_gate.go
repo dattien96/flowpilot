@@ -123,7 +123,7 @@ func (s *InteractiveService) applyVibeGateResolver(runID, parentID, turnID strin
 				driftScore, vibeDriftDebateThreshold)
 		}
 		log.Printf("[vibe-gate] start vibe-owner-debate hub=%s child=%s drift=%d", hub, runID, driftScore)
-		s.startVibeOwnerDebate(hub, message)
+		s.startVibeOwnerDebate(hub, runID, message)
 		return true
 	default:
 		return false
@@ -133,8 +133,10 @@ func (s *InteractiveService) applyVibeGateResolver(runID, parentID, turnID strin
 // startVibeOwnerDebate stashes the parked flow and starts the debate flow
 // (CP-62 P-1). The stash also drops any pending drift-ladder context
 // reduction so the debate turn assembles with the full violation context (T-3).
-func (s *InteractiveService) startVibeOwnerDebate(hub, message string) {
-	s.stashVibeFlowForDebate(hub)
+// gatedRunID is the run whose post-turn gate was diverted into the debate
+// (empty when the resolver had no gated child — e.g. drift-only on the hub).
+func (s *InteractiveService) startVibeOwnerDebate(hub, gatedRunID, message string) {
+	s.stashVibeFlowForDebate(hub, gatedRunID)
 	go s.startResolvedFlow(context.Background(), hub, workingmode.PackPrefix+vibeOwnerDebateFlowID, message)
 }
 
@@ -168,7 +170,7 @@ func (s *InteractiveService) applyVibeDriftOnlyResolver(runID, parentID string, 
 		hub = parentID
 	}
 	log.Printf("[vibe-gate] drift-only escalation run=%s score=%d -> owner debate", hub, driftScore)
-	s.startVibeOwnerDebate(hub, fmt.Sprintf(
+	s.startVibeOwnerDebate(hub, runID, fmt.Sprintf(
 		"vibe drift score %d (>= %d) on a clean gate: owner debate to choose remediation",
 		driftScore, vibeDriftDebateThreshold))
 	return true

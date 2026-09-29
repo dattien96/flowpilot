@@ -74,7 +74,7 @@ func TestCA792_DebateRestorePutsSprintGraphBack(t *testing.T) {
 	rs.activeFlowAcceptanceNodes = []string{"validate", "synthesis", "audit"}
 	svc.mu.Unlock()
 
-	svc.stashVibeFlowForDebate(parent.RunID)
+	svc.stashVibeFlowForDebate(parent.RunID, "")
 	svc.mu.Lock()
 	rs = svc.runs[parent.RunID]
 	rs.chatFlowRef = workingmode.PackPrefix + vibeOwnerDebateFlowID
@@ -116,7 +116,7 @@ func TestCA792_InlineEntryCopiesAcceptanceNodes(t *testing.T) {
 	rs.activeFlowAcceptanceNodes = []string{"validate", "synthesis", "audit"}
 	svc.mu.Unlock()
 
-	svc.stashVibeFlowForDebate(parent.RunID)
+	svc.stashVibeFlowForDebate(parent.RunID, "")
 	svc.startResolvedFlow(t.Context(), parent.RunID, workingmode.PackPrefix+vibeOwnerDebateFlowID, "gate")
 
 	svc.mu.Lock()

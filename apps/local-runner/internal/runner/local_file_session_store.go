@@ -243,8 +243,8 @@ type ndjsonSessionRecord struct {
 	ActiveFlowNodes []agentpack.FlowNode `json:"active_flow_nodes,omitempty"`
 	// ChatSubMode/ChatFlowRef persist the Chat-Mode orchestration picker
 	// selection a run was started with (BUG-263); see ProviderSessionState.
-	ChatSubMode                string   `json:"chat_sub_mode,omitempty"`
-	ChatFlowRef                string   `json:"chat_flow_ref,omitempty"`
+	ChatSubMode string `json:"chat_sub_mode,omitempty"`
+	ChatFlowRef string `json:"chat_flow_ref,omitempty"`
 	// FlowArm is the CP-89 run-scoped launch latch (Task-451); see
 	// ProviderSessionState.FlowArm. Without it the latch silently drops to the
 	// immediate default on reload and a pending flow would auto-start.
@@ -272,6 +272,11 @@ type ndjsonSessionRecord struct {
 	VibeParkedEdges      []agentpack.FlowEdge `json:"vibe_parked_edges,omitempty"`
 	VibeParkedAcceptance []string             `json:"vibe_parked_acceptance,omitempty"`
 	VibeParkedFlowRef    string               `json:"vibe_parked_flow_ref,omitempty"`
+	// VibeParkedGatedRunIDs records the child run(s) whose post-turn gate was
+	// diverted into the owner debate — their interrupted node completion never
+	// fired its done-edge, so restore must reprompt them with the verdict
+	// instead of relying on the generic hub continuation (live run-136/9597).
+	VibeParkedGatedRunIDs []string `json:"vibe_parked_gated_run_ids,omitempty"`
 	// PendingBatchSignatureByStep buffers coder submit_coder_outcome batches
 	// until the negotiation hub consumes them (BUG-404).
 	PendingBatchSignatureByStep map[string][]CoderBatchSignatureRequest `json:"pending_batch_signature_by_step,omitempty"`
@@ -923,6 +928,7 @@ func sessionStateFromRecord(r ndjsonSessionRecord) ProviderSessionState {
 		VibeParkedEdges:                    append([]agentpack.FlowEdge(nil), r.VibeParkedEdges...),
 		VibeParkedAcceptance:               append([]string(nil), r.VibeParkedAcceptance...),
 		VibeParkedFlowRef:                  r.VibeParkedFlowRef,
+		VibeParkedGatedRunIDs:              append([]string(nil), r.VibeParkedGatedRunIDs...),
 		PendingBatchSignatureByStep:        copyBatchSignatureMap(r.PendingBatchSignatureByStep),
 		FlowStartGitHead:                   r.FlowStartGitHead,
 		PendingFlowGateSettle:              r.PendingFlowGateSettle,
@@ -1460,6 +1466,7 @@ func sessionRecordFrom(s ProviderSessionState) ndjsonSessionRecord {
 		VibeParkedEdges:                    append([]agentpack.FlowEdge(nil), s.VibeParkedEdges...),
 		VibeParkedAcceptance:               append([]string(nil), s.VibeParkedAcceptance...),
 		VibeParkedFlowRef:                  s.VibeParkedFlowRef,
+		VibeParkedGatedRunIDs:              append([]string(nil), s.VibeParkedGatedRunIDs...),
 		PendingBatchSignatureByStep:        copyBatchSignatureMap(s.PendingBatchSignatureByStep),
 		FlowStartGitHead:                   s.FlowStartGitHead,
 		PendingFlowGateSettle:              s.PendingFlowGateSettle,

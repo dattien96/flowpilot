@@ -280,6 +280,7 @@ type interactiveRun struct {
 	vibeParkedEdges         []agentpack.FlowEdge
 	vibeParkedAcceptance    []string
 	vibeParkedFlowRef       string
+	vibeParkedGatedRunIDs   []string
 	vibeOwnerFailRetries    int
 	vibeOwnerSettleInFlight bool
 	vibeCoderResumeInFlight bool
@@ -5140,6 +5141,7 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 		VibeParkedEdges:                 append([]agentpack.FlowEdge(nil), rs.vibeParkedEdges...),
 		VibeParkedAcceptance:            append([]string(nil), rs.vibeParkedAcceptance...),
 		VibeParkedFlowRef:               rs.vibeParkedFlowRef,
+		VibeParkedGatedRunIDs:           append([]string(nil), rs.vibeParkedGatedRunIDs...),
 		PendingBatchSignatureByStep:     copyBatchSignatureMap(rs.pendingBatchSignatureByStep),
 		FlowStartGitHead:                rs.flowStartGitHead,
 		PendingFlowGateSettle:           rs.pendingFlowGateSettle,

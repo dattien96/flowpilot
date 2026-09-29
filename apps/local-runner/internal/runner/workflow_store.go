@@ -181,6 +181,9 @@ type ProviderSessionState struct {
 	VibeParkedEdges      []agentpack.FlowEdge
 	VibeParkedAcceptance []string
 	VibeParkedFlowRef    string
+	// VibeParkedGatedRunIDs: the child run(s) the diverted post-turn gate
+	// interrupted — restored runs reprompt them with the debate verdict.
+	VibeParkedGatedRunIDs []string
 	// PendingBatchSignatureByStep buffers coder submit_coder_outcome batches
 	// until the negotiation hub consumes them — RAM-only before BUG-404.
 	PendingBatchSignatureByStep map[string][]CoderBatchSignatureRequest

@@ -106,7 +106,7 @@ func TestStashVibeFlowForDebate_ClearsDriftLadderActions(t *testing.T) {
 	st.pendingNarrow = true
 	st.mu.Unlock()
 
-	svc.stashVibeFlowForDebate(parent.RunID)
+	svc.stashVibeFlowForDebate(parent.RunID, "")
 
 	st.mu.Lock()
 	defer st.mu.Unlock()
