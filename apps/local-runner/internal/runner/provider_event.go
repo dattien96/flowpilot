@@ -98,6 +98,12 @@ const (
 	EventApprovalExpired ProviderEventType = "approval_expired"
 	// BUG-507 twin for ask_user questions expiring unanswered.
 	EventQuestionExpired ProviderEventType = "question_expired"
+	// EventLegClaimReclaimed (BUG-543 residual): the leg-claim sweep closed a
+	// stale active leg whose parent loop is provably sealed or gone. Durable
+	// via the flow-events sidecar so the reclaim is auditable post-restart —
+	// the session row's leg_closed_reason=claim_reclaimed state is the twin
+	// record on the claim itself.
+	EventLegClaimReclaimed ProviderEventType = "leg_claim_reclaimed"
 )
 
 // ProviderLimitKind is the normalized provider-limit taxonomy (Task-445 T-1).

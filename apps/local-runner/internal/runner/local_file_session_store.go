@@ -1184,13 +1184,16 @@ func (s *localFileSessionStore) flowEventsPath(runID string) (string, error) {
 // reason: they are runner-emitted routing decisions with no provider
 // representation — without the sidecar a post-restart replay loses the
 // repin/stop/no-candidate evidence even though session rows still carry the
-// resulting binding (R2-§8).
+// resulting binding (R2-§8). EventLegClaimReclaimed belongs to the same class:
+// a runner-emitted lifecycle decision the provider transcript cannot reproduce
+// (BUG-543 residual).
 func isFlowSidecarEventType(t ProviderEventType) bool {
 	switch t {
 	case EventFlowContextPackage, EventFlowValidationResult,
 		EventFlowValidationRetry, EventFlowAuditDraft,
 		EventUserQuestionRequired, EventPermissionRequired,
-		EventQuotaRouteCommitted, EventQuotaRouteStopped, EventQuotaRouteBlocked:
+		EventQuotaRouteCommitted, EventQuotaRouteStopped, EventQuotaRouteBlocked,
+		EventLegClaimReclaimed:
 		return true
 	}
 	return false

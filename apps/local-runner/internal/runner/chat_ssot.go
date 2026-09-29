@@ -48,6 +48,11 @@ const (
 	// an active worktree claim (live run-2830 kept leg_state=active + an
 	// orphaned approval after skip).
 	LegClosedReasonMemberSkipped = "member_skipped"
+	// LegClosedReasonReclaimed (BUG-543 residual): the claim sweeps closed a
+	// stale active leg whose parent loop is sealed (stopped/done), deleted, or
+	// the row is otherwise provably un-re-drivable — durable garbage collected
+	// by sweepStaleLegClaims, never by a status transition on the leg itself.
+	LegClosedReasonReclaimed = "claim_reclaimed"
 )
 
 // Chat transcript record types (SD-26 §6.1, SD26-E-1..E-9). The record

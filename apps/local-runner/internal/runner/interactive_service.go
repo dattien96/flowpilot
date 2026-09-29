@@ -4976,6 +4976,10 @@ func (s *InteractiveService) AttachRunner(r *Runner) {
 	s.mu.Unlock()
 	// CP-71: boot-time worktree GC runs off-lock after s.runner is set.
 	go s.sweepOrphanedWorktrees(context.Background())
+	// BUG-543 residual: boot-time leg-claim sweep reclaims stale active legs
+	// whose parent loop is provably sealed or gone. Conservative — see
+	// leg_claim_sweep.go for the full predicate.
+	go s.sweepStaleLegClaims(context.Background())
 }
 
 // SetFlowDefinitionStore attaches the FlowDefinitionStore startResolvedFlow

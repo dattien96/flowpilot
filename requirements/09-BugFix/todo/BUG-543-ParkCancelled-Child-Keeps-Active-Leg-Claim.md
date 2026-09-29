@@ -44,11 +44,16 @@ contract; its worktree claim is likewise held until a terminal seam runs.
 - `TestBug543_FlowDoneReconcileClosesLegs` — the flow-done reconcile is the
   generic close seam: `completed` + `flow_done`.
 
-## Residual (accepted)
-Orphaned cancelled children whose parent is sealed `stopped` and never
-resumed keep an `active` leg row forever (durable garbage, no live session).
-Reclamation would need a "will never be re-driven" signal the model does not
-yet carry; a future sweep keyed on sealed-loop age would be the safe seam.
+## Residual — RESOLVED by sweep (CA-1060)
+Orphaned cancelled children whose parent is sealed `stopped`/`done` and never
+resumed are now reclaimed by `sweepStaleLegClaims` (boot via `AttachRunner` +
+in-session `StartLegClaimSweep`, 10 min cadence). The conservative predicate
+closes a claim only when the child row is terminal, older than
+`legClaimReclaimMinAge` (24h), carries no armed intents or pending cards, has
+no merge in flight, is not remote-origin, and the parent loop is provably
+sealed (stopped/done), terminal-loopless, or deleted. Each reclaim persists
+`leg_closed_reason=claim_reclaimed` + a durable `leg_claim_reclaimed` flow
+sidecar event. Reader errors fail closed to keep.
 
 ## Related
 BUG-235/538 (done-reconcile), BUG-539 (member skip close), BUG-535
