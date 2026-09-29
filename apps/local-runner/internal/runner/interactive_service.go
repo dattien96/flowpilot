@@ -8003,6 +8003,26 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 		}
 	}
 
+	// R.3#3 (option c, approved): an agent-name that is actually a flow
+	// definition — bare ("vibe-sprint") or pack-qualified — must be refused,
+	// never silently minted. Before this guard the catalog miss above left
+	// agentDef nil and the child spawned as a plain chat run LABELLED
+	// "vibe-sprint": no flow mount, no contract freeze, no gate chain — a
+	// second, ungated "sprint" execution mode presented as equivalent to the
+	// engine-driven one. Gated flows stay engine-only; spawn_agent accepts
+	// agent names only. Resolution errors (store down, unknown id) are NOT
+	// refusals — only a positively-resolved flow ref is.
+	if agentDef == nil && in.AgentDefOverride == nil {
+		if _, err := NewFlowDefinitionResolver(s.flowDefinitionStore).ResolveFlowRef(ctx, in.Agent); err == nil {
+			return SpawnAgentResult{}, fmt.Errorf("%q is a flow definition, not an agent — spawn_agent only accepts agent names; gated flows are mounted by the flow engine", in.Agent)
+		} else {
+			var invalid *ErrFlowDefinitionInvalid
+			if errors.As(err, &invalid) {
+				return SpawnAgentResult{}, fmt.Errorf("%q is a flow definition, not an agent — spawn_agent only accepts agent names; gated flows are mounted by the flow engine", in.Agent)
+			}
+		}
+	}
+
 	// Determine provider. BUG-228: in.Model — a flow node's own step-configured
 	// model, set by the flow executor for an agent.delegate node with a
 	// purpose-named step_definitions row — is authoritative over any
