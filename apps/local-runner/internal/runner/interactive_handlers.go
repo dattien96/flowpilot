@@ -1336,7 +1336,7 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 		delete(s.runs, runID)
 		return RunHandle{}, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
 	}
-	handle := RunHandle{RunID: runID, ProviderSessionID: sessionID, ProviderKey: providerKey, Status: rs.status, StepID: stepID, RunKind: runKind, ChatID: chatID, LegSeq: legSeq}
+	handle := RunHandle{RunID: runID, ProviderSessionID: sessionID, ProviderKey: providerKey, Status: rs.status, StepID: stepID, RunKind: runKind, ChatID: chatID, LegSeq: legSeq, FlowRef: rs.chatFlowRef, FlowArm: string(rs.flowArm)}
 	if rs.worktree != nil {
 		handle.WorktreeState = rs.worktree.State
 		handle.WorktreeSlug = rs.worktree.Slug
@@ -1430,6 +1430,7 @@ func (s *InteractiveService) resumeRun(runID string) (RunHandle, *apiErr) {
 		RunKind:           rs.runKind,
 		WorkflowID:        rs.workflowID,
 		FlowRef:           rs.chatFlowRef,
+		FlowArm:           string(rs.flowArm),
 		ChatID:            rs.chatID,
 		LegSeq:            rs.legSeq,
 	}
@@ -1520,6 +1521,10 @@ type runHistoryItem struct {
 	// selection instead of silently falling back to "Normal".
 	SubMode string `json:"subMode,omitempty"`
 	FlowRef string `json:"flowRef,omitempty"`
+	// FlowArm exposes the CP-89 chat-then-forward latch so a client reopening
+	// this chat from history can restore the armed "start flow" affordance.
+	// "pending" = pinned but not launched; omitted on runs with no pin.
+	FlowArm string `json:"flowArm,omitempty"`
 	// CP-71 worktree badge fields (omitempty — absent for normal runs).
 	WorktreeState string `json:"worktreeState,omitempty"`
 	WorktreeSlug  string `json:"worktreeSlug,omitempty"`
@@ -1582,6 +1587,7 @@ func (s *InteractiveService) projectRunHistory(projectID string) ([]runHistoryIt
 			AgentStatus: rs.agentStatus,
 			SubMode:     rs.chatSubMode,
 			FlowRef:     rs.chatFlowRef,
+			FlowArm:     string(rs.flowArm),
 		}
 		if rs.worktree != nil {
 			item.WorktreeState = rs.worktree.State
@@ -1643,6 +1649,7 @@ func (s *InteractiveService) projectRunHistory(projectID string) ([]runHistoryIt
 					AgentStatus:     sess.AgentStatus,
 					SubMode:         sess.ChatSubMode,
 					FlowRef:         sess.ChatFlowRef,
+					FlowArm:         sess.FlowArm,
 					WorktreeState:   sess.WorktreeState,
 					WorktreeSlug:    sess.WorktreeSlug,
 					WorktreePath:    sess.WorktreePath,

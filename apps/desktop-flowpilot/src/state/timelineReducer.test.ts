@@ -762,3 +762,37 @@ test("provider_status does not flip run status", () => {
   }));
   assert.equal(next.status, "running");
 });
+
+test("turn_completed finalizes a streaming bubble that never saw message_completed", () => {
+  // Providers that end the turn without a plain message_completed used to leave
+  // the assistant bubble unfinalized — the caret (▌) kept blinking forever.
+  const state = thinkingState([
+    { kind: "prompt", id: "prompt-1", text: "Fix it" },
+    { kind: "assistant", id: "assistant-1", text: "All set", finalized: false },
+  ]);
+
+  const next = applyTimelineEvent(
+    state,
+    baseEvent({ type: "turn_completed", finalMessage: "All set" }),
+  );
+
+  const bubble = next.timeline?.find((it) => it.kind === "assistant");
+  assert.ok(bubble && bubble.kind === "assistant");
+  assert.equal(bubble.finalized, true);
+});
+
+test("tool_started finalizes the open streaming bubble before the tool row", () => {
+  const state = thinkingState([
+    { kind: "prompt", id: "prompt-1", text: "Fix it" },
+    { kind: "assistant", id: "assistant-1", text: "Searching…", finalized: false },
+  ]);
+
+  const next = applyTimelineEvent(
+    state,
+    baseEvent({ type: "tool_started", toolName: "search", input: { q: "x" } }),
+  );
+
+  const bubble = next.timeline?.find((it) => it.kind === "assistant");
+  assert.ok(bubble && bubble.kind === "assistant");
+  assert.equal(bubble.finalized, true);
+});

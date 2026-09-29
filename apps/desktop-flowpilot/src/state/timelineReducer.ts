@@ -236,6 +236,17 @@ export function applyTimelineEvent(s: TimelineState, e: ProviderEventDTO): Parti
   }
 
   const closeAssistant = () => {
+    // BUG: any event that ends the streaming leg (tool_started, turn_completed,
+    // placeholder message_completed, a new turn_started, …) must flip the open
+    // bubble to finalized — otherwise providers that never emit a plain
+    // message_completed leave the caret (▌) blinking on the bubble forever,
+    // including after reopening the chat from a cached snapshot.
+    if (streamingAssistantId) {
+      const idx = timeline.findIndex((it) => it.id === streamingAssistantId);
+      if (idx >= 0 && timeline[idx].kind === "assistant" && !timeline[idx].finalized) {
+        timeline[idx] = { ...timeline[idx], finalized: true };
+      }
+    }
     streamingAssistantId = undefined;
   };
 

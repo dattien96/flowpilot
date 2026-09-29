@@ -159,6 +159,28 @@ function resetTimelineWindow(): Pick<AppState, "timelineHasOlder" | "_timelineAn
   };
 }
 
+// A follow-up turn sent the instant a flow *looks* done can race the hub's own
+// final turn: the loop is marked "done" (which unblocks the composer via
+// deriveOrchestrationRunStatus) from INSIDE that turn, while the turn's
+// provider stream is still open — so the runner still holds turnInFlight and
+// rejects POST /turns with 409 turn_in_progress. gate_in_progress (post-turn
+// gate settling) and hub_parked (children still active) are the sibling
+// transient windows. All three are rejected BEFORE a turn is minted, so
+// re-POSTing is side-effect-free and can never duplicate a turn. Retry briefly
+// until the turn clears instead of dropping the user's message with a raw
+// error and forcing a re-type (the pre-fix symptom on flow completion).
+const TRANSIENT_SEND_CODES = new Set(["turn_in_progress", "gate_in_progress", "hub_parked"]);
+const TRANSIENT_SEND_MAX_RETRIES = 6;
+const TRANSIENT_SEND_RETRY_MS = 700;
+// A send that lands inside a runner restart window dies at the socket
+// ("Failed to fetch") — retry those too. The Idempotency-Key on turnInput
+// makes a re-POST side-effect-free: the runner replays the minted turnId.
+// AbortError (user-driven cancel) is deliberately not retried.
+const isConnectionFailure = (err: unknown) =>
+  !(err instanceof RunnerApiError) && !(err instanceof Error && err.name === "AbortError");
+const CONN_SEND_MAX_RETRIES = 5;
+const CONN_SEND_RETRY_MS = 1500;
+
 let loadProjectsInFlight: Promise<void> | null = null;
 // Dedupe for loadProjectHistory cache-warmer — one fetch per project at a time.
 const projectHistoryInflight = new Set<string>();
@@ -531,6 +553,12 @@ export interface AppState {
    */
   flowRef?: string;
   builtinOrchestrationOptions: BuiltinFlowOption[];
+  /**
+   * CP-89 chat-then-forward (Task-452): the current chat's run was created with
+   * a pinned flow + flowArm:"pending" — chat turns stay plain until the user
+   * explicitly forwards. Undefined when the focused chat has no armed flow.
+   */
+  pendingFlowArm?: { flowRef: string };
 
   // run
   runId?: string;
@@ -823,6 +851,12 @@ export interface AppState {
   setDraft(key: string, draft: DraftState): void;
   clearDraft(key: string): void;
   resetRun(): void;
+  /**
+   * CP-89/Task-452: explicitly start the armed pending flow on the focused
+   * chat — sends a forwardFlow turn (the only signal that flips the pending
+   * latch to started). forwardText rides into the flow's entry prompt.
+   */
+  forwardArmedFlow(forwardText?: string): Promise<void>;
   openInIde(path: string, line?: number): void;
   openAdminWeb(): void;
   restartSystem(): Promise<void>;
@@ -2350,6 +2384,14 @@ export const useStore = create<AppState>((set, get) => ({
                 yoloMode,
                 workingMode,
                 flowRef: vibeEntry?.flowRef,
+                // CP-89 chat-then-forward: a vibe-armed chat pins the flow but
+                // does NOT launch on the first turn — the user discusses with
+                // the AI (SS/SD/CP drafts land in the workspace), then presses
+                // "Start flow" to send the forwardFlow turn (Task-452). The
+                // source doc pin lives on the run so the forward-time ingest
+                // fence validates without a repaste.
+                flowArm: vibeEntry ? "pending" : undefined,
+                sourceDocId: vibeEntry?.sourceDocId || undefined,
                 chatMode: "normal_chat",
                 cwd,
                 worktree: get().worktreeEnabled,
@@ -2375,6 +2417,9 @@ export const useStore = create<AppState>((set, get) => ({
             chatDetached: false,
             activeAgentRunId: undefined,
             activeWorktreePath: handle.worktreePath ?? "",
+            // CP-89: surface the armed affordance — the vibe flow is pinned
+            // pending and waits for the explicit forward turn.
+            pendingFlowArm: vibeEntry ? { flowRef: vibeEntry.flowRef } : undefined,
           });
           if (get().worktreeEnabled) set({ activeWorktreeState: "active" });
         }
@@ -2386,6 +2431,7 @@ export const useStore = create<AppState>((set, get) => ({
           chatId: handle.chatId,
           subMode: chatStartMode === "bugfix" ? "bug" : undefined,
           flowRef: chatStartMode === "bugfix" ? flowRef : undefined,
+          flowArm: vibeEntry ? "pending" : undefined,
         }));
       }
 
@@ -2451,27 +2497,8 @@ export const useStore = create<AppState>((set, get) => ({
         cancelAgentFocusStream();
       }
 
-      // A follow-up sent the instant a flow *looks* done can race the hub's own
-      // final turn: the loop is marked "done" (which unblocks the composer via
-      // deriveOrchestrationRunStatus) from INSIDE that turn, while the turn's
-      // provider stream is still open — so the runner still holds turnInFlight and
-      // rejects POST /turns with 409 turn_in_progress. gate_in_progress (post-turn
-      // gate settling) and hub_parked (children still active) are the sibling
-      // transient windows. All three are rejected BEFORE a turn is minted, so
-      // re-POSTing is side-effect-free and can never duplicate a turn. Retry briefly
-      // until the turn clears instead of dropping the user's message with a raw
-      // error and forcing a re-type (the pre-fix symptom on flow completion).
-      const TRANSIENT_SEND_CODES = new Set(["turn_in_progress", "gate_in_progress", "hub_parked"]);
-      const TRANSIENT_SEND_MAX_RETRIES = 6;
-      const TRANSIENT_SEND_RETRY_MS = 700;
-      // A send that lands inside a runner restart window dies at the socket
-      // ("Failed to fetch") — retry those too. The Idempotency-Key on turnInput
-      // makes a re-POST side-effect-free: the runner replays the minted turnId.
-      // AbortError (user-driven cancel) is deliberately not retried.
-      const isConnectionFailure = (err: unknown) =>
-        !(err instanceof RunnerApiError) && !(err instanceof Error && err.name === "AbortError");
-      const CONN_SEND_MAX_RETRIES = 5;
-      const CONN_SEND_RETRY_MS = 1500;
+      // Retry constants live at module scope (TRANSIENT_SEND_* / CONN_SEND_* —
+      // shared with forwardArmedFlow).
       let connAttempts = 0;
       for (let attempt = 0; ; attempt++) {
         try {
@@ -2563,6 +2590,79 @@ export const useStore = create<AppState>((set, get) => ({
         timeline: [
           ...s.timeline.filter((it) => it.kind !== "thinking"),
           { kind: "system", id: `err-run-${s.timeline.length}`, text: runErrorMessage(err), tone: "error" },
+        ],
+      }));
+    } finally {
+      void get().loadRunHistory();
+    }
+  },
+
+  async forwardArmedFlow(forwardText) {
+    const { client, runId, pendingFlowArm, activeStepId, status } = get();
+    if (!client || !runId || !pendingFlowArm) return;
+    if (status === "running" || status === "waiting_approval" || status === "waiting_question") return;
+    const armedFlowRef = pendingFlowArm.flowRef;
+    const prompt = (forwardText ?? "").trim();
+    const turnInput: TurnInput = {
+      runId,
+      stepId: activeStepId ?? "",
+      prompt,
+      // CP-89 Task-452: the ONLY signal that flips a pending arm to started —
+      // the runner carries this text + the settled chat transcript into the
+      // flow's entry leg.
+      forwardFlow: true,
+    };
+    set((s) => ({
+      pendingFlowArm: undefined,
+      status: "running",
+      recoverable: false,
+      timeline: [
+        ...s.timeline.filter((it) => it.kind !== "thinking"),
+        {
+          kind: "prompt",
+          id: `prompt-forward-${s.timeline.length}`,
+          text: prompt || `Start flow: ${armedFlowRef}`,
+        },
+        { kind: "thinking", id: `thinking-${s.timeline.length + 1}`, text: "Thinking..." },
+      ],
+    }));
+    let connAttempts = 0;
+    try {
+      for (let attempt = 0; ; attempt++) {
+        try {
+          await consumeStream(runId, client.sendTurn(turnInput), set, get);
+          break;
+        } catch (err) {
+          if (isConnectionFailure(err) && connAttempts < CONN_SEND_MAX_RETRIES && shouldApplyRunEvent(get().runId, runId)) {
+            connAttempts++;
+            await new Promise((r) => setTimeout(r, CONN_SEND_RETRY_MS));
+            continue;
+          }
+          const transient = err instanceof RunnerApiError && TRANSIENT_SEND_CODES.has(err.code ?? "");
+          if (!transient || attempt >= TRANSIENT_SEND_MAX_RETRIES || !shouldApplyRunEvent(get().runId, runId)) {
+            throw err;
+          }
+          await new Promise((r) => setTimeout(r, TRANSIENT_SEND_RETRY_MS));
+        }
+      }
+      const orchestrationRunId = get().mainRunId ?? runId;
+      if (orchestrationRunId) {
+        startOrchestrationStream(orchestrationRunId, client, set, get);
+      }
+      void get().refreshAgentRuns();
+      void get().refreshWorkflowStepRuntime();
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[FlowPilot] forwardArmedFlow failed:", err);
+      // The runner rolls the latch back to pending when the forward is
+      // rejected (Task-452) — restore the affordance so the user can retry.
+      set((s) => ({
+        pendingFlowArm: s.pendingFlowArm ?? { flowRef: armedFlowRef },
+        status: "failed",
+        recoverable: true,
+        timeline: [
+          ...s.timeline.filter((it) => it.kind !== "thinking"),
+          { kind: "system", id: `err-fwd-${s.timeline.length}`, text: runErrorMessage(err), tone: "error" },
         ],
       }));
     } finally {
@@ -3433,6 +3533,13 @@ export const useStore = create<AppState>((set, get) => ({
         : {}),
       chatStartMode,
       flowRef: chatStartMode === "bugfix" ? historyItem?.flowRef : undefined,
+      // CP-89 Task-452: reopening an armed chat restores the pending affordance
+      // — the runner-side latch is durable, so the resume handle (or the
+      // history row when the handle predates the field) is the authority.
+      pendingFlowArm:
+        (handle.flowArm ?? historyItem?.flowArm) === "pending"
+          ? { flowRef: handle.flowRef || historyItem?.flowRef || "" }
+          : undefined,
       // Task-433: a cached snapshot of THIS run paints instantly (transient
       // optimistic rows dropped — replay re-appends them with durable ids);
       // the replay stream below remains the authority and revalidates it.
@@ -3604,6 +3711,7 @@ export const useStore = create<AppState>((set, get) => ({
       chatSourceDocId: "",
       flowRef: undefined,
       builtinOrchestrationOptions: [],
+      pendingFlowArm: undefined,
       // worktreeEnabled intentionally survives reset: the toggle is a next-run
       // intent (like yoloMode/workingMode), not per-run state — clearing it here
       // silently dropped worktree:true when "New run"/new-chat called resetRun
@@ -4661,6 +4769,7 @@ function mintedRunHistoryRow(
     chatId?: string;
     subMode?: string;
     flowRef?: string;
+    flowArm?: string;
   },
 ): RunHistoryItem {
   const now = new Date().toISOString();
@@ -4676,6 +4785,7 @@ function mintedRunHistoryRow(
     runKind: ctx.runKind,
     subMode: ctx.subMode,
     flowRef: ctx.flowRef,
+    flowArm: ctx.flowArm,
     worktreeState: handle.worktreeState,
     worktreeSlug: handle.worktreeSlug,
     worktreePath: handle.worktreePath,

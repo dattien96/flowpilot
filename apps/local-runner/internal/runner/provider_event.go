@@ -412,6 +412,11 @@ type RunHandle struct {
 	RunKind    string `json:"runKind,omitempty"`
 	WorkflowID string `json:"workflowId,omitempty"`
 	FlowRef    string `json:"flowRef,omitempty"`
+	// FlowArm is the CP-89 launch latch echo ("pending" = chat-then-forward armed,
+	// flow not started yet). Clients use it to restore the armed affordance on a
+	// reopened chat; "immediate"/"started" are informational only. Omitted on
+	// runs with no flow pin.
+	FlowArm string `json:"flowArm,omitempty"`
 	// Chat SSOT (CP-59 / SD-26 §5.1): the logical chat this run belongs to and
 	// its leg ordinal. Omitted for workflow runs and when the flag is off.
 	ChatID string `json:"chatId,omitempty"`

@@ -227,6 +227,9 @@ interface RunState {
   parentRunId?: string;
   agentName?: string;
   role?: string;
+  /** CP-89: pinned flow ref + armed latch mirrored from StartRunInput. */
+  flowRef?: string;
+  flowArm?: string;
 }
 
 interface ParentGraphState {
@@ -754,6 +757,8 @@ export class MockRunnerClient implements RunnerClient {
         agentName: run.agentName,
         role: run.role,
         agentStatus: run.agentName ? run.status : undefined,
+        flowRef: run.flowRef,
+        flowArm: run.flowArm,
       }));
   }
 
@@ -879,6 +884,8 @@ export class MockRunnerClient implements RunnerClient {
       seq: 0,
       ...(runKind ? { runKind } as never : {}),
       ...(chatId ? { chatId, legSeq } as never : {}),
+      ...(input.flowRef ? { flowRef: input.flowRef } : {}),
+      ...(input.flowArm ? { flowArm: input.flowArm } : {}),
     } as never);
     const providerKey = input.providerKey ?? "codex";
     const stepId = input.chatMode === "normal_chat" ? `chat-${runId}` : undefined;
@@ -890,12 +897,14 @@ export class MockRunnerClient implements RunnerClient {
       ...(stepId ? { stepId } : {}),
       ...(runKind ? { runKind } : {}),
       ...(chatId ? { chatId, legSeq } : {}),
+      ...(input.flowRef ? { flowRef: input.flowRef } : {}),
+      ...(input.flowArm ? { flowArm: input.flowArm } : {}),
     } as RunHandle;
   }
 
   async resumeRun(runId: string): Promise<RunHandle> {
     await delay(80);
-    const state = this.runs.get(runId) as never as { providerSessionId?: string; chatId?: string; legSeq?: number; runKind?: string } | undefined;
+    const state = this.runs.get(runId) as never as { providerSessionId?: string; chatId?: string; legSeq?: number; runKind?: string; flowRef?: string; flowArm?: string } | undefined;
     const providerSessionId = state?.providerSessionId ?? nextId("thread");
     // Mark this run so the next sendTurn streams the full happy path (replay).
     this.replayRuns.add(runId);
@@ -906,6 +915,8 @@ export class MockRunnerClient implements RunnerClient {
       status: "running",
       ...(state?.runKind ? { runKind: state.runKind } : {}),
       ...(state?.chatId ? { chatId: state.chatId, legSeq: state.legSeq } : {}),
+      ...(state?.flowRef ? { flowRef: state.flowRef } : {}),
+      ...(state?.flowArm ? { flowArm: state.flowArm } : {}),
     } as RunHandle;
   }
 
@@ -941,6 +952,11 @@ export class MockRunnerClient implements RunnerClient {
     state.lastPrompt = input.prompt;
     state.status = "running";
     state.updatedAt = new Date().toISOString();
+    // CP-89: an explicit forward flips a pending arm to started (mock mirrors
+    // the durable latch so a later resumeRun reports the flipped state).
+    if (input.forwardFlow && state.flowArm === "pending") {
+      state.flowArm = "started";
+    }
     this.runs.set(input.runId, state);
 
     const isReplay = this.replayRuns.has(input.runId);

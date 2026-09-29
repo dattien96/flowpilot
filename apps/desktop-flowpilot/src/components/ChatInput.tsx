@@ -353,6 +353,8 @@ export function ChatInput(): React.ReactElement {
   const providerSwitchLoading = useStore((s) => s.providerSwitchLoading);
   const requestManualAccountSwitch = useStore((s) => s.requestManualAccountSwitch);
   const backToMainRun = useStore((s) => s.backToMainRun);
+  const pendingFlowArm = useStore((s) => s.pendingFlowArm);
+  const forwardArmedFlow = useStore((s) => s.forwardArmedFlow);
 
   const [text, setText] = useState("");
   const [clearSeq, setClearSeq] = useState(0);
@@ -1401,6 +1403,26 @@ export function ChatInput(): React.ReactElement {
           </>
         ) : (
           <>
+            {isChatMode && pendingFlowArm && (
+              <div className="composer-armed-flow" role="status">
+                <span className="composer-armed-label">
+                  Flow armed: <b>{pendingFlowArm.flowRef}</b> — chat freely, then start the flow when ready.
+                </span>
+                <button
+                  type="button"
+                  className="composer-main-btn composer-start-flow"
+                  onClick={() => {
+                    const forwardText = text.trim();
+                    clearComposer();
+                    void forwardArmedFlow(forwardText);
+                  }}
+                  disabled={blocked}
+                  title="Start the pinned flow — the discussion so far rides in as context"
+                >
+                  Start flow
+                </button>
+              </div>
+            )}
             <div className={`text-area-wrapper${isChatMode && mentionSpans.length > 0 ? " has-highlights" : ""}`}>
               {isChatMode && mentionSpans.length > 0 && (
                 <div className="text-area-backdrop" aria-hidden="true">
