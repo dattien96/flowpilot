@@ -1,7 +1,10 @@
 # BUG-552 — escalate park swallows the gate-decision routing record; routed decision never delivers
 
 ## Status
-OPEN — filed from live run-15525 verification (post CA-1062/1063/1064).
+RESOLVED — CA-1067 (2026-09-29). Regression tests in
+`apps/local-runner/internal/runner/bug552553_park_decision_and_cohort_test.go`
+verified RED→GREEN. Filed from live run-15525 verification
+(post CA-1062/1063/1064).
 
 ## Live-found during
 Post-fix live verification on `:4421` (runner v3, `/tmp/fp-vibe-item2`

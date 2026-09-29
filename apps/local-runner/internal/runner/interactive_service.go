@@ -2429,6 +2429,17 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 		return s.resumeTournamentChoice(parentRunID, tournamentChosen, feedback)
 	}
 
+	// BUG-552 (live run-15525): record operator feedback durably BEFORE any
+	// dispatch — a routed gate-decision or continue note that only rode the
+	// dispatched turn's prompt was swallowed whenever a later park cancelled
+	// that turn, or an orphan-redrive answered with its own generic prompt.
+	// pendingAgentContext persists and is drained by whichever turn next
+	// runs on this run, so the decision is delivered exactly once even
+	// across re-parks and restarts.
+	if feedback != "" {
+		s.appendPendingAgentContext(parentRunID, "Operator feedback: "+feedback)
+	}
+
 	snap := s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
 		if st.Status != "blocked" {
 			return st
@@ -2450,14 +2461,11 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 		// dead — a cap-blocked reinvoke or a turn cancelled by the escalate
 		// freeze leaves loop=running with zero in-flight work and zero armed
 		// intents. Early-returning here made continue/feedback inert forever.
-		// Carry the operator feedback into pendingAgentContext so the
-		// redriven hub turn consumes it (startTurn drains it atomically),
-		// then fall through to the same quiet-redrive seam resumePendingLoopWork
-		// owns; redriveQuietFlowLoop self-gates on flow topology + the full
-		// quiet predicate, so a busy loop is untouched.
-		if feedback != "" {
-			s.appendPendingAgentContext(parentRunID, "Operator feedback: "+feedback)
-		}
+		// The durable note appended above is what the redriven hub turn
+		// consumes (startTurn drains it atomically); fall through to the
+		// same quiet-redrive seam resumePendingLoopWork owns —
+		// redriveQuietFlowLoop self-gates on flow topology + the full quiet
+		// predicate, so a busy loop is untouched.
 		s.redriveQuietFlowLoop(parentRunID)
 		return s.agentGraphSnapshot(parentRunID), nil
 	}
@@ -3220,6 +3228,7 @@ func (s *InteractiveService) parkFlowForAwaitingUser(parentRunID string, opts ..
 			}
 		}
 	}
+	s.releaseParkedCohortSeatsLocked(parentRunID)
 	s.mu.Unlock()
 	// CA-811: never cancel while holding s.mu — finishTurn/emitLocked need it
 	// (/open run-220036 held the mutex and hung "Opening chat…").
@@ -3230,6 +3239,43 @@ func (s *InteractiveService) parkFlowForAwaitingUser(parentRunID string, opts ..
 	}
 	s.flowDiagLog(parentRunID, "flow_parked_awaiting_user",
 		"flow frozen for human decision form; cancelled in-flight turns and dropped auto-intents")
+}
+
+// releaseParkedCohortSeatsLocked buffers a terminal "cancelled" cohort
+// result for every child still holding a cohort seat this park just
+// froze — the same contract the Stop path applies to cancelled members
+// (Task-241 B1) — and drains each barrier that completes. Without it the
+// frozen member's seat stays held forever (live run-15525: parked
+// `waiting_user_approval` children kept `hasOpenCohort` true and
+// `flow-control done` soft-deferred indefinitely). A member later revived
+// by a reprompt/resume intent still counts: appendCohortResult replaces
+// the cancelled placeholder with its real result. Caller holds s.mu.
+func (s *InteractiveService) releaseParkedCohortSeatsLocked(parentRunID string) {
+	var touched []string
+	for _, childID := range s.agentOrchestrator.listChildren(parentRunID) {
+		child := s.runs[childID]
+		if child == nil || strings.TrimSpace(child.flowCohortId) == "" {
+			continue
+		}
+		switch child.status {
+		case RunStatusCompleted, RunStatusFailed, RunStatusCancelled:
+			continue
+		}
+		s.agentOrchestrator.appendCohortResult(parentRunID, child.flowCohortId, cohortEntry{
+			Label:    child.label,
+			Provider: string(child.providerKey),
+			Status:   "cancelled",
+		})
+		touched = append(touched, child.flowCohortId)
+	}
+	for _, cohortID := range touched {
+		if s.agentOrchestrator.cohortComplete(parentRunID, cohortID) {
+			s.agentOrchestrator.drainCohort(parentRunID, cohortID)
+			s.flowDiagLog(parentRunID, "park_cohort_seats_released",
+				"park-cancelled cohort members released; drained completed barrier",
+				"cohort_id", cohortID)
+		}
+	}
 }
 
 // parkFlowForAwaitingUserLocked is like parkFlowForAwaitingUser but caller
@@ -3331,6 +3377,7 @@ func (s *InteractiveService) parkFlowForAwaitingUserLocked(parentRunID string) {
 			}
 		}
 	}
+	s.releaseParkedCohortSeatsLocked(parentRunID)
 	s.flowDiagLog(parentRunID, "flow_parked_awaiting_user",
 		"flow frozen for human decision form; cancelled in-flight turns and dropped auto-intents")
 }

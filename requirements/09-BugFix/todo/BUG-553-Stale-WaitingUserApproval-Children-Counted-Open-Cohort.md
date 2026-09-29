@@ -1,7 +1,10 @@
 # BUG-553 — stale `waiting_user_approval` children counted as open cohort members; `flow-control done` soft-defers forever
 
 ## Status
-OPEN — filed from live run-15525 verification (post CA-1062/1063/1064).
+RESOLVED — CA-1068 (2026-09-29). Regression tests in
+`apps/local-runner/internal/runner/bug552553_park_decision_and_cohort_test.go`
+verified RED→GREEN. Filed from live run-15525 verification
+(post CA-1062/1063/1064).
 Related to BUG-543 (park-cancelled child keeps active leg claim) — same
 residue family, different surface: 543 is the leg-claim leak, this is
 the cohort-membership/counting leak.
