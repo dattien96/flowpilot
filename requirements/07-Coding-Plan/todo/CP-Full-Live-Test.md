@@ -1139,44 +1139,43 @@ unreachable through the current seams (documented why) or environment-blocked
    resume-confirm is skipped on reopen. True zero-task slicer failure keeps
    the retryable `blocked/requirement` path. Desktop board + TUI statusline
    read `plan complete`.
-3. **Two sprint execution modes.** Pick one canonical contract: route
-   `spawn_agent("vibe-sprint")` through the same flow-resolution +
-   contract-freeze/TDD gates as engine-driven sprint nodes, OR explicitly mark
-   agent-child sprints as a lightweight/manual mode (documented as not carrying
-   the gate chain). Do not present both as equivalent.
-4. **Parked-but-resumable runs normalize to `cancelled` on restart.**
-   Preserve nonterminal parked states (`blocked`, `waiting_user_approval`,
-   `paused`, pending intents) across restart — they are durable states, not
-   crash residue. Only normalize to `cancelled` when provably unrecoverable or
-   explicitly cancelled. Add restart tests for parked-flow / pending-gate /
-   pending-question / pending-resume-intent shapes.
-5. **Mutation/continue on a durable-blocked run returns `run_not_found` after
-   restart.** Extend the BUG-508 read-path fallback to mutation endpoints:
-   resolve the run from the session store before answering `run_not_found`;
-   if state is corrupt/unavailable return a typed `workflow_state_unavailable`,
-   never a misleading not-found. Cover `continue`, `flow-control`,
-   `gate-decision` with a restart test.
+3. ~~**Two sprint execution modes.**~~ **RESOLVED (CA-1065, option c —
+   operator-approved).** `spawn_agent` now fails closed on flow-definition
+   names: bare ids (`vibe-sprint`, `review-loop`, `vibe-owner-debate`) and
+   pack-qualified refs (`flowpilot-core-flow-pack/vibe-sprint`) resolve via
+   `FlowDefinitionResolver.ResolveFlowRef` and return a typed refusal —
+   gated sprint stays engine-only, no more fake plain-chat "sprint"
+   children. Unknown non-flow names keep the existing raw-prompt-child
+   contract.
+4. ~~**Parked-but-resumable runs normalize to `cancelled` on restart.**~~
+   **RESOLVED (CA-1055).** Every read surface is pending-aware; the
+   remaining `running`/`starting` → `cancelled` collapse applies only to
+   rows with no durable intent — the intended fail-closed rule.
+5. ~~**Mutation/continue on a durable-blocked run returns `run_not_found`
+   after restart.**~~ **RESOLVED (CA-1059).** Mutation endpoints resolve the
+   run from the durable session store via `ensureRunResident` →
+   `loadPersistedRun`; `continue`, `flow-control`, `gate-decision` all work
+   post-restart, with `workflow_state_unavailable` typed on store failure.
 6. **BUG-505 structured option card.** Keep the live escape hatch as the
    baseline; if adopted, add a typed card with options `retry planner` /
    `use supplied draft` / `park` — durable + audited. Do not implement
    speculatively without product sign-off; today it is a documented direction,
    not a defect.
-7. **BUG-543 leg-claim reclamation sweep.** Implement a conservative boot +
-   in-session sweep: reclaim only claims owned by terminal/deleted/corrupt runs
-   or leases proven stale; never touch `merge_pending` or resumable runs; emit
-   a durable audit event per reclaim. Keep the current pinned contract until
-   implemented.
-8. **`quota_route_committed` not in `isFlowSidecarEventType`.** Include it —
-   it is a durable routing-state transition observers should replay. If
-   intentionally excluded (session rows authoritative), document that and add a
-   projection/replay test proving no event loss. Current asymmetry is
-   undocumented, which is the actual defect.
-9. **Cosmetic stale closed-leg fields** (`waiting_user_approval`,
-   `pending_resume_*` surviving leg close). Clear/normalize transient pending
-   fields at leg close while preserving the closure reason + audit history; add
-   a projection test that closed legs never render actionable pending state.
-   (Live-observed again 2026-09-29: `run-400` shows `waiting_user_approval`
-   while parked on `pending_resume_gen=1` — cosmetic, but confuses reads.)
+7. ~~**BUG-543 leg-claim reclamation sweep.**~~ **RESOLVED (CA-1060).**
+   Conservative boot + in-session sweep reclaiming only claims owned by
+   terminal/deleted/corrupt runs or stale-proven leases, with a durable
+   audit event per reclaim; `merge_pending`/resumable runs untouched.
+8. ~~**`quota_route_committed` not in `isFlowSidecarEventType`.**~~
+   **RESOLVED (CA-1057).** All three `quota_route_*` types persist to the
+   flow-events sidecar; replay pinned by `quota_route_sidecar_test.go`.
+9. ~~**Cosmetic stale closed-leg fields** (`waiting_user_approval`,
+   `pending_resume_*` surviving leg close).~~ **RESOLVED (CA-1058).**
+   `clearClosedLegPendingLocked`/`…Session` clear armed residue at leg close
+   (`waiting_*` → `cancelled`, gens kept as high-water); intent needs,
+   gate rehydrate, and projections all gate on `legState == closed`.
+   Residual live observation (parked *open-leg* children still stamped
+   `waiting_user_approval` and counted in the open cohort) is a different
+   defect — filed as BUG-553.
 10. **CP-87 quota soft-low never gates organically on this bed.** Fixture/unit
     coverage is the intended coverage for a soft-threshold path; if a live leg
     is ever required, add a deterministic test-only telemetry-injection seam
@@ -1192,12 +1191,12 @@ unreachable through the current seams (documented why) or environment-blocked
 | # | Verdict | Record |
 |---|---------|--------|
 | 1 | **Resolved** — `tournamentMergeDecisionCard` (BUG-478/CA-979) already ships exactly this design: options = every candidate with a non-empty patch + `retry`/`discard`/`ask` + operator-paste-diff via `extractOperatorPatch`; live-verified run-478live, run-1269 | closed |
-| 2 | **Approved — queued** | pending implementation |
-| 3 | **Pending product decision** — options: (a) `spawn_agent` resolves flow IDs through the flow engine (breaks `wait=true` semantics, opens system-only flows to agents); (b) document agent-child as lightweight mode; (c) fail closed — reject flow IDs passed as agent names, gated sprint stays engine-only [recommended] | pending decision |
+| 2 | **Resolved** — CA-1061 (`0d935cb4`): typed `completionKind:"plan_complete"` terminal when the sprint task plan drains; live-verified `done + plan_complete` on run-15525 | closed |
+| 3 | **Resolved — option (c) approved + implemented** — CA-1065 (`5ed3671d`): `spawn_agent` rejects flow-definition names (bare + qualified refs) with a typed refusal; gated flows stay engine-only; regression tests in `spawn_agent_flow_ref_guard_test.go` | closed |
 | 4 | **Resolved** — CA-1055 made every read surface pending-aware; remaining `running`/`starting` → `cancelled` collapse is the intended fail-closed rule for rows with no durable intent | closed |
-| 5 | **Approved — queued** | pending implementation |
+| 5 | **Resolved** — CA-1059 (`ea744b3c`): mutation endpoints (`continue`, `flow-control`, `gate-decision`) resolve durable runs via `ensureRunResident`/`loadPersistedRun` post-restart instead of lying `run_not_found` | closed |
 | 6 | **Documented direction** — escape hatch is sufficient baseline; no code without product sign-off | closed |
-| 7 | **Approved — queued** | pending implementation |
+| 7 | **Resolved** — CA-1060 (`3021d810`): conservative leg-claim reclamation sweep (boot + in-session), reclaiming only terminal/deleted/corrupt-owned claims with durable audit events | closed |
 | 8 | **Resolved** — CA-1057 (`46d1f397`): all three `quota_route_*` types now persist to the flow-events sidecar; `quota_route_sidecar_test.go` pins replay | closed |
 | 9 | **Resolved** — CA-1058 (`635c6c4f`): `clearClosedLegPendingLocked`/`…Session` clear armed residue at every leg-close site (`waiting_*` → `cancelled`, gens kept as high-water); `needSessionWithIntent`, `rehydratePendingGatesLocked`, and the three projection paths all gate on `legState == closed` — a closed-but-armed row can no longer resurrect or render actionable | closed |
 | 10 | **Intended** — fixture coverage is the contract for soft-threshold quota | closed |
@@ -1223,3 +1222,32 @@ unreachable through the current seams (documented why) or environment-blocked
   misleading `skipped` counts (runner step detail, TUI, desktop summary).
 - CA-1057 `46d1f397` — quota route decisions persist to the flow sidecar.
 - CA-1058 `635c6c4f` — closed-leg armed-residue clearing + read guards.
+- CA-1059 `ea744b3c` — mutation endpoints resolve durable runs post-restart
+  (R.3#5).
+- CA-1060 `3021d810` — BUG-543 conservative leg-claim reclamation sweep
+  (R.3#7).
+- CA-1061 `0d935cb4` — typed `plan_complete` terminal on sprint plan drain
+  (R.3#2).
+- CA-1062 `b4561601` — vibe debate restore reprompts the gated child;
+  live-verified reprompt dispatch + sprint advance on run-15525.
+- CA-1063 `60ef56ab` — suppress drift-only owner-debate remount while a
+  debate flow is active; live-verified zero remounts.
+- CA-1064 `4d283503` — `r-scaffold-red` honors the declared zero-red waiver
+  in `tdd-signatures.md` (suite must still compile+run+green — fail-closed);
+  live-verified `tdd→coder→validate→synthesis→audit→done`.
+- CA-1065 `5ed3671d` — `spawn_agent` rejects flow-definition names
+  (R.3#3, option c).
+- CA-1066 `0dae2e03` — BUG-551 quiet-wedge recovery: resume early-return,
+  orphaned `pendingAgentContext`, watchdog re-arm on rehydrate, cap-blocked
+  reinvoke watchdog arm; 4 regression tests RED→GREEN.
+
+#### Bugs filed from this campaign's live runs
+
+- BUG-551 (`todo/…Quiet-Wedge-After-Escalate-Park-And-Cap-Blocked-Reinvoke`)
+  — RESOLVED by CA-1066.
+- BUG-552 (`todo/…Escalate-Park-Swallows-Gate-Decision-Routing-Record`) —
+  OPEN. Escalate park ACKs `gate-decision` routing (`routed_to`) then
+  swallows the record; needs durable routed-decision intent.
+- BUG-553 (`todo/…Stale-WaitingUserApproval-Children-Counted-Open-Cohort`)
+  — OPEN. Park-cancelled children keep `waiting_user_approval` stamps and
+  count as open cohort members, soft-deferring `flow-control done`.
