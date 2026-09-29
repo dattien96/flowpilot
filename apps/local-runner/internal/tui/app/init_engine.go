@@ -71,7 +71,7 @@ func (m *AppModel) handleEngineInitMsg(msg EngineInitMsg) (tea.Model, tea.Cmd) {
 		if status == "" {
 			status = "ok"
 		}
-		detail = fmt.Sprintf("%s — %d installed, %d skipped, %d errors", status, installed, skipped, errs)
+		detail = fmt.Sprintf("%s — %d installed, %d already current, %d errors", status, installed, skipped, errs)
 		if len(msg.Result.LastInit.Install.Errors) > 0 {
 			detail += " — " + strings.Join(msg.Result.LastInit.Install.Errors, "; ")
 		}

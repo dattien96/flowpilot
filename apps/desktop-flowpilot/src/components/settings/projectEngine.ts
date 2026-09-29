@@ -297,7 +297,10 @@ export function summarizeProjectEngineInit(
       : result.status === "partial"
         ? "Completed with warnings"
         : "Failed";
-  return `${state}: ${installed} installed, ${skipped} skipped, ${errors} errors.`;
+  if (!result.skipped && installed === 0 && skipped > 0 && errors === 0) {
+    return `${state}: all ${skipped} file(s) already current.`;
+  }
+  return `${state}: ${installed} installed, ${skipped} already current, ${errors} errors.`;
 }
 
 export function engineTone(status: string): "passed" | "warn" | "fail" {
