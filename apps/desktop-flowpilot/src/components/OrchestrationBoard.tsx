@@ -120,7 +120,9 @@ export function OrchestrationBoard(): React.ReactElement {
           <div className="board-round">
             Round <b>{loopRound} / {loopCap}</b>
             {openIssues !== undefined && <span> · <b style={{ color: openIssues > 0 ? "var(--warn)" : "var(--ok)" }}>{openIssues} open issue{openIssues !== 1 ? "s" : ""}</b></span>}
-            <span style={{ marginLeft: "8px", opacity: 0.7 }}>status: {loopStatus}</span>
+            <span style={{ marginLeft: "8px", opacity: 0.7 }}>
+              status: {loopStatus === "done" && loopState?.completionKind === "plan_complete" ? "plan complete" : loopStatus}
+            </span>
           </div>
 
           {/* BUG-231: blocked banner + unified Continue action. Continue answers

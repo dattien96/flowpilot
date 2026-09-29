@@ -362,6 +362,13 @@ type AgentLoopState struct {
 	// deliberately does NOT apply here.
 	NegotiationRound int `json:"negotiationRound,omitempty"`
 	NegotiationCap   int `json:"negotiationCap,omitempty"`
+	// CompletionKind records HOW a done loop completed (R.2-2): "" for a
+	// generic completion vs "plan_complete" when the vibe sprint plan
+	// drained — the distinction run summaries and the UI surface so a
+	// fully-delivered run is not read as a wedged slicer park. Meaningful
+	// only while Status=="done"; a resumed loop may carry a stale value, so
+	// renderers must gate on Status.
+	CompletionKind string `json:"completionKind,omitempty"`
 }
 
 type AgentGraphSnapshot struct {

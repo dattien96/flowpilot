@@ -203,6 +203,7 @@ func (m *AppModel) applyAgentGraph(g *client.AgentGraphSnapshot) {
 	m.vibeTaskIndex = g.LoopState.VibeTaskIndex
 	m.vibeTaskTotal = g.LoopState.VibeTaskTotal
 	m.vibeTaskName = strings.TrimSpace(g.LoopState.VibeTaskName)
+	m.flowCompletionKind = strings.TrimSpace(g.LoopState.CompletionKind)
 	m.agentRuns = g.Runs
 	m.afterAgentRunsAdopted()
 	if m.hasChildAgentRuns() {
@@ -467,6 +468,9 @@ func (m *AppModel) settleFlowIfDone() {
 	}
 	m.connStatus = ConnIdle
 	m.statusMsg = "done"
+	if strings.EqualFold(strings.TrimSpace(m.flowCompletionKind), "plan_complete") {
+		m.statusMsg = "plan complete"
+	}
 	if m.runHandle != nil && !runStatusIsTerminal(m.runHandle.Status) {
 		m.runHandle.Status = "completed"
 	}

@@ -165,6 +165,12 @@ export interface AgentLoopState {
   vibeTaskIndex?: number;
   vibeTaskTotal?: number;
   vibeTaskName?: string;
+  /**
+   * How a done loop completed (R.2-2): "plan_complete" when the vibe sprint
+   * plan drained — distinguishes "all planned tasks delivered" from a wedged
+   * slicer park. Meaningful only while status === "done".
+   */
+  completionKind?: string;
 }
 
 export interface AgentGraphSnapshot {

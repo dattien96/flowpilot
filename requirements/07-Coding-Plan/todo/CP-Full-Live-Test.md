@@ -350,7 +350,9 @@ No new reds → no post-rebase regression. ✅ GATE PASS.
   indistinguishable from a genuine slicer failure; a `continue` turn is
   absorbed (`hub_reinvoke_skipped_vibe_lock_sealed`) with no card options,
   so the only operator close is stop/cancel. Worth a "plan exhausted →
-  done" terminal distinction follow-up.
+  done" terminal distinction follow-up. → **RESOLVED (CA-1061)**: drained
+  plans land on loop `done` + `completionKind=plan_complete` instead of
+  the failure park; see R.2 item 2.
 - **Doc-scope gate on a plain chat turn has real teeth**: a `status?`
   question on run-46465 (post-cancel follow-up) tripped `r-task` because
   the reply referenced Task ids whose docs were deleted — the reprompt
@@ -1128,11 +1130,15 @@ unreachable through the current seams (documented why) or environment-blocked
    `retry cohort` / `stop`, each option carrying its candidate's patch ref,
    decision ledgered. Do not silently discard a mergeable losing patch; keep
    auto-pick only when the winner actually has a mergeable patch.
-2. **Plan-exhausted park is indistinguishable from slicer failure.** Introduce a
-   typed terminal/decision state (`plan_complete` / `sprint_complete`) when
-   `todo/` drains; keep true slicer failure on the retryable `blocked` path.
-   Surface the distinction in the run summary + UI so "done" isn't read as
-   "wedged".
+2. ~~**Plan-exhausted park is indistinguishable from slicer failure.**~~
+   **RESOLVED (CA-1061).** `AgentLoopState.CompletionKind = "plan_complete"`
+   is now the typed terminal when `vibeSprintIndex >= len(vibeTaskPlan) > 0`:
+   `maybeStartNextVibeSprint`'s `d.Done` settles (was silently swallowed),
+   `applyFlowControl` done-path stamps the kind, a stale slicer completion on
+   a drained plan settles instead of re-parking, and the cp_writer→task_slicer
+   resume-confirm is skipped on reopen. True zero-task slicer failure keeps
+   the retryable `blocked/requirement` path. Desktop board + TUI statusline
+   read `plan complete`.
 3. **Two sprint execution modes.** Pick one canonical contract: route
    `spawn_agent("vibe-sprint")` through the same flow-resolution +
    contract-freeze/TDD gates as engine-driven sprint nodes, OR explicitly mark

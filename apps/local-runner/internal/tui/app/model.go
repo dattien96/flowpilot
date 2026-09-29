@@ -589,6 +589,12 @@ type AppModel struct {
 	// "round R/C" chip on the steps header. Zero cap = unknown → chip hidden.
 	flowLoopRound int
 	flowLoopCap   int
+	// flowCompletionKind mirrors LoopState.CompletionKind (R.2-2):
+	// "plan_complete" when the vibe sprint plan drained — the statusline
+	// reads "plan complete" instead of a bare "done" so a fully-delivered
+	// run is not confused with a wedged park. Meaningful only when
+	// flowLoopStatus=="done".
+	flowCompletionKind string
 	// vibeTaskIndex/Total/Name mirror LoopState vibe progress (BUG-367).
 	vibeTaskIndex int
 	vibeTaskTotal int

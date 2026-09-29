@@ -1900,8 +1900,10 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 		// would wedge the run (decline can never complete).
 		s.mu.Lock()
 		sprintRemaining := 0
+		planDrained := false
 		if rs := s.runs[parentRunID]; rs != nil {
 			sprintRemaining = len(rs.vibeTaskPlan) - rs.vibeSprintIndex
+			planDrained = vibePlanDrainedLocked(rs)
 		}
 		s.mu.Unlock()
 		if sprintRemaining > 0 && in.agentInitiated {
@@ -1932,9 +1934,19 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 			st.Status = "done"
 			st.OpenIssues = 0
 			st.GateReason = ""
+			if planDrained {
+				// R.2-2: every sprint task delivered — tag the terminal so
+				// "plan complete" is distinguishable from a generic done and
+				// from a wedged slicer park.
+				st.CompletionKind = vibeCompletionPlanComplete
+			}
 			return st
 		})
-		s.appendPendingAgentContext(parentRunID, strings.TrimSpace("Flow completed. "+in.Summary))
+		doneNote := "Flow completed. "
+		if planDrained {
+			doneNote = "Vibe sprint plan complete — all planned tasks delivered. "
+		}
+		s.appendPendingAgentContext(parentRunID, strings.TrimSpace(doneNote+in.Summary))
 		s.emitAgentGraph(parentRunID, snap)
 		// BUG-StaleCancel: persist synchronously here (not go goroutine) so the
 		// completed state is guaranteed to land in the NDJSON session file before
