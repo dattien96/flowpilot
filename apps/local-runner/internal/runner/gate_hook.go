@@ -1415,6 +1415,11 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 		nonStub, syms := s.scaffoldStaticBodyViolations(cwd, tr.WrittenPaths)
 		tr.ScaffoldBodyNonStub = nonStub
 		tr.NonStubSymbols = syms
+		// Declared zero-red contract (live wedge run-17384): remediation may
+		// adjudicate a pre-existing implementation as the accepted artifact —
+		// tdd-signatures.md then records red_tests:[] + failure_type:none, and
+		// the gate must verify green instead of demanding stub bodies.
+		tr.ScaffoldRedWaived = vibeScaffoldRedWaived(cwd)
 	}
 	if coderSignaturesLocked {
 		tr.SignatureHashBefore = coderFrozenRec.SignatureHash
