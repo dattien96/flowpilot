@@ -86,6 +86,47 @@ func settledChatTurnsForRun(rs *interactiveRun) []transcriptTurn {
 	return out
 }
 
+// forwardChatTranscriptTurns reads the settled discussion the forward must
+// carry from the durable CHAT transcript (CP-59 SSOT). A chat that reattached
+// a leg or switched providers mints a fresh run whose rs.events start empty,
+// so a leg-scoped read would silently drop every pre-switch turn the user
+// discussed (SS/SD/CP review context); the transcript store spans all legs.
+//
+// Caller must NOT hold s.mu — this is chat-store I/O and the writer mutex
+// exists precisely so such I/O never extends the service lock (SD26-S-2).
+// Returns nil when no usable transcript exists; the caller then falls back
+// to the leg's own settled events.
+func (s *InteractiveService) forwardChatTranscriptTurns(ctx context.Context, chatID string) []transcriptTurn {
+	if chatID == "" {
+		return nil
+	}
+	w := s.ensureChatTranscriptWriter()
+	if w == nil || w.store == nil {
+		return nil
+	}
+	records, err := w.store.ReadChatRecords(ctx, chatID, 0, 0)
+	if err != nil || len(records) == 0 {
+		return nil
+	}
+	turns, _ := chatTurnsAndActions(records)
+	out := make([]transcriptTurn, 0, len(turns))
+	for _, tr := range turns {
+		if isSystemPrompt(tr.User) {
+			continue
+		}
+		out = append(out, tr)
+	}
+	// A trailing unanswered turn is never settled context (in-flight or
+	// interrupted) — and this forward's own turn_started, when already
+	// recorded, would otherwise ship the forward text twice (it is the
+	// mandatory "Forward request" section). Mid-chat unanswered turns stay:
+	// the prompt still happened and the discussion continued after it.
+	if n := len(out); n > 0 && strings.TrimSpace(out[n-1].Assistant) == "" {
+		out = out[:n-1]
+	}
+	return out
+}
+
 // forwardEntryBudgetTokens resolves the pinned flow's entry-node context
 // budget: the first spawnable entry node's contextProfile.MaxEstPromptTokens
 // (Task-341 schema). Falls back to the packer default when the flow declares
@@ -114,7 +155,7 @@ func (s *InteractiveService) forwardEntryBudgetTokens(ctx context.Context, flowR
 //   - the forward text is a mandatory section — pinned intact, never dropped
 //     or truncated (PackPrompt's mandatory-kinds contract);
 //   - PackPrompt assembles with deterministic section order + audit.
-func (s *InteractiveService) buildForwardPromptPackage(rs *interactiveRun, forwardText string, budget int64) (ForwardPromptPackage, *apiErr) {
+func (s *InteractiveService) buildForwardPromptPackage(rs *interactiveRun, forwardText string, budget int64, chatTurns []transcriptTurn) (ForwardPromptPackage, *apiErr) {
 	if budget <= 0 {
 		budget = forwardPromptBudgetTokens
 	}
@@ -128,7 +169,10 @@ func (s *InteractiveService) buildForwardPromptPackage(rs *interactiveRun, forwa
 		return ForwardPromptPackage{}, newAPIErr(http.StatusUnprocessableEntity, "forward_prompt_too_large",
 			fmt.Sprintf("forward text (%d est. tokens) exceeds the entry node's prompt budget (%d tokens); shorten the message", promptpacker.EstimateTokens(fwd), budget))
 	}
-	turns := settledChatTurnsForRun(rs)
+	turns := chatTurns
+	if len(turns) == 0 {
+		turns = settledChatTurnsForRun(rs)
+	}
 	// The transcript's byte cap = budget − forward text − envelope reserve.
 	// Tokens ≈ bytes/4 (EstimateTokens), so the transcript cap in bytes is
 	// budget*4 minus what the forward text and headers will occupy.

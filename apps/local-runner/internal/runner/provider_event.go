@@ -417,6 +417,10 @@ type RunHandle struct {
 	// reopened chat; "immediate"/"started" are informational only. Omitted on
 	// runs with no flow pin.
 	FlowArm string `json:"flowArm,omitempty"`
+	// SourceDocID echoes the CP-89 source-document pin (e.g. the CP doc a
+	// vibe-cp-ingest run ingests). Clients need it on the handle so a reopened
+	// or reattached armed chat can re-render the doc path without repaste.
+	SourceDocID string `json:"sourceDocId,omitempty"`
 	// Chat SSOT (CP-59 / SD-26 §5.1): the logical chat this run belongs to and
 	// its leg ordinal. Omitted for workflow runs and when the flag is off.
 	ChatID string `json:"chatId,omitempty"`

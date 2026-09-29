@@ -42,7 +42,7 @@ func TestTask453_PackageContainsForwardAndTranscript(t *testing.T) {
 		{User: "first question", Assistant: "first answer"},
 		{User: "second question", Assistant: "second answer"},
 	})
-	pkg, e := svc.buildForwardPromptPackage(rs, "ship it now", 8000)
+	pkg, e := svc.buildForwardPromptPackage(rs, "ship it now", 8000, nil)
 	if e != nil {
 		t.Fatalf("pack: %v", e)
 	}
@@ -70,7 +70,7 @@ func TestTask453_OnlySettledTurnsIncluded(t *testing.T) {
 	rs.events = append(rs.events,
 		ProviderEvent{Type: EventTurnStarted, Seq: 99, Prompt: "half written turn"})
 	svc.mu.Unlock()
-	pkg, e := svc.buildForwardPromptPackage(rs, "forward", 8000)
+	pkg, e := svc.buildForwardPromptPackage(rs, "forward", 8000, nil)
 	if e != nil {
 		t.Fatalf("pack: %v", e)
 	}
@@ -95,7 +95,7 @@ func TestTask453_RolesFiltered(t *testing.T) {
 		ProviderEvent{Type: EventTurnCompleted, Seq: 51, FinalMessage: "internal system reply"},
 	)
 	svc.mu.Unlock()
-	pkg, e := svc.buildForwardPromptPackage(rs, "go", 8000)
+	pkg, e := svc.buildForwardPromptPackage(rs, "go", 8000, nil)
 	if e != nil {
 		t.Fatalf("pack: %v", e)
 	}
@@ -118,7 +118,7 @@ func TestTask453_BudgetCapTruncatesOldestFirst(t *testing.T) {
 	}
 	rs := task453RunWithTurns(t, svc, turns)
 	budget := int64(900) // tokens → ~3600 bytes; far under the ~9.6KB transcript
-	pkg, e := svc.buildForwardPromptPackage(rs, "pin this forward text", budget)
+	pkg, e := svc.buildForwardPromptPackage(rs, "pin this forward text", budget, nil)
 	if e != nil {
 		t.Fatalf("pack: %v", e)
 	}
@@ -143,7 +143,7 @@ func TestTask453_BudgetCapTruncatesOldestFirst(t *testing.T) {
 func TestTask453_EmptyTranscriptForwardsTextOnly(t *testing.T) {
 	svc := task451Service(t)
 	rs := task453RunWithTurns(t, svc, nil)
-	pkg, e := svc.buildForwardPromptPackage(rs, "just the forward text", 8000)
+	pkg, e := svc.buildForwardPromptPackage(rs, "just the forward text", 8000, nil)
 	if e != nil {
 		t.Fatalf("pack: %v", e)
 	}
@@ -160,7 +160,7 @@ func TestTask453_BareForwardEmptyTextStillPacks(t *testing.T) {
 	rs := task453RunWithTurns(t, svc, []transcriptTurn{
 		{User: "earlier context", Assistant: "earlier reply"},
 	})
-	pkg, e := svc.buildForwardPromptPackage(rs, "", 8000)
+	pkg, e := svc.buildForwardPromptPackage(rs, "", 8000, nil)
 	if e != nil {
 		t.Fatalf("bare forward pack: %v", e)
 	}
@@ -174,8 +174,8 @@ func TestTask453_DeterministicReplay(t *testing.T) {
 	rs := task453RunWithTurns(t, svc, []transcriptTurn{
 		{User: "u1", Assistant: "a1"}, {User: "u2", Assistant: "a2"},
 	})
-	p1, e1 := svc.buildForwardPromptPackage(rs, "fwd", 2000)
-	p2, e2 := svc.buildForwardPromptPackage(rs, "fwd", 2000)
+	p1, e1 := svc.buildForwardPromptPackage(rs, "fwd", 2000, nil)
+	p2, e2 := svc.buildForwardPromptPackage(rs, "fwd", 2000, nil)
 	if e1 != nil || e2 != nil {
 		t.Fatalf("pack errors: %v %v", e1, e2)
 	}

@@ -557,8 +557,17 @@ export interface AppState {
    * CP-89 chat-then-forward (Task-452): the current chat's run was created with
    * a pinned flow + flowArm:"pending" — chat turns stay plain until the user
    * explicitly forwards. Undefined when the focused chat has no armed flow.
+   * sourceDocId preserves the create-time CP pin so a leg hop (reattach) can
+   * re-declare it and the forward-time ingest fence still validates.
    */
-  pendingFlowArm?: { flowRef: string };
+  pendingFlowArm?: { flowRef: string; sourceDocId?: string };
+  /**
+   * CP-89: the focused chat's flow latch already flipped to "started" — the
+   * armed affordance hides and the late-attach picker never reappears. Set
+   * on forward success and restored from the durable latch echo
+   * (handle/history flowArm === "started") on reopen/switch/reattach.
+   */
+  flowStarted?: boolean;
 
   // run
   runId?: string;
@@ -855,8 +864,12 @@ export interface AppState {
    * CP-89/Task-452: explicitly start the armed pending flow on the focused
    * chat — sends a forwardFlow turn (the only signal that flips the pending
    * latch to started). forwardText rides into the flow's entry prompt.
+   * opts.flowRef is the user's FINAL flow choice — it overrides the
+   * provisional create-time pin or supplies the pin outright on a chat that
+   * was never armed (late-attach). opts.sourceDocId feeds the cp-ingest
+   * fence when the final choice is vibe-cp-ingest.
    */
-  forwardArmedFlow(forwardText?: string): Promise<void>;
+  forwardArmedFlow(forwardText?: string, opts?: { flowRef?: string; sourceDocId?: string }): Promise<void>;
   openInIde(path: string, line?: number): void;
   openAdminWeb(): void;
   restartSystem(): Promise<void>;
@@ -1659,6 +1672,23 @@ export const useStore = create<AppState>((set, get) => ({
           accountSwitchLoading: false,
           pendingProviderSwitch: undefined,
           providerSwitchLoading: false,
+          // CP-89: the switch minted a fresh leg — restore the armed
+          // affordance from the NEW handle (runner copies the latch onto the
+          // leg), falling back to the pre-switch state when the runner
+          // predates the echo fields.
+          pendingFlowArm:
+            (resp.handle.flowArm ?? "") === "pending"
+              ? {
+                  flowRef: resp.handle.flowRef || state.pendingFlowArm?.flowRef || "",
+                  sourceDocId: resp.handle.sourceDocId || state.pendingFlowArm?.sourceDocId,
+                }
+              : undefined,
+          flowStarted:
+            (resp.handle.flowArm ?? "") === "started"
+              ? true
+              : (resp.handle.flowArm ?? "") === ""
+                ? state.flowStarted
+                : false,
           _accountSwitchTriedIds: [],
           _streamingAssistantId: undefined,
           agentRuns: [],
@@ -1720,6 +1750,8 @@ export const useStore = create<AppState>((set, get) => ({
         accountSwitchLoading: false,
         pendingProviderSwitch: undefined,
         providerSwitchLoading: false,
+        pendingFlowArm: undefined,
+        flowStarted: false,
         _accountSwitchTriedIds: [],
         _streamingAssistantId: undefined,
         agentRuns: [],
@@ -2334,6 +2366,10 @@ export const useStore = create<AppState>((set, get) => ({
         throw lastErr;
       };
       if (isDetachedReattach) {
+        // CP-89: the armed pin/latch must travel to the replacement leg —
+        // the runner adopts the prior leg's durable row when it can, but the
+        // client fields keep the arm intact when no prior leg is resolvable.
+        const armed = get().pendingFlowArm;
         const handle = await startRunWithRetry({
           projectId: selectedProjectId!,
           providerKey: selectedProvider,
@@ -2346,6 +2382,11 @@ export const useStore = create<AppState>((set, get) => ({
           chatId: existingChatId!,
           switchFromRunId: runId!,
           worktree: get().worktreeEnabled,
+          flowRef: armed?.flowRef || undefined,
+          // flow_arm_requires_flow rejects a pending arm with no pin — only
+          // re-declare the latch when a ref actually travels with it.
+          flowArm: armed?.flowRef ? "pending" : undefined,
+          sourceDocId: armed?.sourceDocId,
         });
         runId = handle.runId;
         if (handle.stepId) {
@@ -2355,12 +2396,28 @@ export const useStore = create<AppState>((set, get) => ({
         // the focus writes gated on the send's seq. The run itself always gets
         // a local history row regardless of focus.
         if (get()._streamRunSeq === sendSeq) {
+          // The new leg echoes the latch it actually adopted (CP-89 reattach):
+          // "pending" keeps the affordance armed, "started" means the flow
+          // already launched on a prior leg — re-arming must not resurface,
+          // and a stale "pending" from before that flip must not linger.
+          const armEcho = handle.flowArm ?? "";
           set({
             mainRunId: handle.runId,
             chatId: handle.chatId ?? existingChatId,
             chatDetached: false,
             activeAgentRunId: undefined,
             activeWorktreePath: handle.worktreePath ?? "",
+            ...(armEcho === "pending"
+              ? {
+                  pendingFlowArm: {
+                    flowRef: handle.flowRef || armed?.flowRef || "",
+                    sourceDocId: handle.sourceDocId || armed?.sourceDocId,
+                  },
+                  flowStarted: false,
+                }
+              : armEcho === "started"
+                ? { pendingFlowArm: undefined, flowStarted: true }
+                : {}),
           });
           if (get().worktreeEnabled) set({ activeWorktreeState: "active" });
         }
@@ -2419,7 +2476,10 @@ export const useStore = create<AppState>((set, get) => ({
             activeWorktreePath: handle.worktreePath ?? "",
             // CP-89: surface the armed affordance — the vibe flow is pinned
             // pending and waits for the explicit forward turn.
-            pendingFlowArm: vibeEntry ? { flowRef: vibeEntry.flowRef } : undefined,
+            pendingFlowArm: vibeEntry
+              ? { flowRef: vibeEntry.flowRef, sourceDocId: vibeEntry.sourceDocId || undefined }
+              : undefined,
+            flowStarted: false,
           });
           if (get().worktreeEnabled) set({ activeWorktreeState: "active" });
         }
@@ -2597,12 +2657,21 @@ export const useStore = create<AppState>((set, get) => ({
     }
   },
 
-  async forwardArmedFlow(forwardText) {
+  async forwardArmedFlow(forwardText, opts) {
     const { client, runId, pendingFlowArm, activeStepId, status } = get();
-    if (!client || !runId || !pendingFlowArm) return;
+    // The affordance exists when the runner can still launch: either the run
+    // carries a pinned pending arm, or the forward turn itself supplies the
+    // user's FINAL flow choice (CP-89 late-attach — an unpinned, never-
+    // launched chat armed only now, validated by the same runner gate).
+    const armedFlowRef = (opts?.flowRef ?? "").trim() || pendingFlowArm?.flowRef;
+    if (!client || !runId || !armedFlowRef) return;
     if (status === "running" || status === "waiting_approval" || status === "waiting_question") return;
-    const armedFlowRef = pendingFlowArm.flowRef;
     const prompt = (forwardText ?? "").trim();
+    // Capture the draft lane + stream seq BEFORE the optimistic mutation —
+    // a failed forward restores the composed text under the same key, and a
+    // late result must never stamp state onto a chat the user switched to.
+    const draftKeyAtSend = draftKeyFor(get().chatId ?? null, runId, get().selectedProjectId ?? null);
+    const sendSeq = get()._streamRunSeq + 1;
     const turnInput: TurnInput = {
       runId,
       stepId: activeStepId ?? "",
@@ -2611,11 +2680,24 @@ export const useStore = create<AppState>((set, get) => ({
       // the runner carries this text + the settled chat transcript into the
       // flow's entry leg.
       forwardFlow: true,
+      // The turn-level ref is the final selection: it overrides the
+      // provisional create-time pin (or is the pin outright on a chat that
+      // was never armed). Runner validates + commits it atomically.
+      flowRef: armedFlowRef,
+      sourceDocId: opts?.sourceDocId?.trim() || undefined,
+      // One key per forward send: retries after a connection failure replay
+      // the same turnId — without it a post-commit retry hits
+      // flow_already_started on a latch the runner already flipped.
+      idempotencyKey: `fwd-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
     };
     set((s) => ({
       pendingFlowArm: undefined,
       status: "running",
       recoverable: false,
+      // Same supersede contract as sendPrompt (CA-1049): bump the stream seq
+      // so in-flight events and any late result from THIS forward cannot
+      // corrupt a chat the user opened meanwhile.
+      _streamRunSeq: sendSeq,
       timeline: [
         ...s.timeline.filter((it) => it.kind !== "thinking"),
         {
@@ -2626,6 +2708,7 @@ export const useStore = create<AppState>((set, get) => ({
         { kind: "thinking", id: `thinking-${s.timeline.length + 1}`, text: "Thinking..." },
       ],
     }));
+    const stillOurs = () => shouldApplyRunEvent(get().runId, runId) && get()._streamRunSeq === sendSeq;
     let connAttempts = 0;
     try {
       for (let attempt = 0; ; attempt++) {
@@ -2633,20 +2716,25 @@ export const useStore = create<AppState>((set, get) => ({
           await consumeStream(runId, client.sendTurn(turnInput), set, get);
           break;
         } catch (err) {
-          if (isConnectionFailure(err) && connAttempts < CONN_SEND_MAX_RETRIES && shouldApplyRunEvent(get().runId, runId)) {
+          if (isConnectionFailure(err) && connAttempts < CONN_SEND_MAX_RETRIES && stillOurs()) {
             connAttempts++;
             await new Promise((r) => setTimeout(r, CONN_SEND_RETRY_MS));
             continue;
           }
           const transient = err instanceof RunnerApiError && TRANSIENT_SEND_CODES.has(err.code ?? "");
-          if (!transient || attempt >= TRANSIENT_SEND_MAX_RETRIES || !shouldApplyRunEvent(get().runId, runId)) {
+          if (!transient || attempt >= TRANSIENT_SEND_MAX_RETRIES || !stillOurs()) {
             throw err;
           }
           await new Promise((r) => setTimeout(r, TRANSIENT_SEND_RETRY_MS));
         }
       }
+      // Forward accepted — the latch is durable started now; hide the armed
+      // affordance + late-attach picker for this chat, and drop the draft
+      // lane the text was composed under.
+      if (stillOurs()) set({ flowStarted: true });
+      get().clearDraft(draftKeyAtSend);
       const orchestrationRunId = get().mainRunId ?? runId;
-      if (orchestrationRunId) {
+      if (orchestrationRunId && stillOurs()) {
         startOrchestrationStream(orchestrationRunId, client, set, get);
       }
       void get().refreshAgentRuns();
@@ -2654,10 +2742,24 @@ export const useStore = create<AppState>((set, get) => ({
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error("[FlowPilot] forwardArmedFlow failed:", err);
+      // Stale guard FIRST: a forward that resolves after the user switched
+      // chats must not mark the focused run failed or re-arm another chat's
+      // flow affordance. The retry invariants live runner-side anyway.
+      if (!stillOurs()) {
+        return;
+      }
+      // Restore the composed text — the composer cleared optimistically and
+      // a rejected forward must not make the user retype the final ask. A
+      // draft the user re-typed mid-flight (same key) wins over the restore.
+      if (!get().drafts[draftKeyAtSend]) {
+        get().setDraft(draftKeyAtSend, { text: prompt, updatedAt: Date.now() });
+      }
       // The runner rolls the latch back to pending when the forward is
       // rejected (Task-452) — restore the affordance so the user can retry.
+      // A rejected LATE-ATTACH never had an arm to begin with — restoring a
+      // synthesized one would mislabel the picker as an armed pin.
       set((s) => ({
-        pendingFlowArm: s.pendingFlowArm ?? { flowRef: armedFlowRef },
+        pendingFlowArm: s.pendingFlowArm ?? pendingFlowArm,
         status: "failed",
         recoverable: true,
         timeline: [
@@ -3538,8 +3640,12 @@ export const useStore = create<AppState>((set, get) => ({
       // history row when the handle predates the field) is the authority.
       pendingFlowArm:
         (handle.flowArm ?? historyItem?.flowArm) === "pending"
-          ? { flowRef: handle.flowRef || historyItem?.flowRef || "" }
+          ? {
+              flowRef: handle.flowRef || historyItem?.flowRef || "",
+              sourceDocId: handle.sourceDocId || historyItem?.sourceDocId,
+            }
           : undefined,
+      flowStarted: (handle.flowArm ?? historyItem?.flowArm) === "started",
       // Task-433: a cached snapshot of THIS run paints instantly (transient
       // optimistic rows dropped — replay re-appends them with durable ids);
       // the replay stream below remains the authority and revalidates it.
@@ -3712,6 +3818,7 @@ export const useStore = create<AppState>((set, get) => ({
       flowRef: undefined,
       builtinOrchestrationOptions: [],
       pendingFlowArm: undefined,
+      flowStarted: false,
       // worktreeEnabled intentionally survives reset: the toggle is a next-run
       // intent (like yoloMode/workingMode), not per-run state — clearing it here
       // silently dropped worktree:true when "New run"/new-chat called resetRun
@@ -5161,9 +5268,17 @@ function snapshotRunState(state: AppState): RunSnapshot {
 function restoreRunSnapshot(snapshot: RunSnapshot): Partial<AppState> {
   const pending = sanitizePendingSnapshotState(snapshot.status, snapshot.pendingApprovals, snapshot.pendingQuestions);
   // Clone mutable collections on restore too — the cached copy must not alias
-  // live state the reducer will mutate next.
+  // live state the reducer will mutate next. CP-89 caret fix: any assistant
+  // bubble still marked unfinalized in a CACHED snapshot is stale — the live
+  // stream that owned it died when the snapshot was taken, and providers that
+  // close a turn without a plain message_completed left finalized:false
+  // behind (the blinking ▌ caret on historical replies). Finalize them all:
+  // if the run is genuinely still streaming, the replay's message_delta
+  // re-opens the same bubble id in place, so nothing live is lost.
   return {
-    timeline: [...snapshot.timeline],
+    timeline: snapshot.timeline.map((it) =>
+      it.kind === "assistant" && !it.finalized ? { ...it, finalized: true } : it,
+    ),
     artifacts: [...snapshot.artifacts],
     status: snapshot.status,
     pendingApprovals: [...pending.pendingApprovals],
@@ -5172,7 +5287,10 @@ function restoreRunSnapshot(snapshot: RunSnapshot): Partial<AppState> {
     contextNotice: snapshot.contextNotice,
     lastTurnInput: snapshot.lastTurnInput,
     recoverable: snapshot.recoverable,
-    _streamingAssistantId: snapshot._streamingAssistantId,
+    // Cleared with the finalize-all above — a replayed delta re-binds by
+    // event id; keeping the stale id would append replayed text onto the
+    // already-complete bubble instead of rebuilding it.
+    _streamingAssistantId: undefined,
     activeStepId: snapshot.activeStepId,
     timelineHasOlder: snapshot.timelineHasOlder ?? false,
     _timelineAnchorSeq: snapshot._timelineAnchorSeq,

@@ -227,6 +227,9 @@ interface RunState {
   parentRunId?: string;
   agentName?: string;
   role?: string;
+  chatId?: string;
+  legSeq?: number;
+  runKind?: string;
   /** CP-89: pinned flow ref + armed latch mirrored from StartRunInput. */
   flowRef?: string;
   flowArm?: string;
@@ -420,8 +423,33 @@ export class MockRunnerClient implements RunnerClient {
     this.chatLegs.set(chatId, legSeq);
     this.switchLastProvider.set(chatId, input.targetProviderKey);
     const runId = `mock-run-${chatId}-${legSeq}`;
+    // CP-89: the new leg inherits the chat's armed latch — echo the newest
+    // prior leg's flowArm/flowRef on the handle (mirrors switchChatLeg).
+    const prevLeg = [...this.runs.values()]
+      .filter((r) => r.chatId === chatId)
+      .sort((a, b) => (a.legSeq ?? 0) - (b.legSeq ?? 0))
+      .pop() as { flowRef?: string; flowArm?: string } | undefined;
+    this.runs.set(runId, {
+      runId,
+      projectId: "",
+      providerSessionId: `ses-${legSeq}`,
+      providerTurnId: "",
+      status: "running",
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      seq: 0,
+      chatId,
+      legSeq,
+      runKind: "chat",
+      ...(prevLeg?.flowRef ? { flowRef: prevLeg.flowRef } : {}),
+      ...(prevLeg?.flowArm ? { flowArm: prevLeg.flowArm } : {}),
+    } as never);
     return {
-      handle: { runId, providerSessionId: `ses-${legSeq}`, providerKey: input.targetProviderKey, status: "starting", chatId, legSeq },
+      handle: {
+        runId, providerSessionId: `ses-${legSeq}`, providerKey: input.targetProviderKey, status: "starting", chatId, legSeq,
+        ...(prevLeg?.flowRef ? { flowRef: prevLeg.flowRef } : {}),
+        ...(prevLeg?.flowArm ? { flowArm: prevLeg.flowArm } : {}),
+      },
       chatId,
       legSeq,
       model: input.model ?? "",
@@ -872,6 +900,17 @@ export class MockRunnerClient implements RunnerClient {
     const chatId = isChat ? (input.chatId ?? `cht_mock_${runId}`) : undefined;
     const legSeq = isChat ? (input.legSeq ?? 0) : undefined;
     const runKind = isChat ? "chat" : input.workflowId || input.stepId ? "workflow" : undefined;
+    // CP-89: a reattach leg inherits the chat's armed latch from the newest
+    // prior leg when the request does not pin one itself (mirrors the
+    // runner's durable-leg adoption in createRun).
+    const priorLeg = input.chatId
+      ? [...this.runs.values()]
+          .filter((r) => r.chatId === chatId && r.runId !== runId)
+          .sort((a, b) => (a.legSeq ?? 0) - (b.legSeq ?? 0))
+          .pop()
+      : undefined;
+    const flowRef = input.flowRef ?? priorLeg?.flowRef;
+    const flowArm = input.flowArm ?? priorLeg?.flowArm;
     this.runs.set(runId, {
       runId,
       projectId: input.projectId,
@@ -884,8 +923,8 @@ export class MockRunnerClient implements RunnerClient {
       seq: 0,
       ...(runKind ? { runKind } as never : {}),
       ...(chatId ? { chatId, legSeq } as never : {}),
-      ...(input.flowRef ? { flowRef: input.flowRef } : {}),
-      ...(input.flowArm ? { flowArm: input.flowArm } : {}),
+      ...(flowRef ? { flowRef } : {}),
+      ...(flowArm ? { flowArm } : {}),
     } as never);
     const providerKey = input.providerKey ?? "codex";
     const stepId = input.chatMode === "normal_chat" ? `chat-${runId}` : undefined;
@@ -897,8 +936,8 @@ export class MockRunnerClient implements RunnerClient {
       ...(stepId ? { stepId } : {}),
       ...(runKind ? { runKind } : {}),
       ...(chatId ? { chatId, legSeq } : {}),
-      ...(input.flowRef ? { flowRef: input.flowRef } : {}),
-      ...(input.flowArm ? { flowArm: input.flowArm } : {}),
+      ...(flowRef ? { flowRef } : {}),
+      ...(flowArm ? { flowArm } : {}),
     } as RunHandle;
   }
 
@@ -953,9 +992,15 @@ export class MockRunnerClient implements RunnerClient {
     state.status = "running";
     state.updatedAt = new Date().toISOString();
     // CP-89: an explicit forward flips a pending arm to started (mock mirrors
-    // the durable latch so a later resumeRun reports the flipped state).
-    if (input.forwardFlow && state.flowArm === "pending") {
-      state.flowArm = "started";
+    // the durable latch so a later resumeRun reports the flipped state). The
+    // turn's flowRef is the final pin — it overrides the provisional create
+    // pin or late-attaches a never-armed chat.
+    if (input.forwardFlow) {
+      const pinned = Boolean(state.flowRef);
+      if (state.flowArm === "pending" || (state.flowArm !== "started" && !pinned && input.flowRef)) {
+        state.flowArm = "started";
+        if (input.flowRef) state.flowRef = input.flowRef;
+      }
     }
     this.runs.set(input.runId, state);
 

@@ -10212,11 +10212,32 @@ func (s *InteractiveService) forwardPinnedFlow(ctx context.Context, rs *interact
 		return "", newAPIErr(http.StatusUnprocessableEntity, "forward_requires_root_run",
 			"forwardFlow is only valid on a chat-root run")
 	}
-	flowRef, pinErr := resolvePinnedFlowRefForForward(rs)
-	if pinErr != nil {
-		return "", pinErr
+	// CP-89 desktop wiring: the forward turn may carry the user's FINAL flow
+	// choice. A chat armed at create time pins a provisional ref (e.g. the
+	// vibe-ingest guess), but the discussion may produce a CP doc afterwards —
+	// the explicit turn-level ref then overrides/ completes the pin and is
+	// stamped onto rs.chatFlowRef atomically at commitPendingFlowStartLocked.
+	flowRef := strings.TrimSpace(in.FlowRef)
+	if flowRef == "" {
+		var pinErr *apiErr
+		flowRef, pinErr = resolvePinnedFlowRefForForward(rs)
+		if pinErr != nil {
+			return "", pinErr
+		}
 	}
-	if rs.flowArm != FlowArmPending {
+	if rs.flowArm == FlowArmPending {
+		// The CP-89 latch path: an armed run's forward flips pending→started.
+	} else if rs.flowArm == FlowArmImmediate &&
+		strings.TrimSpace(rs.chatFlowRef) == "" &&
+		strings.TrimSpace(rs.workflowID) == "" &&
+		!rs.flowEngineDriven &&
+		strings.TrimSpace(in.FlowRef) != "" {
+		// Late arm+forward: an unpinned, never-launched chat's explicit
+		// "start flow" — the turn's flowRef IS the pin being committed now.
+		// Still an explicit deterministic user signal, fenced identically;
+		// a pinned immediate run (chatFlowRef set) or an already-driven run
+		// keeps failing closed below.
+	} else {
 		return "", newAPIErr(http.StatusUnprocessableEntity, "flow_already_started",
 			"this run's flow is not pending — it already started or never armed forward")
 	}
@@ -10232,6 +10253,16 @@ func (s *InteractiveService) forwardPinnedFlow(ctx context.Context, rs *interact
 // launch (R5-1). Caller holds s.mu.
 func (s *InteractiveService) commitPendingFlowStartLocked(rs *interactiveRun, flowRef string) {
 	rs.setFlowArmStartedLocked()
+	if rs.flowArm == FlowArmImmediate {
+		// Late arm+forward (desktop CP-89 fix): forwardPinnedFlow admitted an
+		// unpinned, never-launched chat whose turn carried the explicit final
+		// flowRef — there is no pending latch to flip, so stamp started
+		// directly. setFlowArmStartedLocked keeps its pending-only guard;
+		// every other arm state still cannot reach this point (the gate
+		// rejects started/driven/pinned-immediate before commit).
+		rs.flowArm = FlowArmStarted
+		rs.updatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	}
 	rs.flowEngineDriven = true
 	// Flow-start turns lock YOLO=true before the async entry spawn so children
 	// inherit the product posture — same contract as the immediate first-turn
@@ -10682,11 +10713,12 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 	// (BUG-288 prepared intents): the flowArm latch itself is the idempotency
 	// key. A relaunched forward whose flip already committed (arm=started)
 	// completes synthetically — re-spawning would duplicate the flow; a
-	// relaunched forward on a still-pending latch runs the full fence+flip
-	// path because the first attempt never reached the launch.
+	// relaunched forward on ANY uncommitted latch (pending, or the late-arm
+	// immediate shape) re-runs the full fence+flip path because the first
+	// attempt never reached the launch — the gate re-validates inside.
 	if in.ForwardFlow && isPreparedRelaunch && rs.flowArm == FlowArmStarted {
 		flowStartOnly = true
-	} else if in.ForwardFlow && (!isPreparedRelaunch || rs.flowArm == FlowArmPending) {
+	} else if in.ForwardFlow && (!isPreparedRelaunch || rs.flowArm != FlowArmStarted) {
 		// Same first-turn adoption the immediate block does — the forward IS
 		// this run's launch turn, so a turn-level changeType/sourceDocID/
 		// subMode must land on the run before the fences read it (and before
@@ -10733,13 +10765,50 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 			s.mu.Unlock()
 			return "", e
 		}
+		// CP-89 Task-453 R-fix: the transcript the entry child needs is
+		// CHAT-scoped — a reattach or provider switch mints a fresh leg whose
+		// rs.events start empty, so a leg-scoped read would silently drop
+		// the whole pre-switch discussion. That read is chat-store I/O and
+		// must never extend s.mu (SD26-S-2), so it runs in a lock gap.
+		// turnInFlight stays set across the gap so a concurrent turn still
+		// fences on it; the relock revalidates before anything commits.
+		chatID := rs.chatID
+		s.mu.Unlock()
+		fwdTurns := s.forwardChatTranscriptTurns(context.Background(), chatID)
+		s.mu.Lock()
+		if s.runs[runID] != rs {
+			// Deleted while the lock was dropped — nothing has committed;
+			// abort before any latch flip or spawn (mirrors the post-persist
+			// gap below).
+			rs.turnInFlight = false
+			s.mu.Unlock()
+			return "", newAPIErr(http.StatusNotFound, "run_not_found",
+				"run deleted while preparing the forward")
+		}
+		if rs.status == RunStatusFailed || rs.status == RunStatusCancelled {
+			// Stopped while the lock was dropped — the forward is superseded
+			// and nothing committed, so surface a typed retryable conflict
+			// rather than ack a launch that never happened.
+			rollbackRejectedForward()
+			s.mu.Unlock()
+			return "", newAPIErr(http.StatusConflict, "forward_superseded",
+				"run was stopped while preparing the forward")
+		}
+		// Re-run the latch gate after the unlocked gap — fences are pure
+		// validation; a state change that landed mid-read must not inherit
+		// a stale admit.
+		if _, reErr := s.forwardPinnedFlow(context.Background(), rs, in); reErr != nil {
+			rollbackRejectedForward()
+			s.mu.Unlock()
+			return "", reErr
+		}
 		// CP-89 Task-453: the entry child's prompt = forward text pinned
 		// intact + the settled chat transcript, oldest material degrading
 		// first, under the entry node's hard context budget. The pack runs
 		// BEFORE the flip (R5-1): a pack rejection must not consume the
 		// latch.
 		pkg, perr := s.buildForwardPromptPackage(rs, in.Prompt,
-			s.forwardEntryBudgetTokens(context.Background(), flowRef))
+			s.forwardEntryBudgetTokens(context.Background(), flowRef), fwdTurns)
 		if perr != nil {
 			rollbackRejectedForward()
 			s.mu.Unlock()

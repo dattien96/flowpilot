@@ -320,21 +320,25 @@ export function applyTimelineEvent(s: TimelineState, e: ProviderEventDTO): Parti
     }
 
     case "message_completed": {
-      if (isTurnCompletedPlaceholder(e.text)) {
+      // Some providers emit a completion with no text payload (the turn's end
+      // signal only) — the placeholder check and bubble writes must not read
+      // e.text unconditionally (terminal parity crash).
+      const completedText = e.text ?? "";
+      if (isTurnCompletedPlaceholder(completedText)) {
         closeAssistant();
         break;
       }
       if (streamingAssistantId) {
         const idx = timeline.findIndex((it) => it.id === streamingAssistantId);
         if (idx >= 0 && timeline[idx].kind === "assistant") {
-          timeline[idx] = { kind: "assistant", id: streamingAssistantId, text: e.text, finalized: true };
+          timeline[idx] = { kind: "assistant", id: streamingAssistantId, text: completedText, finalized: true };
         }
       } else {
         // Idempotent guard (BUG-111): update an existing bubble with this id in place
         // rather than pushing a duplicate on re-delivery.
         const existingIdx = timeline.findIndex((it) => it.kind === "assistant" && it.id === e.id);
         if (existingIdx >= 0) {
-          timeline[existingIdx] = { kind: "assistant", id: e.id, text: e.text, finalized: true };
+          timeline[existingIdx] = { kind: "assistant", id: e.id, text: completedText, finalized: true };
         } else if (wasEvicted(e.id)) {
           // Task-421: row was evicted — a re-delivered completion must not
           // re-append it at the tail.
@@ -347,9 +351,11 @@ export function applyTimelineEvent(s: TimelineState, e: ProviderEventDTO): Parti
           // instead of stacking identical bubbles (the "CHILD_AGENT_DONE ×3" symptom).
           const lastMeaningful = timeline[timeline.length - 1];
           const isDuplicate =
-            lastMeaningful?.kind === "assistant" && lastMeaningful.finalized && lastMeaningful.text === e.text;
-          if (!isDuplicate) {
-            timeline.push({ kind: "assistant", id: e.id, text: e.text, finalized: true });
+            lastMeaningful?.kind === "assistant" && lastMeaningful.finalized && lastMeaningful.text === completedText;
+          // A textless completion is a pure end-of-turn signal — with no
+          // streaming or existing bubble to settle there is nothing to render.
+          if (!isDuplicate && completedText !== "") {
+            timeline.push({ kind: "assistant", id: e.id, text: completedText, finalized: true });
           }
         }
       }

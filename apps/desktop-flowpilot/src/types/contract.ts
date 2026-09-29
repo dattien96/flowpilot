@@ -391,6 +391,9 @@ export interface RunHandle {
   /** CP-89: launch latch echo — "pending" means the pinned flow is armed but
    *  not launched; the chat-then-forward affordance should render. */
   flowArm?: string;
+  /** CP-89: source-document pin echo (vibe-cp-ingest CP path) so a reopened or
+   *  reattached armed chat can re-render the doc path without repaste. */
+  sourceDocId?: string;
 }
 
 export interface RunHistoryItem {
@@ -429,6 +432,8 @@ export interface RunHistoryItem {
    * chat is reopened from history.
    */
   flowArm?: string;
+  /** CP-89: source-document pin persisted on the run (vibe-cp-ingest path). */
+  sourceDocId?: string;
   /** CP-71: present when the run owns/shares a worktree binding. */
   worktreeState?: string;
   worktreeSlug?: string;

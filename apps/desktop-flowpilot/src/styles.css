@@ -4790,9 +4790,29 @@ body[data-platform="darwin"] .app-header {
 .composer-armed-label {
   flex: 1;
   min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+}
+.composer-armed-select {
+  font: inherit;
+  color: var(--text);
+  background: var(--surface-2, transparent);
+  border: 1px solid var(--border, transparent);
+  border-radius: var(--radius-sm, 4px);
+  padding: 1px 4px;
+  max-width: 190px;
+}
+.composer-armed-source {
+  font: inherit;
+  flex: 1;
+  min-width: 80px;
+  color: var(--text);
+  background: var(--surface-2, transparent);
+  border: 1px solid var(--border, transparent);
+  border-radius: var(--radius-sm, 4px);
+  padding: 1px 6px;
 }
 .composer-armed-label b {
   color: var(--text);

@@ -190,7 +190,7 @@ func TestR5_ForwardPackageAssembledWithinBudget(t *testing.T) {
 	// Forward text sized so the ASSEMBLED prompt (headers + sections) still
 	// fits the hard cap — the invariant this test pins.
 	fwd := strings.Repeat("y", int(budget)*4-256)
-	pkg, e := svc.buildForwardPromptPackage(rs, fwd, budget)
+	pkg, e := svc.buildForwardPromptPackage(rs, fwd, budget, nil)
 	if e != nil {
 		t.Fatalf("in-budget forward must pack, got %v", e)
 	}
@@ -200,7 +200,7 @@ func TestR5_ForwardPackageAssembledWithinBudget(t *testing.T) {
 	// The over-cap case: a forward text that fits the content budget but not
 	// the assembled cap must be rejected, not shipped oversize.
 	edge := strings.Repeat("y", int(budget)*4-64)
-	if _, e := svc.buildForwardPromptPackage(rs, edge, budget); e == nil ||
+	if _, e := svc.buildForwardPromptPackage(rs, edge, budget, nil); e == nil ||
 		e.code != "forward_prompt_too_large" {
 		t.Fatalf("over-cap assembled prompt must reject typed, got %v", e)
 	}
