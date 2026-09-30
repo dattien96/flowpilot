@@ -205,7 +205,11 @@ func TestRun207435NoReparkAfterFreezeDone(t *testing.T) {
 				if got := flowStepStatus(t, svc, runID, "synthesis"); got != StepStatusDone {
 					t.Fatalf("%s: synthesis = %v, want DONE", pk, got)
 				}
-				if got := flowStepStatus(t, svc, runID, "audit"); got != StepStatusDone && got != StepStatusRunning {
+				// CA-1074: a dispatched audit that blocks on validation now
+				// parks itself WAITING_USER_APPROVAL (BUG-362 shape, same as
+				// the tier-3 gate block) instead of staying RUNNING while the
+				// hub takes the stamp — still "dispatched".
+				if got := flowStepStatus(t, svc, runID, "audit"); got != StepStatusDone && got != StepStatusRunning && got != StepStatusWaitingUserApr {
 					st := svc.agentOrchestrator.loopStateFor(runID)
 					t.Fatalf("%s: audit = %v, want RUNNING or DONE (dispatched): loop=%+v", pk, got, st)
 				}

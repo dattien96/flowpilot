@@ -2311,11 +2311,20 @@ func isMissingChangeAuditNoteReason(reason string) bool {
 	return strings.Contains(strings.ToLower(reason), "no change-audit note")
 }
 
-// upstreamCodeWriterForNode walks forward edges backwards from nodeID and
-// returns the nearest upstream agent.code writer (run-202550: task-harness
-// audit <- synthesis <- reviewer <- validate <- implement). Only forward
-// edges are followed so continue back-edges cannot loop; "" when none.
-func upstreamCodeWriterForNode(edges []agentpack.FlowEdge, nodes []agentpack.FlowNode, nodeID string) string {
+// isValidationNotVerifiedReason reports whether a gate reason is the audit
+// draft block on missing/stale validation (CA-1074): "Audit blocked:
+// validation was not positively verified ...". Continue on that park must
+// re-enter the upstream command.validate node — re-running the audit or
+// reinvoking the hub can never change flowValidationRetryState.
+func isValidationNotVerifiedReason(reason string) bool {
+	return strings.Contains(strings.ToLower(reason), "validation was not positively verified")
+}
+
+// upstreamNodeByBehavior walks forward edges backwards from nodeID and
+// returns the nearest upstream node whose canonical behavior matches.
+// Only forward edges are followed so continue back-edges cannot loop;
+// "" when none.
+func upstreamNodeByBehavior(edges []agentpack.FlowEdge, nodes []agentpack.FlowNode, nodeID, canonicalBehavior string) string {
 	start := strings.TrimSpace(nodeID)
 	if start == "" {
 		return ""
@@ -2338,7 +2347,7 @@ func upstreamCodeWriterForNode(edges []agentpack.FlowEdge, nodes []agentpack.Flo
 				}
 				visited[from] = true
 				if node, ok := findFlowNode(nodes, from); ok {
-					if canonical, ok := agentpack.NormalizeBehaviorID(node.Behavior); ok && canonical == "agent.code" {
+					if canonical, ok := agentpack.NormalizeBehaviorID(node.Behavior); ok && canonical == canonicalBehavior {
 						return from
 					}
 				}
@@ -2348,6 +2357,14 @@ func upstreamCodeWriterForNode(edges []agentpack.FlowEdge, nodes []agentpack.Flo
 		frontier = next
 	}
 	return ""
+}
+
+// upstreamCodeWriterForNode walks forward edges backwards from nodeID and
+// returns the nearest upstream agent.code writer (run-202550: task-harness
+// audit <- synthesis <- reviewer <- validate <- implement). Only forward
+// edges are followed so continue back-edges cannot loop; "" when none.
+func upstreamCodeWriterForNode(edges []agentpack.FlowEdge, nodes []agentpack.FlowNode, nodeID string) string {
+	return upstreamNodeByBehavior(edges, nodes, nodeID, "agent.code")
 }
 
 // resumeFlowWithFeedback is the BUG-231 "Continue" action: it answers the
@@ -2670,6 +2687,31 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 		}
 		// No writer resolved or no matching child — fall through to the
 		// existing audit re-dispatch below rather than stranding the resume.
+	}
+	// CA-1074: an audit escalate for "validation was not positively verified"
+	// (blocked_validation_failed — the sprint's validate node was skipped, or
+	// its verdict went stale while remediation rewrote code) must NOT re-run
+	// the audit or reinvoke the hub — neither can change
+	// flowValidationRetryState, so the flow looped synthesis → audit forever
+	// (live: 6/6 vibe-tasks lanes churned ~10min/round and starved at 1/N
+	// sprints). Re-enter the nearest upstream command.validate node so it
+	// records a fresh verdict; the flow then advances validate → synthesis →
+	// audit on its own edges.
+	if escalatedNodeID != "" && isValidationNotVerifiedReason(prevGateReason) {
+		if node, ok := findFlowNode(nodes, escalatedNodeID); ok {
+			if canonical, ok := agentpack.NormalizeBehaviorID(node.Behavior); ok && canonical == "artifact.audit_draft" {
+				if validateID := upstreamNodeByBehavior(edges, nodes, escalatedNodeID, "command.validate"); validateID != "" {
+					if vnode, ok := findFlowNode(nodes, validateID); ok && flowNodeInlineDispatchable(vnode) {
+						s.flowDiagLog(parentRunID, "flow_audit_validation_retry_validate", "validation-blocked audit park: re-entering upstream validate node",
+							"audit_node_id", escalatedNodeID, "validate_node_id", validateID)
+						go s.tryAdvanceFlowThroughInline(parentRunID, edges, nodes, vnode, feedback)
+						return snap, nil
+					}
+				}
+			}
+		}
+		// No upstream validate node (custom/hub-less topology) — fall
+		// through to the existing audit re-dispatch below.
 	}
 	// Run-144900: writer parks (agent.code / agent.delegate) must retry the
 	// delegate child even on live rag-harness which has hub.inline=synthesis.
