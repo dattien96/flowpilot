@@ -34,7 +34,7 @@ import type { SupportedModel } from "@flowpilot/client-core";
 import type { LocalRunnerProvider } from "@flowpilot/client-core";
 import { createRunnerClient } from "@/client/createRunnerClient";
 import { RunnerApiError } from "@/client/HttpWsRunnerClient";
-import { detectVibeEntry, loadWorkingMode, persistWorkingMode } from "./workingMode";
+import { detectVibeEntry, loadWorkingMode, persistWorkingMode, userFlowSelectableForMode } from "./workingMode";
 import type { ScenarioName } from "@/client/mockData";
 import { ideBridge } from "@/client/ideBridge";
 import { getAdminUseCases } from "@/clientCore";
@@ -938,7 +938,9 @@ export const useStore = create<AppState>((set, get) => ({
   _accountSwitchTriedIds: [],
   historyOpenError: undefined,
   launchMode: "workflow",
-  chatMode: "normal_chat",
+  // CA-1070: vibe mode is flow-only — a persisted vibe default must boot on
+  // the workflow surface, not normal_chat.
+  chatMode: loadWorkingMode() === "vibe" ? "workflow_step_auto" : "normal_chat",
   selectedProvider: "codex",
   yoloMode: false,
   workingMode: loadWorkingMode(),
@@ -1132,8 +1134,15 @@ export const useStore = create<AppState>((set, get) => ({
         if (!get().runId) {
           const savedMode = localStorage.getItem(LAST_CHAT_MODE_KEY) as ChatMode | null;
           if (savedMode === "normal_chat" || savedMode === "workflow_step_auto") {
-            if (get().chatMode !== savedMode) {
-              set({ chatMode: savedMode });
+            // CA-1070: a persisted vibe mode can't restore onto the Chat
+            // surface — coerce to the flow tab instead of leaving an
+            // unreachable-mode combination.
+            const restored =
+              savedMode === "normal_chat" && get().workingMode === "vibe"
+                ? "workflow_step_auto"
+                : savedMode;
+            if (get().chatMode !== restored) {
+              set({ chatMode: restored });
             }
           }
         }
@@ -1523,6 +1532,9 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   setChatMode(mode) {
+    // CA-1070: vibe mode only works on the flow surface — the Chat tab is
+    // disabled in the UI and refused here so no path re-enters it.
+    if (mode === "normal_chat" && get().workingMode === "vibe") return;
     try {
       localStorage.setItem(LAST_CHAT_MODE_KEY, mode);
     } catch {}
@@ -1896,6 +1908,18 @@ export const useStore = create<AppState>((set, get) => ({
       flowRef: undefined,
       builtinOrchestrationOptions: [],
     });
+    // CA-1070: vibe is flow-only — turning it on from the Chat tab moves the
+    // user to the flow surface (same as clicking the Workflow tab); turning
+    // it off leaves the user wherever they are, since dev works on both.
+    if (wired === "vibe" && get().chatMode !== "workflow_step_auto") {
+      get().setChatMode("workflow_step_auto");
+    }
+    // A selected workflow can fall outside the new mode's startable set —
+    // drop it so the Flow tab select can't carry a forbidden pick.
+    const selected = get().workflows.find((w) => w.id === get().selectedWorkflowId);
+    if (selected && !userFlowSelectableForMode(wired, selected.packFlowId ?? selected.id)) {
+      set({ selectedWorkflowId: undefined });
+    }
   },
 
   // CP-71 / Task-409 T-2: the toggle writes through on the next startRun;

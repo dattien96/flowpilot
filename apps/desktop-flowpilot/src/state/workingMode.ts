@@ -26,6 +26,62 @@ export function flowPickerOptions(mode: string | undefined): string[] {
   return [...DEV_HARNESS_FIVE];
 }
 
+// --- Flow-tab pickers ---------------------------------------------------
+// Desktop mirror of internal/workingmode's user-start family gate
+// (FlowAllowedForWorkingMode with kind="user"). The runner is the enforcer;
+// these helpers only keep forbidden options out of the pickers.
+
+const PACK_PREFIX = "flowpilot-core-flow-pack/";
+
+/** Builtin mirrors that exist as rows but are never user-startable. */
+const HIDDEN_FLOW_IDS = new Set(["review-loop", "rag-harness", "cp-harness-smoke"]);
+const VIBE_USER_FLOW_IDS = new Set(["vibe-ingest", "vibe-cp-ingest"]);
+const VIBE_SYSTEM_FLOW_IDS = new Set(["vibe-sprint", "vibe-owner-debate"]);
+
+/** Strip an optional "flowpilot-core-flow-pack/" prefix (BareFlowID). */
+export function bareFlowId(ref: string | undefined): string {
+  const id = (ref ?? "").trim();
+  if (!id) return "";
+  if (id.startsWith(PACK_PREFIX)) return id.slice(PACK_PREFIX.length).trim();
+  const slash = id.lastIndexOf("/");
+  if (slash >= 0 && slash < id.length - 1 && id.slice(0, slash) === PACK_PREFIX.slice(0, -1)) {
+    return id.slice(slash + 1);
+  }
+  return id;
+}
+
+function isVibeFamilyFlowId(id: string): boolean {
+  return VIBE_USER_FLOW_IDS.has(id) || VIBE_SYSTEM_FLOW_IDS.has(id) || id.startsWith("vibe-");
+}
+
+/**
+ * True when a user may start this flow under `mode`. `flowIdOrRef` is the
+ * flow identity — a bare pack flow id, a pack-prefixed ref, or a catalog
+ * (workflow row) UUID. Vibe mode allows only the two user vibe flows; dev
+ * allows the harness five plus untracked catalog ids and rejects every
+ * vibe-family or hidden id.
+ */
+export function userFlowSelectableForMode(mode: string | undefined, flowIdOrRef: string | undefined): boolean {
+  const id = bareFlowId(flowIdOrRef);
+  if (!id || HIDDEN_FLOW_IDS.has(id)) return false;
+  if (wireWorkingMode(mode) === WORKING_MODE_VIBE) {
+    return VIBE_USER_FLOW_IDS.has(id);
+  }
+  return !isVibeFamilyFlowId(id);
+}
+
+/**
+ * Filter a workflow-select option list to the mode's startable set. Each
+ * item's identity is its pack flow id when present (builtin mirrors),
+ * otherwise the row id (catalog UUIDs).
+ */
+export function filterWorkflowsForWorkingMode<T extends { id: string; packFlowId?: string | null }>(
+  workflows: T[],
+  mode: string | undefined,
+): T[] {
+  return workflows.filter((w) => userFlowSelectableForMode(mode, w.packFlowId ?? w.id));
+}
+
 export function isCodingPlanCPPath(p: string | undefined): boolean {
   const raw = (p ?? "").trim().replace(/\\/g, "/");
   if (!raw.toLowerCase().endsWith(".md")) return false;
