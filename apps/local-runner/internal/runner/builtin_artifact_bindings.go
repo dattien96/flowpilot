@@ -60,6 +60,9 @@ var builtinHarnessArtifactFlowIDs = map[string]struct{}{
 	"vibe-ingest":      {},
 	"vibe-cp-ingest":   {},
 	"vibe-sprint":      {},
+	// CP-90: vibe-tasks declares the cp_md input binding on
+	// task_plan_reader — same mirror-seed requirement as the slicer.
+	"vibe-tasks": {},
 }
 
 // builtinHarnessArtifactBindingSeeder is implemented by

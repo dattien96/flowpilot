@@ -7723,7 +7723,7 @@ func (s *InteractiveService) advanceHubDoneThroughEdge(targetRunID string, in Fl
 			rs.activeHubNodeID = ""
 		}
 		s.mu.Unlock()
-		if hubID == vibeSprintSlicerNodeID || hubID == vibeTaskSlicerNodeID {
+		if hubID == vibeSprintSlicerNodeID || hubID == vibeTaskSlicerNodeID || hubID == vibeTaskPlanReaderNodeID {
 			s.setFlowStepStatus(context.Background(), targetRunID, hubID, StepStatusDone)
 			s.onVibeCpNodeDone(targetRunID, hubID)
 			s.mu.Lock()
@@ -10302,7 +10302,7 @@ func (s *InteractiveService) runFirstTurnFences(ctx context.Context, rs *interac
 	if err := workingmode.FlowAllowedForWorkingMode(rs.workingMode, flowRef, "user"); err != nil {
 		return mapWorkingModeError(err)
 	}
-	if workingmode.BareFlowID(flowRef) == vibeCpIngestFlowID {
+	if isVibeCpSourcedFlowID(workingmode.BareFlowID(flowRef)) {
 		fenceIn := in
 		if strings.TrimSpace(fenceIn.SourceDocID) == "" {
 			fenceIn.SourceDocID = rs.sourceDocID
@@ -10393,12 +10393,12 @@ func (s *InteractiveService) commitPendingFlowStartLocked(rs *interactiveRun, fl
 	// block below (BUG-299 residual).
 	rs.yolo = true
 	rs.chatFlowRef = flowRef
-	if id := workingmode.BareFlowID(flowRef); id == vibeCpIngestFlowID || id == vibeIngestFlowID {
+	if id := workingmode.BareFlowID(flowRef); id == vibeIngestFlowID || isVibeCpSourcedFlowID(id) {
 		rs.vibeAwaitingLock = true
 		if rs.vibeSprintBudget <= 0 {
 			rs.vibeSprintBudget = defaultVibeSprintBudget
 		}
-		if id == vibeCpIngestFlowID {
+		if isVibeCpSourcedFlowID(id) {
 			rs.vibeLockedCP = rs.sourceDocID
 		}
 	}
@@ -10591,7 +10591,7 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 	// starting — chat would be dead until the user pasted a source.
 	if rs.turnCount == 0 && strings.TrimSpace(rs.restoredFrom) == "" &&
 		rs.flowArm == FlowArmImmediate &&
-		workingmode.BareFlowID(strings.TrimSpace(in.FlowRef)) == vibeCpIngestFlowID {
+		isVibeCpSourcedFlowID(workingmode.BareFlowID(strings.TrimSpace(in.FlowRef))) {
 		if e := s.validateVibeCpIngestSource(rs, in); e != nil {
 			s.mu.Unlock()
 			return "", e
@@ -11083,12 +11083,12 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 				rs.chatSubMode = strings.TrimSpace(in.SubMode)
 				rs.chatFlowRef = flowRef
 				id := workingmode.BareFlowID(flowRef)
-				if id == vibeCpIngestFlowID || id == vibeIngestFlowID {
+				if id == vibeIngestFlowID || isVibeCpSourcedFlowID(id) {
 					rs.vibeAwaitingLock = true
 					if rs.vibeSprintBudget <= 0 {
 						rs.vibeSprintBudget = defaultVibeSprintBudget
 					}
-					if id == vibeCpIngestFlowID {
+					if isVibeCpSourcedFlowID(id) {
 						rs.vibeLockedCP = rs.sourceDocID
 					}
 				}

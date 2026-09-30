@@ -65,8 +65,12 @@ func (m *AppModel) setWorkingMode(mode string) {
 	m.persistSessionPrefs()
 }
 
-func isVibeCpIngestFlow(ref string) bool {
-	return workingmode.BareFlowID(ref) == "vibe-cp-ingest"
+// isVibeCpSourcedFlow reports whether a picker/flow id takes a CP-*.md
+// `@path` source at launch — vibe-cp-ingest slices it; vibe-tasks (CP-90)
+// sprints its existing parented Task files. Same arming contract.
+func isVibeCpSourcedFlow(ref string) bool {
+	id := workingmode.BareFlowID(ref)
+	return id == "vibe-cp-ingest" || id == "vibe-tasks"
 }
 
 func (m *AppModel) workingModeChip() string {

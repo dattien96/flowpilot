@@ -43,6 +43,9 @@ var harnessFlowIDs = map[string]struct{}{
 var vibeUserFlowIDs = map[string]struct{}{
 	"vibe-ingest":    {},
 	"vibe-cp-ingest": {},
+	// CP-90: vibe-tasks — third user entry for a prepared workspace (CP +
+	// Task-*.md already broken); skips task_slicer entirely.
+	"vibe-tasks": {},
 }
 
 var vibeSystemFlowIDs = map[string]struct{}{
@@ -207,7 +210,7 @@ func FlowPickerOptions(mode string) []string {
 		return nil
 	}
 	if norm == Vibe {
-		return []string{"vibe-ingest", "vibe-cp-ingest"}
+		return []string{"vibe-ingest", "vibe-cp-ingest", "vibe-tasks"}
 	}
 	out := make([]string, len(DevHarnessFive))
 	copy(out, DevHarnessFive)

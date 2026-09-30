@@ -21,6 +21,7 @@ const (
 	defaultVibeSprintBudget   = 8
 	vibeIngestFlowID          = "vibe-ingest"
 	vibeCpIngestFlowID        = "vibe-cp-ingest"
+	vibeTasksFlowID           = "vibe-tasks"
 	vibeSprintFlowID          = "vibe-sprint"
 	vibeOwnerDebateFlowID     = "vibe-owner-debate"
 	vibeCpLockNodeID          = "cp_lock"
@@ -28,6 +29,7 @@ const (
 	vibeSSValidatorNodeID     = "ss_validator"
 	vibeCPValidatorNodeID     = "cp_validator"
 	vibeTaskSlicerNodeID      = "task_slicer"
+	vibeTaskPlanReaderNodeID  = "task_plan_reader"
 	vibeSprintSlicerNodeID    = "sprint_slicer"
 	vibeCpWriterNodeID        = "cp_writer"
 	vibeDebateSynthesisNodeID = "debate_synthesis"
@@ -56,6 +58,10 @@ func inferPackFlowRefFromNodes(nodes []agentpack.FlowNode, fallback string) stri
 		return pick(vibeOwnerDebateFlowID)
 	case ids["tdd"] && ids["coder"]:
 		return pick(vibeSprintFlowID)
+	// CP-90: vibe-tasks shares cp_reader/cp_lock with vibe-cp-ingest — the
+	// reader node is the only discriminator, so it must win first.
+	case ids[vibeTaskPlanReaderNodeID]:
+		return pick(vibeTasksFlowID)
 	case ids[vibeTaskSlicerNodeID] || ids[vibeCpLockNodeID] || ids["cp_reader"]:
 		return pick(vibeCpIngestFlowID)
 	case ids[vibeSSLockNodeID] || ids["ingest_reader"]:
@@ -70,7 +76,7 @@ func inferPackFlowRefFromNodes(nodes []agentpack.FlowNode, fallback string) stri
 // session model. Per-node Settings (flow-scoped step row) still win.
 func vibeInheritsSessionModel(nodeID string) bool {
 	switch strings.TrimSpace(nodeID) {
-	case vibeCpWriterNodeID, vibeTaskSlicerNodeID:
+	case vibeCpWriterNodeID, vibeTaskSlicerNodeID, vibeTaskPlanReaderNodeID:
 		return true
 	default:
 		return false
@@ -81,7 +87,7 @@ func vibeInheritsSessionModel(nodeID string) bool {
 // linear chain, not a review-cohort feeding the previous hub.inline.
 func vibeLinearWriterNode(nodeID string) bool {
 	switch strings.TrimSpace(nodeID) {
-	case vibeCpWriterNodeID, vibeTaskSlicerNodeID:
+	case vibeCpWriterNodeID, vibeTaskSlicerNodeID, vibeTaskPlanReaderNodeID:
 		return true
 	default:
 		return false
@@ -497,16 +503,41 @@ func (s *InteractiveService) maybeParkVibeCpJoinResume(parentRunID string) bool 
 	return true
 }
 
+// isVibeCpSourcedFlowID reports whether a bare flow id takes a CP-*.md
+// source at admission (CP-90: vibe-tasks shares the CP-source contract with
+// vibe-cp-ingest — the difference starts after cp_lock).
+func isVibeCpSourcedFlowID(bareID string) bool {
+	return bareID == vibeCpIngestFlowID || bareID == vibeTasksFlowID
+}
+
+// vibeFenceFlowID resolves which vibe entry the admission check guards:
+// the turn's own FlowRef wins, else the run's pinned ref (forward turns).
+func vibeFenceFlowID(rs *interactiveRun, in TurnInput) string {
+	if id := workingmode.BareFlowID(strings.TrimSpace(in.FlowRef)); id != "" {
+		return id
+	}
+	if rs != nil {
+		return workingmode.BareFlowID(rs.chatFlowRef)
+	}
+	return ""
+}
+
 // validateVibeCpIngestSource enforces BUG-399 (live run-3439): a turn that
-// launches vibe-cp-ingest must name a CP-shaped source before cp_reader can
-// draft anything — requirements/07-Coding-Plan/**/CP-*.md whose file exists
-// and carries `Document ID: CP-*`. The TUI `/flow` picker runs DetectVibeEntry
-// but API clients pin flowRef directly, so the deterministic check lives at
-// turn admission. Source resolution order: explicit SourceDocID (the launch
-// arm's `@path`, stripped), then the first CP-shaped token in the prompt.
-// Fail-closed: no source, unreadable file, or missing Document ID all reject
-// with 422 — nothing is drafted. Called with s.mu held.
+// launches a CP-sourced vibe flow must name a CP-shaped source before
+// cp_reader can draft anything — requirements/07-Coding-Plan/**/CP-*.md
+// whose file exists and carries `Document ID: CP-*`. The TUI `/flow` picker
+// runs DetectVibeEntry but API clients pin flowRef directly, so the
+// deterministic check lives at turn admission. Source resolution order:
+// explicit SourceDocID (the launch arm's `@path`, stripped), then the first
+// CP-shaped token in the prompt. Fail-closed: no source, unreadable file,
+// or missing Document ID all reject with 422 — nothing is drafted.
+// CP-90: vibe-tasks additionally requires the CP to already own ≥1 Task
+// file under requirements/08-Task/todo/ parented to it — that entry sprints
+// a pre-broken plan; a task-less CP belongs to vibe-cp-ingest (the slicer).
+// Empty workspaceCwd defers that check to the reader node's fail-closed
+// park. Called with s.mu held.
 func (s *InteractiveService) validateVibeCpIngestSource(rs *interactiveRun, in TurnInput) *apiErr {
+	flowID := vibeFenceFlowID(rs, in)
 	src := strings.TrimPrefix(strings.TrimSpace(in.SourceDocID), "@")
 	if !workingmode.IsCodingPlanCPPath(src) {
 		src = ""
@@ -520,7 +551,7 @@ func (s *InteractiveService) validateVibeCpIngestSource(rs *interactiveRun, in T
 	}
 	if src == "" {
 		return newAPIErr(http.StatusUnprocessableEntity, "invalid_cp_source",
-			"vibe-cp-ingest requires a requirements/07-Coding-Plan/**/CP-*.md source document")
+			fmt.Sprintf("%s requires a requirements/07-Coding-Plan/**/CP-*.md source document", flowID))
 	}
 	abs := src
 	if !filepath.IsAbs(abs) && strings.TrimSpace(rs.workspaceCwd) != "" {
@@ -529,16 +560,21 @@ func (s *InteractiveService) validateVibeCpIngestSource(rs *interactiveRun, in T
 	b, err := os.ReadFile(abs)
 	if err != nil {
 		return newAPIErr(http.StatusUnprocessableEntity, "invalid_cp_source",
-			fmt.Sprintf("vibe-cp-ingest source %q is not readable: %v", src, err))
+			fmt.Sprintf("%s source %q is not readable: %v", flowID, src, err))
 	}
 	if !workingmode.HasCPDocumentID(string(b)) {
 		return newAPIErr(http.StatusUnprocessableEntity, "invalid_cp_source",
-			fmt.Sprintf("vibe-cp-ingest source %q is not a CP document (missing `Document ID: CP-*`)", src))
+			fmt.Sprintf("%s source %q is not a CP document (missing `Document ID: CP-*`)", flowID, src))
 	}
 	// BUG-468: pin the ingested CP so the sprint plan and every "this run's
 	// tasks" presence check scope to tasks parented to this document —
 	// foreign/stale Task files on a shared bed must never join the plan.
 	rs.vibeCpDocID = workingmode.CPDocumentID(string(b))
+	if flowID == vibeTasksFlowID && strings.TrimSpace(rs.workspaceCwd) != "" &&
+		len(collectVibeTaskPlanForCP(rs.workspaceCwd, rs.vibeCpDocID)) == 0 {
+		return newAPIErr(http.StatusUnprocessableEntity, "no_cp_tasks",
+			fmt.Sprintf("vibe-tasks requires existing Task-*.md files parented to %s under requirements/08-Task/todo/ (use vibe-cp-ingest to slice tasks first)", rs.vibeCpDocID))
+	}
 	return nil
 }
 
@@ -1019,7 +1055,7 @@ func (s *InteractiveService) onVibeCpNodeDone(parentRunID, completedNodeID strin
 		s.maybeStartVibeCpIngest(parentRunID)
 	case vibeDebateSynthesisNodeID:
 		s.restoreVibeFlowAfterDebate(parentRunID)
-	case vibeTaskSlicerNodeID, vibeSprintSlicerNodeID:
+	case vibeTaskSlicerNodeID, vibeSprintSlicerNodeID, vibeTaskPlanReaderNodeID:
 		// BUG-363: fail closed when the slicer wrote nothing. With a visible
 		// workspace and zero Task files, starting a sprint from the SS-glob
 		// fallback silently runs the wrong plan (live run-635006: no CP, no
@@ -1029,6 +1065,9 @@ func (s *InteractiveService) onVibeCpNodeDone(parentRunID, completedNodeID strin
 		// Empty-cwd shapes keep legacy behavior (CA-791, CA-783, Task-321/326
 		// unit shapes); the SS fallback in collectVibeSprintPlan itself is
 		// unchanged (pinned by CA-783).
+		// CP-90: task_plan_reader (vibe-tasks) shares this arm — it produces
+		// no tasks, it DISCOVERS the ones already parented to the locked CP;
+		// an empty scope means the entry was pointed at the wrong CP.
 		s.mu.Lock()
 		var cwd, cpID string
 		drained := false
@@ -1047,17 +1086,21 @@ func (s *InteractiveService) onVibeCpNodeDone(parentRunID, completedNodeID strin
 			// run-640953). Mirrors the cohort self-settle and the :1203
 			// terminal write. Unlocked variant: s.mu is not held here.
 			s.setFlowStepStatus(context.Background(), parentRunID, completedNodeID, StepStatusDone)
+			verb := "produced"
+			if completedNodeID == vibeTaskPlanReaderNodeID {
+				verb = "found"
+			}
 			if drained {
 				// R.2-2: a late/stale slicer completion on a fully-delivered
 				// plan is NOT a slicer failure — the empty todo/ is the
 				// drained state. Land the typed terminal instead of parking
 				// the finished run behind a "produced no Task files" card.
-				s.settleVibePlanComplete(parentRunID, "task_slicer produced no new Task files; sprint plan already delivered")
+				s.settleVibePlanComplete(parentRunID, fmt.Sprintf("%s %s no new Task files; sprint plan already delivered", completedNodeID, verb))
 				return
 			}
-			reason := "task_slicer produced no Task files under requirements/08-Task/todo/; refusing to sprint from fallback"
+			reason := fmt.Sprintf("%s %s no Task files under requirements/08-Task/todo/; refusing to sprint from fallback", completedNodeID, verb)
 			if strings.TrimSpace(cpID) != "" {
-				reason = fmt.Sprintf("task_slicer produced no Task files parented to %s under requirements/08-Task/todo/; refusing to sprint foreign/stale tasks", cpID)
+				reason = fmt.Sprintf("%s %s no Task files parented to %s under requirements/08-Task/todo/; refusing to sprint foreign/stale tasks", completedNodeID, verb, cpID)
 			}
 			s.parkVibeRequirementFrom(parentRunID, reason, completedNodeID)
 			return
