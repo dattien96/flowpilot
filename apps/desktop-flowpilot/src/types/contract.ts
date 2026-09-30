@@ -757,6 +757,18 @@ export const CHAT_POSTURES: { key: ChatPosture; label: string; hint: string }[] 
   { key: "non", label: "Non", hint: "No posture — keeps your last model choice across restarts." },
 ];
 
+/**
+ * CA-1071: the posture strip renders only these as toggleable options — "non"
+ * is the unselected state, reached by clicking the active tab again rather
+ * than a dedicated tab.
+ */
+export const CHAT_POSTURE_TABS = CHAT_POSTURES.filter((p) => p.key !== "non");
+
+/** Clicking the active posture tab deselects it → "non"; anything else selects. */
+export function postureAfterTabClick(current: ChatPosture, clicked: ChatPosture): ChatPosture {
+  return current === clicked ? "non" : clicked;
+}
+
 // ---- ProviderEventDTO (serialized ProviderEvent union) ---------------------
 
 export interface ProviderEventBaseDTO {
