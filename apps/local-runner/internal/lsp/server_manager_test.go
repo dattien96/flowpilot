@@ -27,6 +27,8 @@ func TestLSPHelperProcess(t *testing.T) {
 		lspHelperServe()
 	case "diagnostics":
 		lspHelperDiagnostics()
+	case "pulldiagnostics":
+		lspHelperPullDiagnostics()
 	case "hangkill": // like hang, but stdin EOF never ends the process:
 		// only a signal can take it down (deterministic kill shape).
 		b := make([]byte, 1)
@@ -130,6 +132,54 @@ func lspHelperDiagnostics() {
 			if json.Unmarshal(msg.Params, &p) == nil {
 				publish(p.TextDocument.URI)
 			}
+		case "exit":
+			return
+		}
+	}
+}
+
+// lspHelperPullDiagnostics answers initialize advertising
+// diagnosticProvider and answers textDocument/diagnostic requests — it
+// never pushes publishDiagnostics, like JetBrains kotlin-lsp.
+// GO_LSP_HELPER_DIAG controls the items payload (same format as
+// lspHelperDiagnostics).
+func lspHelperPullDiagnostics() {
+	br := bufio.NewReader(os.Stdin)
+	out := bufio.NewWriter(os.Stdout)
+	write := func(msg rpcMessage) {
+		body, _ := json.Marshal(msg)
+		fmt.Fprintf(out, "Content-Length: %d\r\n\r\n", len(body))
+		_, _ = out.Write(body)
+		_ = out.Flush()
+	}
+	for {
+		body, err := readFrame(br)
+		if err != nil {
+			return
+		}
+		var msg rpcMessage
+		if err := json.Unmarshal(body, &msg); err != nil {
+			continue
+		}
+		switch msg.Method {
+		case "initialize":
+			if msg.ID != nil {
+				write(rpcMessage{JSONRPC: "2.0", ID: msg.ID,
+					Result: json.RawMessage(`{"capabilities":{"diagnosticProvider":{"interFileDependencies":false,"workspaceDiagnostics":false}},"serverInfo":{"name":"fake-lsp","version":"0.0"}}`)})
+			}
+		case "textDocument/diagnostic":
+			if msg.ID == nil {
+				continue
+			}
+			var items []string
+			if d := os.Getenv("GO_LSP_HELPER_DIAG"); d != "" && d != "clean" {
+				for i, chunk := range strings.Split(d, "|") {
+					q, _ := json.Marshal(strings.TrimSpace(chunk))
+					items = append(items, `{"range":{"start":{"line":`+strconv.Itoa(i)+`,"character":0},"end":{"line":`+strconv.Itoa(i)+`,"character":5}},"severity":1,"message":`+string(q)+`}`)
+				}
+			}
+			write(rpcMessage{JSONRPC: "2.0", ID: msg.ID,
+				Result: json.RawMessage(`{"kind":"full","items":[` + strings.Join(items, ",") + `]}`)})
 		case "exit":
 			return
 		}

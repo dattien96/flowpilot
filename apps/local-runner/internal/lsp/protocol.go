@@ -112,6 +112,20 @@ type PublishDiagnosticsParams struct {
 	Diagnostics []Diagnostic `json:"diagnostics"`
 }
 
+// DocumentDiagnosticParams is the body of a textDocument/diagnostic request
+// (pull diagnostics, LSP 3.17). JetBrains kotlin-lsp is pull-only: it never
+// pushes publishDiagnostics, so the client must ask.
+type DocumentDiagnosticParams struct {
+	TextDocument TextDocumentIdentifier `json:"textDocument"`
+}
+
+// DocumentDiagnosticReport is the textDocument/diagnostic result. The
+// "full" variant carries items; "unchanged" carries none.
+type DocumentDiagnosticReport struct {
+	Kind  string       `json:"kind"`
+	Items []Diagnostic `json:"items,omitempty"`
+}
+
 // DidOpenTextDocumentParams opens a document on the server.
 type DidOpenTextDocumentParams struct {
 	TextDocument TextDocumentItem `json:"textDocument"`
@@ -134,9 +148,19 @@ type WorkspaceFolder struct {
 	Name string `json:"name"`
 }
 
-// ClientCapabilities is intentionally minimal: an empty capability set is
-// valid per the spec and every server in the CP-63 registry accepts it.
-type ClientCapabilities struct{}
+// ClientCapabilities is intentionally minimal. textDocument.diagnostic is
+// advertised so pull-only servers (kotlin-lsp/intellij-server) may answer
+// textDocument/diagnostic; push-based servers are unaffected by the cap.
+type ClientCapabilities struct {
+	TextDocument *TextDocumentCapabilities `json:"textDocument,omitempty"`
+}
+
+// TextDocumentCapabilities lists per-document features the client speaks.
+type TextDocumentCapabilities struct {
+	// Diagnostic marks pull-diagnostics support (LSP 3.17); the empty
+	// object is the whole declaration.
+	Diagnostic map[string]any `json:"diagnostic,omitempty"`
+}
 
 // InitializeParams starts the LSP handshake.
 type InitializeParams struct {

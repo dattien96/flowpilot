@@ -57,6 +57,26 @@ func TestDoctorCheck_SomeMissing(t *testing.T) {
 	}
 }
 
+func TestDoctorCheck_AltBinaryFallback(t *testing.T) {
+	// Only the legacy fwcd binary exists: the android row must still
+	// resolve instead of reporting a missing kotlin-lsp.
+	rows := doctorCheck(func(name string) (string, error) {
+		if name == "kotlin-language-server" {
+			return "/usr/local/bin/kotlin-language-server", nil
+		}
+		return "", errDoctorTestMissing
+	})
+	for _, r := range rows {
+		if r.Platform == "android" {
+			if !r.Installed || r.Binary != "kotlin-language-server" {
+				t.Fatalf("android row must resolve via alt binary: %+v", r)
+			}
+			return
+		}
+	}
+	t.Fatal("android row missing")
+}
+
 func TestFormatDoctorShowsMissingAndHints(t *testing.T) {
 	rows := []doctorRow{
 		{Platform: "golang", Binary: "gopls", FoundPath: "/usr/bin/gopls", Installed: true, InstallHint: "go install x/gopls@latest"},

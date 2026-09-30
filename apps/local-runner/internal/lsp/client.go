@@ -178,6 +178,27 @@ func (c *Client) DocumentSymbols(ctx context.Context, uri string) ([]DocumentSym
 	return out, nil
 }
 
+// DocumentDiagnostic requests textDocument/diagnostic (pull model, LSP
+// 3.17) for uri and returns the full-report items. Pull-only servers such
+// as JetBrains kotlin-lsp never push publishDiagnostics — this request is
+// the only way to obtain their diagnostics.
+func (c *Client) DocumentDiagnostic(ctx context.Context, uri string) ([]Diagnostic, error) {
+	raw, err := c.request(ctx, "textDocument/diagnostic", DocumentDiagnosticParams{
+		TextDocument: TextDocumentIdentifier{URI: uri},
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, nil
+	}
+	var rep DocumentDiagnosticReport
+	if err := json.Unmarshal(raw, &rep); err != nil {
+		return nil, fmt.Errorf("lsp: decode textDocument/diagnostic result: %w", err)
+	}
+	return rep.Items, nil
+}
+
 // request sends a JSON-RPC request and waits for its response.
 func (c *Client) request(ctx context.Context, method string, params any) (json.RawMessage, error) {
 	if c.closed.Load() {

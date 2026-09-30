@@ -110,6 +110,43 @@ func TestDetectAndResolveReturnErrorWhenBinaryMissing(t *testing.T) {
 	}
 }
 
+// The android entry prefers the official JetBrains server (kotlin-lsp),
+// accepts the newer bundle's intellij-server, and still honours a legacy
+// fwcd kotlin-language-server install so existing setups keep working.
+func TestDetectAndResolvePrefersKotlinLspForAndroid(t *testing.T) {
+	binDir := t.TempDir()
+	lspWithBinariesOnPath(t, binDir, "kotlin-language-server", "intellij-server", "kotlin-lsp")
+	ws := lspFixtureDir(t, map[string]string{"build.gradle": ""})
+
+	cfg, err := DetectAndResolve(ws)
+	if err != nil {
+		t.Fatalf("DetectAndResolve: %v", err)
+	}
+	if cfg.Binary != "kotlin-lsp" {
+		t.Fatalf("binary = %q, want kotlin-lsp (official wins over fallbacks)", cfg.Binary)
+	}
+}
+
+func TestDetectAndResolveFallsBackToAltKotlinBinaries(t *testing.T) {
+	// PATH is replaced wholesale so a real host install cannot win.
+	for _, candidate := range []string{"intellij-server", "kotlin-language-server"} {
+		t.Run(candidate, func(t *testing.T) {
+			binDir := t.TempDir()
+			lspFakeBinary(t, binDir, candidate)
+			t.Setenv("PATH", binDir)
+			ws := lspFixtureDir(t, map[string]string{"build.gradle": ""})
+
+			cfg, err := DetectAndResolve(ws)
+			if err != nil {
+				t.Fatalf("DetectAndResolve with only %q on PATH: %v", candidate, err)
+			}
+			if cfg.Binary != candidate {
+				t.Fatalf("binary = %q, want %q", cfg.Binary, candidate)
+			}
+		})
+	}
+}
+
 func TestDetectPlatformReusesProjectWizardLogic(t *testing.T) {
 	cases := []struct {
 		name  string

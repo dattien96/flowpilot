@@ -57,6 +57,7 @@ type ServerManager struct {
 	InitOptions    map[string]any
 	stdin          io.WriteCloser
 	client         *Client
+	caps           *ServerCapabilities // captured by WaitReady; nil until then
 	binary         string
 	args           []string
 	root           string
@@ -118,6 +119,7 @@ func (m *ServerManager) startProcessLocked(binary string, args []string, workspa
 	m.cmd = cmd
 	m.stdin = stdin
 	m.client = NewClient(stdin, stdout)
+	m.caps = nil // fresh process, fresh handshake
 	m.binary = binary
 	m.args = append([]string(nil), args...)
 	m.root = workspaceRoot
@@ -246,7 +248,9 @@ func (m *ServerManager) WaitReady(ctx context.Context, timeout time.Duration) er
 		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
-	params := InitializeParams{Capabilities: ClientCapabilities{}}
+	params := InitializeParams{Capabilities: ClientCapabilities{
+		TextDocument: &TextDocumentCapabilities{Diagnostic: map[string]any{}},
+	}}
 	if strings.TrimSpace(root) != "" {
 		uri := FileURI(root)
 		params.RootURI = &uri
@@ -254,9 +258,13 @@ func (m *ServerManager) WaitReady(ctx context.Context, timeout time.Duration) er
 	if len(initOptions) > 0 {
 		params.InitializationOptions = initOptions
 	}
-	if _, err := client.Initialize(ctx, params); err != nil {
+	res, err := client.Initialize(ctx, params)
+	if err != nil {
 		return fmt.Errorf("lsp: wait ready: %w", err)
 	}
+	m.mu.Lock()
+	m.caps = &res.Capabilities
+	m.mu.Unlock()
 	// BUG-380: the initialize RESPONSE alone is not "ready" — LSP requires the
 	// `initialized` notification to complete the handshake. gopls defers
 	// package load until it arrives, so without it diagnostics stay empty.
@@ -264,6 +272,16 @@ func (m *ServerManager) WaitReady(ctx context.Context, timeout time.Duration) er
 		return fmt.Errorf("lsp: wait ready (initialized): %w", err)
 	}
 	return nil
+}
+
+// PullDiagnostics reports whether the running server advertised
+// diagnosticProvider during the handshake — i.e. pull diagnostics
+// (textDocument/diagnostic, LSP 3.17) instead of pushed publishDiagnostics.
+// JetBrains kotlin-lsp/intellij-server is pull-only.
+func (m *ServerManager) PullDiagnostics() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.caps != nil && m.caps.DiagnosticProvider != nil
 }
 
 // healthLoop watches the current process and recovers from crashes within

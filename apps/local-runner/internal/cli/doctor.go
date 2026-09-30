@@ -20,8 +20,8 @@ type doctorRow struct {
 	InstallHint string
 }
 
-// doctorCheck probes every registered LSP server binary. lookPath is
-// exec.LookPath in production and a stub in tests.
+// doctorCheck probes every registered LSP server binary (and its declared
+// alternates). lookPath is exec.LookPath in production and a stub in tests.
 func doctorCheck(lookPath func(string) (string, error)) []doctorRow {
 	reg := lsp.DefaultRegistry()
 	plats := make([]string, 0, len(reg))
@@ -33,8 +33,9 @@ func doctorCheck(lookPath func(string) (string, error)) []doctorRow {
 	for _, p := range plats {
 		cfg := reg[p]
 		row := doctorRow{Platform: p, Binary: cfg.Binary, InstallHint: cfg.InstallHint}
-		if path, err := lookPath(cfg.Binary); err == nil {
+		if name, path, err := cfg.ResolveBinary(lookPath); err == nil {
 			row.Installed = true
+			row.Binary = name
 			row.FoundPath = path
 		}
 		rows = append(rows, row)
@@ -83,7 +84,7 @@ func newDoctorCommand(cfg *config) *cobra.Command {
 		Use:   "doctor",
 		Short: "Check language-server binaries for live diagnostics",
 		Long: `Probes every language server in the LSP platform registry (gopls,
-vtsls, pyright-langserver, rust-analyzer, clangd, kotlin-language-server)
+vtsls, pyright-langserver, rust-analyzer, clangd, kotlin-lsp)
 via PATH and prints per-platform status with install hints.
 
 Exits non-zero when any server is missing; FlowPilot keeps working without
