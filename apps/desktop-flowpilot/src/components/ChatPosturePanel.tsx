@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useStore } from "@/state/store";
-import { CHAT_POSTURES, type ChatPosture, type ChatPostureConfig, type ChatPostureProfile } from "@/types/contract";
+import { CHAT_POSTURES, CHAT_POSTURE_TABS, postureAfterTabClick, type ChatPosture, type ChatPostureConfig, type ChatPostureProfile } from "@/types/contract";
 import {
   applyPostureModelPick,
   buildPostureModelGroups,
@@ -20,14 +20,6 @@ function PostureModeIcon({ posture }: { posture: ChatPosture }): React.ReactElem
       <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
         <circle cx="7" cy="7" r="3.6" fill="none" stroke="currentColor" strokeWidth="1.4" />
         <path d="M9.7 9.7 13 13" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-      </svg>
-    );
-  }
-  if (posture === "non") {
-    return (
-      <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-        <circle cx="8" cy="8" r="5.2" fill="none" stroke="currentColor" strokeWidth="1.3" />
-        <path d="M5.4 8h5.2" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
       </svg>
     );
   }
@@ -125,8 +117,8 @@ export function ChatPosturePanel(): React.ReactElement | null {
           </svg>
         </button>
       </div>
-      <div className="tab-list tab-list-four" role="tablist" aria-label="Chat posture">
-        {CHAT_POSTURES.map((item) => (
+      <div className="tab-list tab-list-three" role="tablist" aria-label="Chat posture">
+        {CHAT_POSTURE_TABS.map((item) => (
           <button
             key={item.key}
             type="button"
@@ -134,8 +126,8 @@ export function ChatPosturePanel(): React.ReactElement | null {
             aria-selected={chatPosture === item.key}
             className={`tab chat-posture-tab is-${item.key} ${chatPosture === item.key ? "active" : ""}`}
             disabled={isRunning}
-            title={item.hint}
-            onClick={() => void setChatPosture(item.key)}
+            title={`${item.hint} Click again for no posture.`}
+            onClick={() => void setChatPosture(postureAfterTabClick(chatPosture, item.key))}
           >
             <span className="chat-posture-icon"><PostureModeIcon posture={item.key} /></span>
             <span>{item.label}</span>
@@ -179,7 +171,8 @@ function ChatPostureSetupModal({ posture, onClose }: { posture: ChatPosture; onC
   const saveChatPostureConfig = useStore((s) => s.saveChatPostureConfig);
   const localProviders = useStore((s) => s.localProviders);
   const supportedModels = useStore((s) => s.supportedModels);
-  const [modalTab, setModalTab] = useState<ChatPosture>(posture);
+  // "non" has no profile to edit — when the modal opens on it, land on scan.
+  const [modalTab, setModalTab] = useState<ChatPosture>(posture === "non" ? "scan" : posture);
   const [draft, setDraft] = useState<ChatPostureConfig>(() => ({
     active: config.active,
     profiles: {
@@ -251,8 +244,8 @@ function ChatPostureSetupModal({ posture, onClose }: { posture: ChatPosture; onC
           auto-derives from the picked model). Empty fields inherit the
           current session selection. Scan/Plan are read-only (reads auto-approve, writes auto-deny).
         </p>
-        <div className="tab-list tab-list-four chat-posture-modal-tabs" role="tablist" aria-label="Posture profiles">
-          {CHAT_POSTURES.map((item) => (
+        <div className="tab-list tab-list-three chat-posture-modal-tabs" role="tablist" aria-label="Posture profiles">
+          {CHAT_POSTURE_TABS.map((item) => (
             <button
               key={item.key}
               type="button"
