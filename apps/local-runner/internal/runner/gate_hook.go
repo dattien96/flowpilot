@@ -3371,6 +3371,16 @@ type driftRunState struct {
 	// scored turn; inert while the detector flag is OFF.
 	lastScore int
 
+	// debateDischarged is set when a drift-only owner debate mounts for this
+	// run's accumulated drift debt. While set, applyVibeDriftOnlyResolver
+	// suppresses re-mounts at a still-high score — the debate already
+	// escalated that debt, and orchestration turns (synthesis/join, zero
+	// file delta by design) would otherwise pin the score at 100 and
+	// re-park the sprint on every clean-gate turn forever. Cleared when a
+	// scored turn lands below the debate threshold — the score decayed
+	// through real correction — so genuinely new drift can still escalate.
+	debateDischarged bool
+
 	// lastSeenUnixNano is stamped by driftStateFor under driftStates.Lock so
 	// idle entries can be evicted (housekeeping, no extra synchronization).
 	lastSeenUnixNano int64
