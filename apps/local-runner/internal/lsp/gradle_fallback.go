@@ -24,9 +24,9 @@ type GradleError struct {
 }
 
 // ShouldRunGradleFallback reports whether the Gradle fallback applies: only
-// for Android workspaces whose LSP diagnostics are clean (kotlin-language-
-// server is known to miss R-class and Compose generated-type errors, so a
-// clean LSP result is exactly when deeper validation pays off).
+// for Android workspaces whose LSP diagnostics are clean (the Kotlin LSP
+// can miss Android generated-type errors — R class, Compose — so a clean
+// LSP result is exactly when deeper validation pays off).
 func ShouldRunGradleFallback(diagnostics []FileDiagnostic, platform string) bool {
 	return platform == "android" && len(diagnostics) == 0
 }

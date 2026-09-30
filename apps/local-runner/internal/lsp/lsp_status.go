@@ -44,11 +44,13 @@ func (s *ServerSet) Status(workspaceRoot string) ServerStatus {
 	}
 	st.Binary = cfg.Binary
 	st.InstallHint = cfg.InstallHint
-	if _, err := exec.LookPath(cfg.Binary); err != nil {
+	resolved, _, err := cfg.ResolveBinary(exec.LookPath)
+	if err != nil {
 		st.Warn = true
 		st.Notice = "LSP: " + cfg.Binary + " not installed (" + cfg.InstallHint + ")"
 		return st
 	}
+	st.Binary = resolved
 	st.Installed = true
 	return st
 }

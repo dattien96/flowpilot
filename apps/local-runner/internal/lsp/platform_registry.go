@@ -12,8 +12,13 @@ import (
 type PlatformLSPConfig struct {
 	// Platform is the DetectPlatform token, e.g. "golang".
 	Platform string
-	// Binary is the server executable resolved via PATH, e.g. "gopls".
+	// Binary is the preferred server executable resolved via PATH, e.g.
+	// "gopls".
 	Binary string
+	// AltBinaries are additional executable names tried after Binary when
+	// resolving via PATH — e.g. the same server shipped under a different
+	// name (intellij-server) or a legacy predecessor (kotlin-language-server).
+	AltBinaries []string
 	// Args are passed verbatim on spawn, e.g. ["--stdio"].
 	Args []string
 	// FileExtensions selects the files this server owns, e.g. [".go"].
@@ -27,9 +32,7 @@ type PlatformLSPConfig struct {
 // Registry maps platform tokens to server configs.
 type Registry map[string]PlatformLSPConfig
 
-// DefaultRegistry returns the built-in platform -> server mapping. The
-// android entry is a draft until Task-360 finalizes the Kotlin-specific
-// initialization options.
+// DefaultRegistry returns the built-in platform -> server mapping.
 func DefaultRegistry() Registry {
 	return Registry{
 		"golang": {
@@ -74,10 +77,15 @@ func DefaultRegistry() Registry {
 			InstallHint:    "Install LLVM (llvm.org) or your OS package manager",
 		},
 		"android": {
-			// Draft: Task-360 finalizes args and initialization options.
-			Platform: "android", Binary: "kotlin-language-server", Args: []string{"--stdio"},
+			// kotlin-lsp is the official JetBrains server (Kotlin/kotlin-lsp,
+			// IntelliJ-based, experimental Android Gradle support). Newer
+			// standalone archives name the binary intellij-server;
+			// kotlin-language-server is the legacy fwcd/community build kept
+			// as a fallback so existing installs keep working.
+			Platform: "android", Binary: "kotlin-lsp", Args: []string{"--stdio"},
+			AltBinaries:    []string{"intellij-server", "kotlin-language-server"},
 			FileExtensions: []string{".kt", ".kts"},
-			InstallHint:    "Download from fwcd/kotlin-language-server releases",
+			InstallHint:    "brew install JetBrains/utils/kotlin-lsp or download from github.com/Kotlin/kotlin-lsp releases",
 		},
 	}
 }
@@ -86,6 +94,32 @@ func DefaultRegistry() Registry {
 func (r Registry) Lookup(platform string) (PlatformLSPConfig, bool) {
 	cfg, ok := r[platform]
 	return cfg, ok
+}
+
+// Binaries returns the executable candidates in preference order: Binary
+// first, then AltBinaries.
+func (cfg PlatformLSPConfig) Binaries() []string {
+	out := make([]string, 0, 1+len(cfg.AltBinaries))
+	if cfg.Binary != "" {
+		out = append(out, cfg.Binary)
+	}
+	return append(out, cfg.AltBinaries...)
+}
+
+// ResolveBinary returns the first candidate found on PATH as (name, path).
+// lookPath is exec.LookPath in production; tests inject a stub.
+func (cfg PlatformLSPConfig) ResolveBinary(lookPath func(string) (string, error)) (string, string, error) {
+	candidates := cfg.Binaries()
+	var lastErr error
+	for _, b := range candidates {
+		if path, err := lookPath(b); err == nil {
+			return b, path, nil
+		} else {
+			lastErr = err
+		}
+	}
+	return "", "", fmt.Errorf("lsp: no server binary found in PATH (tried %s): %w",
+		strings.Join(candidates, ", "), lastErr)
 }
 
 // DetectAndResolve detects the workspace platform and resolves its server
@@ -103,9 +137,11 @@ func DetectAndResolveWith(reg Registry, workspaceRoot string) (PlatformLSPConfig
 	if !ok {
 		return PlatformLSPConfig{}, fmt.Errorf("lsp: no language server registered for platform %q", platform)
 	}
-	if _, err := exec.LookPath(cfg.Binary); err != nil {
+	resolved, _, err := cfg.ResolveBinary(exec.LookPath)
+	if err != nil {
 		return PlatformLSPConfig{}, fmt.Errorf("lsp: server binary %q for platform %q not found in PATH: %w", cfg.Binary, platform, err)
 	}
+	cfg.Binary = resolved
 	return cfg, nil
 }
 

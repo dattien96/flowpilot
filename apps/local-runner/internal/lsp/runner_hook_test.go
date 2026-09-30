@@ -63,6 +63,38 @@ func TestPostWriteHookReturnsDiagnosticsOnError(t *testing.T) {
 	}
 }
 
+// Pull-model servers (kotlin-lsp) never publish diagnostics — the hook must
+// issue textDocument/diagnostic instead of waiting for a push.
+func TestPostWriteHookPullDiagnostics(t *testing.T) {
+	dir := t.TempDir()
+	m := &ServerManager{}
+	m.Env = []string{"GO_WANT_LSP_HELPER=1", "GO_LSP_HELPER_MODE=pulldiagnostics", "GO_LSP_HELPER_DIAG=undefined: Bar"}
+	if err := m.Start(context.Background(), os.Args[0], []string{"-test.run=TestLSPHelperProcess"}, dir); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = m.Stop() })
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := m.WaitReady(ctx, 0); err != nil {
+		t.Fatalf("WaitReady: %v", err)
+	}
+	if !m.PullDiagnostics() {
+		t.Fatal("helper advertised diagnosticProvider — PullDiagnostics must be true")
+	}
+	hook := &PostWriteDiagnosticsHook{
+		Manager: m, DocSync: NewDocumentSyncManager(m.Client()),
+		Collector: NewDiagnosticsCollector(m.Client()), WorkspaceRoot: dir,
+		DiagnosticsTimeout: 5 * time.Second,
+	}
+	got, err := hook.AfterFileWrite("a.kt", "fun f() { Bar() }\n")
+	if err != nil {
+		t.Fatalf("AfterFileWrite: %v", err)
+	}
+	if !strings.Contains(got, "undefined: Bar") {
+		t.Fatalf("pull diagnostics = %q, want the server message", got)
+	}
+}
+
 func TestPostWriteHookSkipsWhenLSPNotRunning(t *testing.T) {
 	hook := &PostWriteDiagnosticsHook{Manager: &ServerManager{}, WorkspaceRoot: t.TempDir()}
 	if hook.ShouldRun("a.go") {

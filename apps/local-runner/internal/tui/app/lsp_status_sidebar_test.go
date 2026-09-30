@@ -73,9 +73,9 @@ func TestLSPSidebar_TruncatesLongHint(t *testing.T) {
 	m.width = 120
 	m.fullWidth = 120
 	m.lspStatus = &client.LSPStatus{
-		Platform: "android", Binary: "kotlin-language-server",
+		Platform: "android", Binary: "kotlin-lsp",
 		Installed: false, Warn: true,
-		InstallHint: "Download from fwcd/kotlin-language-server releases page and unzip somewhere on PATH please",
+		InstallHint: "brew install JetBrains/utils/kotlin-lsp or download the standalone archive from github.com/Kotlin/kotlin-lsp releases",
 	}
 	w := m.sideWidth()
 	for _, l := range m.renderRightSidebar(30) {

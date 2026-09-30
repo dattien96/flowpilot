@@ -7,9 +7,11 @@ import (
 	"strings"
 )
 
-// KotlinInitializationOptions carries Gradle/Android context to
-// kotlin-language-server via initialize.initializationOptions. Unknown keys
-// are ignored by servers, so extra hints are safe.
+// KotlinInitializationOptions carries Gradle/Android context to the Kotlin
+// language server via initialize.initializationOptions. The keys target the
+// legacy fwcd kotlin-language-server; the official kotlin-lsp (IntelliJ-
+// based) imports the Gradle/Android project itself and ignores them — and
+// unknown keys are ignored by servers anyway, so extra hints are safe.
 type KotlinInitializationOptions struct {
 	// StoragePath is the server's cache dir, scoped per workspace.
 	StoragePath string `json:"storagePath,omitempty"`

@@ -48,7 +48,7 @@ func TestKotlinInitOptionsIncludesGradleSettings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("KotlinServerConfig: %v", err)
 	}
-	if cfg.Binary != "kotlin-language-server" {
+	if cfg.Binary != "kotlin-lsp" {
 		t.Fatalf("binary = %q", cfg.Binary)
 	}
 	if cfg.InitializationOptions == nil {
@@ -111,7 +111,7 @@ func TestKotlinPlatformConfigInRegistry(t *testing.T) {
 	if !ok {
 		t.Fatal("android missing from registry")
 	}
-	if cfg.Binary != "kotlin-language-server" {
+	if cfg.Binary != "kotlin-lsp" {
 		t.Fatalf("binary = %q", cfg.Binary)
 	}
 	foundStdio := false

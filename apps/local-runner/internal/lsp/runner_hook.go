@@ -99,6 +99,24 @@ func (h *PostWriteDiagnosticsHook) AfterFileWriteErrors(relPath, newContent stri
 		log.Printf("[lsp] doc sync failed for %s: %v (skipping diagnostics)", abs, err)
 		return nil, nil
 	}
+	// Pull-model servers (kotlin-lsp/intellij-server) never push
+	// publishDiagnostics — ask for the report instead of waiting.
+	if h.Manager.PullDiagnostics() {
+		ctx, cancel := context.WithTimeout(context.Background(), h.timeout())
+		diags, err := h.Manager.Client().DocumentDiagnostic(ctx, uri)
+		cancel()
+		if err != nil {
+			log.Printf("[lsp] pull diagnostics failed for %s: %v (skipping)", abs, err)
+			return nil, nil
+		}
+		var errs []FileDiagnostic
+		for _, d := range diags {
+			if d.Severity == DiagnosticSeverityError {
+				errs = append(errs, FileDiagnostic{URI: uri, Diagnostic: d})
+			}
+		}
+		return errs, nil
+	}
 	// BUG-380: wait for THIS file's publish — a foreign file's diagnostics
 	// bumping the shared generation used to end the wait early.
 	if err := h.Collector.WaitForDiagnosticsForURI(context.Background(), uri, h.timeout()); err != nil {
@@ -241,8 +259,8 @@ func (s *ServerSet) CheckFiles(ctx context.Context, workspaceRoot string, relPat
 	if text := FormatDiagnosticsForAgent(lspErrs); text != "" {
 		out = append(out, text)
 	}
-	// Android deeper validation: kotlin-language-server misses R-class and
-	// Compose generated-type errors, so a clean LSP result triggers the
+	// Android deeper validation: the Kotlin LSP can miss Android generated-
+	// type errors (R class, Compose), so a clean LSP result triggers the
 	// Gradle fallback (Task-361). Runs only when the LSP server actually
 	// ran (unavailable server => unknown state, not "clean").
 	if ShouldRunGradleFallback(lspErrs, platform) {
@@ -320,14 +338,16 @@ func (s *ServerSet) getOrStart(ctx context.Context, root string, cfg PlatformLSP
 		}
 		delete(s.cooldown, key)
 	}
-	if _, err := exec.LookPath(cfg.Binary); err != nil {
+	binary, _, err := cfg.ResolveBinary(exec.LookPath)
+	if err != nil {
 		if !s.warned[cfg.Binary] {
 			s.warned[cfg.Binary] = true
-			log.Printf("[lsp] server binary %q for platform %q not found in PATH (%s); diagnostics disabled for this session",
-				cfg.Binary, cfg.Platform, cfg.InstallHint)
+			log.Printf("[lsp] server binary %q for platform %q not found in PATH (tried %s; %s); diagnostics disabled for this session",
+				cfg.Binary, cfg.Platform, strings.Join(cfg.Binaries(), ", "), cfg.InstallHint)
 		}
 		return nil, fmt.Errorf("lsp: server binary %q for platform %q not found in PATH: %w", cfg.Binary, cfg.Platform, err)
 	}
+	cfg.Binary = binary
 	mgr := &ServerManager{}
 	if hook := s.initOptionsFor(cfg.Platform, root); len(hook) > 0 {
 		mgr.InitOptions = hook
