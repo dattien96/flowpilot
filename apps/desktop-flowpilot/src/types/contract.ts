@@ -27,6 +27,12 @@ export interface Workflow {
   description?: string;
   model?: string;
   yoloMode?: boolean;
+  /**
+   * Pack identity on builtin mirror rows (e.g. "vibe-ingest"); null/absent on
+   * user-authored workflows. The working-mode flow filter keys off this —
+   * the row id is a storage UUID that says nothing about the flow family.
+   */
+  packFlowId?: string | null;
 }
 
 /** LSP server presence for a workspace (GET /client/lsp-status). */

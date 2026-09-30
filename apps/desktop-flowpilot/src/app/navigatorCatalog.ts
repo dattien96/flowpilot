@@ -16,6 +16,10 @@ export function mapNavigatorWorkflow(workflow: AdminWorkflow): Workflow {
     // model_override, no matter what Settings > Workflows displayed.
     model: workflow.modelOverride ?? undefined,
     yoloMode: workflow.yoloMode,
+    // CA-1070: pack identity feeds the working-mode flow filter — without it
+    // builtin mirrors are indistinguishable from user workflows and the Flow
+    // tab's select shows vibe flows in dev mode (and vice versa).
+    packFlowId: workflow.packFlowId ?? null,
   };
 }
 

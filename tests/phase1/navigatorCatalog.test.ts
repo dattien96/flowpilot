@@ -45,6 +45,7 @@ test("mapNavigatorWorkflow keeps workflow ids and normalizes global workflows", 
       description: "Shared",
       model: undefined,
       yoloMode: false,
+      packFlowId: null,
     },
   );
 });
@@ -72,7 +73,7 @@ test("mapNavigatorWorkflow carries modelOverride and yoloMode through to the nav
       clonedFrom: null,
       packId: null,
       packVersion: null,
-      packFlowId: null,
+      packFlowId: "review-loop",
       packHash: null,
       selectableIn: ["chat"],
       chatBaseline: false,
@@ -90,6 +91,9 @@ test("mapNavigatorWorkflow carries modelOverride and yoloMode through to the nav
       description: "Built-in review loop",
       model: "claude-haiku",
       yoloMode: true,
+      // CA-1070: packFlowId must carry through — the working-mode flow filter
+      // keys the vibe/dev family check off it.
+      packFlowId: "review-loop",
     },
   );
 });

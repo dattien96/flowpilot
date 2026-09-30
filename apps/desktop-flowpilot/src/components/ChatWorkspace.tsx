@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { filterNavigatorWorkflows } from "@/app/navigatorCatalog";
+import { filterWorkflowsForWorkingMode } from "@/state/workingMode";
 import { Navigator } from "@/components/Navigator";
 import { ChatInput } from "@/components/ChatInput";
 import { TerminalPanel } from "@/components/TerminalPanel";
@@ -34,11 +35,28 @@ function WorkflowControlPanel(): React.ReactElement | null {
   const selectWorkflow = useStore((s) => s.selectWorkflow);
   const selectStep = useStore((s) => s.selectStep);
   const projects = useStore((s) => s.projects);
+  const workingMode = useStore((s) => s.workingMode);
+  const setWorkingMode = useStore((s) => s.setWorkingMode);
+  const runStatus = useStore((s) => s.status);
+  const scaffoldActive = useStore((s) => s.scaffoldSession?.active === true);
 
   const project = useMemo(() => projects.find((p) => p.id === selectedProjectId), [projects, selectedProjectId]);
+  const vibeOn = workingMode === "vibe";
+  // The mode flip resets the visible run (the chat→flow coercion is a surface
+  // switch) — lock it while a run or scaffold turn is live, same guard the
+  // old chat-controller toggle had.
+  const modeLocked =
+    runStatus === "running" ||
+    runStatus === "waiting_approval" ||
+    runStatus === "waiting_question" ||
+    runStatus === "blocked" ||
+    scaffoldActive;
+  // CA-1070: the Flow tab's select must offer only flows the current working
+  // mode can actually start — dev hides vibe-family mirrors, vibe shows only
+  // the two user-startable vibe flows (mirrors the runner's family gate).
   const visibleWorkflows = useMemo(
-    () => filterNavigatorWorkflows(workflows, selectedProjectId),
-    [selectedProjectId, workflows],
+    () => filterWorkflowsForWorkingMode(filterNavigatorWorkflows(workflows, selectedProjectId), workingMode),
+    [selectedProjectId, workflows, workingMode],
   );
 
   return (
@@ -50,19 +68,43 @@ function WorkflowControlPanel(): React.ReactElement | null {
         </div>
       </div>
 
+      <button
+        type="button"
+        role="switch"
+        aria-checked={vibeOn}
+        className={`working-mode-toggle ${vibeOn ? "active" : ""}`}
+        disabled={modeLocked}
+        title={
+          modeLocked
+            ? "Working mode is locked while a run is active"
+            : vibeOn
+              ? "Vibe mode — flow runs only. Switch back to Normal."
+              : "Normal mode — chat and flows. Switch to Vibe."
+        }
+        onClick={() => setWorkingMode(vibeOn ? "dev" : "vibe")}
+      >
+        <span className="working-mode-toggle-dot" aria-hidden="true" />
+        {vibeOn ? "Vibe" : "Normal"}
+      </button>
+
       <div className="tab-list" role="tablist" aria-label="Chat mode">
-        {(["normal_chat", "workflow_step_auto"] as const).map((mode) => (
-          <button
-            key={mode}
-            type="button"
-            role="tab"
-            aria-selected={chatMode === mode}
-            className={`tab ${chatMode === mode ? "active" : ""}`}
-            onClick={() => setChatMode(mode)}
-          >
-            {mode === "normal_chat" ? "Chat" : "Workflow"}
-          </button>
-        ))}
+        {(["normal_chat", "workflow_step_auto"] as const).map((mode) => {
+          const chatDisabled = vibeOn && mode === "normal_chat";
+          return (
+            <button
+              key={mode}
+              type="button"
+              role="tab"
+              aria-selected={chatMode === mode}
+              className={`tab ${chatMode === mode ? "active" : ""}`}
+              disabled={chatDisabled}
+              title={chatDisabled ? "Chat is unavailable in Vibe mode — vibe runs flows only" : undefined}
+              onClick={() => setChatMode(mode)}
+            >
+              {mode === "normal_chat" ? "Chat" : "Workflow"}
+            </button>
+          );
+        })}
       </div>
 
       {chatMode === "workflow_step_auto" && (

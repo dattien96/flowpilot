@@ -1773,6 +1773,59 @@ body[data-platform="darwin"] .app-header {
   background: var(--surface-2);
   color: var(--text);
 }
+.tab:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+/* CA-1070: Normal/Vibe working-mode toggle — a single highlighted button in
+   the right rail (moved out of the chat controller, which hides in flow
+   mode). Vibe borrows the flow-surface gradient identity from
+   .chat-area-flow. */
+.working-mode-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-3);
+  color: var(--text-dim);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.working-mode-toggle-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-dim);
+}
+.working-mode-toggle:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--text);
+}
+.working-mode-toggle.active {
+  color: var(--text);
+  border-color: rgba(168, 85, 247, 0.55);
+  background: linear-gradient(
+    135deg,
+    rgba(73, 176, 255, 0.16) 0%,
+    rgba(168, 85, 247, 0.2) 40%,
+    rgba(236, 72, 153, 0.2) 70%,
+    rgba(249, 115, 22, 0.16) 100%
+  );
+  box-shadow: 0 0 10px rgba(168, 85, 247, 0.25);
+}
+.working-mode-toggle.active .working-mode-toggle-dot {
+  background: linear-gradient(135deg, #49b0ff, #a855f7 45%, #ec4899 75%, #f97316);
+}
+.working-mode-toggle:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
 .nav-panel.hidden {
   display: none;
 }
