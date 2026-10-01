@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
+	"regexp"
 	"strings"
 
 	"flowpilot-runner/internal/agentpack"
@@ -162,6 +164,66 @@ func EnsureAllBuiltinArtifactBindingsWithStore(ctx context.Context, store FlowDe
 	return firstErr
 }
 
+// builtinArtifactBindingRow is the step_artifact_bindings upsert shape
+// shared by both builtin seeders.
+type builtinArtifactBindingRow struct {
+	StepDefinitionID   string `json:"step_definition_id"`
+	Direction          string `json:"direction"`
+	SlotName           string `json:"slot_name"`
+	ArtifactInstanceID string `json:"artifact_instance_id"`
+	Required           bool   `json:"required"`
+	Position           int    `json:"position"`
+}
+
+// artifactInstanceFKMiss matches PostgREST's 23503 detail text, e.g.
+// `Key (artifact_instance_id)=(00000000-…-0005) is not present in table
+// "artifact_instances"`.
+var artifactInstanceFKMiss = regexp.MustCompile(
+	`artifact_instance_id\)=\(([0-9a-fA-F-]{36})\) is not present`)
+
+// postStepArtifactBindingRows upserts binding rows, and on a 23503 FK miss
+// naming a concrete artifact_instance_id drops just the rows bound to that
+// missing instance and retries (CA-1079): builtinHarnessArtifactInstanceIDs
+// maps well-known instance UUIDs by literal, but a remote that never ran
+// the seeding migration (tdd_signatures/...0005 has no migration at all —
+// CA-966 added the constant without one) otherwise fails the WHOLE batch
+// and starves the flow's valid bindings. Loop terminates because every
+// iteration removes ≥1 row. Any other status propagates unchanged.
+func (s *SupabaseWorkflowFlowStore) postStepArtifactBindingRows(ctx context.Context, rows []builtinArtifactBindingRow, errPrefix string) error {
+	for len(rows) > 0 {
+		payload, err := json.Marshal(rows)
+		if err != nil {
+			return fmt.Errorf("%s: encode: %w", errPrefix, err)
+		}
+		endpoint := s.restURL + "/step_artifact_bindings?on_conflict=step_definition_id,direction,artifact_instance_id"
+		status, body, err := httpRequestFn(ctx, http.MethodPost, endpoint, s.headers("resolution=merge-duplicates,return=minimal"), payload)
+		if err != nil {
+			return fmt.Errorf("%s: %w", errPrefix, err)
+		}
+		if status >= 200 && status < 300 {
+			return nil
+		}
+		missing := ""
+		if status == http.StatusConflict && strings.Contains(string(body), "23503") {
+			if m := artifactInstanceFKMiss.FindSubmatch(body); len(m) == 2 {
+				missing = string(m[1])
+			}
+		}
+		if missing == "" {
+			return fmt.Errorf("%s failed: status %d: %s", errPrefix, status, string(body))
+		}
+		kept := rows[:0]
+		for _, row := range rows {
+			if row.ArtifactInstanceID != missing {
+				kept = append(kept, row)
+			}
+		}
+		log.Printf("[artifact-bindings] remote lacks artifact_instances %s; dropping %d binding row(s) and retrying", missing, len(rows)-len(kept))
+		rows = kept
+	}
+	return nil
+}
+
 // SeedBuiltinContextArtifactBindings wires the built-in default
 // context_artifact instance (builtinContextArtifactInstanceID) as the
 // OUTPUT of the flow's "context" node and the INPUT of every other node
@@ -171,16 +233,7 @@ func EnsureAllBuiltinArtifactBindingsWithStore(ctx context.Context, store FlowDe
 // (step_definition_id, direction, artifact_instance_id) unique key the
 // migration declares, so re-running mirror sync never duplicates rows.
 func (s *SupabaseWorkflowFlowStore) SeedBuiltinContextArtifactBindings(ctx context.Context, record FlowDefinitionRecord) error {
-	type bindingRow struct {
-		StepDefinitionID   string `json:"step_definition_id"`
-		Direction          string `json:"direction"`
-		SlotName           string `json:"slot_name"`
-		ArtifactInstanceID string `json:"artifact_instance_id"`
-		Required           bool   `json:"required"`
-		Position           int    `json:"position"`
-	}
-
-	var rows []bindingRow
+	var rows []builtinArtifactBindingRow
 	for _, node := range record.Definition.Nodes {
 		direction := "input"
 		if node.ID == "context" {
@@ -192,7 +245,7 @@ func (s *SupabaseWorkflowFlowStore) SeedBuiltinContextArtifactBindings(ctx conte
 		// is unreachable; record.FlowRef is passed only to satisfy its
 		// signature.
 		stepType := flowNodeStepType(record, record.FlowRef, node)
-		rows = append(rows, bindingRow{
+		rows = append(rows, builtinArtifactBindingRow{
 			StepDefinitionID:   stepType,
 			Direction:          direction,
 			SlotName:           "main_context",
@@ -201,23 +254,7 @@ func (s *SupabaseWorkflowFlowStore) SeedBuiltinContextArtifactBindings(ctx conte
 			Position:           0,
 		})
 	}
-	if len(rows) == 0 {
-		return nil
-	}
-
-	payload, err := json.Marshal(rows)
-	if err != nil {
-		return fmt.Errorf("seed builtin artifact bindings: encode: %w", err)
-	}
-	endpoint := s.restURL + "/step_artifact_bindings?on_conflict=step_definition_id,direction,artifact_instance_id"
-	status, body, err := httpRequestFn(ctx, http.MethodPost, endpoint, s.headers("resolution=merge-duplicates,return=minimal"), payload)
-	if err != nil {
-		return fmt.Errorf("seed builtin artifact bindings: %w", err)
-	}
-	if status < 200 || status >= 300 {
-		return fmt.Errorf("seed builtin artifact bindings failed: status %d: %s", status, string(body))
-	}
-	return nil
+	return s.postStepArtifactBindingRows(ctx, rows, "seed builtin artifact bindings")
 }
 
 // SeedBuiltinHarnessArtifactBindings (CP-58 Task-307) seeds
@@ -230,23 +267,14 @@ func (s *SupabaseWorkflowFlowStore) SeedBuiltinContextArtifactBindings(ctx conte
 // upserts on the same (step_definition_id, direction, artifact_instance_id)
 // unique key as the Task-205 seed.
 func (s *SupabaseWorkflowFlowStore) SeedBuiltinHarnessArtifactBindings(ctx context.Context, record FlowDefinitionRecord) error {
-	type bindingRow struct {
-		StepDefinitionID   string `json:"step_definition_id"`
-		Direction          string `json:"direction"`
-		SlotName           string `json:"slot_name"`
-		ArtifactInstanceID string `json:"artifact_instance_id"`
-		Required           bool   `json:"required"`
-		Position           int    `json:"position"`
-	}
-
-	var rows []bindingRow
+	var rows []builtinArtifactBindingRow
 	for _, node := range record.Definition.Nodes {
 		for _, b := range node.ArtifactBindings {
 			instanceID, ok := builtinHarnessArtifactInstanceIDs[strings.TrimSpace(b.ArtifactInstanceID)]
 			if !ok {
 				continue
 			}
-			rows = append(rows, bindingRow{
+			rows = append(rows, builtinArtifactBindingRow{
 				StepDefinitionID:   flowNodeStepType(record, record.FlowRef, node),
 				Direction:          b.Direction,
 				SlotName:           b.SlotName,
@@ -256,21 +284,5 @@ func (s *SupabaseWorkflowFlowStore) SeedBuiltinHarnessArtifactBindings(ctx conte
 			})
 		}
 	}
-	if len(rows) == 0 {
-		return nil
-	}
-
-	payload, err := json.Marshal(rows)
-	if err != nil {
-		return fmt.Errorf("seed harness artifact bindings: encode: %w", err)
-	}
-	endpoint := s.restURL + "/step_artifact_bindings?on_conflict=step_definition_id,direction,artifact_instance_id"
-	status, body, err := httpRequestFn(ctx, http.MethodPost, endpoint, s.headers("resolution=merge-duplicates,return=minimal"), payload)
-	if err != nil {
-		return fmt.Errorf("seed harness artifact bindings: %w", err)
-	}
-	if status < 200 || status >= 300 {
-		return fmt.Errorf("seed harness artifact bindings failed: status %d: %s", status, string(body))
-	}
-	return nil
+	return s.postStepArtifactBindingRows(ctx, rows, "seed harness artifact bindings")
 }
