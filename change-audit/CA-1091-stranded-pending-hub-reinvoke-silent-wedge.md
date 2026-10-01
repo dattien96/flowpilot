@@ -58,3 +58,14 @@ Two missing drains for an armed-but-undrained `pendingHubReinvoke`:
   stranded pending still blocks `hub_stalled` by design.
 - Regression sweep: HubStall/StalledHub/CA1087/CA1088/CA1090/NotifyTurnIdle/
   Reinvoke/ResumePending/CohortJoin/OwnerDebate/VibeOwner/Bug28x — all green.
+
+## Follow-up (same day, full-suite review)
+
+The child-settle drain initially invoked the full `notifyTurnIdle(parent)`.
+`TestE2EReviewLoopApprovedPath` caught that this also fires the BUG-542
+`waitingReviewDrainDueLocked` fallback on every inter-child gap — 3 hub turns
+for a 2-member cohort instead of exactly 1 (premature synthesis before the
+join completes). The child-settle branch now calls
+`drainArmedPendingHubReinvoke`, which consumes ONLY the explicitly armed
+`pendingHubReinvoke` flag (the stranded-by-hub_parked case this CA fixes) and
+never consults the waitingReview fallback.

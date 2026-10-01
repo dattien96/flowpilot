@@ -2488,12 +2488,50 @@ func (s *InteractiveService) notifyTurnIdle(runID string) {
 			// pendingHubReinvoke stranded by hub_parked is invisible to
 			// flushDurableTurnIntents and stays armed forever once the last
 			// child is gone (live run-3362: debate_synthesis parked ~10m).
-			go s.notifyTurnIdle(parentID)
+			// Drain ONLY the explicitly-armed flag here: running the full
+			// notifyTurnIdle(parent) would also fire the BUG-542
+			// waitingReview fallback on every inter-child gap, minting
+			// premature hub turns before the cohort joins.
+			go s.drainArmedPendingHubReinvoke(parentID)
 		}
 		return
 	}
 	go s.flushDurableTurnIntents(runID)
 	s.maybeScheduleHubStallCheck(runID)
+}
+
+// drainArmedPendingHubReinvoke consumes an explicitly armed parent
+// pendingHubReinvoke (CA-1091): the stranded-by-hub_parked flag that nothing
+// else drains once the last child settles. Unlike notifyTurnIdle it does NOT
+// consult the BUG-542 waitingReview fallback — the cohort join arms and
+// delivers its own reinvoke; this drain exists only for a flag that was
+// armed and then orphaned.
+func (s *InteractiveService) drainArmedPendingHubReinvoke(runID string) {
+	s.mu.Lock()
+	rs := s.runs[runID]
+	if rs == nil {
+		s.mu.Unlock()
+		return
+	}
+	gateLive := gateCancelLive(rs.postTurnGateStartedAt, rs.postTurnGateCancel)
+	busy := (rs.turnInFlight && rs.postTurnGateCancel == nil) || gateLive
+	armed := !busy && rs.parentRunID == "" && rs.pendingHubReinvoke
+	prompt := ""
+	if armed {
+		rs.pendingHubReinvoke = false
+		prompt = rs.pendingHubReinvokePrompt
+		rs.pendingHubReinvokePrompt = ""
+		touchHubProgressLocked(rs)
+	}
+	s.mu.Unlock()
+	if !armed {
+		return
+	}
+	if prompt != "" {
+		go s.maybeAutoReinvokeHubWithPrompt(runID, prompt)
+	} else {
+		go s.maybeAutoReinvokeHub(runID)
+	}
 }
 
 // reconstructPendingChildSessions loads child sessions under parentRunID that
