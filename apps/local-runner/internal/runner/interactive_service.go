@@ -4269,6 +4269,27 @@ func (s *InteractiveService) maybeReinvokeCoderForContinue(parentRunID, prompt s
 		spawnContinueChild()
 		return
 	}
+	// CA-1099: a continue back-edge whose target is a hub.inline node
+	// (vibe-owner-debate's debate_synthesis -> debate_trigger) re-enters a node
+	// the PARENT hub itself executes — no child labeled with that node id can
+	// ever exist, so both child paths below are guaranteed no-ops and the flow
+	// used to wedge with the node stamped RUNNING forever. Re-point the active
+	// hub node (so the next verdict resolves THIS node's edges) and re-invoke
+	// the parent hub session, mirroring dispatchHubNotifyNode.
+	if composeOK {
+		if canonical, ok := agentpack.NormalizeBehaviorID(composeNode.Behavior); ok && canonical == "hub.inline" {
+			s.mu.Lock()
+			if rs := s.runs[parentRunID]; rs != nil {
+				rs.activeHubNodeID = targetNodeID
+				if rs.flowEngineDriven && len(rs.activeFlowNodes) > 0 {
+					rs.autoOrchestrate = true
+				}
+			}
+			s.mu.Unlock()
+			s.maybeAutoReinvokeHubWithPrompt(parentRunID, prompt)
+			return
+		}
+	}
 	// run-198699: a continue landing on a reinvoke-lifecycle agent.delegate with
 	// no prior child (hub_stalled parked the flow before the writer ever ran —
 	// task-harness plan_writer) used to silently no-op and hub_stalled again.
