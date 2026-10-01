@@ -7758,6 +7758,41 @@ func (s *InteractiveService) advanceHubDoneThroughEdge(targetRunID string, in Fl
 	if hubID == "" {
 		return FlowControlResult{}, false
 	}
+	// CA-1087 (live run-2302): an agent-submitted "done" that resolves via the
+	// fallback (no activeHubNodeID) onto a hub node that was never dispatched
+	// cannot be that node's verdict — every legitimate reach stamps the hub
+	// RUNNING before its turn (dispatchHubNotifyNode sets RUNNING +
+	// activeHubNodeID; the cohort-join path stamps RUNNING before reinvoke).
+	// A still-PENDING/terminal fallback hub means the outcome belongs to a
+	// transition already consumed — e.g. the vibe entry's reader/slicer arms
+	// the sprint chain on child-terminal, swapping activeFlowNodes, and a
+	// stale synthesis turn's done would otherwise land on vibe-sprint's
+	// "synthesis" and dispatch audit with zero validation, parking the run
+	// and cancelling the in-flight sprint entry child mid-turn. Consume it
+	// as advancing (one-decision guard stamped like every other claim here)
+	// instead of dispatching a successor the run never reached. Operator
+	// settles (agentInitiated=false) keep legacy behavior.
+	if in.agentInitiated && activeHubNodeID == "" {
+		switch st := s.lookupFlowStepStatus(targetRunID, hubID); st {
+		case StepStatusRunning, StepStatusWaitingUserApr, "":
+			// RUNNING/WAITING: the hub node was dispatched and may own this
+			// outcome. "": no step row (legacy/unmirrored shape) — fall
+			// through to legacy edge resolution rather than second-guess it.
+		default:
+			s.flowDiagLog(targetRunID, "flow_control_stale_hub_done",
+				"agent done resolved onto a fallback hub that was never dispatched; consuming without dispatch",
+				"hub_node_id", hubID,
+				"hub_step_status", string(st),
+			)
+			s.mu.Lock()
+			if rs := s.runs[targetRunID]; rs != nil && rs.currentTurnID != "" {
+				rs.lastFlowControlTurnID = rs.currentTurnID
+			}
+			s.mu.Unlock()
+			st := s.agentOrchestrator.loopStateFor(targetRunID)
+			return FlowControlResult{Status: "done", Round: st.Round, Cap: effectiveCap(st), OpenIssues: st.OpenIssues, NextAction: "advancing"}, true
+		}
+	}
 	target, ok := edgeTargetFrom(edges, hubID, "done", "forward")
 	if !ok || target == "" || target == "done" || target == "ask_user" {
 		s.mu.Lock()

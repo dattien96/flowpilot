@@ -1330,6 +1330,22 @@ func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID
 
 	targetIDs := forwardDoneTargets(edges, completedNodeID)
 	if len(targetIDs) == 0 {
+		// CA-1087 (live run-2302): onVibeCpNodeDone consumed this completion
+		// into a chain dispatch that swapped activeFlowNodes (sprint chain,
+		// cp-ingest chain, post-debate restore) — the handoff node
+		// legitimately has no edges in the NEW topology. Claim it: falling
+		// back to the note+reinvoke path lets the reinvoked hub's synthesized
+		// "done" resolve against the new topology's first hub.inline node
+		// (vibe-sprint's "synthesis"), which dispatched audit before any
+		// validation ran and parked — cancelling the just-spawned sprint
+		// entry child mid-turn.
+		if _, inFlow := findFlowNode(nodes, completedNodeID); !inFlow && vibeChainHandoffNode(completedNodeID) {
+			s.flowDiagLog(parentRunID, "flow_advance_vibe_handoff_claimed",
+				"completed node's transition already consumed by chain dispatch; skipping hub reinvoke",
+				"completed_node_id", completedNodeID,
+			)
+			return true
+		}
 		s.flowDiagLog(parentRunID, "flow_advance_no_targets", "completed node has no forward done targets",
 			"completed_node_id", completedNodeID,
 		)
@@ -1341,7 +1357,11 @@ func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID
 		// not in activeFlowNodes. Returning false here made advanceOrNotifyHub
 		// reinvoke ss_validator/cp_validator, which submit_review_outcome
 		// continue and re-park the lock (live run-214743: second ss_lock).
-		if completedNodeID == vibeCpWriterNodeID || completedNodeID == vibeTaskSlicerNodeID || completedNodeID == vibeDebateSynthesisNodeID {
+		// CA-1087: sprint_slicer and task_plan_reader are the same terminal
+		// handoff shape (CP-90 added the reader but missed this list).
+		if completedNodeID == vibeCpWriterNodeID || completedNodeID == vibeTaskSlicerNodeID ||
+			completedNodeID == vibeSprintSlicerNodeID || completedNodeID == vibeTaskPlanReaderNodeID ||
+			completedNodeID == vibeDebateSynthesisNodeID {
 			s.flowDiagLog(parentRunID, "flow_advance_vibe_terminal_done", "claimed vibe writer/slicer/debate terminal done without hub reinvoke",
 				"completed_node_id", completedNodeID,
 			)

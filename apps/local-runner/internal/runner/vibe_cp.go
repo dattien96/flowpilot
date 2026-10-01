@@ -83,6 +83,23 @@ func vibeInheritsSessionModel(nodeID string) bool {
 	}
 }
 
+// vibeChainHandoffNode reports whether onVibeCpNodeDone consumes the node's
+// completion into a chain dispatch that can swap activeFlowNodes under it —
+// the sprint chain (slicer/reader → vibe-sprint), the cp-ingest chain
+// (cp_writer → vibe-cp-ingest), or the post-debate topology restore
+// (debate_synthesis). When the swap already landed, the completed node is
+// legitimately absent from the active topology and tryAdvanceFlowFromNode
+// must claim it rather than reinvoke the hub (CA-1087, live run-2302).
+func vibeChainHandoffNode(nodeID string) bool {
+	switch strings.TrimSpace(nodeID) {
+	case vibeCpWriterNodeID, vibeDebateSynthesisNodeID,
+		vibeTaskSlicerNodeID, vibeSprintSlicerNodeID, vibeTaskPlanReaderNodeID:
+		return true
+	default:
+		return false
+	}
+}
+
 // vibeLinearWriterNode is a spawnable vibe node whose --done--> done is a
 // linear chain, not a review-cohort feeding the previous hub.inline.
 func vibeLinearWriterNode(nodeID string) bool {
