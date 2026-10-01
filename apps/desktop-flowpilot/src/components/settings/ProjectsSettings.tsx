@@ -21,6 +21,8 @@ import {
 } from "@/components/settings/projectEngine";
 import { ScaffoldActivity } from "@/components/settings/ScaffoldActivity";
 import { ProjectEnginePanel, type ScaffoldLaunchInput } from "@/components/settings/ProjectEnginePanel";
+import { SearchableModelSelect } from "@/components/settings/SearchableModelSelect";
+import { buildModelOptions } from "@/components/settings/stepModelOptions";
 import { useStore } from "@/state/store";
 
 type BindingDraft = Pick<ProjectWorkspaceBinding, "id" | "localPath" | "label"> & { persisted: boolean };
@@ -893,7 +895,7 @@ export function ProjectsSettings({ onNavigateSection, onOpenChat }: ProjectsSett
                       <label className="settings-field settings-field-full"><span>Xcode Destination</span><input placeholder="e.g. platform=iOS Simulator,name=iPhone 15" value={projectForm.xcodeDestination} onChange={(event) => setProjectForm((current) => ({ ...current, xcodeDestination: event.target.value }))} /></label>
                     </>)}
                     <label className="settings-field"><span>Status</span><select value={projectForm.status} onChange={(event) => setProjectForm((current) => ({ ...current, status: event.target.value }))}><option value="active">active</option><option value="archived">archived</option></select></label>
-                    <label className="settings-field"><span>Default Model</span><select value={defaults.defaultModel} onChange={(event) => setDefaults((current) => ({ ...current, defaultModel: event.target.value }))}>{models.map((model) => <option key={model.id} value={model.modelId}>{model.displayName}</option>)}</select></label>
+                    <label className="settings-field"><span>Default Model</span><SearchableModelSelect value={defaults.defaultModel} options={buildModelOptions(models)} onChange={(model) => setDefaults((current) => ({ ...current, defaultModel: model }))} placeholder="Select a model..." /></label>
                     <label className="settings-field"><span>Reasoning</span><select value={defaults.defaultReasoningEffort} onChange={(event) => setDefaults((current) => ({ ...current, defaultReasoningEffort: event.target.value }))}><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Extra High</option></select></label>
                     <label className="settings-field"><span>Provider Session Idle TTL</span><input min={1} type="number" value={defaults.sessionIdleTtlMinutes} onChange={(event) => setDefaults((current) => ({ ...current, sessionIdleTtlMinutes: Number(event.target.value) || 1 }))} /></label>
                   </div>,
