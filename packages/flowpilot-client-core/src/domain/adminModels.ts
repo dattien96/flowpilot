@@ -192,6 +192,21 @@ export interface FlowBehaviorOption {
   requiresAgent: boolean;
 }
 
+// CA-1081: canonical behavior ids the runner dispatches but the authoring
+// picker never offers — builtin-authored topologies only (agentpack
+// behaviorAliases' canonical targets: contract.freeze, agent.scaffold on
+// vibe-sprint, tournament.* on tournament-harness, agent.reproduce on
+// bug-harness). user.confirm IS user-selectable so it stays in
+// FLOW_BEHAVIOR_OPTIONS. `requiresAgent` mirrors ProviderBackedBehavior:
+// the four agent.* ids spawn provider children and must carry agentRef.
+export const BUILTIN_ONLY_BEHAVIOR_IDS: readonly FlowBehaviorOption[] = [
+  { id: "agent.scaffold", label: "Agent scaffold — spawn a TDD contract architect", requiresAgent: true },
+  { id: "agent.reproduce", label: "Agent reproduce — spawn a bug reproducer", requiresAgent: true },
+  { id: "contract.freeze", label: "Contract freeze — validate + persist the change contract", requiresAgent: false },
+  { id: "tournament.arbiter", label: "Tournament arbiter — deterministic candidate arbitration", requiresAgent: false },
+  { id: "tournament.merge", label: "Tournament merge — apply the winning candidate", requiresAgent: false },
+];
+
 export const FLOW_BEHAVIOR_OPTIONS: FlowBehaviorOption[] = [
   { id: "agent.delegate", label: "Agent delegate — spawn an agent", requiresAgent: true },
   { id: "agent.code", label: "Agent code — spawn a frozen-contract writer", requiresAgent: true },
@@ -208,6 +223,15 @@ export const FLOW_BEHAVIOR_OPTIONS: FlowBehaviorOption[] = [
   { id: "artifact.audit_draft", label: "Artifact audit draft — prepare an audit/commit draft", requiresAgent: false },
   { id: "flow.control", label: "Flow control — map a tool outcome to flow control", requiresAgent: false },
   { id: "user.confirm", label: "User confirm — gate on explicit user confirmation", requiresAgent: false },
+];
+
+/** Every behavior id the runner can dispatch: user-selectable ∪ builtin-only
+ * (CA-1081). Validation checks against this — the picker's
+ * FLOW_BEHAVIOR_OPTIONS alone is NOT the runner's dispatch table. Declared
+ * after FLOW_BEHAVIOR_OPTIONS so module init order is safe. */
+export const KNOWN_BEHAVIOR_OPTIONS: readonly FlowBehaviorOption[] = [
+  ...FLOW_BEHAVIOR_OPTIONS,
+  ...BUILTIN_ONLY_BEHAVIOR_IDS,
 ];
 
 /** Edge terminal pseudo-nodes an edge may point at besides a declared node. */
@@ -374,9 +398,13 @@ export function validateFlowGraph(
     );
   }
 
-  const knownBehaviorIds = new Set(FLOW_BEHAVIOR_OPTIONS.map((option) => option.id));
+  // CA-1081: known = user-selectable ∪ builtin-only dispatchable — mirrored
+  // builtin step_definitions legitimately carry ids (contract.freeze,
+  // agent.scaffold, tournament.*) the picker never offers; validating only
+  // against FLOW_BEHAVIOR_OPTIONS falsely flagged them as undispatchable.
+  const knownBehaviorIds = new Set(KNOWN_BEHAVIOR_OPTIONS.map((option) => option.id));
   const behaviorsRequiringAgent = new Set(
-    FLOW_BEHAVIOR_OPTIONS.filter((option) => option.requiresAgent).map((option) => option.id),
+    KNOWN_BEHAVIOR_OPTIONS.filter((option) => option.requiresAgent).map((option) => option.id),
   );
   const nodeIds = new Set<string>();
 

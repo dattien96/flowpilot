@@ -10,7 +10,7 @@ import type {
   WorkflowFlowEdge,
   WorkflowStep,
 } from "@flowpilot/client-core";
-import { FLOW_BEHAVIOR_OPTIONS, FLOW_EDGE_TERMINALS, validateFlowGraph } from "@flowpilot/client-core";
+import { FLOW_BEHAVIOR_OPTIONS, FLOW_EDGE_TERMINALS, KNOWN_BEHAVIOR_OPTIONS, validateFlowGraph } from "@flowpilot/client-core";
 import { getAdminUseCases } from "@/clientCore";
 import { formatTimestamp, integrationTypes, toErrorMessage } from "@/components/settings/settingsHelpers";
 import {
@@ -370,7 +370,10 @@ function stepDefinitionAgentRefIssue(
   behaviorId: string | null | undefined,
   agentRef: string | null | undefined,
 ): string | null {
-  const requiresAgent = FLOW_BEHAVIOR_OPTIONS.find((option) => option.id === behaviorId)?.requiresAgent ?? false;
+  // KNOWN_BEHAVIOR_OPTIONS includes builtin-only provider behaviors
+  // (agent.scaffold/agent.reproduce) — a scaffold step without an agentRef
+  // must warn here too, not just the picker's delegate/code (CA-1081).
+  const requiresAgent = KNOWN_BEHAVIOR_OPTIONS.find((option) => option.id === behaviorId)?.requiresAgent ?? false;
   if (requiresAgent && !agentRef?.trim()) {
     return `Behavior "${behaviorId}" requires an Agent ref — set one before saving this step.`;
   }
