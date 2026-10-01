@@ -229,6 +229,11 @@ func IsLegacyContractsStorePath(p string) bool {
 //     writeDefaultGateConfig (BUG-394 run-2284)
 //   - .devin/mcp_config.local.json: the Devin provider session's MCP config
 //     (BUG-394 run-4472)
+//   - .flowpilot/workflow_drift_events.json: the gate's own drift recorder
+//     appends it on every evaluated turn — always dirty inside the writer's
+//     own diff window, never the writer's write (CA-1089, live run-3362:
+//     writers parked "scope drift" on it and the escalate mounted a wedged
+//     owner debate; same self-park class as CA-649's gate-metrics).
 //
 // Exact paths only per CA-427 Finding 2 — .flowpilot/settings/flow-rules.json,
 // .flowpilot/contracts/*.ndjson and every other .flowpilot/** or .devin/**
@@ -238,6 +243,7 @@ func RunnerOwnedConfigPaths() []string {
 		path.Join(".flowpilot", "guard", "test_baseline.json"),
 		path.Join(".flowpilot", "settings", "gate-config.json"),
 		path.Join(".devin", "mcp_config.local.json"),
+		path.Join(".flowpilot", "workflow_drift_events.json"),
 	}
 }
 
