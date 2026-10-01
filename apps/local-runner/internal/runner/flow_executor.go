@@ -1871,9 +1871,13 @@ func (s *InteractiveService) delegateSpawnModel(ctx context.Context, parentRunID
 // SpawnAgentInput.Model and spawnChildRun falls back to inherit-from-parent.
 // Inline/control behaviors never reach a provider turn — empty.
 //
-// Spawnable (non-inline) nodes: agent.delegate AND agent.code. Settings >
-// Step Definitions writes step_definitions.model; a non-empty catalog row
-// wins inherit. Pack YAML model: remains Task-320 (delegate-only at load).
+// Spawnable (non-inline) nodes: agent.delegate, agent.code, AND
+// agent.scaffold (CA-1077 — scaffold children reuse behaviorAgentDelegate,
+// and pack-load has accepted `model:` on them since CP-67 B-5; dropping it
+// here silently dead-pinned vibe-sprint's tdd claude-sonnet-4-5 and made the
+// Settings step row unreachable). Settings > Step Definitions writes
+// step_definitions.model; a non-empty catalog row wins inherit.
+// Pack YAML model: remains Task-320.
 //
 // Precedence for spawnable nodes:
 //  1. planner nodes (contract-planner agent / preflight_contract_plan id):
@@ -1886,7 +1890,7 @@ func (s *InteractiveService) delegateSpawnModel(ctx context.Context, parentRunID
 //     ValidateFlowDefinition still rejects non-delegate model).
 //     Empty → inherit downstream.
 func (s *InteractiveService) resolveFlowNodeModel(ctx context.Context, parentRunID string, node agentpack.FlowNode) string {
-	if canonical, ok := agentpack.NormalizeBehaviorID(node.Behavior); ok && canonical != "agent.delegate" && canonical != "agent.code" {
+	if canonical, ok := agentpack.NormalizeBehaviorID(node.Behavior); ok && canonical != "agent.delegate" && canonical != "agent.code" && canonical != "agent.scaffold" {
 		return ""
 	}
 	if strings.EqualFold(strings.TrimSpace(flowNodeAgentName(node)), "contract-planner") ||

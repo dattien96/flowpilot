@@ -14,9 +14,14 @@
 // Mirrors FLOW_BEHAVIOR_OPTIONS (packages/flowpilot-client-core/src/domain/adminModels.ts)
 // — only the ids that require an agent matter here; kept in sync manually.
 // Empty model is inherit (run/flow baseline), not a missing required field.
+// CA-1077: agent.scaffold is a builtin-only behavior (deliberately absent
+// from FLOW_BEHAVIOR_OPTIONS authoring dropdown) but its steps DO spawn a
+// delegate child — and resolveFlowNodeModel now honors its step row — so
+// the Model field must surface on scaffold steps like vibe-sprint's tdd.
 const BEHAVIOR_IDS_REQUIRING_AGENT: Record<string, true> = {
   "agent.delegate": true,
   "agent.code": true,
+  "agent.scaffold": true,
 };
 
 export function stepDefinitionRequiresModel(behaviorId: string | null | undefined): boolean {

@@ -6,6 +6,23 @@ test("stepDefinitionRequiresModel: shows the model field for agent.code writers"
   assert.equal(stepDefinitionRequiresModel("agent.code"), true);
 });
 
+// CA-1077: agent.scaffold steps (vibe-sprint tdd) spawn delegate children and
+// resolveFlowNodeModel now honors their step row — the Model field must show.
+test("stepDefinitionRequiresModel: shows the model field for agent.scaffold steps", () => {
+  assert.equal(stepDefinitionRequiresModel("agent.scaffold"), true);
+});
+
+test("stepDefinitionListSubtitle: keeps the model for an agent.scaffold node", () => {
+  assert.equal(
+    stepDefinitionListSubtitle({
+      stepType: "flowpilot_core_flow_pack_vibe_sprint_tdd",
+      behaviorId: "agent.scaffold",
+      model: "grok-4.6",
+    }),
+    "flowpilot_core_flow_pack_vibe_sprint_tdd / grok-4.6",
+  );
+});
+
 test("stepDefinitionListSubtitle: keeps the model for an agent.code node", () => {
   assert.equal(
     stepDefinitionListSubtitle({

@@ -270,13 +270,16 @@ func recordFromWorkflowRow(row dbWorkflowRow) FlowDefinitionRecord {
 		// resolveFlowNodeModel treats DB-backed (cloned) flows exactly like
 		// pack-YAML node.Model — including planner nodes, whose DB-row lookup
 		// stays skipped (CA-616) but whose carried Model is honored.
-		// Delegate nodes only (BUG-352): a stale model on any other behavior
-		// stays ignored exactly like pre-Task-320 runtime did. Carrying it
-		// would trip ValidateFlowDefinition's fail-closed delegate-only rule
-		// and fail the whole flow load (422) — e.g. a legacy gpt-5.4 on the
-		// context.produce/context node breaking task-harness resolution.
+		// Spawnable nodes only (BUG-352/CA-1077): a stale model on any other
+		// behavior stays ignored exactly like pre-Task-320 runtime did.
+		// Carrying it would trip ValidateFlowDefinition's fail-closed
+		// spawnable-only rule and fail the whole flow load (422) — e.g. a
+		// legacy gpt-5.4 on the context.produce/context node breaking
+		// task-harness resolution. agent.code/agent.scaffold are accepted by
+		// the same rule that admits agent.delegate (pack.go).
 		if defn.Model != nil {
-			if canonical, ok := agentpack.NormalizeBehaviorID(node.Behavior); ok && canonical == "agent.delegate" {
+			if canonical, ok := agentpack.NormalizeBehaviorID(node.Behavior); ok &&
+				(canonical == "agent.delegate" || canonical == "agent.code" || canonical == "agent.scaffold") {
 				node.Model = *defn.Model
 			}
 		}
