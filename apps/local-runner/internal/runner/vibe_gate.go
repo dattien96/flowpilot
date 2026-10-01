@@ -138,7 +138,15 @@ func (s *InteractiveService) applyVibeGateResolver(runID, parentID, turnID strin
 // gatedRunID is the run whose post-turn gate was diverted into the debate
 // (empty when the resolver had no gated child — e.g. drift-only on the hub).
 func (s *InteractiveService) startVibeOwnerDebate(hub, gatedRunID, message string) {
-	s.stashVibeFlowForDebate(hub, gatedRunID)
+	// CA-1095: stash is the atomic mount decision — it reports false when a
+	// debate already owns this hub (violation-routed escalation mid-debate,
+	// or a concurrent drift mount). The gated child was still recorded for
+	// its post-debate reprompt; launching a second debate flow here is the
+	// nested-mount wedge from live run-3362.
+	if !s.stashVibeFlowForDebate(hub, gatedRunID) {
+		log.Printf("[vibe-gate] owner debate mount suppressed hub=%s gated=%s: debate already active", hub, gatedRunID)
+		return
+	}
 	go s.startResolvedFlow(context.Background(), hub, workingmode.PackPrefix+vibeOwnerDebateFlowID, message)
 }
 

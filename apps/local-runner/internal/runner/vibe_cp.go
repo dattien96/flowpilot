@@ -916,12 +916,17 @@ func collectVibeSprintPlan(cwd string) []string {
 	return out
 }
 
-func (s *InteractiveService) stashVibeFlowForDebate(parentRunID, gatedRunID string) {
+// stashVibeFlowForDebate parks the sprint topology for the debate and
+// reports whether THIS call performed the park — the single atomic mount
+// decision (CA-1095). A caller that gets false must NOT launch another
+// debate flow: one is already mounted, and this call still recorded the
+// gated child for its post-debate reprompt.
+func (s *InteractiveService) stashVibeFlowForDebate(parentRunID, gatedRunID string) (parkedNow bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rs := s.runs[parentRunID]
 	if rs == nil {
-		return
+		return false
 	}
 	// Record the interrupted child even when the topology is already parked
 	// (a second gate fire mid-debate): every diverted node completion owes a
@@ -930,7 +935,13 @@ func (s *InteractiveService) stashVibeFlowForDebate(parentRunID, gatedRunID stri
 		rs.vibeParkedGatedRunIDs = append(rs.vibeParkedGatedRunIDs, gatedRunID)
 	}
 	if len(rs.vibeParkedNodes) > 0 {
-		return
+		return false
+	}
+	// CA-1095: a debate flow already mounted as the chat flow while the
+	// parked topology was somehow cleared still owns the run — never
+	// remount onto it.
+	if workingmode.BareFlowID(rs.chatFlowRef) == vibeOwnerDebateFlowID {
+		return false
 	}
 	rs.vibeParkedNodes = append([]agentpack.FlowNode(nil), rs.activeFlowNodes...)
 	rs.vibeParkedEdges = append([]agentpack.FlowEdge(nil), rs.activeFlowEdges...)
@@ -952,6 +963,7 @@ func (s *InteractiveService) stashVibeFlowForDebate(parentRunID, gatedRunID stri
 		st.pendingNarrow = false
 		st.mu.Unlock()
 	}
+	return true
 }
 
 func (s *InteractiveService) restoreVibeFlowAfterDebate(parentRunID string) bool {

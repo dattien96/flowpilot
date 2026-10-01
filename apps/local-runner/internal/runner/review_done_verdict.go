@@ -78,7 +78,7 @@ func flowRequiresHubMachineVerdict(rs *interactiveRun, hubID string) bool {
 	return len(cohortNodeLabels(rs.activeFlowNodes, cohort)) > 0
 }
 
-func (s *InteractiveService) recordReviewCohortMemberVerdict(parentRunID, label, domainStatus string) {
+func (s *InteractiveService) recordReviewCohortMemberVerdict(parentRunID, label, domainStatus, detail string) {
 	label = strings.TrimSpace(label)
 	domainStatus = strings.TrimSpace(domainStatus)
 	if parentRunID == "" || label == "" || domainStatus == "" {
@@ -94,6 +94,47 @@ func (s *InteractiveService) recordReviewCohortMemberVerdict(parentRunID, label,
 		parent.pendingReviewVerdictByLabel = make(map[string]string)
 	}
 	parent.pendingReviewVerdictByLabel[label] = domainStatus
+	if detail = strings.TrimSpace(detail); detail != "" {
+		if parent.pendingReviewVerdictDetailByLabel == nil {
+			parent.pendingReviewVerdictDetailByLabel = make(map[string]string)
+		}
+		parent.pendingReviewVerdictDetailByLabel[label] = detail
+	}
+}
+
+// reviewVerdictDetailForCohort renders the verdict CONTENT buffered beside
+// the status (CA-1095): feedback summary + per-AC verdict rows + issues, so
+// the joined cohort note carries the reviewer's actual decision — a
+// verdict_only owner child's thin final message is no longer the only text
+// the synthesis hub sees.
+func reviewVerdictDetailForCohort(in FlowControlInput) string {
+	var b strings.Builder
+	if s := strings.TrimSpace(in.Summary); s != "" {
+		b.WriteString(s)
+	}
+	if rows, ok := in.Payload["verdicts"].([]VerdictRow); ok {
+		for _, r := range rows {
+			line := strings.TrimSpace(r.ACID) + ": " + strings.TrimSpace(r.Verdict)
+			if n := strings.TrimSpace(r.Note); n != "" {
+				line += " — " + n
+			}
+			if strings.TrimSpace(line) != ":" {
+				fmt.Fprintf(&b, "\n  - %s", line)
+			}
+		}
+	}
+	if issues, ok := in.Payload["issues"].([]ReviewIssue); ok {
+		for _, is := range issues {
+			line := strings.TrimSpace(is.Title)
+			if f := strings.TrimSpace(is.File); f != "" {
+				line += " (" + f + ")"
+			}
+			if line != "" {
+				fmt.Fprintf(&b, "\n  - issue: %s", line)
+			}
+		}
+	}
+	return b.String()
 }
 
 func (s *InteractiveService) snapshotReviewCohortVerdicts(parentRunID string, entries []cohortEntry) {

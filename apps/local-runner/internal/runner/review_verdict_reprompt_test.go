@@ -133,7 +133,7 @@ func TestCohortMemberRecordedVerdictSkipsReprompt(t *testing.T) {
 	rs.status = RunStatusCompleted
 	svc.mu.Unlock()
 
-	svc.recordReviewCohortMemberVerdict(parent.RunID, "plan_reviewer", "approved")
+	svc.recordReviewCohortMemberVerdict(parent.RunID, "plan_reviewer", "approved", "")
 
 	svc.mu.Lock()
 	svc.settleFlowChildTurnCompletedLocked(rs, "approved with verdicts", ProviderEvent{Type: EventTurnCompleted})

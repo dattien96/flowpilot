@@ -14,6 +14,7 @@ package runner
 // ============================================================================
 
 import (
+	"context"
 	"testing"
 
 	"flowpilot-runner/internal/agentpack"
@@ -123,6 +124,25 @@ func TestCA1087_StaleHubDoneOnUndispatchedSprintHubDoesNotDispatchAudit(t *testi
 func TestCA1087_LegitDispatchedSynthesisDoneStillAdvances(t *testing.T) {
 	svc, parent := ca1087VibeTasksSprintBed(t)
 	svc.onVibeCpNodeDone(parent.RunID, vibeTaskPlanReaderNodeID)
+
+	// CA-1096: the audit's missing-feature-key auto-finalize now requires a
+	// completed coder leg — this bed never ran one, so mark the sprint's
+	// writer steps DONE to keep exercising the done-edge consumption (the
+	// escalation path for an incomplete sprint is covered by CA-1096's own
+	// tests).
+	svc.setFlowStepStatus(context.Background(), parent.RunID, "coder", StepStatusDone)
+	// CA-1093: a finished sprint with plan tasks left now auto-advances into
+	// the next sprint (reseed) — pin this bed at the LAST sprint so audit
+	// settles instead of advancing.
+	svc.mu.Lock()
+	if rs := svc.runs[parent.RunID]; rs != nil {
+		rs.vibeSprintIndex = len(rs.vibeTaskPlan)
+	}
+	svc.mu.Unlock()
+	// CA-1092: vibe-sprint now declares a cohort:review reviewer inbound of
+	// synthesis, so its done is gated on a recorded approved verdict — record
+	// the verdict the reviewer child would have submitted at join.
+	svc.recordReviewCohortMemberVerdict(parent.RunID, "reviewer", "approved", "")
 
 	// Simulate the real dispatch: dispatchHubNotifyNode stamps
 	// activeHubNodeID + RUNNING before the hub turn runs.

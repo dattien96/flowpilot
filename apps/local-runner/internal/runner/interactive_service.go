@@ -584,6 +584,11 @@ type interactiveRun struct {
 	// pendingReviewVerdictByLabel buffers reviewer submit_review_outcome calls
 	// until the cohort member's turn completes and appendCohortResult runs.
 	pendingReviewVerdictByLabel map[string]string
+	// pendingReviewVerdictDetailByLabel mirrors the verdict buffer with the
+	// rendered verdict CONTENT (CA-1095): status alone told debate_synthesis
+	// "continue" but not the remediation the owner chose — the joined note
+	// now carries it.
+	pendingReviewVerdictDetailByLabel map[string]string
 	// lastReviewCohortVerdicts is a snapshot taken at the most recent review
 	// cohort join (label → approved|changes_requested|blocked).
 	lastReviewCohortVerdicts map[string]string
@@ -3016,6 +3021,16 @@ func buildCohortNote(parentRunID, cohortID string, entries []cohortEntry, round 
 				msg = "(completed with no final message captured)"
 			}
 			fmt.Fprintf(&b, "%q (%s): %s\n", label, e.Provider, msg)
+			// CA-1095: a verdict_only member (owner-debate proxies) submits its
+			// decision via submit_review_outcome — surface the status AND the
+			// recorded content so the synthesis hub reads what was decided,
+			// not just that a message completed.
+			if v := strings.TrimSpace(e.MachineVerdict); v != "" {
+				fmt.Fprintf(&b, "  verdict=%s\n", v)
+			}
+			if d := strings.TrimSpace(e.VerdictDetail); d != "" {
+				fmt.Fprintf(&b, "  verdict detail: %s\n", d)
+			}
 		}
 	}
 	b.WriteString("---\n")
@@ -6346,9 +6361,12 @@ func (s *InteractiveService) settleFlowChildTurnCompletedLocked(rs *interactiveR
 	}
 	if rs.flowCohortId != "" {
 		machineVerdict := ""
+		var machineVerdictDetail string
 		if parent := s.runs[rs.parentRunID]; parent != nil && parent.pendingReviewVerdictByLabel != nil {
 			machineVerdict = parent.pendingReviewVerdictByLabel[rs.label]
 			delete(parent.pendingReviewVerdictByLabel, rs.label)
+			machineVerdictDetail = parent.pendingReviewVerdictDetailByLabel[rs.label]
+			delete(parent.pendingReviewVerdictDetailByLabel, rs.label)
 		}
 		// CP-67 live finding (run-8853): on deferred-tool transports a reviewer
 		// can end its turn with the submit_review_outcome call cancelled in
@@ -6422,6 +6440,7 @@ func (s *InteractiveService) settleFlowChildTurnCompletedLocked(rs *interactiveR
 			FinalMessage:   truncateDisplayField(finalMsg, 1500),
 			Status:         "completed",
 			MachineVerdict: machineVerdict,
+			VerdictDetail:  truncateDisplayField(machineVerdictDetail, 1500),
 		})
 		s.flowDiagLog(rs.parentRunID, "cohort_member_completed", "cohort member completed and buffered",
 			"child_run_id", rs.id,
@@ -7309,6 +7328,26 @@ func (b *turnBridge) RequestApproval(details ApprovalDetails) (string, error) {
 		return decision, nil
 	}
 
+	// CA-1094 (bounded stubs): the same bridge choke point enforces the
+	// scaffold writer's freeze-time read-only set — declared production
+	// files that existed at contract.freeze. The scaffold may only CREATE
+	// declared paths; modifying a pre-existing one is silent-denied for
+	// every provider, before YOLO.
+	if decision, reason, handled := s.decideScaffoldPreExistingLock(b.rs, details); handled {
+		s.recordAutoApproval(b.rs, details, decision, reason)
+		b.Emit(ProviderEvent{
+			Type:     EventNodeIsolationWriteDenied,
+			ToolName: details.Reason,
+			Status:   "deny",
+			Input: map[string]string{
+				"posture": reason,
+				"command": details.Command,
+				"kind":    details.Kind,
+			},
+		})
+		return decision, nil
+	}
+
 	// BUG-397: durable frozen-contract state protection. While a frozen
 	// contract is active for the run, exec commands that rewind/delete/
 	// overwrite .flowpilot/** state (or the whole tree) are silent-denied at
@@ -7687,7 +7726,7 @@ func (b *turnBridge) SubmitFlowControl(in FlowControlInput) (FlowControlResult, 
 			if label == "" {
 				label = strings.TrimSpace(b.rs.agentName)
 			}
-			b.svc.recordReviewCohortMemberVerdict(targetParentID, label, in.reviewOutcomeStatus)
+			b.svc.recordReviewCohortMemberVerdict(targetParentID, label, in.reviewOutcomeStatus, reviewVerdictDetailForCohort(in))
 			return FlowControlResult{
 				Status:     in.reviewOutcomeStatus,
 				NextAction: "review_verdict_recorded",

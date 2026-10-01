@@ -44,6 +44,12 @@ type cohortEntry struct {
 	// MachineVerdict is the domain status from submit_review_outcome when the
 	// reviewer recorded a machine-checkable verdict (CP-53 P-2 / Task-274).
 	MachineVerdict string
+	// VerdictDetail is the rendered verdict CONTENT (feedback + per-AC rows +
+	// issues) recorded with the machine verdict (CA-1095). For verdict_only
+	// members — the owner-debate proxies — the final message is thin and this
+	// is the only channel that carries the remediation decision into the
+	// joined note the synthesis hub reads.
+	VerdictDetail string
 }
 
 type agentCompletion struct {
