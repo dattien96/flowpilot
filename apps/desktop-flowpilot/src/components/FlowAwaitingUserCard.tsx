@@ -34,25 +34,29 @@ export function FlowAwaitingUserCard(): React.ReactElement | null {
   // escalate card so operators are not offered Retry/Stop/Allow behind a second modal.
   if (gateBlock) return null;
 
-  const { stalled, isCap, driftedPaths, isDrift, retryIsPrimary } = awaitingUserDriftState(loopState);
+  const { stalled, isCap, isSprintBoundary, driftedPaths, isDrift, retryIsPrimary } = awaitingUserDriftState(loopState);
   const isVibeLock = loopState.blockReason === "vibe_lock";
   const reasonLabel =
     isVibeLock
       ? "Preview & Lock"
-      : isCap
-        ? "Round limit reached"
-        : stalled
-          ? "Member stalled"
-          : "Needs your decision";
+      : isSprintBoundary
+        ? "Sprint done"
+        : isCap
+          ? "Round limit reached"
+          : stalled
+            ? "Member stalled"
+            : "Needs your decision";
   const detail =
     loopState.gateReason ||
     (isVibeLock
       ? "Lock the SS/CP draft to start slicing, or paste edits then Lock."
-      : isCap
-        ? "The review loop reached its round limit."
-        : stalled
-          ? "A cohort member stopped producing events. Retry it, skip it (mark failed and join), or stop the flow."
-          : "The flow paused and is waiting for your input.");
+      : isSprintBoundary
+        ? "Task complete — Continue starts the next task, Stop ends the run."
+        : isCap
+          ? "The review loop reached its round limit."
+          : stalled
+            ? "A cohort member stopped producing events. Retry it, skip it (mark failed and join), or stop the flow."
+            : "The flow paused and is waiting for your input.");
 
   const handleRetry = async () => {
     if (submitting) return;
@@ -135,12 +139,12 @@ export function FlowAwaitingUserCard(): React.ReactElement | null {
           <>
             <button
               type="button"
-              className={`btn ${retryIsPrimary || isVibeLock ? "btn-primary" : "btn-ghost"}`}
+              className={`btn ${retryIsPrimary || isVibeLock || isSprintBoundary ? "btn-primary" : "btn-ghost"}`}
               onClick={() => void handleRetry()}
               disabled={submitting}
-              title={isVibeLock ? "lock draft and continue" : "run again with old scope"}
+              title={isVibeLock ? "lock draft and continue" : isSprintBoundary ? "start the next task" : "run again with old scope"}
             >
-              {isVibeLock ? "Lock" : "Retry"} <span className="btn-desc">{isVibeLock ? "write-back if edited, then slice" : "run again with old scope"}</span>
+              {isVibeLock ? "Lock" : isSprintBoundary ? "Continue" : "Retry"} <span className="btn-desc">{isVibeLock ? "write-back if edited, then slice" : isSprintBoundary ? "start the next task" : "run again with old scope"}</span>
             </button>
             {isDrift && (
               <button

@@ -26,6 +26,12 @@ export function FlowTimelineSidebar(): React.ReactElement | null {
     const ls = s.agentGraphSnapshot?.loopState;
     return ls?.cap ?? ls?.roundCap ?? 0;
   });
+  // CA-1097 (live run-3362): vibe-tasks runs 1 CP → N existing Tasks, but the
+  // desktop gave no hint which task the sprint was on — the TUI already renders
+  // a "task i/total <name>" chip. Mirror it from loopState.vibeTask*.
+  const vibeTaskIndex = useStore((s) => s.agentGraphSnapshot?.loopState?.vibeTaskIndex ?? 0);
+  const vibeTaskTotal = useStore((s) => s.agentGraphSnapshot?.loopState?.vibeTaskTotal ?? 0);
+  const vibeTaskName = useStore((s) => s.agentGraphSnapshot?.loopState?.vibeTaskName ?? "");
   const [expanded, setExpanded] = useState(true);
   // Auto-collapse the step rail on narrow windows; restores the user's choice
   // when the window widens back past the breakpoint.
@@ -85,6 +91,14 @@ export function FlowTimelineSidebar(): React.ReactElement | null {
       <div className="flow-sidebar-head">
         {expanded && (
           <div className="flow-sidebar-summary">
+            {/* CA-1097: which of the CP's pre-existing Tasks the sprint is on —
+                mirrors the TUI vibeTaskChip. */}
+            {vibeTaskTotal > 0 && vibeTaskIndex > 0 && (
+              <span className="flow-sidebar-task" title={vibeTaskName || undefined}>
+                Task {vibeTaskIndex}/{vibeTaskTotal}
+                {vibeTaskName ? ` — ${vibeTaskName}` : ""}
+              </span>
+            )}
             {/* BUG-234 (#2): round counter — loopRound is 0-based (0 = first pass),
                 so display round+1. Highlighted once a loop-back has occurred so the
                 user can see the flow returned to the coder for another round. */}

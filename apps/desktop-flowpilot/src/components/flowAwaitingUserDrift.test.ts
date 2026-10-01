@@ -52,3 +52,13 @@ test("awaitingUserDriftState: Allow only on non-cap non-stalled drift", () => {
   assert.equal(escalate.isDrift, false);
   assert.equal(escalate.retryIsPrimary, true);
 });
+
+test("awaitingUserDriftState: vibe_sprint_boundary flagged so the card can label Continue", () => {
+  // CA-1097 (live run-3362): a finished vibe sprint parks on
+  // vibe_sprint_boundary; the action is "start the next task", not a retry —
+  // the desktop button read "Retry" while the TUI already renders [Continue].
+  const boundary = awaitingUserDriftState({ blockReason: "vibe_sprint_boundary" });
+  assert.equal(boundary.isSprintBoundary, true);
+  assert.equal(boundary.stalled, false);
+  assert.equal(boundary.isCap, false);
+});

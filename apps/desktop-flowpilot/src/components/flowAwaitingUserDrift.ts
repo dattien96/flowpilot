@@ -22,10 +22,14 @@ export function awaitingUserDriftState(loopState: {
   isDrift: boolean;
   stalled: boolean;
   isCap: boolean;
+  isSprintBoundary: boolean;
   retryIsPrimary: boolean;
 } {
   const stalled = loopState.blockReason === "member_stalled";
   const isCap = loopState.blockReason === "cap";
+  // vibe_sprint_boundary (CA-1097): a finished sprint parked for continuation —
+  // the action starts the next task, it is not a retry.
+  const isSprintBoundary = loopState.blockReason === "vibe_sprint_boundary";
   const driftedPaths = !stalled && !isCap ? parseDriftedPaths(loopState.gateReason ?? "") : null;
   const isDrift = driftedPaths !== null && driftedPaths.length > 0;
   return {
@@ -33,6 +37,7 @@ export function awaitingUserDriftState(loopState: {
     isDrift,
     stalled,
     isCap,
+    isSprintBoundary,
     retryIsPrimary: !isDrift,
   };
 }
