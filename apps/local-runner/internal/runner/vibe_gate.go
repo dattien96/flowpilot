@@ -47,12 +47,14 @@ func classifyVibeGateWithDrift(mode string, result flowgate.EnforceResult, drift
 	// per-run drift state (structural no-re-route), so the drift-routed
 	// debate is the only escalation surface.
 	res := flowgate.ResolvePrecedence(result.Violations, mode, driftScore, false)
-	// Warn-mode gate (Task-352 re-review): Enforce downgrades block/reprompt to
-	// "warn" under a warn-configured gate — the pre-unification live behavior
-	// passed those through, so only a VIOLATION-routed debate downgrades back
-	// to passthrough. Drift-routed debates (DriftRouted) are independent of
-	// the gate action and still escalate.
-	if res.Route == flowgate.PrecedenceRouteOwnerDebate && !res.DriftRouted && result.Action == "warn" {
+	// Warn-mode gate (Task-352 re-review, extended CA-1086): Enforce downgrades
+	// block/reprompt to "warn" under a warn-configured gate — the pre-unification
+	// live behavior passed those through, so every violation-routed escalation
+	// downgrades back to passthrough, requirement-class included (a warn event
+	// still surfaces to the user — BR-4 routing preserved; it just cannot park
+	// a chat-surface run into flow_awaiting_user). Drift-routed debates
+	// (DriftRouted) are independent of the gate action and still escalate.
+	if !res.DriftRouted && result.Action == "warn" {
 		return vibeGatePassthrough
 	}
 	switch res.Route {
@@ -241,12 +243,22 @@ func (s *InteractiveService) injectVibeSSDrift(rs *interactiveRun, tr *flowgate.
 	}
 	ssPath := strings.TrimSpace(rs.vibeLockedSS)
 	cwd := strings.TrimSpace(rs.workspaceCwd)
+	// CA-1086: the sourceDocID fallback only counts when the pinned doc is an
+	// actual SS — CP-sourced vibe runs pin CP-*.md and task/bugfix chats pin
+	// Task-*/BUG-* docs; treating those as the locked SS makes every AC-* line
+	// read "uncovered" the moment a green-baseline turn writes no tests (live
+	// run-2280 user-blocked on a plain chat turn).
+	isSpecDoc := func(p string) bool {
+		return strings.HasPrefix(filepath.Base(p), "SS-")
+	}
 	if ssPath == "" && rs.parentRunID != "" {
 		s.mu.Lock()
 		if p := s.runs[rs.parentRunID]; p != nil {
 			ssPath = strings.TrimSpace(p.vibeLockedSS)
 			if ssPath == "" {
-				ssPath = strings.TrimSpace(p.sourceDocID)
+				if d := strings.TrimSpace(p.sourceDocID); isSpecDoc(d) {
+					ssPath = d
+				}
 			}
 			if cwd == "" {
 				cwd = p.workspaceCwd
@@ -255,7 +267,9 @@ func (s *InteractiveService) injectVibeSSDrift(rs *interactiveRun, tr *flowgate.
 		s.mu.Unlock()
 	}
 	if ssPath == "" {
-		ssPath = strings.TrimSpace(rs.sourceDocID)
+		if d := strings.TrimSpace(rs.sourceDocID); isSpecDoc(d) {
+			ssPath = d
+		}
 	}
 	ssBody := ""
 	if ssPath != "" && cwd != "" {
@@ -283,6 +297,11 @@ func (s *InteractiveService) injectVibeSSDrift(rs *interactiveRun, tr *flowgate.
 			b.Write(raw)
 			b.WriteByte('\n')
 		}
+	}
+	// CA-1086: a turn that wrote no test sources has nothing to compare —
+	// without this every locked-SS AC reads "uncovered" on any quiet turn.
+	if b.Len() == 0 {
+		return
 	}
 	drift, detail := flowgate.ComputeRequirementDrift(ssBody, b.String())
 	if drift {
