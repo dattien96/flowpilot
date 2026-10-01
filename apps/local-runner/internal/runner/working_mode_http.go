@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
@@ -55,6 +56,21 @@ func (s *InteractiveService) enforceWorkingModeStart(in *StartRunInput) *apiErr 
 	}
 	if flowID == "" {
 		return nil
+	}
+	// CA-1078: a Flow-mode picker launch sends the workflow row's catalog
+	// UUID as WorkflowID, not the pack flow identity — a builtin mirror's
+	// UUID (workflows.id → pack_flow_id=vibe-tasks) reads as an unknown id
+	// and fails the vibe family gate with working_mode_flow_forbidden.
+	// Resolve to the canonical pack ref before gating. An unresolvable ref
+	// keeps its raw value: dev still admits plain admin workflows, vibe
+	// still fails closed on unknown/system ids.
+	s.mu.Lock()
+	store := s.flowDefinitionStore
+	s.mu.Unlock()
+	if rec, rerr := NewFlowDefinitionResolver(store).
+		ResolveFlowRef(context.Background(), flowID); rerr == nil &&
+		strings.TrimSpace(rec.FlowRef) != "" {
+		flowID = rec.FlowRef
 	}
 	if err := workingmode.FlowAllowedForWorkingMode(mode, flowID, "user"); err != nil {
 		return mapWorkingModeError(err)

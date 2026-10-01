@@ -10391,6 +10391,18 @@ func (s *InteractiveService) forwardPinnedFlow(ctx context.Context, rs *interact
 			return "", pinErr
 		}
 	}
+	// CA-1078: a workflowID pin is the catalog row UUID — normalize to the
+	// canonical pack ref so runFirstTurnFences' family gate sees the flow
+	// identity (a builtin mirror UUID would 400 as an unknown id) and the
+	// committed chatFlowRef feeds downstream BareFlowID consumers
+	// (vibeAwaitingLock, isVibeCpSourcedFlowID). Unresolvable pins keep the
+	// raw value; the fences still fail closed on them. Called with s.mu
+	// held — read the store field directly like runFirstTurnFences.
+	if rec, rerr := NewFlowDefinitionResolver(s.flowDefinitionStore).
+		ResolveFlowRef(ctx, flowRef); rerr == nil &&
+		strings.TrimSpace(rec.FlowRef) != "" {
+		flowRef = rec.FlowRef
+	}
 	if rs.flowArm == FlowArmPending {
 		// The CP-89 latch path: an armed run's forward flips pending→started.
 	} else if rs.flowArm == FlowArmImmediate &&
