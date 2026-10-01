@@ -179,12 +179,18 @@ func detectRunnerInDir(dir string) string {
 		}
 	}
 	// Android / Java Gradle — prefer Unix wrapper, fall back to Windows bat. (Task-159)
-	if _, err := os.Stat(filepath.Join(dir, "build.gradle")); err == nil {
-		if _, err2 := os.Stat(filepath.Join(dir, "gradlew")); err2 == nil {
-			return "./gradlew test"
-		}
-		if _, err2 := os.Stat(filepath.Join(dir, "gradlew.bat")); err2 == nil {
-			return "gradlew.bat test"
+	// Kotlin DSL markers count too: modern Android roots ship build.gradle.kts /
+	// settings.gradle.kts only, and missing them drops the root fast path so a
+	// nested foreign runner (e.g. a scratch go.mod) wins instead. (CA-1100)
+	for _, marker := range []string{"build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts"} {
+		if _, err := os.Stat(filepath.Join(dir, marker)); err == nil {
+			if _, err2 := os.Stat(filepath.Join(dir, "gradlew")); err2 == nil {
+				return "./gradlew test"
+			}
+			if _, err2 := os.Stat(filepath.Join(dir, "gradlew.bat")); err2 == nil {
+				return "gradlew.bat test"
+			}
+			break
 		}
 	}
 	// Java Maven (Task-159)
