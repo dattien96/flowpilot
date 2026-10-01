@@ -33,8 +33,9 @@ core/navigation/src/main/java/com/privavault/core/navigation/
 ├── AppRouter.kt                         // router contract + AppNavigator (owns the back stack)
 ├── AppFeatureNavGraph.kt                // contribution contract + AppGraphInput + appEntry
 ├── TopLevelDestination.kt               // adaptive-suite tab contract
-├── PrivaVaultAdaptiveNavigationSuite.kt // bottom bar <600dp / Navigation Rail >=600dp
-└── AppNavHost.kt                        // the ONLY NavDisplay in the app
+├── AppShell.kt                          // AppShellRoute + AppShellNavGraph — the ONE entry that carries chrome
+├── PrivaVaultAdaptiveNavigationSuite.kt // bottom bar <600dp / Navigation Rail >=600dp + inner NavDisplay
+└── AppNavHost.kt                        // the ONLY outer NavDisplay in the app
 ```
 
 `AppRoute` is **open on purpose** — sealed routes in core force every feature to edit a shared
@@ -71,16 +72,34 @@ interface AppRouter {
 @ActivityRetainedScoped
 class AppNavigator @Inject constructor(
     @StartDestination startDestination: NavKey,
+    topLevelDestinations: Set<TopLevelDestination>,
 ) : AppRouter {
-    internal val backStack: SnapshotStateList<NavKey> = mutableStateListOf(startDestination)
+    internal val backStack = mutableStateListOf(startDestination)       // outer stack
+    internal val topLevelDestinations = topLevelDestinations
+    private val tabScreens = topLevelDestinations.mapTo(HashSet()) { it.screen }
+    internal val tabBackStack = mutableStateListOf<NavKey>().apply {    // shell's inner stack
+        topLevelDestinations.minByOrNull { it.order }?.let { add(it.route) }
+    }
 
-    override fun navigate(route: AppRoute) { backStack.add(route) }
+    // Tab routes land on the INNER stack; everything else covers the shell full-screen.
+    // This dispatch is why onboarding/unlock/paywall never see the bottom bar.
+    override fun navigate(route: AppRoute) {
+        if (route.screen in tabScreens) tabBackStack.add(route) else backStack.add(route)
+    }
 
     override fun pop(): Boolean {          // fail-closed: never pops the root
         if (backStack.size <= 1) return false
         backStack.removeAt(backStack.lastIndex)
         return true
     }
+
+    fun popTab(): Boolean {                // same rule on the inner stack
+        if (tabBackStack.size <= 1) return false
+        tabBackStack.removeAt(tabBackStack.lastIndex)
+        return true
+    }
+
+    fun onTabBack(): Boolean = popTab() || pop()   // inner history first, then outer
 }
 ```
 
@@ -91,7 +110,13 @@ interface AppFeatureNavGraph {
     fun EntryProviderScope<NavKey>.registerEntries(input: AppGraphInput)
 }
 
-data class AppGraphInput(val router: AppRouter)
+data class AppGraphInput(
+    val navigator: AppNavigator,
+    val graphs: Set<AppFeatureNavGraph>,
+) {
+    val router: AppRouter get() = navigator
+    val tabs: Set<TopLevelDestination> get() = navigator.topLevelDestinations
+}
 
 inline fun <reified R : AppRoute> EntryProviderScope<NavKey>.appEntry(
     noinline content: (R) -> Unit,
@@ -109,16 +134,13 @@ fun AppNavHost(
     modifier: Modifier = Modifier,
 ) {
     checkNoDuplicateScreens(featureGraphs)
-    val input = remember { AppGraphInput(router = navigator) }
     NavDisplay(
         backStack = navigator.backStack,
         onBack = navigator::pop,
-        entryDecorators = listOf(
-            rememberSaveableStateHolderNavEntryDecorator(),
-            rememberViewModelStoreNavEntryDecorator(),
-        ),
+        entryDecorators = defaultNavEntryDecorators(),  // saveable-state + ViewModel-store
         entryProvider = entryProvider {
-            featureGraphs.forEach { graph -> graph.run { registerEntries(input) } }
+            val input = AppGraphInput(navigator = navigator, graphs = featureGraphs)
+            featureGraphs.forEach { graph -> with(graph) { registerEntries(input) } }
         },
         modifier = modifier,
     )
@@ -193,10 +215,19 @@ abstract class AppRouterModule {
 }
 
 // di/.../AppDestinationModule.kt — the only place the app picks its entry screen.
+// The start destination is the SHELL, not a feature tab: pre-shell flows (onboarding,
+// unlock) swap onto the outer stack later and never touch the bottom bar.
 @Module
 @InstallIn(ActivityRetainedComponent::class)
 object AppDestinationModule {
-    @Provides @StartDestination fun startDestination(): NavKey = DashboardRoute
+    @Provides @StartDestination fun provideStartDestination(): NavKey = AppShellRoute
+}
+
+// di/.../NavigationShellModule.kt — contributes the shell graph like a feature graph.
+@Module
+@InstallIn(ActivityRetainedComponent::class)
+abstract class NavigationShellModule {
+    @Binds @IntoSet abstract fun bindAppShellNavGraph(g: AppShellNavGraph): AppFeatureNavGraph
 }
 
 // di/.../DashboardNavigationModule.kt — per feature: graph AND tab contributions.
@@ -224,42 +255,48 @@ class MainActivity : ComponentActivity() {
     // @JvmSuppressWildcards is REQUIRED on injected Set<T> — Kotlin wildcards
     // break the Hilt multibinding lookup without it.
     @Inject lateinit var featureGraphs: @JvmSuppressWildcards Set<AppFeatureNavGraph>
-    @Inject lateinit var topLevelDestinations: @JvmSuppressWildcards Set<TopLevelDestination>
 
     override fun onCreate(savedInstanceState: Bundle?) {
         ...
         setContent {
             PrivaVaultTheme {
-                PrivaVaultAdaptiveNavigationSuite(navigator, topLevelDestinations) {
-                    AppNavHost(navigator, featureGraphs)
-                }
+                // No suite wrapper here — the chrome lives inside the AppShellRoute entry,
+                // so outer-stack screens (onboarding/unlock/paywall/detail) stay chrome-free.
+                AppNavHost(navigator, featureGraphs)
             }
         }
     }
 }
 ```
 
-## 6. Adaptive chrome — `PrivaVaultAdaptiveNavigationSuite`
+## 6. Adaptive chrome — shell entry, not an app wrapper
 
-`NavigationSuiteScaffold` renders a **bottom navigation bar under 600dp window width** and a
-**Navigation Rail at 600dp+** — the library decides; no `WindowSizeClass` plumbing in app code.
-Source plan: `design/ADAPTIVE-MULTI-SCREEN.md` §3.
+The nav root is a **normal graph of root screens**: onboarding, splash, unlock, paywall and
+detail entries all live on `navigator.backStack` beside the shell and never see navigation
+chrome. The bottom bar exists inside exactly one entry — `AppShellRoute` — whose content is
+`PrivaVaultAdaptiveNavigationSuite`: `NavigationSuiteScaffold` (bottom bar <600dp window width,
+Navigation Rail ≥600dp, library-decided) around a **nested `NavDisplay`** over
+`navigator.tabBackStack`. Source plan: `design/ADAPTIVE-MULTI-SCREEN.md` §3.
 
 - Tab model: `TopLevelDestination(screen, route, label, icon, order)` — same `@IntoSet`
   contribution shape as graphs, so adding a tab = feature file + one `:di` provider.
-- Selected state reads `navigator.backStack.lastOrNull()` cast to `AppRoute` → `screen`. The back
-  stack is the single source of truth; deep links and restores highlight correctly for free.
-- Re-tapping the current tab is a no-op (`if (currentScreen != destination.screen) navigate(...)`) —
-  tabs push fresh entries rather than duplicating the same screen.
-- Colors come from `MaterialTheme.colorScheme` (already themed by `PrivaVaultTheme`), keeping
-  `:core:navigation` free of a design-system edge.
-- Hide the suite on screens that are not top-level (lock keypad, onboarding, player full-screen):
-  gate the scaffold on whether `currentScreen` is in `tabs.map { it.screen }` when those features
-  land — spec lives in `design/screens/*` (unlock has no bottom nav; settings is a tab).
+- **Routing dispatch is automatic**: `AppNavigator.navigate()` sends a route to `tabBackStack`
+  when its `screen` is a contributed tab, otherwise to `backStack` (full-screen, covers the
+  shell). Feature code just calls `input.router.navigate(route)`.
+- Selected state reads `navigator.tabBackStack.lastOrNull()` cast to `AppRoute` → `screen`.
+- Re-tapping the current tab is a no-op — tabs push fresh inner entries rather than duplicating.
+- Back inside the shell: `onTabBack()` = inner history first, then outer pop (e.g. back to
+  onboarding before the shell ever appeared).
+- Inner entry provider registers only graphs claiming a tab `ScreenId` — which is also what keeps
+  `AppShellNavGraph` from re-registering itself inside its own nested display.
+- Colors come from `MaterialTheme.colorScheme`, keeping `:core:navigation` free of a
+  design-system edge.
+- Never wrap `AppNavHost` itself in the suite — that puts chrome on every outer screen.
 
 ## 7. Tests that pin this architecture
 
-- `AppNavigatorTest` — starts on injected destination, append order, `pop()` fails closed at root.
+- `AppNavigatorTest` — injected start, append order, `pop()` fail-closed, tab seeding by lowest
+  order, tab→inner / detail→outer dispatch, `popTab()`/`onTabBack()` fall-through.
 - `ScreenIdTest` — format gate + `navContentKey` namespaces.
 - `CheckNoDuplicateScreensTest` — clashing `screens` across graphs fails with both names.
 - Contract harness: `requirements/.flowpilot/vibe/appbootstrap/navigation_contract_test.go` locks
@@ -268,10 +305,15 @@ Source plan: `design/ADAPTIVE-MULTI-SCREEN.md` §3.
 
 ## Forbidden patterns (all banned by contract test)
 
-- `sealed`/`object` route declarations inside `:core:navigation` — routes are open, feature-owned.
+- `sealed`/`object` route declarations inside `:core:navigation` — routes are open, feature-owned
+  (the one exception is `AppShellRoute`, which is chrome infrastructure, not a feature screen).
 - `NavCommand` / `Channel<...>` / `receiveAsFlow` / a suspend navigator — commands are dead code;
-  `AppRouter` is synchronous and owns the stack.
-- `rememberNavBackStack`, composition-owned `SnapshotStateList`, attach/detach lifecycle.
-- `NavController`, string routes, `createRoute()`, a second `NavDisplay` anywhere else.
+  `AppRouter` is synchronous and owns the stacks.
+- `rememberNavBackStack`, composition-owned `SnapshotStateList`, attach/detach lifecycle — both
+  stacks live in the scoped navigator.
+- `NavController`, string routes, `createRoute()`, a third `NavDisplay` anywhere else (outer host
+  + shell's inner host are the only two).
 - Feature → feature route imports; `AppNavHost`/`MainActivity` importing feature classes.
+- Wrapping `AppNavHost` in `NavigationSuiteScaffold` — chrome belongs inside the `AppShellRoute`
+  entry only.
 - Injecting `Set<AppFeatureNavGraph>`/`Set<TopLevelDestination>` without `@JvmSuppressWildcards`.
