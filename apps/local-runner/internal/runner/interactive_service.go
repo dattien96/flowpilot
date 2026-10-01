@@ -2718,6 +2718,21 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 		// No upstream validate node (custom/hub-less topology) — fall
 		// through to the existing audit re-dispatch below.
 	}
+	// CA-1098 (live run-31884): a synthesis escalate for a missing or
+	// not-approved reviewer machine verdict parks the hub itself
+	// (lastEscalatedInlineNodeID unset) — the generic Continue hub re-prompt
+	// can never produce the member's verdict, so the run re-parked
+	// identically forever (round 0/3 across repeated continues while the hub
+	// re-submitted approved each time). Mirror CA-1074's upstream re-entry:
+	// re-drive the deficient review-cohort member(s) with an explicit verdict
+	// instruction; their settle rejoins the cohort and re-invokes the hub on
+	// its own edges. Falls through when no live child maps — e.g. the member
+	// run was deleted — so generic resume still applies.
+	if prevBlockReason == "escalate" && isReviewVerdictGateReason(prevGateReason) {
+		if s.resumeVerdictDeficientMembers(parentRunID) {
+			return snap, nil
+		}
+	}
 	// Run-144900: writer parks (agent.code / agent.delegate) must retry the
 	// delegate child even on live rag-harness which has hub.inline=synthesis.
 	// CA-627's hub-less guard (hubInline == "") is correct for inline helpers

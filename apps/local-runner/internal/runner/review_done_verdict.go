@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -327,6 +328,92 @@ func (s *InteractiveService) hubDoneVerdictError(parentRunID, hubID string) erro
 		return fmt.Errorf("advanceHubDoneThroughEdge: %s done blocked — reviewer verdict not approved: %s", hubID, strings.Join(notApproved, ", "))
 	}
 	return nil
+}
+
+// isReviewVerdictGateReason reports whether an escalate GateReason belongs to
+// the hub-done verdict-gate family (hubDoneVerdictError /
+// synthesisDoneVerdictError): a cohort member produced no machine verdict, or
+// a recorded verdict that is not approved. Continue on those parks must
+// re-drive the deficient member — a hub re-prompt can never produce the
+// missing verdict (CA-1098, live run-31884).
+func isReviewVerdictGateReason(reason string) bool {
+	r := strings.ToLower(strings.TrimSpace(reason))
+	return strings.Contains(r, "done blocked") &&
+		(strings.Contains(r, "machine verdict") || strings.Contains(r, "verdict not approved"))
+}
+
+// resumeVerdictDeficientMembers re-drives every review-cohort member child
+// whose machine verdict is missing or not approved for the run's active hub
+// (CA-1098). Each matched member's settle-time reprompt budget is reset — a
+// user-driven Continue is a fresh attempt, not a continuation of the
+// exhausted budget. Returns false when no deficient member maps to a live
+// child, letting the caller fall through to the generic resume.
+func (s *InteractiveService) resumeVerdictDeficientMembers(parentRunID string) bool {
+	s.mu.Lock()
+	parent := s.runs[parentRunID]
+	if parent == nil {
+		s.mu.Unlock()
+		return false
+	}
+	hubID := strings.TrimSpace(parent.activeHubNodeID)
+	if hubID == "" {
+		hubID = hubInlineNodeID(parent.activeFlowNodes)
+	}
+	expected := cohortNodeLabels(parent.activeFlowNodes, hubInboundCohortName(hubID))
+	if len(expected) == 0 {
+		s.mu.Unlock()
+		return false
+	}
+	verdicts := mergePendingReviewVerdictsLocked(parent, parent.lastReviewCohortVerdicts)
+	deficient := map[string]bool{}
+	for _, label := range expected {
+		if v := strings.TrimSpace(verdicts[label]); v != "approved" {
+			deficient[label] = true
+		}
+	}
+	if len(deficient) == 0 {
+		s.mu.Unlock()
+		return false
+	}
+	var labels []string
+	seen := map[string]bool{}
+	for _, childID := range s.agentOrchestrator.listChildren(parentRunID) {
+		child := s.runs[childID]
+		if child == nil || !deficient[child.label] || seen[child.label] {
+			continue
+		}
+		seen[child.label] = true
+		child.verdictRepromptCount = 0
+		// BUG-403: arm the flag so a failed scheduled turn retries/drains
+		// instead of silently dropping the verdict retry.
+		child.reinvokeInFlight = true
+		labels = append(labels, child.label)
+	}
+	s.mu.Unlock()
+	if len(labels) == 0 {
+		return false
+	}
+	prompt := "[flow-engine] The synthesis gate rejected the hub's done: your machine verdict " +
+		"was missing or not approved. Re-evaluate and call submit_review_outcome as the FIRST " +
+		"action of this turn with status=approved|changes_requested|blocked and a verdicts " +
+		"array containing one row per acceptance criterion. Wait for the tool result before " +
+		"writing any summary text."
+	redriven := false
+	for _, label := range labels {
+		want := label
+		if s.reinvokeMatchingFlowChild(parentRunID, prompt, func(child *interactiveRun) bool {
+			return child.label == want
+		}) {
+			s.setFlowStepStatus(context.Background(), parentRunID, label, StepStatusRunning)
+			redriven = true
+		}
+	}
+	if redriven {
+		s.flowDiagLog(parentRunID, "verdict_deficient_member_redrive",
+			"missing/deficient verdict park: re-driving cohort members",
+			"labels", strings.Join(labels, ","))
+	}
+	return redriven
 }
 
 // hubDoneCohortHasChangesRequested reports whether any expected inbound-cohort
