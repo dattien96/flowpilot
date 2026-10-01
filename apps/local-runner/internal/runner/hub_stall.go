@@ -465,6 +465,30 @@ func (s *InteractiveService) checkAndBlockStalledHub(runID string) bool {
 	// debate's own settle/cap ladder (maybeSettleVibeOwnerDebate above)
 	// bounds a genuinely wedged debate.
 	if debateMounted {
+		// CA-1091: the debate guard forbids blocking, so a pendingHubReinvoke
+		// stranded by a hub_parked startTurn failure would re-arm this tick
+		// forever (live run-3362: debate_synthesis owed a join turn, ~10m
+		// silent park). An armed reinvoke with nothing live is progress owed —
+		// drain it, then re-arm. BUG-289's non-debate hub_stalled contract is
+		// untouched.
+		s.mu.Lock()
+		drainPrompt := ""
+		drainPending := false
+		if r := s.runs[runID]; r != nil && r.pendingHubReinvoke {
+			r.pendingHubReinvoke = false
+			drainPrompt = r.pendingHubReinvokePrompt
+			r.pendingHubReinvokePrompt = ""
+			touchHubProgressLocked(r)
+			drainPending = true
+		}
+		s.mu.Unlock()
+		if drainPending {
+			if drainPrompt != "" {
+				go s.maybeAutoReinvokeHubWithPrompt(runID, drainPrompt)
+			} else {
+				go s.maybeAutoReinvokeHub(runID)
+			}
+		}
 		s.maybeScheduleHubStallCheck(runID)
 		return false
 	}

@@ -2484,6 +2484,11 @@ func (s *InteractiveService) notifyTurnIdle(runID string) {
 		s.mu.Unlock()
 		if parentID != "" && !s.hasActiveFlowChild(parentID) {
 			go s.flushDurableTurnIntents(parentID)
+			// CA-1091: also drain an armed parent hub reinvoke — a
+			// pendingHubReinvoke stranded by hub_parked is invisible to
+			// flushDurableTurnIntents and stays armed forever once the last
+			// child is gone (live run-3362: debate_synthesis parked ~10m).
+			go s.notifyTurnIdle(parentID)
 		}
 		return
 	}
