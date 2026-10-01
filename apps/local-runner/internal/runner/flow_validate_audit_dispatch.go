@@ -1398,8 +1398,15 @@ func (s *InteractiveService) runAuditNode(ctx context.Context, parentRunID strin
 			"node_id", node.ID, "status", draft.Status, "validation", draft.ValidationResult,
 		)
 		if s.isFlowEngineDriven(parentRunID) {
-			s.setFlowStepAwaitingUser(ctx, parentRunID)
+			// CA-1074: park the AUDIT node itself, not the first-hub
+			// fallback — and stamp it as the escalated node so Continue
+			// routes the remediation (e.g. upstream validate re-run for
+			// blocked_validation_failed) instead of falling through to the
+			// generic hub reinvoke, which only re-entered synthesis→audit
+			// on the same stale state (live: 6/6 vibe-tasks lanes starved).
+			s.setFlowStepStatus(ctx, parentRunID, node.ID, StepStatusWaitingUserApr)
 		}
+		s.stampLastEscalatedInlineNode(parentRunID, node.ID)
 		if auditCtxCancelled(ctx, parentRunID, node.ID, "draft_not_ready_before_escalate") {
 			return false
 		}

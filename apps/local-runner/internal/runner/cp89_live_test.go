@@ -243,6 +243,16 @@ func (e *cp89LiveEnv) cp89StartRun(t *testing.T, body map[string]any) (int, map[
 	if body["providerKey"] == nil {
 		body["providerKey"] = e.provider
 	}
+	// Pin the model to the effective providerKey — in the start handler the
+	// resolved model wins over providerKey (providerKeyFromModel), so a run
+	// created without a model is silently restamped onto the default-model's
+	// provider (observed: providerKey=devin → codex/gpt-5.4-mini). Sending the
+	// provider's own default model keeps the stamp consistent.
+	if body["model"] == nil {
+		if m := defaultModelForProvider(ProviderKey(fmt.Sprint(body["providerKey"]))); m != "" {
+			body["model"] = m
+		}
+	}
 	if body["projectId"] == nil {
 		body["projectId"] = "cp89-live"
 	}

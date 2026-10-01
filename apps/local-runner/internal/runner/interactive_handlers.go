@@ -1287,7 +1287,7 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 		// a pending run stamps chatFlowRef but keeps the vibe start markers
 		// off until the explicit forward turn (Task-452).
 		id := workingmode.BareFlowID(ref)
-		if flowArm == FlowArmImmediate && (id == vibeCpIngestFlowID || id == vibeIngestFlowID) {
+		if flowArm == FlowArmImmediate && (id == vibeIngestFlowID || isVibeCpSourcedFlowID(id)) {
 			rs.vibeAwaitingLock = true
 			rs.vibeSprintBudget = defaultVibeSprintBudget
 		}

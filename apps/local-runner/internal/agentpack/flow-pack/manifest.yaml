@@ -88,6 +88,13 @@ flows:
     editable: false
     selectableIn: []
     cloneable: false
+  # CP-90: third vibe entry — sprint existing parented tasks under a locked
+  # CP without running task_slicer.
+  - path: flows/vibe-tasks.yaml
+    visibility: builtin
+    editable: false
+    selectableIn: []
+    cloneable: false
 tools:
   - tools/submit-review-outcome.yaml
   - tools/vibe-requirement-outcome.yaml
@@ -117,6 +124,7 @@ prompts:
   - prompts/vibe-ss-validate.md
   - prompts/vibe-cp-from-ss.md
   - prompts/vibe-cp-validate.md
+  - prompts/vibe-task-plan-read.md
   # CP-68 (Task-384 T-1): Zero-Prompt Injection template for the AI Scaffold Turn.
   - prompts/scaffold-step0-bootstrap.md
   # CP-67 (Task-380/Task-381): Contract-First Scaffold TDD prompt pair.

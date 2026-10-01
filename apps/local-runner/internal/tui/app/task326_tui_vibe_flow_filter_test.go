@@ -56,8 +56,11 @@ func TestTUIFlowSuggest_VibeOnlyIngest(t *testing.T) {
 	if _, ok := ids["vibe-cp-ingest"]; !ok {
 		t.Fatalf("vibe /flow missing cp-ingest: %v", ids)
 	}
-	if len(ids) != 2 {
-		t.Fatalf("vibe /flow ids=%v, want ingest+cp-ingest", ids)
+	if _, ok := ids["vibe-tasks"]; !ok {
+		t.Fatalf("vibe /flow missing tasks entry (CP-90): %v", ids)
+	}
+	if len(ids) != 3 {
+		t.Fatalf("vibe /flow ids=%v, want ingest+cp-ingest+tasks", ids)
 	}
 }
 

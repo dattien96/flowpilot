@@ -105,7 +105,7 @@ func normalizeVibeCheckpointLayer(nodeID string) string {
 	switch strings.TrimSpace(nodeID) {
 	case "audit", "tdd":
 		return "tdd"
-	case vibeSprintSlicerNodeID, vibeTaskSlicerNodeID:
+	case vibeSprintSlicerNodeID, vibeTaskSlicerNodeID, vibeTaskPlanReaderNodeID:
 		return vibeTaskSlicerNodeID
 	case vibeCpLockNodeID, vibeCpWriterNodeID:
 		return vibeCpWriterNodeID

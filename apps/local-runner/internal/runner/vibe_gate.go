@@ -163,6 +163,14 @@ func (s *InteractiveService) applyVibeDriftOnlyResolver(runID, parentID string, 
 	}
 	driftScore := s.latestVibeDriftScore(rs)
 	if driftScore < vibeDriftDebateThreshold {
+		// The score decayed below the debate threshold — real correction
+		// happened (a clean turn with a file delta halves the carried
+		// score). Re-arm the drift-only escalation so a genuinely NEW
+		// drift episode can mount a fresh debate.
+		st := driftStateFor(s, rs.id)
+		st.mu.Lock()
+		st.debateDischarged = false
+		st.mu.Unlock()
 		return false
 	}
 	hub := runID
@@ -189,6 +197,24 @@ func (s *InteractiveService) applyVibeDriftOnlyResolver(runID, parentID string, 
 		log.Printf("[vibe-gate] drift-only escalation suppressed run=%s score=%d: owner debate already active", hub, driftScore)
 		return false
 	}
+	// Post-debate discharge (CA-1073): a drift-only debate already mounted for
+	// this accumulated debt. While the score stays pinned at/above the
+	// threshold — which orchestration turns guarantee, since they produce
+	// zero file delta by design — re-mounting would re-park the sprint on
+	// every clean-gate turn and starve the reprompted worker the debate just
+	// ordered. Suppress until the score decays below the threshold and
+	// re-climbs (fresh drift evidence). A violation-routed debate
+	// (applyVibeGateResolver) is unaffected: real gate failures still
+	// escalate per turn.
+	st := driftStateFor(s, rs.id)
+	st.mu.Lock()
+	if st.debateDischarged {
+		st.mu.Unlock()
+		log.Printf("[vibe-gate] drift-only escalation suppressed run=%s score=%d: drift debt already discharged by a prior debate; re-arms when the score decays below %d and climbs again", hub, driftScore, vibeDriftDebateThreshold)
+		return false
+	}
+	st.debateDischarged = true
+	st.mu.Unlock()
 	log.Printf("[vibe-gate] drift-only escalation run=%s score=%d -> owner debate", hub, driftScore)
 	s.startVibeOwnerDebate(hub, runID, fmt.Sprintf(
 		"vibe drift score %d (>= %d) on a clean gate: owner debate to choose remediation",

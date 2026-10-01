@@ -8,9 +8,10 @@ import {
   wireWorkingMode,
 } from "./workingMode";
 
-test("chrome toggle vibe filters picker to ingest", () => {
+test("chrome toggle vibe filters picker to vibe entries", () => {
   const ids = flowPickerOptions("vibe");
-  assert.deepEqual(ids, ["vibe-ingest", "vibe-cp-ingest"]);
+  // CP-90: vibe-tasks joins the two ingest entries.
+  assert.deepEqual(ids, ["vibe-ingest", "vibe-cp-ingest", "vibe-tasks"]);
 });
 
 test("chrome toggle normal hides vibe-*", () => {

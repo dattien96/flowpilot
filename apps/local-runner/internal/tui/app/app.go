@@ -3174,7 +3174,7 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				if cmd := suggestionAcceptValue(it); cmd != "" {
 					// Action rows only expand the next picker (provider connect, /image open|rm, mode-setup steps) —
 					// except immediate-execution actions like /provider refresh|reload (CA-687), which run right away.
-					expandsPicker := it.kind == "provider-action" || it.kind == "image-sub-next" || it.kind == "mode-setup-posture" || (it.kind == "mode-setup-field" && !strings.HasSuffix(strings.ToLower(strings.TrimSpace(it.value)), " clear")) || (it.kind == "flow" && isVibeCpIngestFlow(it.value))
+					expandsPicker := it.kind == "provider-action" || it.kind == "image-sub-next" || it.kind == "mode-setup-posture" || (it.kind == "mode-setup-field" && !strings.HasSuffix(strings.ToLower(strings.TrimSpace(it.value)), " clear")) || (it.kind == "flow" && isVibeCpSourcedFlow(it.value))
 					if expandsPicker && !(it.kind == "provider-action" && providerImmediateAction(it.value)) {
 						m.setInputPreservingDraftPrefix(cmd)
 						m.suggIdx = 0
@@ -3685,8 +3685,8 @@ func suggestionAcceptValue(it suggestItem) string {
 		if strings.TrimSpace(it.value) == "" {
 			return ""
 		}
-		if isVibeCpIngestFlow(it.value) {
-			return "/flow vibe-cp-ingest @"
+		if isVibeCpSourcedFlow(it.value) {
+			return "/flow " + it.value + " @"
 		}
 		return "/flow " + it.value
 	case "history":
@@ -4722,11 +4722,11 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 				break
 			}
 		}
-		if isVibeCpIngestFlow(flowID) {
+		if isVibeCpSourcedFlow(flowID) {
 			rest := strings.TrimSpace(strings.Join(args[1:], " "))
 			rest = strings.TrimSpace(strings.TrimPrefix(rest, "@"))
 			if rest == "" {
-				m.setInputPreservingDraftPrefix("/flow vibe-cp-ingest @")
+				m.setInputPreservingDraftPrefix("/flow " + flowID + " @")
 				return m, m.cmdMaybePrefetchWorkspaceFiles()
 			}
 			if err := workingmode.RejectNonCP(rest, ""); err != nil {
@@ -4735,14 +4735,14 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			}
 			m.launch = LaunchArm{
 				Mode:        ModeFlow,
-				FlowRef:     "vibe-cp-ingest",
-				Label:       "vibe-cp-ingest",
+				FlowRef:     flowID,
+				Label:       flowID,
 				SourceDocID: rest,
 			}
 			m.mode = ModeFlow
 			m.firstTurnPending = true
 			m.persistSessionPrefs()
-			m.addMessage("system", fmt.Sprintf("CP locked entry armed: %s. Send a prompt to start vibe-cp-ingest.", rest), "")
+			m.addMessage("system", fmt.Sprintf("CP locked entry armed: %s. Send a prompt to start %s.", rest, flowID), "")
 			break
 		}
 		query := strings.Join(args, " ")

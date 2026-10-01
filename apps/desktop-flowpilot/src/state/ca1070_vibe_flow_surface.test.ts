@@ -9,11 +9,13 @@ import {
 
 // CA-1070: the Flow tab's workflow select must mirror the runner's
 // workingmode.FlowAllowedForWorkingMode user-start gate — dev sees harness +
-// catalog flows, vibe sees only the two user-startable vibe flows.
+// catalog flows, vibe sees only the user-startable vibe flows (CP-90 adds
+// vibe-tasks as the third).
 const WORKFLOWS = [
   { id: "wf-task", projectId: "", name: "Task Harness", packFlowId: "task-harness" },
   { id: "wf-ingest", projectId: "", name: "Vibe Ingest", packFlowId: "vibe-ingest" },
   { id: "wf-cp", projectId: "", name: "Vibe CP Ingest", packFlowId: "vibe-cp-ingest" },
+  { id: "wf-tasks", projectId: "", name: "Vibe Tasks", packFlowId: "vibe-tasks" },
   { id: "wf-sprint", projectId: "", name: "Vibe Sprint", packFlowId: "vibe-sprint" },
   { id: "wf-review", projectId: "", name: "Review Loop", packFlowId: "review-loop" },
   { id: "user-uuid-1", projectId: "", name: "My Flow" },
@@ -24,11 +26,11 @@ test("dev flow list hides vibe-family and non-startable builtin mirrors", () => 
   assert.deepEqual(ids, ["wf-task", "user-uuid-1"]);
 });
 
-test("vibe flow list shows only the two user-startable vibe flows", () => {
+test("vibe flow list shows only the user-startable vibe flows", () => {
   const ids = filterWorkflowsForWorkingMode(WORKFLOWS, "vibe")
     .map((w) => w.id)
     .sort();
-  assert.deepEqual(ids, ["wf-cp", "wf-ingest"]);
+  assert.deepEqual(ids, ["wf-cp", "wf-ingest", "wf-tasks"]);
 });
 
 test("userFlowSelectableForMode mirrors the runner family gate", () => {
@@ -41,9 +43,10 @@ test("userFlowSelectableForMode mirrors the runner family gate", () => {
   assert.ok(!userFlowSelectableForMode("dev", "vibe-sprint"));
   assert.ok(!userFlowSelectableForMode("dev", "review-loop"));
   assert.ok(!userFlowSelectableForMode("dev", ""));
-  // vibe: only the vibe user pair — system vibe flows and everything else out.
+  // vibe: only the vibe user set — system vibe flows and everything else out.
   assert.ok(userFlowSelectableForMode("vibe", "vibe-ingest"));
   assert.ok(userFlowSelectableForMode("vibe", "vibe-cp-ingest"));
+  assert.ok(userFlowSelectableForMode("vibe", "vibe-tasks"));
   assert.ok(!userFlowSelectableForMode("vibe", "vibe-sprint"));
   assert.ok(!userFlowSelectableForMode("vibe", "task-harness"));
   assert.ok(!userFlowSelectableForMode("vibe", "user-uuid-1"));
