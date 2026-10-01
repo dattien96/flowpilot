@@ -66,6 +66,7 @@ func (s *InteractiveService) maybeSettleVibeOwnerDebate(parentRunID string) bool
 		return false
 	}
 
+	ownerChildren := 0
 	for _, childID := range s.agentOrchestrator.listChildren(parentRunID) {
 		s.mu.Lock()
 		ch := s.runs[childID]
@@ -76,13 +77,24 @@ func (s *InteractiveService) maybeSettleVibeOwnerDebate(parentRunID string) bool
 		if ch.label != "owner_1" && ch.label != "owner_2" {
 			continue
 		}
+		ownerChildren++
 		if ch.status != RunStatusFailed && ch.status != RunStatusCompleted && ch.status != RunStatusCancelled {
 			return false
 		}
 	}
 
-	st1, st2, stSyn := s.vibeOwnerDebateStepStatuses(parentRunID)
-	if !vibeOwnerStepFailed(st1) || !vibeOwnerStepFailed(st2) {
+	stTrig, st1, st2, stSyn := s.vibeOwnerDebateStepStatuses(parentRunID)
+	ownersFailed := vibeOwnerStepFailed(st1) && vibeOwnerStepFailed(st2)
+	// CA-1088 (live run-3362): a mount starved by child_spawn_refused_blocked_
+	// loop leaves both owner steps PENDING with zero owner children — the same
+	// wedge class as both-failed, so it retries through the same ladder.
+	// debate_trigger RUNNING means the mount is still dispatching; a parallel
+	// restart would double-mount the debate.
+	ownersStarved := ownerChildren == 0 &&
+		stTrig != "" && stTrig != StepStatusRunning &&
+		st1 != StepStatusRunning && st1 != StepStatusDone &&
+		st2 != StepStatusRunning && st2 != StepStatusDone
+	if !ownersFailed && !ownersStarved {
 		return false
 	}
 	if stSyn == StepStatusRunning || stSyn == StepStatusDone || stSyn == StepStatusWaitingUserApr {
@@ -133,16 +145,18 @@ func (s *InteractiveService) maybeSettleVibeOwnerDebate(parentRunID string) bool
 	return true
 }
 
-func (s *InteractiveService) vibeOwnerDebateStepStatuses(parentRunID string) (st1, st2, stSyn RuntimeWorkflowStepStatus) {
+func (s *InteractiveService) vibeOwnerDebateStepStatuses(parentRunID string) (stTrig, st1, st2, stSyn RuntimeWorkflowStepStatus) {
 	if s.workflowStore == nil {
-		return "", "", ""
+		return "", "", "", ""
 	}
 	steps, err := s.workflowStore.LoadRunSteps(context.Background(), parentRunID)
 	if err != nil {
-		return "", "", ""
+		return "", "", "", ""
 	}
 	for _, step := range steps {
 		switch strings.TrimSpace(step.NodeID) {
+		case "debate_trigger":
+			stTrig = step.Status
 		case "owner_1":
 			st1 = step.Status
 		case "owner_2":
@@ -151,5 +165,5 @@ func (s *InteractiveService) vibeOwnerDebateStepStatuses(parentRunID string) (st
 			stSyn = step.Status
 		}
 	}
-	return st1, st2, stSyn
+	return stTrig, st1, st2, stSyn
 }

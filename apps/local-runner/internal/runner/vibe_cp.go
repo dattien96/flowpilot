@@ -936,6 +936,13 @@ func (s *InteractiveService) stashVibeFlowForDebate(parentRunID, gatedRunID stri
 	rs.vibeParkedEdges = append([]agentpack.FlowEdge(nil), rs.activeFlowEdges...)
 	rs.vibeParkedAcceptance = append([]string(nil), rs.activeFlowAcceptanceNodes...)
 	rs.vibeParkedFlowRef = rs.chatFlowRef
+	// CA-1088: the parked flow's hub pointer is meaningless inside the debate
+	// topology — leaving it resolves post-mount reinvokes onto the stashed
+	// hub (live run-3362: sprint `synthesis` reinvoke churn feeding the
+	// escalate loop). Empty re-resolves via hubInlineNodeID on the mounted
+	// debate graph; the sprint hub id needs no restore — the post-restore
+	// fallback resolves it from the same nodes.
+	rs.activeHubNodeID = ""
 	// CP-62 P-1 T-3 (Task-337): the debate turn must assemble with the full
 	// violation context — drop any pending drift-ladder context reduction
 	// (note/narrow) before the debate prompt is packed.

@@ -390,6 +390,11 @@ func (s *InteractiveService) checkAndBlockStalledHub(runID string) bool {
 		gateCancelLive(rs.postTurnGateStartedAt, rs.postTurnGateCancel) ||
 		strings.TrimSpace(rs.pendingGateRepromptPrompt) != "" ||
 		strings.TrimSpace(rs.pendingResumePrompt) != ""
+	// CA-1088: a mounted owner debate shares this loop — the debate IS the
+	// remediation in flight, so stall-blocking it mid-mount starves the
+	// owner cohort spawn (child_spawn_refused_blocked_loop →
+	// flow_start_no_entry → escalate/re-park churn, live run-3362).
+	debateMounted := len(rs.vibeParkedNodes) > 0 || vibeOwnerDebateGraph(rs.activeFlowNodes)
 	last := rs.hubLastProgressAt
 	status := rs.status
 	s.mu.Unlock()
@@ -452,6 +457,14 @@ func (s *InteractiveService) checkAndBlockStalledHub(runID string) bool {
 		return false
 	}
 	if s.maybeSettleVibeOwnerDebate(runID) {
+		s.maybeScheduleHubStallCheck(runID)
+		return false
+	}
+	// CA-1088: never hub_stalled-block a loop that currently hosts the owner
+	// debate — the block starves the very remediation it exists to run. The
+	// debate's own settle/cap ladder (maybeSettleVibeOwnerDebate above)
+	// bounds a genuinely wedged debate.
+	if debateMounted {
 		s.maybeScheduleHubStallCheck(runID)
 		return false
 	}
