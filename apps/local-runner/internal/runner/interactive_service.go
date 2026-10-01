@@ -4620,6 +4620,10 @@ func (s *InteractiveService) resumePendingLoopWork(parentRunID string) {
 	allows := s.loopAllowsNextTurnLocked(parentRunID)
 	s.mu.Unlock()
 	if allows && hasRestart {
+		// CA-1090: a crash/shutdown stop leaves a durable run_stop fence; a
+		// resumed loop minting turns must release it first or every send dies
+		// at the CAS with stop_outcome=stopped_before_send (silent churn).
+		s.releaseHubStopFenceForFollowUp(context.Background(), parentRunID)
 		go s.deliverPendingRestart(parentRunID)
 		return
 	}
@@ -4631,6 +4635,12 @@ func (s *InteractiveService) resumePendingLoopWork(parentRunID string) {
 		s.mu.Unlock()
 		return
 	}
+	s.mu.Unlock()
+	// CA-1090: durable child resume intents mint sends that are fenced by the
+	// parent's crash-stop tombstone (ErrParentStopFence) — release it before
+	// any resume-driven dispatch.
+	s.releaseHubStopFenceForFollowUp(context.Background(), parentRunID)
+	s.mu.Lock()
 	for _, childID := range s.agentOrchestrator.listChildren(parentRunID) {
 		child := s.runs[childID]
 		if child == nil {
@@ -4744,6 +4754,10 @@ func (s *InteractiveService) redriveQuietFlowLoop(parentRunID string) {
 	}
 	rs.autoOrchestrate = true
 	s.mu.Unlock()
+	// CA-1090: the shutdown's durable run_stop fence must be released before
+	// the re-driven hub mints a turn — otherwise the send CAS is fenced
+	// (stopped_before_send) and the loop silently re-wedges.
+	s.releaseHubStopFenceForFollowUp(context.Background(), parentRunID)
 	s.flowDiagLog(parentRunID, "flow_loop_redrive_after_crash",
 		"loop running but no live or pending work after resume; re-driving hub")
 	go s.maybeAutoReinvokeHub(parentRunID)
