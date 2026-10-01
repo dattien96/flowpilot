@@ -97,6 +97,99 @@ func inVibeSprintTopology(rs *interactiveRun) bool {
 	return runHasFlowNode(rs, "tdd") && runHasFlowNode(rs, "coder")
 }
 
+// maybeAutoAdvanceVibeSprintBoundary is the CA-1093 sprint-boundary contract:
+// a finished vibe-sprint audit with plan tasks remaining STARTS the next
+// sprint immediately — vibe runs gate the user only at cp_lock and at an
+// unresolved owner-debate cap, never between sprints (live run-3362: the
+// operator had to press a card mislabeled "Retry" to release each next task).
+//
+// It shares every guard with the old park (vibe topology, lock, plan,
+// pending boundary, open cohort, budget, sealed-loop races) and then drives
+// the SAME guarded start path a Continue decision used — arm the boundary
+// flag, stamp the finished sprint, emit its handoff, and hand off to
+// continueVibeSprintBoundary's take/mutate/spawn/rollback machinery so the
+// auto-start inherits the double-start and sealed-loop protections verbatim.
+// Returns true when the boundary owned the outcome (sprint started, lock or
+// budget gate armed, or a sealed loop absorbed the flag); false leaves the
+// existing settle behavior untouched (non-vibe, empty plan, last sprint,
+// open cohort — the audit re-drives after the join, as before).
+func (s *InteractiveService) maybeAutoAdvanceVibeSprintBoundary(ctx context.Context, parentRunID, auditNodeID string) bool {
+	s.mu.Lock()
+	rs := s.runs[parentRunID]
+	if rs == nil || rs.parentRunID != "" || !inVibeSprintTopology(rs) ||
+		rs.vibeAwaitingLock || len(rs.vibeTaskPlan) == 0 || rs.vibeSprintBoundaryPending ||
+		rs.vibeSprintStartInFlight {
+		s.mu.Unlock()
+		return false
+	}
+	if s.agentOrchestrator.hasOpenCohort(parentRunID) {
+		// Barrier still open: let the join complete first (mirrors the
+		// applyFlowControl soft-defer); the audit re-drives after.
+		s.mu.Unlock()
+		return false
+	}
+	budget := rs.vibeSprintBudget
+	if budget <= 0 {
+		budget = defaultVibeSprintBudget
+	}
+	cwd := rs.workspaceCwd
+	plan := append([]string(nil), rs.vibeTaskPlan...)
+	index := rs.vibeSprintIndex
+	if index >= budget || index >= len(plan) {
+		s.mu.Unlock()
+		// Last sprint (or budget): tick that Task's DoD, never status=done.
+		stampCompletedVibeTask(cwd, plan, index)
+		return false
+	}
+	// Arm the boundary flag so concurrent chain/start paths cannot
+	// double-take the next index while the start is in flight.
+	rs.vibeSprintBoundaryPending = true
+	rs.vibeSprintBoundaryTask = plan[index]
+	s.mu.Unlock()
+
+	stampCompletedVibeTask(cwd, plan, index)
+	if s.isFlowEngineDriven(parentRunID) {
+		s.setFlowStepStatus(ctx, parentRunID, auditNodeID, StepStatusDone)
+	}
+	// Task-351 (CP-62 P-6): write the finished sprint's handoff pinned to the
+	// just-finished index BEFORE the take moves the cursor — a concurrent
+	// advance must not attribute sprint N's data to handoff N+1. Ownership
+	// check under the lock; emitSprintHandoffAt takes s.mu itself.
+	s.mu.Lock()
+	r := s.runs[parentRunID]
+	handoffOK := r != nil && r.vibeSprintBoundaryPending &&
+		r.vibeSprintBoundaryTask == plan[index] && r.vibeSprintIndex == index
+	s.mu.Unlock()
+	if !handoffOK {
+		// The flag was consumed between arm and here — the winner (a gate
+		// decision or rollback) owns the boundary outcome.
+		return true
+	}
+	s.emitSprintHandoffAt(r, index)
+	s.flowDiagLog(parentRunID, "vibe_sprint_boundary_autostart", "sprint done; auto-starting next sprint (no user gate)",
+		"done_sprints", index,
+		"total_sprints", len(plan),
+		"next_task", plan[index],
+	)
+	// continueVibeSprintBoundary consumes the armed flag and runs the
+	// standard take → mutate(running) → startTakenVibeSprint chain with its
+	// sealed-loop and spawn-failure rollbacks. A false return means another
+	// consumer already owned the flag — still handled, never settle done.
+	s.continueVibeSprintBoundary(parentRunID, "")
+	// A cp_lock re-armed under the take leaves the flag parked by design —
+	// but with no boundary card to consume it, that flag would fence
+	// maybeStartNextVibeSprint when the lock resolves. The lock gate owns the
+	// user decision; release the boundary flag so its resolution path can
+	// start the sprint itself.
+	s.mu.Lock()
+	if r := s.runs[parentRunID]; r != nil && r.vibeSprintBoundaryPending && r.vibeAwaitingLock {
+		r.vibeSprintBoundaryPending = false
+		r.vibeSprintBoundaryTask = ""
+	}
+	s.mu.Unlock()
+	return true
+}
+
 // maybeParkVibeSprintBoundary parks the sprint-boundary Continue gate when a
 // vibe-sprint audit just completed and plan tasks remain. It peeks the next
 // sprint WITHOUT consuming it (takeNext increments on start) so ok/Continue
@@ -301,7 +394,10 @@ func (s *InteractiveService) maybeReparkVibeSprintBoundary(parentRunID string) {
 		if loop.Status == "blocked" && loop.BlockReason != vibeSprintBoundaryReason {
 			return
 		}
-		s.maybeParkVibeSprintBoundary(context.Background(), parentRunID, "audit", false)
+		// CA-1093: a running/blocked loop that was mid-boundary when the
+		// session reopened auto-advances — the boundary is not a user gate.
+		// The declined marker above still suppresses the restart.
+		s.maybeAutoAdvanceVibeSprintBoundary(context.Background(), parentRunID, "audit")
 	}
 }
 

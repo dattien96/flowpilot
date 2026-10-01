@@ -320,6 +320,10 @@ func TestVibeSprintBoundary_EmptyContinueStartsNextSprint(t *testing.T) {
 func TestVibeSprintBoundary_AuditAutoFinalizeParks(t *testing.T) {
 	// Reported shape: sprint audit completes (here via the vibe missing-key
 	// auto-finalize) with tasks left → boundary form, never silent done.
+	// CA-1093 SUPERSESSION: the audit completion now AUTO-STARTS the next
+	// sprint — vibe boundaries are not user gates (live run-3362: five cards
+	// for five tasks). The anti-silent-done guarantee survives: the loop
+	// either starts sprint 2 or stays non-done.
 	svc, _ := newTestServer(t)
 	parent, err := svc.createRun(StartRunInput{
 		ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex,
@@ -361,12 +365,94 @@ func TestVibeSprintBoundary_AuditAutoFinalizeParks(t *testing.T) {
 	if loop.Status == "done" {
 		t.Fatal("must NOT settle done silently with 2 sprints left")
 	}
-	if loop.Status != "blocked" || loop.BlockReason != vibeSprintBoundaryReason {
-		t.Fatalf("loop=%q/%q want blocked/%s", loop.Status, loop.BlockReason, vibeSprintBoundaryReason)
+	// CA-1093: no boundary card is parked — the next sprint is taken
+	// synchronously (index advanced past the peek) instead of awaiting a
+	// user click.
+	svc.mu.Lock()
+	pending, idx := svc.runs[parent.RunID].vibeSprintBoundaryPending, svc.runs[parent.RunID].vibeSprintIndex
+	svc.mu.Unlock()
+	if pending {
+		t.Fatal("boundary gate must not park — sprint transition is automatic")
 	}
-	mustBoundaryPending(t, svc, parent.RunID)
-	if got := flowStepStatus(t, svc, parent.RunID, "audit"); got != StepStatusDone {
-		t.Fatalf("audit=%v want DONE", got)
+	if idx != 2 {
+		t.Fatalf("index=%d want 2 (sprint 2 taken automatically)", idx)
+	}
+	// (No audit-status assertion: the just-started sprint reseeds its own
+	// step table, so "audit" is sprint 2's node — PENDING is correct.)
+}
+
+// TestCA1093_AuditDoneAutoStartsNextSprint pins the new boundary contract on
+// the direct seam: a finished sprint audit with plan tasks left starts the
+// next sprint with NO pending gate, no blocked loop, and the vibe-sprint
+// entry child actually spawned.
+func TestCA1093_AuditDoneAutoStartsNextSprint(t *testing.T) {
+	svc, _ := newTestServer(t)
+	runID := armBoundaryRun(t, svc, ProviderKeyCodex, workingmode.Vibe, boundaryTestPlan, 1)
+
+	if !svc.maybeAutoAdvanceVibeSprintBoundary(context.Background(), runID, "audit") {
+		t.Fatal("sprint 1/3 done must auto-advance to sprint 2")
+	}
+	svc.mu.Lock()
+	rs := svc.runs[runID]
+	pending, idx := rs.vibeSprintBoundaryPending, rs.vibeSprintIndex
+	ref := rs.chatFlowRef
+	svc.mu.Unlock()
+	if pending {
+		t.Fatal("no boundary gate may park on the automatic transition")
+	}
+	if idx != 2 {
+		t.Fatalf("index=%d want 2", idx)
+	}
+	if workingmode.BareFlowID(ref) != vibeSprintFlowID {
+		t.Fatalf("chatFlowRef=%q want vibe-sprint", ref)
+	}
+	loop := svc.agentOrchestrator.loopStateFor(runID)
+	if loop.Status != "running" || loop.BlockReason != "" {
+		t.Fatalf("loop=%q/%q want running with no gate", loop.Status, loop.BlockReason)
+	}
+	if got := countChildrenWithLabel(svc, runID, "preflight_contract_plan"); got < 1 {
+		t.Fatalf("preflight children=%d want >=1 (sprint 2 actually spawned)", got)
+	}
+}
+
+// TestCA1093_AutoAdvanceKeepsDeclineSuppression: the durable declined marker
+// still wins — an operator-declined run never silently restarts a sprint.
+func TestCA1093_AutoAdvanceKeepsDeclineSuppression(t *testing.T) {
+	svc, _ := newTestServer(t)
+	runID := armBoundaryRun(t, svc, ProviderKeyCodex, workingmode.Vibe, boundaryTestPlan, 1)
+	// Decline once through the real gate so the marker is durable.
+	if !svc.maybeParkVibeSprintBoundary(context.Background(), runID, "audit", false) {
+		t.Fatal("must park first")
+	}
+	if apiErr := svc.SubmitGateDecision(runID, "cancel", ""); apiErr != nil {
+		t.Fatalf("cancel: %v", apiErr)
+	}
+	// A later re-derivation (reopen) must not auto-start over the decline.
+	svc.maybeReparkVibeSprintBoundary(runID)
+	svc.mu.Lock()
+	idx, pending, declined := svc.runs[runID].vibeSprintIndex, svc.runs[runID].vibeSprintBoundaryPending, svc.runs[runID].vibeSprintBoundaryDeclined
+	svc.mu.Unlock()
+	if idx != 1 || pending || !declined {
+		t.Fatalf("idx=%d pending=%v declined=%v — declined run must stay settled", idx, pending, declined)
+	}
+}
+
+// TestCA1093_AutoAdvanceSkipsSealedLoop: a stopped/done loop can never be
+// flipped back to running by an audit-path auto-advance.
+func TestCA1093_AutoAdvanceSkipsSealedLoop(t *testing.T) {
+	svc, _ := newTestServer(t)
+	runID := armBoundaryRun(t, svc, ProviderKeyCodex, workingmode.Vibe, boundaryTestPlan, 1)
+	svc.agentOrchestrator.setLoop(runID, AgentLoopState{Status: "stopped", Cap: 3, RoundCap: 3})
+	svc.maybeAutoAdvanceVibeSprintBoundary(context.Background(), runID, "audit")
+	loop := svc.agentOrchestrator.loopStateFor(runID)
+	if loop.Status != "stopped" {
+		t.Fatalf("loop=%q want stopped — auto-advance must respect a sealed loop", loop.Status)
+	}
+	svc.mu.Lock()
+	idx, pending := svc.runs[runID].vibeSprintIndex, svc.runs[runID].vibeSprintBoundaryPending
+	svc.mu.Unlock()
+	if idx != 1 || pending {
+		t.Fatalf("idx=%d pending=%v — sealed loop took nothing", idx, pending)
 	}
 }
 
@@ -1109,18 +1195,25 @@ func TestVibeSprintBoundary_OkCustomTextReachesPrompt(t *testing.T) {
 
 func TestVibeSprintBoundary_RunningReopenReDerives(t *testing.T) {
 	// Restart-loss shape for a non-sealed loop: audit DONE durable, plan and
-	// index durable, memory-only flag lost, loop running. Reopen must
-	// re-derive the identical gate (the case dropped in the first rework).
+	// index durable, memory-only flag lost, loop running.
+	// CA-1093 SUPERSESSION: reopen no longer re-derives a boundary card — it
+	// auto-starts the pending sprint (the boundary is not a user gate). The
+	// durable flag/audit state is consumed by the take instead.
 	svc, _ := newTestServer(t)
 	runID := armBoundaryRun(t, svc, ProviderKeyCodex, workingmode.Vibe, boundaryTestPlan, 1)
 	svc.maybeReparkVibeSprintBoundary(runID)
-	mustBoundaryPending(t, svc, runID)
-	loop := svc.agentOrchestrator.loopStateFor(runID)
-	if loop.Status != "blocked" || loop.BlockReason != vibeSprintBoundaryReason {
-		t.Fatalf("loop=%q/%q want blocked/%s", loop.Status, loop.BlockReason, vibeSprintBoundaryReason)
+	svc.mu.Lock()
+	pending, idx := svc.runs[runID].vibeSprintBoundaryPending, svc.runs[runID].vibeSprintIndex
+	svc.mu.Unlock()
+	if pending {
+		t.Fatal("reopen must not re-park a boundary card — sprint transition is automatic")
 	}
-	if !strings.Contains(loop.GateReason, "Task-905") {
-		t.Fatalf("gateReason=%q must name the next sprint", loop.GateReason)
+	if idx != 2 {
+		t.Fatalf("index=%d want 2 (sprint 2 taken on reopen)", idx)
+	}
+	loop := svc.agentOrchestrator.loopStateFor(runID)
+	if loop.Status != "running" {
+		t.Fatalf("loop=%q want running after auto-advance", loop.Status)
 	}
 }
 

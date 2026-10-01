@@ -1363,15 +1363,20 @@ func (s *InteractiveService) runAuditNode(ctx context.Context, parentRunID strin
 		}
 		// Vibe: missing feature key is not operator-actionable (Retry re-parks
 		// forever). Auto-finalize — CP-60 non-requirement gates auto-resolve.
-		if draft.Status == "blocked_missing_feature_key" && s.isVibeWorkingMode(parentRunID) {
+		// CA-1096: only when the sprint evidence is complete — open gate
+		// issues or a declared agent.code leg that never reached DONE mean
+		// the work is mid-remediation; settling done there false-greens the
+		// run (live run-3362: Task-015 finalized while its contract suite
+		// was still red). Falls through to the shared escalate block.
+		if draft.Status == "blocked_missing_feature_key" && s.isVibeWorkingMode(parentRunID) && s.vibeSprintEvidenceComplete(parentRunID) {
 			summary := "Vibe audit: feature key missing or unverified; auto-finalized (not an operator gate)."
 			s.flowDiagLog(parentRunID, "flow_audit_vibe_missing_key_auto", summary,
 				"node_id", node.ID, "status", draft.Status,
 			)
-			// Sprint boundary: a finished sprint with plan tasks left parks a
-			// Continue gate for the next sprint instead of settling done.
-			// Live audit path: never flip a concurrently sealed loop.
-			if s.maybeParkVibeSprintBoundary(ctx, parentRunID, node.ID, false) {
+			// Sprint boundary (CA-1093): a finished sprint with plan tasks
+			// left auto-starts the next sprint — the boundary is not a user
+			// gate. Falls through to done only when nothing remains.
+			if s.maybeAutoAdvanceVibeSprintBoundary(ctx, parentRunID, node.ID) {
 				return true
 			}
 			if _, err := s.applyFlowControl(parentRunID, FlowControlInput{
@@ -1393,6 +1398,9 @@ func (s *InteractiveService) runAuditNode(ctx context.Context, parentRunID strin
 		summary := "Audit blocked: validation was not positively verified (status=" + draft.Status + ", validation=" + draft.ValidationResult + ")."
 		if draft.Status == "blocked_missing_feature_key" {
 			summary = "Audit blocked: feature key missing or unverified; cannot finalize."
+			if s.isVibeWorkingMode(parentRunID) {
+				summary = "Audit blocked: sprint evidence incomplete (open issues or unfinished coder leg); cannot auto-finalize."
+			}
 		}
 		s.flowDiagLog(parentRunID, "flow_audit_blocked_not_ready", "audit draft not ready; escalating",
 			"node_id", node.ID, "status", draft.Status, "validation", draft.ValidationResult,
@@ -1446,10 +1454,10 @@ func (s *InteractiveService) runAuditNode(ctx context.Context, parentRunID strin
 	if auditCtxCancelled(ctx, parentRunID, node.ID, "before_flow_done") {
 		return false
 	}
-	// Sprint boundary: a finished sprint with plan tasks left parks a
-	// Continue gate for the next sprint instead of settling done.
-	// Live audit path: never flip a concurrently sealed loop.
-	if s.maybeParkVibeSprintBoundary(ctx, parentRunID, node.ID, false) {
+	// Sprint boundary (CA-1093): a finished sprint with plan tasks left
+	// auto-starts the next sprint — the boundary is not a user gate.
+	// Falls through to done only when nothing remains.
+	if s.maybeAutoAdvanceVibeSprintBoundary(ctx, parentRunID, node.ID) {
 		return true
 	}
 	if _, err := s.applyFlowControl(parentRunID, FlowControlInput{
@@ -1465,6 +1473,33 @@ func (s *InteractiveService) runAuditNode(ctx context.Context, parentRunID strin
 	s.onAuditNodeCompleted(workspace, changedFiles)
 	if s.isFlowEngineDriven(parentRunID) {
 		s.setFlowStepStatus(ctx, parentRunID, node.ID, StepStatusDone)
+	}
+	return true
+}
+
+// vibeSprintEvidenceComplete reports whether a vibe sprint's audit may
+// auto-finalize on a non-requirement gate (CA-1096): the loop must carry no
+// open issues and every declared agent.code writer leg must have reached
+// DONE. A topology without a coder leg has nothing to check. Unreadable
+// step state fails closed — no auto-finalize on unverifiable evidence.
+func (s *InteractiveService) vibeSprintEvidenceComplete(parentRunID string) bool {
+	if st := s.agentOrchestrator.loopStateFor(parentRunID); st.OpenIssues > 0 {
+		return false
+	}
+	var coderIDs []string
+	s.mu.Lock()
+	if rs := s.runs[parentRunID]; rs != nil {
+		for _, n := range rs.activeFlowNodes {
+			if c, ok := agentpack.NormalizeBehaviorID(n.Behavior); ok && c == string(BehaviorAgentCode) {
+				coderIDs = append(coderIDs, n.ID)
+			}
+		}
+	}
+	s.mu.Unlock()
+	for _, id := range coderIDs {
+		if s.lookupFlowStepStatus(parentRunID, id) != StepStatusDone {
+			return false
+		}
 	}
 	return true
 }
@@ -2000,6 +2035,12 @@ func (s *InteractiveService) runContractFreezeNode(ctx context.Context, parentRu
 		lock.Unlock()
 		return escalate("could not normalize declared scope: " + err.Error())
 	}
+	// CA-1094 (bounded stubs): for a scaffold writer, every declared path
+	// that already exists on disk at freeze time is read-only — it may only
+	// CREATE declared paths as stubs, never modify pre-existing code.
+	if ro := scaffoldBoundedReadOnly(workspace, writerNode, rec.DeclaredPaths); len(ro) > 0 {
+		rec.ReadOnlyPaths = ro
+	}
 	if err := store.SaveFrozen(rec); err != nil {
 		lock.Unlock()
 		return escalate("could not persist frozen contract: " + err.Error())
@@ -2348,6 +2389,11 @@ func (s *InteractiveService) bindFrozenContractToSiblingWriters(store *changecon
 		rec, err := changecontract.FreezeContract(workspace, runID, plannerStepID, w.ID, draft, baseSHA, baseline, "", len(versions)+1, time.Now().UTC())
 		if err != nil {
 			return fmt.Errorf("writer %q: %w", w.ID, err)
+		}
+		// CA-1094 (bounded stubs): same existing-vs-new split for a scaffold
+		// sibling writer — pre-existing declared paths are read-only for it.
+		if ro := scaffoldBoundedReadOnly(workspace, w, rec.DeclaredPaths); len(ro) > 0 {
+			rec.ReadOnlyPaths = ro
 		}
 		if err := store.SaveFrozen(rec); err != nil {
 			return fmt.Errorf("writer %q: %w", w.ID, err)
