@@ -25,6 +25,8 @@ import {
 import { createRunnerClient } from "@/client/createRunnerClient";
 import type { AgentDefinition } from "@/types/contract";
 import { stepDefinitionListSubtitle, stepDefinitionRequiresModel } from "@/components/settings/stepModelVisibility";
+import { buildModelOptions } from "@/components/settings/stepModelOptions";
+import { SearchableModelSelect } from "@/components/settings/SearchableModelSelect";
 
 export { stepDefinitionRequiresModel };
 
@@ -344,11 +346,13 @@ function normalizeStepSnapshot(step: StepDefinition | null) {
   });
 }
 
-function buildModelOptions(models: SupportedModel[]) {
-  const enabledModels = models.filter((model) => model.isEnabled);
-  return enabledModels.length > 0
-    ? enabledModels.map((model) => ({ value: model.modelId, label: model.displayName }))
-    : [{ value: DEFAULT_MODEL, label: DEFAULT_MODEL }];
+// CA-1076: buildModelOptions moved to stepModelOptions.ts (carries
+// providerKey for grouped search); the DEFAULT_MODEL fallback stays local.
+function modelOptionsFor(models: SupportedModel[]) {
+  const options = buildModelOptions(models);
+  return options.length > 0
+    ? options
+    : [{ value: DEFAULT_MODEL, label: DEFAULT_MODEL, providerKey: "codex" }];
 }
 
 function toggleString(list: string[], value: string) {
@@ -967,7 +971,7 @@ export function WorkflowsSettings(): React.ReactElement {
     () => stepDefinitions.find((item) => item.stepType === selectedStepType) ?? null,
     [stepDefinitions, selectedStepType],
   );
-  const modelOptions = useMemo(() => buildModelOptions(models), [models]);
+  const modelOptions = useMemo(() => modelOptionsFor(models), [models]);
   const availableCreateWorkflowSteps = useMemo(
     () =>
       stepDefinitions.filter(
@@ -2224,17 +2228,13 @@ export function WorkflowsSettings(): React.ReactElement {
           <>
             <label className="settings-field">
               <span>Model</span>
-              <select
-                onChange={(event) => onChange({ ...draft, model: event.target.value || null })}
+              <SearchableModelSelect
                 value={draft.model ?? ""}
-              >
-                <option value="">(inherit)</option>
-                {modelOptions.map((model) => (
-                  <option key={model.value} value={model.value}>
-                    {model.label}
-                  </option>
-                ))}
-              </select>
+                options={modelOptions}
+                emptyLabel="(inherit)"
+                placeholder="(inherit)"
+                onChange={(next) => onChange({ ...draft, model: next || null })}
+              />
             </label>
             <label className="settings-field">
               <span>Reasoning effort</span>
@@ -2814,22 +2814,17 @@ export function WorkflowsSettings(): React.ReactElement {
                 </label>
                 <label className="settings-field">
                   <span>Model override</span>
-                  <select
-                    onChange={(event) =>
+                  <SearchableModelSelect
+                    value={createWorkflowDraft.modelOverride ?? ""}
+                    options={modelOptions}
+                    placeholder="Select a model..."
+                    onChange={(next) =>
                       setCreateWorkflowDraft((current) => ({
                         ...current,
-                        modelOverride: event.target.value,
+                        modelOverride: next,
                       }))
                     }
-                    value={createWorkflowDraft.modelOverride ?? ""}
-                  >
-                    <option value="">Select a model...</option>
-                    {modelOptions.map((model) => (
-                      <option key={model.value} value={model.value}>
-                        {model.label}
-                      </option>
-                    ))}
-                  </select>
+                  />
                 </label>
                 <label className="settings-field">
                   <span>Reasoning effort</span>
@@ -3151,23 +3146,18 @@ export function WorkflowsSettings(): React.ReactElement {
                       </label>
                       <label className="settings-field">
                         <span>Model override</span>
-                        <select
-                          onChange={(event) =>
+                        <SearchableModelSelect
+                          value={workflowDraft.modelOverride ?? ""}
+                          options={modelOptions}
+                          placeholder="Select a model..."
+                          onChange={(next) =>
                             setWorkflowDraft((current) =>
                               current
-                                ? { ...current, modelOverride: event.target.value }
+                                ? { ...current, modelOverride: next }
                                 : current,
                             )
                           }
-                          value={workflowDraft.modelOverride ?? ""}
-                        >
-                          <option value="">Select a model...</option>
-                          {modelOptions.map((model) => (
-                            <option key={model.value} value={model.value}>
-                              {model.label}
-                            </option>
-                          ))}
-                        </select>
+                        />
                       </label>
                       <label className="settings-field">
                         <span>Reasoning effort</span>
