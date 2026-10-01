@@ -22,6 +22,10 @@ tools:
   # CP-67 P-5 (Task-378): Contract-First TDD handover faces.
   - tools/submit-scaffold-outcome.yaml
   - tools/submit-coder-outcome.yaml
+  # CA-1092 (live run-3362 review): the reviewer needs the declared verdict
+  # face — its submit_review_outcome gates synthesis done via the cohort's
+  # machine verdicts.
+  - tools/submit-review-outcome.yaml
 # CP-62 P-5 (Task-341): vibe-sprint profiles — tdd/coder see the SS slice +
 # dependence; the previous sprint's handoff (P-6) rides the pack when present.
 contextProfiles:
@@ -33,6 +37,10 @@ contextProfiles:
     maxEstPromptTokens: 24000
   tdd:
     candidateSources: [conventions, canonical.head, change.contract, source.excerpt]
+    maxEstPromptTokens: 12000
+  # CA-1092: reviewer sees contract + excerpts only (task-harness parity).
+  reviewer:
+    candidateSources: [conventions, change.contract, source.excerpt]
     maxEstPromptTokens: 12000
 acceptance_nodes:
   - validate
@@ -92,6 +100,22 @@ nodes:
     run: inline
     lifecycle: once
     behavior: command.validate
+  # CA-1092 (live run-3362 review): dedicated read-only reviewer between
+  # validate and synthesis — task-harness parity. Its machine verdict gates
+  # synthesis done; changes_requested loops back through synthesis -> coder.
+  - id: reviewer
+    run: delegate
+    lifecycle: spawn
+    behavior: agent.delegate
+    workloadClass: high_reasoning
+    agent: agents/reviewer.md
+    promptTemplate: prompts/review-safe-fix-contract.md
+    posture: read_only
+    contextProfile: reviewer
+    dependsOn:
+      - validate
+    cohort: review
+    join: all
   - id: synthesis
     run: inline
     lifecycle: reinvoke
@@ -131,7 +155,18 @@ edges:
     to: validate
     when: done
     kind: forward
+  # CA-1092: validate retries re-enter the coder directly (task-harness
+  # LOOP 2 shape) — a red suite is a code loop-back, not a user gate.
   - from: validate
+    to: coder
+    when: continue
+    kind: back
+  # CA-1092: validate done feeds the reviewer; the reviewer feeds synthesis.
+  - from: validate
+    to: reviewer
+    when: done
+    kind: forward
+  - from: reviewer
     to: synthesis
     when: done
     kind: forward

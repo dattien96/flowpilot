@@ -28,9 +28,11 @@ func TestPack_VibeSprintV2Topology(t *testing.T) {
 		order = append(order, n.ID)
 	}
 	// CP-67 P-5: synthesis_negotiation joins the topology (B-6).
+	// CA-1092: reviewer joins between validate and synthesis (task-harness
+	// review parity — a real review step, not hub self-review).
 	want := []string{
 		"preflight_contract_plan", "preflight_contract_freeze", "context",
-		"tdd", "coder", "validate", "synthesis", "synthesis_negotiation", "audit",
+		"tdd", "coder", "validate", "reviewer", "synthesis", "synthesis_negotiation", "audit",
 	}
 	if len(order) != len(want) {
 		t.Fatalf("nodes=%v, want %v", order, want)
@@ -57,17 +59,24 @@ func TestPack_VibeSprintV2Topology(t *testing.T) {
 	if tdd.Agent != "agents/scaffold-architect.md" {
 		t.Fatalf("tdd agent=%q, want agents/scaffold-architect.md", tdd.Agent)
 	}
-	// CP-67 supersession: two continue back-edges now — the review-loop
-	// synthesis→coder edge (unchanged) plus the negotiation
-	// synthesis_negotiation→tdd edge (B-6).
+	// CP-67 supersession: the review-loop synthesis→coder edge (unchanged)
+	// plus the negotiation synthesis_negotiation→tdd edge (B-6).
+	// CA-1092: a third back-edge validate→coder carries validate retries —
+	// task-harness LOOP 2 parity, so a red suite loops code instead of
+	// escalating to a user gate.
 	back := 0
 	tddToCoder := false
 	negotiationBack := false
+	validateBack := false
 	for _, e := range def.Edges {
 		if e.Kind == "back" && e.When == "continue" {
 			back++
 			if e.From == "synthesis_negotiation" && e.To == "tdd" {
 				negotiationBack = true
+				continue
+			}
+			if e.From == "validate" && e.To == "coder" {
+				validateBack = true
 				continue
 			}
 			if e.From != "synthesis" || e.To != "coder" {
@@ -78,8 +87,11 @@ func TestPack_VibeSprintV2Topology(t *testing.T) {
 			tddToCoder = true
 		}
 	}
-	if back != 2 {
-		t.Fatalf("continue back-edges=%d, want 2", back)
+	if back != 3 {
+		t.Fatalf("continue back-edges=%d, want 3", back)
+	}
+	if !validateBack {
+		t.Fatal("missing validate → coder continue back-edge (CA-1092 validate retry loop)")
 	}
 	if !negotiationBack {
 		t.Fatal("missing synthesis_negotiation → tdd continue back-edge (CP-67 renegotiation loop)")
@@ -110,11 +122,16 @@ func nodeByID(def FlowDefinition, id string) FlowNode {
 	return FlowNode{}
 }
 
+// CA-1092: the "no reviewer in vibe-sprint" claim is SUPERSEDED — the sprint
+// now carries a read-only reviewer cohort between validate and synthesis
+// (task-harness parity; asserted positively by
+// TestPack_CA1092_VibeSprintReviewerTopology). Plan-phase harness nodes
+// remain forbidden: vibe-sprint never writes or reviews a plan.
 func TestPack_VibeSprintV2NoReviewerCohort(t *testing.T) {
 	def := loadVibeSprint(t)
 	for _, n := range def.Nodes {
 		switch n.ID {
-		case "reviewer", "plan_reviewer", "plan_writer", "plan_synthesis":
+		case "plan_reviewer", "plan_writer", "plan_synthesis":
 			t.Fatalf("harness-only node %s leaked into vibe-sprint", n.ID)
 		}
 	}
