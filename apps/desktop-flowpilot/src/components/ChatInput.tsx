@@ -354,6 +354,8 @@ export function ChatInput(): React.ReactElement {
   const requestManualAccountSwitch = useStore((s) => s.requestManualAccountSwitch);
   const backToMainRun = useStore((s) => s.backToMainRun);
   const pendingFlowArm = useStore((s) => s.pendingFlowArm);
+  const setPendingFlowArmSourceDoc = useStore((s) => s.setPendingFlowArmSourceDoc);
+  const armPendingFlow = useStore((s) => s.armPendingFlow);
   const flowStarted = useStore((s) => s.flowStarted);
   const forwardArmedFlow = useStore((s) => s.forwardArmedFlow);
 
@@ -779,7 +781,9 @@ export function ChatInput(): React.ReactElement {
   const canSend = isChatMode
     ? hasSelectedProject && selectedProviderInstalled && selectedProviderConnected && !blocked && !hasBlockingChild && !childRunFocused && text.trim().length > 0 && !showPicker && !showAgentCommand && !showFilePicker
     : hasSelectedProject &&
-      (launchMode === "workflow" ? !!selectedWorkflowId : !!selectedStepId) &&
+      // CA-1084: a pending arm needs no tab pick — the armed run is a chat
+      // run and the flow rides as flowRef, so the composer stays sendable.
+      (launchMode === "workflow" ? !!selectedWorkflowId || !!pendingFlowArm : !!selectedStepId) &&
       !blocked &&
       text.trim().length > 0;
 
@@ -1450,13 +1454,16 @@ export function ChatInput(): React.ReactElement {
           </>
         ) : (
           <>
-            {runId && !flowStarted && (pendingFlowArm || workingMode === "vibe") && (() => {
+            {!flowStarted && (pendingFlowArm || workingMode === "vibe") && (() => {
               // CP-89: the forward turn carries the user's FINAL flow choice.
               // An armed chat defaults to its pin; a never-armed vibe chat
               // can late-attach (runner gate validates + commits atomically).
               // CA-1083: the bar is not chat-tab-only anymore — vibe-mode
               // Workflow-tab picks arrive armed too (normal_chat is disabled
               // in vibe, so isChatMode would hide the forward affordance).
+              // CA-1084: no runId gate — selectWorkflow pre-arms on pick so
+              // the bar shows before the first message, and Start flow on an
+              // empty session mints the armed run + forwards in one gesture.
               const options = flowPickerOptions(workingMode);
               const rawChoice = armedFlowChoice || pendingFlowArm?.flowRef || options[0] || "";
               // History/handle refs can be pack-prefixed ("<pack>/<id>") while
@@ -1471,7 +1478,12 @@ export function ChatInput(): React.ReactElement {
                     <select
                       className="composer-armed-select"
                       value={choice}
-                      onChange={(e) => setArmedFlowChoice(e.target.value)}
+                      onChange={(e) => {
+                        setArmedFlowChoice(e.target.value);
+                        // CA-1084: pre-run, the bar pick IS the arm — a later
+                        // plain send must mint the armed run for THIS flow.
+                        if (!runId) armPendingFlow(e.target.value);
+                      }}
                       aria-label="Flow to start"
                     >
                       {options.map((f) => (
@@ -1483,7 +1495,10 @@ export function ChatInput(): React.ReactElement {
                         <select
                           className="composer-armed-source"
                           value={armedSourceDoc}
-                          onChange={(e) => setArmedSourceDoc(e.target.value)}
+                          onChange={(e) => {
+                            setArmedSourceDoc(e.target.value);
+                            setPendingFlowArmSourceDoc(e.target.value);
+                          }}
                           aria-label="CP source document"
                         >
                           <option value="">Select CP doc…</option>
@@ -1495,7 +1510,10 @@ export function ChatInput(): React.ReactElement {
                         <input
                           className="composer-armed-source"
                           value={armedSourceDoc}
-                          onChange={(e) => setArmedSourceDoc(e.target.value)}
+                          onChange={(e) => {
+                            setArmedSourceDoc(e.target.value);
+                            setPendingFlowArmSourceDoc(e.target.value);
+                          }}
                           placeholder="CP doc path (requirements/07-Coding-Plan/CP-*.md)"
                           spellCheck={false}
                         />

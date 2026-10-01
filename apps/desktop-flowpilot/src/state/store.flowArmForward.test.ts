@@ -414,3 +414,99 @@ test("dev-mode Workflow-tab launch is unchanged (immediate workflowId)", async (
   assert.equal(captured.startRun?.flowArm, undefined);
   assert.equal(useStore.getState().pendingFlowArm, undefined);
 });
+
+// --- CA-1084: the armed bar must show the instant a vibe flow is picked —
+// no chat-first requirement — and Start flow on an empty session mints the
+// armed run and forwards in one gesture.
+
+test("selectWorkflow in vibe mode pre-arms the pick before any run", async () => {
+  seedVibeWorkflowTab();
+  useStore.setState({ client: makeClient({ turns: [] }) } as never);
+
+  await useStore.getState().selectWorkflow("wf-tasks");
+
+  assert.equal(useStore.getState().pendingFlowArm?.flowRef, "vibe-tasks",
+    "the armed bar must render immediately — the run is minted on send or on Start flow");
+});
+
+test("selectWorkflow pre-arm never rewrites a live run's latch", async () => {
+  const captured: Captured = { turns: [] };
+  seedVibeWorkflowTab();
+  useStore.setState({ client: makeClient(captured) } as never);
+  await useStore.getState().sendPrompt("hi");
+
+  await useStore.getState().selectWorkflow("wf-cp");
+
+  assert.equal(useStore.getState().pendingFlowArm?.flowRef, "vibe-tasks",
+    "live arm keeps the run's pin; a re-pick only feeds the forward's final ref");
+});
+
+test("a pre-armed Start flow mints the run and forwards in one gesture", async () => {
+  const captured: Captured = { turns: [] };
+  seedVibeWorkflowTab();
+  useStore.setState({ client: makeClient(captured) } as never);
+  await useStore.getState().selectWorkflow("wf-tasks");
+
+  await useStore.getState().forwardArmedFlow("do tasks 21-25", {
+    sourceDocId: "requirements/07-Coding-Plan/todo/CP-90-x.md",
+  });
+
+  assert.equal(captured.startRun?.chatMode, "normal_chat");
+  assert.equal(captured.startRun?.flowArm, "pending");
+  assert.equal(captured.startRun?.flowRef, "vibe-tasks");
+  assert.equal(captured.startRun?.model, "devin/swe-2-high", "flow's configured model, not composer's");
+  assert.equal(captured.startRun?.sourceDocId, "requirements/07-Coding-Plan/todo/CP-90-x.md");
+  assert.equal(captured.turns.length, 1, "no wasted chat turn — the forward is the only turn");
+  const fwd = captured.turns[0];
+  assert.equal(fwd.forwardFlow, true);
+  assert.equal(fwd.flowRef, "vibe-tasks");
+  assert.equal(fwd.sourceDocId, "requirements/07-Coding-Plan/todo/CP-90-x.md");
+  assert.equal(fwd.runId, "run-armed");
+  assert.equal(useStore.getState().runId, "run-armed");
+});
+
+test("a CP picked before the run rides the armed create as the source pin", async () => {
+  const captured: Captured = { turns: [] };
+  seedVibeWorkflowTab();
+  useStore.setState({ client: makeClient(captured) } as never);
+  await useStore.getState().selectWorkflow("wf-tasks");
+  // The dropdown mirrors the pick onto the arm (setPendingFlowArmSourceDoc).
+  useStore.getState().setPendingFlowArmSourceDoc("requirements/07-Coding-Plan/todo/CP-90-x.md");
+
+  await useStore.getState().sendPrompt("walk me through the plan");
+
+  assert.equal(captured.startRun?.flowArm, "pending");
+  assert.equal(captured.startRun?.sourceDocId, "requirements/07-Coding-Plan/todo/CP-90-x.md");
+  const s = useStore.getState();
+  assert.equal(s.pendingFlowArm?.flowRef, "vibe-tasks");
+  assert.equal(s.pendingFlowArm?.sourceDocId, "requirements/07-Coding-Plan/todo/CP-90-x.md",
+    "the pick survives the re-seed after the run is minted");
+});
+
+test("a bar-only flow pick (no tab select) arms the first chat send", async () => {
+  const captured: Captured = { turns: [] };
+  seedVibeWorkflowTab();
+  useStore.setState({
+    client: makeClient(captured),
+    selectedWorkflowId: undefined,
+  } as never);
+  // The composer's flow select mirrors a pre-run pick via armPendingFlow.
+  useStore.getState().armPendingFlow("vibe-cp-ingest");
+
+  await useStore.getState().sendPrompt("let's talk about the CP first");
+
+  assert.equal(captured.startRun?.flowArm, "pending");
+  assert.equal(captured.startRun?.flowRef, "vibe-cp-ingest");
+  assert.equal(captured.startRun?.workflowId, undefined);
+});
+
+test("switching to dev with no run discards a pre-arm", async () => {
+  seedVibeWorkflowTab();
+  useStore.setState({ client: makeClient({ turns: [] }) } as never);
+  await useStore.getState().selectWorkflow("wf-tasks");
+  assert.equal(useStore.getState().pendingFlowArm?.flowRef, "vibe-tasks");
+
+  useStore.getState().setWorkingMode("dev");
+
+  assert.equal(useStore.getState().pendingFlowArm, undefined);
+});

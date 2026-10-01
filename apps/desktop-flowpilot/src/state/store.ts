@@ -870,6 +870,19 @@ export interface AppState {
    * fence when the final choice is vibe-cp-ingest.
    */
   forwardArmedFlow(forwardText?: string, opts?: { flowRef?: string; sourceDocId?: string }): Promise<void>;
+  /**
+   * CA-1084: mirror the armed bar's CP pick onto the arm — the armed run's
+   * create then carries it as the source pin, and the composer's re-seed
+   * effect doesn't wipe a selection made before the run existed.
+   */
+  setPendingFlowArmSourceDoc(sourceDocId?: string): void;
+  /**
+   * CA-1084: an explicit flow pick in the armed bar before any run exists IS
+   * the arm — store it so the first chat send creates the armed run. A live
+   * run's latch is never rewritten here; on a started run the bar's re-pick
+   * only feeds the forward turn's final flowRef.
+   */
+  armPendingFlow(flowRef: string): void;
   openInIde(path: string, line?: number): void;
   openAdminWeb(): void;
   restartSystem(): Promise<void>;
@@ -1544,10 +1557,38 @@ export const useStore = create<AppState>((set, get) => ({
 
   async selectWorkflow(workflowId) {
     set({ selectedWorkflowId: workflowId });
+    // CA-1084: in vibe mode a picked flow pre-arms immediately — the armed
+    // bar (flow pick + CP source + Start flow) must show BEFORE the first
+    // chat message so the user can either chat first or start the flow in
+    // the same gesture. Only touches pre-run state; a live armed run's
+    // pendingFlowArm is never rewritten by a re-pick.
+    const state = get();
+    if (state.workingMode !== "vibe" || state.runId) return;
+    const bare = bareFlowId(
+      state.workflows.find((w) => w.id === workflowId)?.packFlowId ?? workflowId ?? "",
+    );
+    set({
+      pendingFlowArm: userFlowSelectableForMode("vibe", bare)
+        ? { flowRef: bare }
+        : undefined,
+    });
   },
 
   selectStep(stepId) {
     set({ selectedStepId: stepId });
+  },
+
+  setPendingFlowArmSourceDoc(sourceDocId) {
+    const arm = get().pendingFlowArm;
+    if (!arm) return;
+    set({ pendingFlowArm: { ...arm, sourceDocId: sourceDocId?.trim() || undefined } });
+  },
+
+  armPendingFlow(flowRef) {
+    const ref = flowRef?.trim();
+    if (!ref || get().runId) return;
+    const prev = get().pendingFlowArm;
+    set({ pendingFlowArm: { flowRef: ref, sourceDocId: prev?.sourceDocId } });
   },
 
   setScenario(scenario) {
@@ -1919,6 +1960,12 @@ export const useStore = create<AppState>((set, get) => ({
     const selected = get().workflows.find((w) => w.id === get().selectedWorkflowId);
     if (selected && !userFlowSelectableForMode(wired, selected.packFlowId ?? selected.id)) {
       set({ selectedWorkflowId: undefined });
+    }
+    // CA-1084: a pre-run arm is only an intent for the picked surface —
+    // switching modes with no run discards it. A live armed run keeps its
+    // latch (runId set) and restores the bar on its own.
+    if (!get().runId) {
+      set({ pendingFlowArm: undefined });
     }
   },
 
@@ -2298,7 +2345,9 @@ export const useStore = create<AppState>((set, get) => ({
       if (!selectedProjectId || !selectedProvider) return;
     } else {
       const launchTargetId = launchMode === "workflow" ? selectedWorkflowId : selectedStepId;
-      if (!selectedProjectId || !launchTargetId) return;
+      // CA-1084: a pending arm needs no launch target — the armed run is a
+      // chat run and the picked flow rides as flowRef, not workflowId.
+      if (!selectedProjectId || (!launchTargetId && !get().pendingFlowArm)) return;
     }
 
     const launchTargetId = launchMode === "workflow" ? selectedWorkflowId : selectedStepId;
@@ -2388,16 +2437,20 @@ export const useStore = create<AppState>((set, get) => ({
       // workflowId path so the runner's create-time mode gate rejects it.
       return userFlowSelectableForMode("vibe", bare) ? bare : "";
     })();
-    const vibeArmFlowRef = vibeEntry?.flowRef ?? (pickerVibeArm || undefined);
+    // CA-1084: a pre-run arm (tab select or armed-bar pick) carries the same
+    // intent — honor it on the first send even when launchMode didn't derive
+    // the arm from selectedWorkflowId (e.g. a bar-only pick).
+    const preArmFlowRef = !runId ? get().pendingFlowArm?.flowRef : undefined;
+    const vibeArmFlowRef = vibeEntry?.flowRef ?? preArmFlowRef ?? (pickerVibeArm || undefined);
     // CA-1083: an armed-pending run IS the picked flow's run — stamp its
     // resolved model (workflow override → project default → composer pick) so
     // the pre-forward chat leg AND post-forward flow children without a step
     // pin inherit the flow's configured model, not whatever the composer
     // happens to show (live run-2198: run pinned gpt-5.5 → codex while the
     // flow was configured devin/swe-2-high).
-    const armedRunModel = pickerVibeArm
+    const armedRunModel = vibeArmFlowRef && !vibeEntry
       ? (get().workflows.find(
-            (w) => w.id === selectedWorkflowId || bareFlowId(w.packFlowId ?? "") === pickerVibeArm,
+            (w) => w.id === selectedWorkflowId || bareFlowId(w.packFlowId ?? "") === vibeArmFlowRef,
           )?.model ??
           get().projects.find((p) => p.id === selectedProjectId)?.model ??
           selectedModel)
@@ -2487,11 +2540,11 @@ export const useStore = create<AppState>((set, get) => ({
         }));
       } else if (!runId) {
         const handle = await startRunWithRetry(
-          chatMode === "normal_chat" || pickerVibeArm
+          chatMode === "normal_chat" || vibeArmFlowRef
             ? {
                 projectId: selectedProjectId!,
                 providerKey: selectedProvider,
-                model: pickerVibeArm ? armedRunModel : selectedModel,
+                model: vibeArmFlowRef && !vibeEntry ? armedRunModel : selectedModel,
                 reasoningEffort,
                 yoloMode,
                 workingMode,
@@ -2505,7 +2558,10 @@ export const useStore = create<AppState>((set, get) => ({
                 // covers Workflow-tab picks (pickerVibeArm) — the runner treats
                 // them identically to detectVibeEntry-armed chats.
                 flowArm: vibeArmFlowRef ? "pending" : undefined,
-                sourceDocId: vibeEntry?.sourceDocId || undefined,
+                // CA-1084: a CP picked in the armed bar pre-run rides the
+                // create as the source pin (mirrored onto pendingFlowArm).
+                sourceDocId:
+                  vibeEntry?.sourceDocId || get().pendingFlowArm?.sourceDocId || undefined,
                 chatMode: "normal_chat",
                 cwd,
                 worktree: get().worktreeEnabled,
@@ -2534,7 +2590,14 @@ export const useStore = create<AppState>((set, get) => ({
             // CP-89: surface the armed affordance — the vibe flow is pinned
             // pending and waits for the explicit forward turn.
             pendingFlowArm: vibeArmFlowRef
-              ? { flowRef: vibeArmFlowRef, sourceDocId: vibeEntry?.sourceDocId || undefined }
+              ? {
+                  flowRef: vibeArmFlowRef,
+                  // CA-1084: keep a CP picked pre-run — the create wiped the
+                  // pre-arm identity (new chatId) but the pick must survive
+                  // into the armed bar and the eventual forward.
+                  sourceDocId:
+                    vibeEntry?.sourceDocId || get().pendingFlowArm?.sourceDocId || undefined,
+                }
               : undefined,
             flowStarted: false,
           });
@@ -2543,11 +2606,11 @@ export const useStore = create<AppState>((set, get) => ({
         noteLocallyStartedRun(set, mintedRunHistoryRow(handle, {
           projectId: selectedProjectId!,
           providerKey: selectedProvider ?? "codex",
-          runKind: chatMode === "normal_chat" || pickerVibeArm ? "chat" : "workflow",
+          runKind: chatMode === "normal_chat" || vibeArmFlowRef ? "chat" : "workflow",
           prompt,
           chatId: handle.chatId,
           subMode: chatStartMode === "bugfix" ? "bug" : undefined,
-          flowRef: chatStartMode === "bugfix" ? flowRef : pickerVibeArm || undefined,
+          flowRef: chatStartMode === "bugfix" ? flowRef : vibeArmFlowRef,
           flowArm: vibeArmFlowRef ? "pending" : undefined,
         }));
       }
@@ -2715,15 +2778,82 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   async forwardArmedFlow(forwardText, opts) {
-    const { client, runId, pendingFlowArm, activeStepId, status } = get();
+    const { client, pendingFlowArm, status } = get();
+    let { runId, activeStepId } = get();
     // The affordance exists when the runner can still launch: either the run
     // carries a pinned pending arm, or the forward turn itself supplies the
     // user's FINAL flow choice (CP-89 late-attach — an unpinned, never-
     // launched chat armed only now, validated by the same runner gate).
     const armedFlowRef = (opts?.flowRef ?? "").trim() || pendingFlowArm?.flowRef;
-    if (!client || !runId || !armedFlowRef) return;
+    if (!client || !armedFlowRef) return;
     if (status === "running" || status === "waiting_approval" || status === "waiting_question") return;
     const prompt = (forwardText ?? "").trim();
+    // CA-1084: Start flow pressed before any chat — mint the armed pending
+    // run and forward on it in the same gesture. The forward's prompt seeds
+    // the flow's entry leg; no provider chat turn is spent minting context.
+    if (!runId) {
+      const st = get();
+      if (!st.selectedProjectId) return;
+      const armBare = bareFlowId(armedFlowRef);
+      const armedModel =
+        st.workflows.find(
+          (w) => w.id === st.selectedWorkflowId || bareFlowId(w.packFlowId ?? "") === armBare,
+        )?.model ??
+        st.projects.find((p) => p.id === st.selectedProjectId)?.model ??
+        st.selectedModel;
+      try {
+        const handle = await client.startRun({
+          projectId: st.selectedProjectId,
+          providerKey: st.selectedProvider,
+          model: armedModel,
+          reasoningEffort: st.reasoningEffort,
+          yoloMode: st.yoloMode,
+          workingMode: st.workingMode === "vibe" ? "vibe" : "dev",
+          flowRef: armedFlowRef,
+          flowArm: "pending",
+          sourceDocId: opts?.sourceDocId?.trim() || pendingFlowArm?.sourceDocId || undefined,
+          chatMode: "normal_chat",
+          cwd: selectedProjectPath(st),
+          worktree: st.worktreeEnabled,
+        });
+        runId = handle.runId;
+        activeStepId = handle.stepId;
+        set({
+          runId: handle.runId,
+          activeStepId: handle.stepId,
+          mainRunId: handle.runId,
+          chatId: handle.chatId,
+          chatDetached: false,
+          activeAgentRunId: undefined,
+          activeWorktreePath: handle.worktreePath ?? "",
+          pendingFlowArm: {
+            flowRef: armedFlowRef,
+            sourceDocId: opts?.sourceDocId?.trim() || pendingFlowArm?.sourceDocId || undefined,
+          },
+          flowStarted: false,
+        });
+        if (st.worktreeEnabled) set({ activeWorktreeState: "active" });
+        noteLocallyStartedRun(set, mintedRunHistoryRow(handle, {
+          projectId: st.selectedProjectId,
+          providerKey: st.selectedProvider ?? "codex",
+          runKind: "chat",
+          prompt,
+          chatId: handle.chatId,
+          flowRef: armedFlowRef,
+          flowArm: "pending",
+        }));
+      } catch (err) {
+        set((s) => ({
+          status: "failed",
+          recoverable: false,
+          timeline: [
+            ...s.timeline.filter((it) => it.kind !== "thinking"),
+            { kind: "system", id: `err-run-${s.timeline.length}`, text: runErrorMessage(err), tone: "error" },
+          ],
+        }));
+        return;
+      }
+    }
     // Capture the draft lane + stream seq BEFORE the optimistic mutation —
     // a failed forward restores the composed text under the same key, and a
     // late result must never stamp state onto a chat the user switched to.
@@ -2741,7 +2871,7 @@ export const useStore = create<AppState>((set, get) => ({
       // provisional create-time pin (or is the pin outright on a chat that
       // was never armed). Runner validates + commits it atomically.
       flowRef: armedFlowRef,
-      sourceDocId: opts?.sourceDocId?.trim() || undefined,
+      sourceDocId: opts?.sourceDocId?.trim() || pendingFlowArm?.sourceDocId || undefined,
       // One key per forward send: retries after a connection failure replay
       // the same turnId — without it a post-commit retry hits
       // flow_already_started on a latch the runner already flipped.
