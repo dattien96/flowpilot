@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync/atomic"
 
@@ -583,8 +584,13 @@ func (s *SupabaseWorkflowFlowStore) healCloneDefinitionSnapshot(ctx context.Cont
 }
 
 // isUndefinedDefinitionJSONColumn reports a PostgREST undefined-column error
-// for workflows.definition_json (SQLSTATE 42703) — the remote project has not
-// run the definition_json migration.
+// for workflows.definition_json — the remote project has not run the
+// definition_json migration. Two shapes carry the same meaning: SQLSTATE
+// 42703 from Postgres once the statement executes, and PGRST204 from
+// PostgREST's schema cache emitted before the query ever runs (CA-1075 —
+// without the PGRST204 arm every mirror/clone upsert hard-failed on an
+// unmigrated remote and SyncBuiltins aborted on the first flow, so new
+// builtin flows never got mirror rows).
 func isUndefinedDefinitionJSONColumn(status int, body []byte) bool {
 	if status != http.StatusBadRequest {
 		return false
@@ -596,7 +602,10 @@ func isUndefinedDefinitionJSONColumn(status int, body []byte) bool {
 	if err := json.Unmarshal(body, &e); err != nil {
 		return false
 	}
-	return e.Code == "42703" && strings.Contains(e.Message, "definition_json")
+	if !strings.Contains(e.Message, "definition_json") {
+		return false
+	}
+	return e.Code == "42703" || e.Code == "PGRST204"
 }
 
 // GetByPackFlow looks up a mirrored built-in row by pack identity.
@@ -928,6 +937,19 @@ func (s *SupabaseWorkflowFlowStore) replaceSteps(ctx context.Context, workflowID
 	}
 
 	newIDs, err := s.insertSteps(ctx, workflowID, stepTypes, insertOrderIndexOffset)
+	if err != nil && isUniqueViolationErr(err) {
+		// CA-1075: a previous replaceSteps that died between insert and
+		// delete-superseded leaves orphaned rows in the offset band, and
+		// every retry then collides on the same
+		// unique(workflow_id, order_index) key — the "retry to clean up"
+		// the error below promises could never happen. Inserts only ever
+		// write the offset band, so a 23505 here can only be an orphan;
+		// no completed save keeps order_index >= insertOrderIndexOffset
+		// (renormalize restores 0..N-1). Clean the band and retry once.
+		if cerr := s.deleteOffsetSteps(ctx, workflowID); cerr == nil {
+			newIDs, err = s.insertSteps(ctx, workflowID, stepTypes, insertOrderIndexOffset)
+		}
+	}
 	if err != nil {
 		return fmt.Errorf("supabase workflow flow: insert new steps (existing steps left untouched): %w", err)
 	}
@@ -942,6 +964,28 @@ func (s *SupabaseWorkflowFlowStore) replaceSteps(ctx context.Context, workflowID
 	// even if this step fails or is skipped; a failure here must not be
 	// treated as a replaceSteps failure.
 	s.renormalizeOrderIndex(ctx, newIDs)
+	return nil
+}
+
+// isUniqueViolationErr reports a Postgres 23505 unique-violation embedded in
+// a PostgREST error body (insertSteps wraps it into the error text).
+func isUniqueViolationErr(err error) bool {
+	return err != nil && strings.Contains(err.Error(), `"23505"`)
+}
+
+// deleteOffsetSteps removes orphaned workflow_steps rows left in the offset
+// range (order_index >= insertOrderIndexOffset) by a replaceSteps that died
+// mid-swap. Safe because no completed save keeps rows there.
+func (s *SupabaseWorkflowFlowStore) deleteOffsetSteps(ctx context.Context, workflowID string) error {
+	endpoint := s.restURL + "/workflow_steps?workflow_id=eq." + url.QueryEscape(workflowID) +
+		"&order_index=gte." + strconv.Itoa(insertOrderIndexOffset)
+	status, body, err := httpRequestFn(ctx, http.MethodDelete, endpoint, s.headers("return=minimal"), nil)
+	if err != nil {
+		return err
+	}
+	if status < 200 || status >= 300 {
+		return fmt.Errorf("supabase workflow flow: delete orphaned offset steps failed: status %d: %s", status, string(body))
+	}
 	return nil
 }
 

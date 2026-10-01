@@ -625,6 +625,151 @@ func TestBUG474_UpsertDegradesOnUnmigratedRemote(t *testing.T) {
 	}
 }
 
+// CA-1075 (live, 2026-10-01): PostgREST rejects an unknown column from its
+// schema cache with PGRST204 ("Could not find the 'definition_json' column
+// of 'workflows' in the schema cache") — the request never reaches Postgres,
+// so no 42703 is ever emitted. isUndefinedDefinitionJSONColumn only matched
+// 42703, so on an unmigrated remote EVERY mirror upsert failed and
+// SyncBuiltins aborted on the first flow — new builtin flows (vibe-tasks)
+// never got mirror rows and never appeared in the Flow picker/Settings.
+// The degradation contract must recognize the PGRST204 shape too.
+func TestCA1075_UpsertDegradesOnPGRST204SchemaCacheMiss(t *testing.T) {
+	original := httpRequestFn
+	defer func() { httpRequestFn = original }()
+
+	schemaCacheMiss := []byte(`{"code":"PGRST204","details":null,"hint":null,"message":"Could not find the 'definition_json' column of 'workflows' in the schema cache"}`)
+	var posts []map[string]any
+	httpRequestFn = func(_ context.Context, method, endpoint string, _ map[string]string, body []byte) (int, []byte, error) {
+		switch {
+		case method == http.MethodPost && strings.Contains(endpoint, "/workflows"):
+			var p map[string]any
+			_ = json.Unmarshal(body, &p)
+			posts = append(posts, p)
+			if _, has := p["definition_json"]; has {
+				return 400, schemaCacheMiss, nil
+			}
+			return 200, []byte(`[{"id":"aaaa1111-2222-3333-4444-555566667777"}]`), nil
+		case method == http.MethodGet:
+			b, _ := json.Marshal([]map[string]any{{
+				"id": "aaaa1111-2222-3333-4444-555566667777", "is_builtin": false,
+				"edges_json": []any{}, "workflow_steps": []any{},
+			}})
+			return 200, b, nil
+		}
+		return 200, []byte("[]"), nil
+	}
+
+	store := NewSupabaseWorkflowFlowStore(SupabaseWorkspaceConfig{APIURL: "https://proj.supabase.co/"}, "k")
+	rec, err := store.Upsert(context.Background(), FlowDefinitionRecord{
+		Name:      "Vibe Tasks",
+		Editable:  true,
+		Cloneable: true,
+		Definition: agentpack.FlowDefinition{
+			ID:    "vibe-tasks-clone",
+			Nodes: []agentpack.FlowNode{{ID: "n1", Behavior: "agent.delegate", Run: "delegate"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Upsert on PGRST204 remote must degrade, got: %v", err)
+	}
+	if len(posts) != 2 {
+		t.Fatalf("expected initial post + stripped retry, got %d posts", len(posts))
+	}
+	if _, has := posts[0]["definition_json"]; !has {
+		t.Fatal("first post must attempt the snapshot")
+	}
+	if _, has := posts[1]["definition_json"]; has {
+		t.Fatal("retry must strip definition_json for the schema-cache miss")
+	}
+	if rec.FlowRef != "aaaa1111-2222-3333-4444-555566667777" {
+		t.Fatalf("FlowRef = %q", rec.FlowRef)
+	}
+}
+
+// CA-1075 (live): a replaceSteps that died between insert and
+// delete-superseded leaves orphaned rows at
+// order_index >= insertOrderIndexOffset; every later save collided on the
+// same unique(workflow_id, order_index) key — the "retry to clean up" the
+// error text promises could never happen (observed live on
+// bug-plan-harness, order_index=1000006). The store must delete the offset
+// band and retry the insert when — and only when — the insert surfaces a
+// 23505, so the common path keeps the BUG-NOTE-CP42 #18 ordering verbatim.
+func TestCA1075_ReplaceStepsClearsStaleOffsetOrphans(t *testing.T) {
+	original := httpRequestFn
+	defer func() { httpRequestFn = original }()
+
+	uniqueViolation := []byte(`{"code":"23505","details":"Key (workflow_id, order_index)=(wf-1, 1000001) already exists.","hint":null,"message":"duplicate key value violates unique constraint \"workflow_steps_workflow_id_order_index_key\""}`)
+	var calls []string
+	insertAttempts := 0
+	httpRequestFn = func(_ context.Context, method, endpoint string, _ map[string]string, _ []byte) (int, []byte, error) {
+		switch {
+		case method == http.MethodDelete && strings.Contains(endpoint, "order_index=gte."):
+			calls = append(calls, "delete-orphans")
+			return 200, []byte("[]"), nil
+		case method == http.MethodPost && strings.Contains(endpoint, "/workflow_steps"):
+			insertAttempts++
+			calls = append(calls, "insert-steps")
+			if insertAttempts == 1 {
+				return 409, uniqueViolation, nil
+			}
+			return 200, []byte(`[{"id":"s1"},{"id":"s2"}]`), nil
+		case method == http.MethodDelete && strings.Contains(endpoint, "id=not.in"):
+			calls = append(calls, "delete-superseded")
+			return 200, []byte("[]"), nil
+		case method == http.MethodPatch:
+			return 200, []byte("[]"), nil // renormalize
+		}
+		return 200, []byte("[]"), nil
+	}
+
+	store := NewSupabaseWorkflowFlowStore(SupabaseWorkspaceConfig{APIURL: "https://proj.supabase.co/"}, "k")
+	if err := store.replaceSteps(context.Background(), "wf-1", []string{"st-a", "st-b"}); err != nil {
+		t.Fatalf("replaceSteps: %v", err)
+	}
+	want := []string{"insert-steps", "delete-orphans", "insert-steps", "delete-superseded"}
+	if len(calls) != len(want) {
+		t.Fatalf("calls = %v, want %v", calls, want)
+	}
+	for i := range want {
+		if calls[i] != want[i] {
+			t.Fatalf("calls = %v, want %v", calls, want)
+		}
+	}
+}
+
+// CA-1075: a non-unique insert failure must NOT trigger the orphan
+// cleanup/retry — 23505 is the only signal that means "stale offset rows",
+// anything else (FK, network, RLS) must propagate untouched so the caller
+// still sees "existing steps left untouched".
+func TestCA1075_ReplaceStepsNonUniqueInsertFailurePropagates(t *testing.T) {
+	original := httpRequestFn
+	defer func() { httpRequestFn = original }()
+
+	var calls []string
+	httpRequestFn = func(_ context.Context, method, endpoint string, _ map[string]string, _ []byte) (int, []byte, error) {
+		switch {
+		case method == http.MethodDelete && strings.Contains(endpoint, "order_index=gte."):
+			calls = append(calls, "delete-orphans")
+			return 200, []byte("[]"), nil
+		case method == http.MethodPost && strings.Contains(endpoint, "/workflow_steps"):
+			calls = append(calls, "insert-steps")
+			return 500, []byte(`{"code":"23503","message":"fk violation"}`), nil
+		case method == http.MethodDelete:
+			calls = append(calls, "delete-superseded")
+			return 200, []byte("[]"), nil
+		}
+		return 200, []byte("[]"), nil
+	}
+
+	store := NewSupabaseWorkflowFlowStore(SupabaseWorkspaceConfig{APIURL: "https://proj.supabase.co/"}, "k")
+	if err := store.replaceSteps(context.Background(), "wf-1", []string{"st-a"}); err == nil {
+		t.Fatal("expected non-unique insert failure to propagate")
+	}
+	if len(calls) != 1 || calls[0] != "insert-steps" {
+		t.Fatalf("non-unique failure must not retry or clean up, calls = %v", calls)
+	}
+}
+
 // A clone whose source row is gone (deleted) keeps the deterministic legacy
 // path — no heal target, no failure.
 func TestBUG474_DesktopCloneWithMissingSourceKeepsLegacyPath(t *testing.T) {
