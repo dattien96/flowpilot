@@ -34,7 +34,7 @@ import type { SupportedModel } from "@flowpilot/client-core";
 import type { LocalRunnerProvider } from "@flowpilot/client-core";
 import { createRunnerClient } from "@/client/createRunnerClient";
 import { RunnerApiError } from "@/client/HttpWsRunnerClient";
-import { detectVibeEntry, loadWorkingMode, persistWorkingMode, userFlowSelectableForMode } from "./workingMode";
+import { bareFlowId, detectVibeEntry, loadWorkingMode, persistWorkingMode, userFlowSelectableForMode } from "./workingMode";
 import type { ScenarioName } from "@/client/mockData";
 import { ideBridge } from "@/client/ideBridge";
 import { getAdminUseCases } from "@/clientCore";
@@ -2313,7 +2313,7 @@ export const useStore = create<AppState>((set, get) => ({
     // In normal_chat the runner mints one synthetic step ("chat-<runId>") for the whole
     // run and surfaces it via startRun (turn 1) / resumeRun (from history). It is held in
     let turnStepId =
-      chatMode === "normal_chat"
+      chatMode === "normal_chat" || get().pendingFlowArm
         ? get().activeStepId ?? launchTargetId ?? ""
         : launchTargetId ?? "";
 
@@ -2371,6 +2371,37 @@ export const useStore = create<AppState>((set, get) => ({
     const vibeEntry = workingMode === "vibe" && isFirstChatTurn
       ? detectVibeEntry(chatSourceDocId.trim() || prompt)
       : null;
+    // CA-1083: picking a vibe user flow on the Workflow tab arms it pending
+    // (chat_then_forward) instead of immediate-launching on this send — the
+    // user discusses with the main agent first and presses "Start flow" to
+    // actually run it (CP-89). CP-sourced entries additionally need a source
+    // doc collected at forward time, which an immediate launch cannot supply
+    // (live run: 422 invalid_cp_source on vibe-tasks).
+    const pickerVibeArm = (() => {
+      if (vibeEntry || runId || workingMode !== "vibe" || launchMode !== "workflow") return "";
+      const bare = bareFlowId(
+        get().workflows.find((w) => w.id === selectedWorkflowId)?.packFlowId ??
+          selectedWorkflowId ??
+          "",
+      );
+      // Fail closed: a ref outside the vibe user set keeps the immediate
+      // workflowId path so the runner's create-time mode gate rejects it.
+      return userFlowSelectableForMode("vibe", bare) ? bare : "";
+    })();
+    const vibeArmFlowRef = vibeEntry?.flowRef ?? (pickerVibeArm || undefined);
+    // CA-1083: an armed-pending run IS the picked flow's run — stamp its
+    // resolved model (workflow override → project default → composer pick) so
+    // the pre-forward chat leg AND post-forward flow children without a step
+    // pin inherit the flow's configured model, not whatever the composer
+    // happens to show (live run-2198: run pinned gpt-5.5 → codex while the
+    // flow was configured devin/swe-2-high).
+    const armedRunModel = pickerVibeArm
+      ? (get().workflows.find(
+            (w) => w.id === selectedWorkflowId || bareFlowId(w.packFlowId ?? "") === pickerVibeArm,
+          )?.model ??
+          get().projects.find((p) => p.id === selectedProjectId)?.model ??
+          selectedModel)
+      : selectedModel;
     try {
       // `go run` recompiles before the runner listens and restarts drop in-flight
       // connections, so a send inside that window dies at the socket ("Failed to
@@ -2456,22 +2487,24 @@ export const useStore = create<AppState>((set, get) => ({
         }));
       } else if (!runId) {
         const handle = await startRunWithRetry(
-          chatMode === "normal_chat"
+          chatMode === "normal_chat" || pickerVibeArm
             ? {
                 projectId: selectedProjectId!,
                 providerKey: selectedProvider,
-                model: selectedModel,
+                model: pickerVibeArm ? armedRunModel : selectedModel,
                 reasoningEffort,
                 yoloMode,
                 workingMode,
-                flowRef: vibeEntry?.flowRef,
+                flowRef: vibeArmFlowRef,
                 // CP-89 chat-then-forward: a vibe-armed chat pins the flow but
                 // does NOT launch on the first turn — the user discusses with
                 // the AI (SS/SD/CP drafts land in the workspace), then presses
                 // "Start flow" to send the forwardFlow turn (Task-452). The
                 // source doc pin lives on the run so the forward-time ingest
-                // fence validates without a repaste.
-                flowArm: vibeEntry ? "pending" : undefined,
+                // fence validates without a repaste. CA-1083: the same arm
+                // covers Workflow-tab picks (pickerVibeArm) — the runner treats
+                // them identically to detectVibeEntry-armed chats.
+                flowArm: vibeArmFlowRef ? "pending" : undefined,
                 sourceDocId: vibeEntry?.sourceDocId || undefined,
                 chatMode: "normal_chat",
                 cwd,
@@ -2500,8 +2533,8 @@ export const useStore = create<AppState>((set, get) => ({
             activeWorktreePath: handle.worktreePath ?? "",
             // CP-89: surface the armed affordance — the vibe flow is pinned
             // pending and waits for the explicit forward turn.
-            pendingFlowArm: vibeEntry
-              ? { flowRef: vibeEntry.flowRef, sourceDocId: vibeEntry.sourceDocId || undefined }
+            pendingFlowArm: vibeArmFlowRef
+              ? { flowRef: vibeArmFlowRef, sourceDocId: vibeEntry?.sourceDocId || undefined }
               : undefined,
             flowStarted: false,
           });
@@ -2510,12 +2543,12 @@ export const useStore = create<AppState>((set, get) => ({
         noteLocallyStartedRun(set, mintedRunHistoryRow(handle, {
           projectId: selectedProjectId!,
           providerKey: selectedProvider ?? "codex",
-          runKind: chatMode === "normal_chat" ? "chat" : "workflow",
+          runKind: chatMode === "normal_chat" || pickerVibeArm ? "chat" : "workflow",
           prompt,
           chatId: handle.chatId,
           subMode: chatStartMode === "bugfix" ? "bug" : undefined,
-          flowRef: chatStartMode === "bugfix" ? flowRef : undefined,
-          flowArm: vibeEntry ? "pending" : undefined,
+          flowRef: chatStartMode === "bugfix" ? flowRef : pickerVibeArm || undefined,
+          flowArm: vibeArmFlowRef ? "pending" : undefined,
         }));
       }
 

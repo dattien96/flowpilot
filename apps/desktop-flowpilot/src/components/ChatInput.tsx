@@ -17,7 +17,7 @@ import {
 import { supportsVisionFor } from "./visionProviders";
 import { ContextNotice, UsageFigures } from "./ContextUsageNotice";
 import { draftKeyFor } from "@/state/drafts";
-import { flowPickerOptions } from "@/state/workingMode";
+import { flowPickerOptions, isCodingPlanCPPath } from "@/state/workingMode";
 import { BotIcon, CaretIcon, CheckIcon, CloseIcon, MenuIcon, PaperclipIcon, SendIcon } from "@/components/icons";
 
 function CodexIcon(): React.ReactElement {
@@ -608,6 +608,32 @@ export function ChatInput(): React.ReactElement {
     setArmedFlowChoice(pendingFlowArm?.flowRef ?? "");
     setArmedSourceDoc(pendingFlowArm?.sourceDocId ?? "");
   }, [pendingFlowArm?.flowRef, pendingFlowArm?.sourceDocId, chatId]);
+
+  // CA-1083: CP-sourced vibe flows (vibe-cp-ingest, vibe-tasks) need a real
+  // CP-*.md pinned at forward — list the workspace's Coding-Plan docs so the
+  // user picks the file instead of retyping its path. Free-text fallback
+  // stays when the workspace yields no CP docs.
+  const armedChoiceForSource = armedFlowChoice || pendingFlowArm?.flowRef || "";
+  const armedNeedsSourceDoc = /(^|\/)vibe-(cp-ingest|tasks)$/.test(armedChoiceForSource);
+  const [cpDocOptions, setCpDocOptions] = useState<string[]>([]);
+  useEffect(() => {
+    if (!armedNeedsSourceDoc || !client.listWorkspaceFiles || !selectedProjectPath) {
+      setCpDocOptions([]);
+      return;
+    }
+    let cancelled = false;
+    void client
+      .listWorkspaceFiles(selectedProjectPath, "07-coding-plan")
+      .then((paths) => {
+        if (!cancelled) setCpDocOptions(paths.filter(isCodingPlanCPPath));
+      })
+      .catch(() => {
+        if (!cancelled) setCpDocOptions([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [armedNeedsSourceDoc, selectedProjectPath, client]);
 
   useEffect(() => {
     const draft = useStore.getState().drafts[draftKey];
@@ -1424,17 +1450,20 @@ export function ChatInput(): React.ReactElement {
           </>
         ) : (
           <>
-            {isChatMode && runId && !flowStarted && (pendingFlowArm || workingMode === "vibe") && (() => {
+            {runId && !flowStarted && (pendingFlowArm || workingMode === "vibe") && (() => {
               // CP-89: the forward turn carries the user's FINAL flow choice.
               // An armed chat defaults to its pin; a never-armed vibe chat
               // can late-attach (runner gate validates + commits atomically).
+              // CA-1083: the bar is not chat-tab-only anymore — vibe-mode
+              // Workflow-tab picks arrive armed too (normal_chat is disabled
+              // in vibe, so isChatMode would hide the forward affordance).
               const options = flowPickerOptions(workingMode);
               const rawChoice = armedFlowChoice || pendingFlowArm?.flowRef || options[0] || "";
               // History/handle refs can be pack-prefixed ("<pack>/<id>") while
               // the picker lists bare ids — match by suffix so the select
               // never renders blank.
               const choice = options.find((f) => rawChoice === f || rawChoice.endsWith(`/${f}`)) ?? rawChoice;
-              const needsSourceDoc = /(^|\/)vibe-cp-ingest$/.test(choice);
+              const needsSourceDoc = /(^|\/)vibe-(cp-ingest|tasks)$/.test(choice);
               return (
                 <div className="composer-armed-flow" role="status">
                   <span className="composer-armed-label">
@@ -1450,13 +1479,27 @@ export function ChatInput(): React.ReactElement {
                       ))}
                     </select>
                     {needsSourceDoc && (
-                      <input
-                        className="composer-armed-source"
-                        value={armedSourceDoc}
-                        onChange={(e) => setArmedSourceDoc(e.target.value)}
-                        placeholder="CP doc path (requirements/07-Coding-Plan/CP-*.md)"
-                        spellCheck={false}
-                      />
+                      cpDocOptions.length > 0 ? (
+                        <select
+                          className="composer-armed-source"
+                          value={armedSourceDoc}
+                          onChange={(e) => setArmedSourceDoc(e.target.value)}
+                          aria-label="CP source document"
+                        >
+                          <option value="">Select CP doc…</option>
+                          {cpDocOptions.map((p) => (
+                            <option key={p} value={p}>{p}</option>
+                          ))}
+                        </select>
+                      ) : (
+                        <input
+                          className="composer-armed-source"
+                          value={armedSourceDoc}
+                          onChange={(e) => setArmedSourceDoc(e.target.value)}
+                          placeholder="CP doc path (requirements/07-Coding-Plan/CP-*.md)"
+                          spellCheck={false}
+                        />
+                      )
                     )}
                     {pendingFlowArm && !needsSourceDoc
                       ? " — chat freely, then start the flow when ready."

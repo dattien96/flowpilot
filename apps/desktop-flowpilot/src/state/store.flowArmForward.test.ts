@@ -323,3 +323,94 @@ test("a stale forward result never stamps failure onto the chat the user switche
   assert.equal(s.pendingFlowArm?.flowRef, "vibe-ingest", "run B's own arm survives");
   assert.ok(!s.timeline.some((it) => it.id.startsWith("err-fwd-")), "no error row lands on run B");
 });
+
+// --- CA-1083: vibe-mode Workflow-tab picks arm pending (chat_then_forward)
+// instead of immediate-launching — the user chats first, "Start flow" sends
+// the forwardFlow turn. Fixes the live 422 invalid_cp_source on vibe-tasks
+// (picker path never collected a CP source before firing the fence).
+
+function seedVibeWorkflowTab(workflowId = "wf-tasks"): void {
+  seedVibeChat();
+  useStore.setState({
+    chatMode: "workflow_step_auto",
+    launchMode: "workflow",
+    chatSourceDocId: "",
+    selectedWorkflowId: workflowId,
+    selectedModel: "gpt-5.5",
+    projects: [{ id: "p1", name: "App", path: "/tmp/app", model: "devin/swe-2-high" } as never],
+    workflows: [
+      { id: "wf-tasks", projectId: "p1", name: "Vibe Tasks", packFlowId: "vibe-tasks", model: "devin/swe-2-high" },
+      { id: "wf-cp", projectId: "p1", name: "Vibe CP Ingest", packFlowId: "vibe-cp-ingest" },
+      { id: "wf-harness", projectId: "p1", name: "Task Harness", packFlowId: "task-harness" },
+    ] as never,
+  } as never);
+}
+
+test("vibe Workflow-tab pick of vibe-tasks arms pending as a chat run", async () => {
+  const captured: Captured = { turns: [] };
+  seedVibeWorkflowTab();
+  useStore.setState({ client: makeClient(captured) } as never);
+
+  await useStore.getState().sendPrompt("which tasks does this CP cover?");
+
+  const start = captured.startRun!;
+  assert.equal(start.chatMode, "normal_chat", "armed pick is a chat run, not a workflow launch");
+  assert.equal(start.workflowId, undefined, "no immediate workflowId execution");
+  assert.equal(start.flowArm, "pending");
+  assert.equal(start.flowRef, "vibe-tasks", "picker's packFlowId resolves to the bare flow ref");
+  assert.equal(start.workingMode, "vibe");
+  assert.equal(
+    start.model,
+    "devin/swe-2-high",
+    "armed run stamps the flow's configured model — composer gpt-5.5 must not leak (live run-2198)",
+  );
+  assert.equal(captured.turns.length, 1);
+  assert.equal(captured.turns[0].forwardFlow, undefined, "first chat turn must not forward");
+  assert.equal(captured.turns[0].stepId, "chat-run-armed", "turn rides the run's synthetic chat step");
+  assert.equal(useStore.getState().pendingFlowArm?.flowRef, "vibe-tasks");
+  assert.equal(useStore.getState().flowStarted, false);
+});
+
+test("vibe Workflow-tab pick arms vibe-cp-ingest too", async () => {
+  const captured: Captured = { turns: [] };
+  seedVibeWorkflowTab("wf-cp");
+  useStore.setState({ client: makeClient(captured) } as never);
+
+  await useStore.getState().sendPrompt("review this CP with me");
+
+  assert.equal(captured.startRun?.flowArm, "pending");
+  assert.equal(captured.startRun?.flowRef, "vibe-cp-ingest");
+  assert.equal(captured.startRun?.workflowId, undefined);
+  // No model on the wf-cp row → project default beats the composer pick.
+  assert.equal(captured.startRun?.model, "devin/swe-2-high");
+});
+
+test("vibe Workflow-tab pick of a non-vibe flow stays fail-closed immediate", async () => {
+  const captured: Captured = { turns: [] };
+  seedVibeWorkflowTab("wf-harness");
+  useStore.setState({ client: makeClient(captured) } as never);
+
+  await useStore.getState().sendPrompt("run it");
+
+  // task-harness is not user-selectable in vibe — the send keeps the
+  // workflowId path so the runner's create-time mode gate rejects it.
+  assert.equal(captured.startRun?.workflowId, "wf-harness");
+  assert.equal(captured.startRun?.flowArm, undefined);
+  assert.equal(useStore.getState().pendingFlowArm, undefined);
+});
+
+test("dev-mode Workflow-tab launch is unchanged (immediate workflowId)", async () => {
+  const captured: Captured = { turns: [] };
+  seedVibeWorkflowTab("wf-harness");
+  useStore.setState({
+    client: makeClient(captured),
+    workingMode: "dev",
+  } as never);
+
+  await useStore.getState().sendPrompt("run it");
+
+  assert.equal(captured.startRun?.workflowId, "wf-harness");
+  assert.equal(captured.startRun?.chatMode, undefined, "workflow launch sends no chatMode");
+  assert.equal(captured.startRun?.flowArm, undefined);
+  assert.equal(useStore.getState().pendingFlowArm, undefined);
+});
