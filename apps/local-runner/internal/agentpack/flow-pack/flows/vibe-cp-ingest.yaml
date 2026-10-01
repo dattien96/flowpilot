@@ -22,7 +22,17 @@ nodes:
     behavior: agent.delegate
     workloadClass: scan
     agent: agents/vibe-intake.md
+    promptTemplate: prompts/vibe-cp-read.md
     join: all
+    artifactBindings:
+      - direction: input
+        slotName: cp_md
+        artifactInstanceId: cp_md
+        artifactTypeId: file_artifact.v1
+        required: true
+        position: 0
+        config:
+          pathTemplate: requirements/07-Coding-Plan/**/CP-*.md
   - id: cp_validator
     run: inline
     lifecycle: once

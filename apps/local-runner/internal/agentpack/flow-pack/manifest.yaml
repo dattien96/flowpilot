@@ -123,6 +123,7 @@ prompts:
   - prompts/vibe-ss-ingest.md
   - prompts/vibe-ss-validate.md
   - prompts/vibe-cp-from-ss.md
+  - prompts/vibe-cp-read.md
   - prompts/vibe-cp-validate.md
   - prompts/vibe-task-plan-read.md
   # CP-68 (Task-384 T-1): Zero-Prompt Injection template for the AI Scaffold Turn.
