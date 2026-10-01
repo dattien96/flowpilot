@@ -183,6 +183,11 @@ type TurnResult struct {
 	// must-be-RED/must-be-stub requirements; the suite still has to compile,
 	// run, and be green.
 	ScaffoldRedWaived bool `json:"scaffold_red_waived,omitempty"`
+	// ScaffoldPreExistingTouched (CA-1094 bounded stubs) names the paths the
+	// scaffold turn wrote that already existed on disk at contract freeze.
+	// The scaffold may only CREATE declared files that did not exist yet —
+	// a pre-existing production file is read-only for it.
+	ScaffoldPreExistingTouched []string `json:"scaffold_preexisting_touched,omitempty"`
 }
 
 // DodExplanation is the schema'd or-explained payload for r-dod-complete

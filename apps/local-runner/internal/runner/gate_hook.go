@@ -950,6 +950,10 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 	// stays false and boundByFrozenContract stays false for it.
 	var rec changecontract.FrozenContractRecord
 	var frozenOK bool
+	// CA-1094 (bounded stubs): populated inside the frozen-scope block for a
+	// scaffold turn — declared files that existed at freeze which the turn
+	// still wrote. Feeds tr.ScaffoldPreExistingTouched below.
+	var scaffoldPreExisting []string
 	if parentID != "" && coderStepID != "" {
 		if frozenStore, err := changecontract.NewFrozenStore(cwd); err == nil {
 			rec, frozenOK, _ = frozenStore.GetFrozenForStep(parentID, coderStepID)
@@ -1093,21 +1097,6 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 			}
 			codeOnlyWritten = append(codeOnlyWritten, p)
 		}
-		// CP-64 P-3: the reproduction test file is the reproduce step's own
-		// evidence, locked read-only on THIS contract after its gate passed. It
-		// shows up in the diff since BaseSHA but was never the coder's write,
-		// and the approval bridge denies the coder from touching it — counting
-		// it as coder drift would park every bug fix right after a successful
-		// reproduction.
-		lockedOnly := codeOnlyWritten[:0]
-		for _, p := range codeOnlyWritten {
-			// BUG-388: tolerate records whose ReadOnlyPaths were stored absolute.
-			if changecontract.IsReadOnlyLockedPathUnder(rec, p, cwd) {
-				continue
-			}
-			lockedOnly = append(lockedOnly, p)
-		}
-		codeOnlyWritten = lockedOnly
 		// Run-144900 false-drift fix: leftover untracked skill dirs
 		// (e.g. .agents/skills/flow-mode-orchestrator/SKILL.md created at
 		// 10:28 before the flow started) show up in ObserveGitDiffSince(BaseSHA)
@@ -1136,6 +1125,58 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 				filtered = append(filtered, p)
 			}
 			codeOnlyWritten = filtered
+		}
+		// CA-1094 (bounded stubs): snapshot the fingerprint-filtered writes
+		// BEFORE the read-only subtraction below — a scaffold write to a
+		// freeze-locked (pre-existing) file must stay visible to the
+		// r-scaffold-red check, not be silently exempted as "locked, not the
+		// writer's drift". The filters commute: survivors are identical,
+		// just captured earlier for this signal. Must be a COPY — the
+		// lockedOnly filter below reuses this slice's backing array
+		// (s[:0] idiom) and would corrupt a shared view.
+		preLockWritten := append([]string(nil), codeOnlyWritten...)
+		// CP-64 P-3: the reproduction test file is the reproduce step's own
+		// evidence, locked read-only on THIS contract after its gate passed. It
+		// shows up in the diff since BaseSHA but was never the coder's write,
+		// and the approval bridge denies the coder from touching it — counting
+		// it as coder drift would park every bug fix right after a successful
+		// reproduction.
+		lockedOnly := codeOnlyWritten[:0]
+		for _, p := range codeOnlyWritten {
+			// BUG-388: tolerate records whose ReadOnlyPaths were stored absolute.
+			if changecontract.IsReadOnlyLockedPathUnder(rec, p, cwd) {
+				continue
+			}
+			lockedOnly = append(lockedOnly, p)
+		}
+		codeOnlyWritten = lockedOnly
+		if scaffoldTurn {
+			// CA-1094 (bounded stubs): a write to a path that existed at
+			// freeze is a violation for the scaffold. Two signals cover old
+			// and new records: the record's ReadOnlyPaths (minted by the
+			// freeze split), and the git status vs BaseSHA fallback (a
+			// declared path whose diff status is not "A" existed at the
+			// frozen base — records frozen before the lock existed still
+			// fail closed).
+			declaredSet := map[string]bool{}
+			for _, d := range rec.DeclaredPaths {
+				declaredSet[filepath.ToSlash(strings.TrimSpace(d))] = true
+			}
+			statusByPath := map[string]string{}
+			for _, f := range frozenDiff {
+				statusByPath[f.Path] = f.Status
+			}
+			for _, p := range preLockWritten {
+				// A declared path dirty-but-untracked at freeze diffs as "A"
+				// against BaseSHA — the baseline fingerprint catches it
+				// (unchanged dirt was already subtracted above, so reaching
+				// here means the content moved).
+				_, dirtyAtFreeze := rec.BaselineWorktree[p]
+				if changecontract.IsReadOnlyLockedPathUnder(rec, p, cwd) ||
+					(declaredSet[p] && (statusByPath[p] != "A" && statusByPath[p] != "" || dirtyAtFreeze)) {
+					scaffoldPreExisting = append(scaffoldPreExisting, p)
+				}
+			}
 		}
 		drift := changecontract.FrozenContractScopeDrift(rec, codeOnlyWritten)
 		if len(drift) > 0 {
@@ -1409,6 +1450,10 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 	// FLOWPILOT_ENABLE_DRIFT_DETECTOR flag is set.
 	if scaffoldTurn {
 		tr.ScaffoldExpected = true
+		// CA-1094 (bounded stubs): declared files that existed at freeze are
+		// read-only for this turn — any that were still written violate
+		// r-scaffold-red.
+		tr.ScaffoldPreExistingTouched = scaffoldPreExisting
 		// CP-67 P-2b (B-11): static stub-body whitelist over the production
 		// (non-test) files written this turn — deterministic, independent of
 		// the suite's red/green outcome.

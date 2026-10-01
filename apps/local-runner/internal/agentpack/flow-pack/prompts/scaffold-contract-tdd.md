@@ -11,12 +11,21 @@ Read the task plan / specs referenced by the frozen contract (DeclaredPaths,
 intent, source doc). The signatures you declare here are LOCKED after this
 turn: the coder cannot change them without a batch renegotiation round.
 
-## Step 2 — Create production stubs (signature only)
+## Step 2 — Create production stubs (signature only, NEW files only)
 
-Create or extend the production files declared in the contract with every
+Create the declared production files that DO NOT ALREADY EXIST with every
 struct, interface, and function the plan needs. Signature must be complete
 (name, receiver, parameter types, return types). The BODY must be an empty
 stub — exactly one of the canonical shapes:
+
+**A declared file that already exists on disk is READ-ONLY for you.** Never
+modify, extend, or rewrite it — not to add a symbol, not to adjust a
+dependency, not to reformat. The runner locks every pre-existing declared
+path at contract freeze; a write to one is denied at the approval bridge
+and is a gate violation even when the suite stays red. The coder owns all
+modifications to existing files. If a symbol the plan needs belongs in an
+existing file, declare it in `tdd-signatures.md` and leave the body to the
+coder.
 
 - **Go**: `return nil, errors.New("not implemented")` / `panic("not implemented")`
 - **Kotlin**: `= TODO("not implemented")` / `throw NotImplementedError("not implemented")`

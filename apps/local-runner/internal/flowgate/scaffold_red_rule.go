@@ -51,7 +51,7 @@ func EnabledScaffoldRules(base []Rule, expected bool) []Rule {
 // static whitelist. A waived turn (declared zero-red contract) is satisfied
 // by a green suite instead — the accepted artifact is the contract.
 func ScaffoldSatisfied(tr TurnResult) bool {
-	if !tr.ScaffoldExpected || !tr.Tests.Ran || tr.ScaffoldCompileFailed {
+	if !tr.ScaffoldExpected || !tr.Tests.Ran || tr.ScaffoldCompileFailed || len(tr.ScaffoldPreExistingTouched) > 0 {
 		return false
 	}
 	if tr.ScaffoldRedWaived {
@@ -65,6 +65,17 @@ func ScaffoldSatisfied(tr TurnResult) bool {
 func checkScaffoldRedRule(rule Rule, tr TurnResult) *Violation {
 	if !tr.ScaffoldExpected {
 		return nil
+	}
+	// CA-1094 (bounded stubs): a declared production file that already
+	// existed at contract freeze is read-only for the scaffold — it may only
+	// create NEW declared files. This check runs before every other signal
+	// including the waived path: the waiver licenses a green suite, never a
+	// rewrite of pre-existing code.
+	if len(tr.ScaffoldPreExistingTouched) > 0 {
+		return &Violation{
+			Rule: rule,
+			Detail: "the scaffold modified production file(s) that existed at contract freeze: " + strings.Join(tr.ScaffoldPreExistingTouched, ", ") + " — restore them byte-for-byte; the scaffold may only create NEW declared files as whitelist stubs (the coder fills the bodies)",
+		}
 	}
 	// Declared zero-red contract (live wedge run-15525/run-17384): the
 	// node's tdd-signatures.md records "red_tests: []" + "failure_type:

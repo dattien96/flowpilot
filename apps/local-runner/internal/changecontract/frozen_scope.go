@@ -455,11 +455,14 @@ func amendFrozenContractUnion(store *FrozenStore, workspace string, existing Fro
 		Intent:            draft.Intent,
 		DeclaredPaths:     normalized,
 		AllowedExtraPaths: extraUnion,
-		SourceDocID:       draft.SourceDocID,
-		BaseSHA:           existing.BaseSHA,
-		BaselineWorktree:  existing.BaselineWorktree,
-		Supersedes:        existing.ContractID,
-		DeclaredAt:        now,
+		// CA-1094: widening scope must not silently unlock paths already
+		// frozen read-only (reproduce evidence, scaffold bounded stubs).
+		ReadOnlyPaths:    uniqueNormalizedPaths(existing.ReadOnlyPaths),
+		SourceDocID:      draft.SourceDocID,
+		BaseSHA:          existing.BaseSHA,
+		BaselineWorktree: existing.BaselineWorktree,
+		Supersedes:       existing.ContractID,
+		DeclaredAt:       now,
 	}
 	if err := store.SaveFrozen(amended); err != nil {
 		return FrozenContractRecord{}, err
