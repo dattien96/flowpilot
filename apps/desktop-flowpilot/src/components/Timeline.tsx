@@ -258,6 +258,7 @@ const FILE_ICON: Record<string, React.ReactElement> = {
 };
 
 import { buildTimelineGroups, type ApprovalItem, type QuestionItem, type TimelineGroup, type ToolItem } from "./timelineGrouping";
+import { scrollAnchorCandidates, scrollAnchorRevealPrompts } from "./timelineScrollAnchor";
 
 export function shouldShowAgentTimelineHeader(activeAgentRunId: string | undefined, mainRunId: string | undefined, agentRunCount: number): boolean {
   return Boolean(activeAgentRunId && mainRunId && activeAgentRunId !== mainRunId) || agentRunCount > 0;
@@ -794,15 +795,39 @@ export function Timeline(): React.ReactElement {
   useEffect(() => {
     if (!pendingScrollAnchor || pendingScrollAnchor.runId !== runId) return;
     const box = timelineRef.current;
-    const node = box?.querySelector<HTMLElement>(
-      `[data-item-id="${CSS.escape(pendingScrollAnchor.itemId)}"]`,
-    );
-    if (!box || !node) return;
+    if (!box) return;
+    // A lone approval/question captured as `approval-N` re-ids to
+    // `approval-group-approval-N` when a sibling appended while the child view
+    // was focused — try the grouped forms before declaring the anchor lost.
+    const wanted = pendingScrollAnchor.itemId;
+    let node: HTMLElement | null = null;
+    for (const candidate of scrollAnchorCandidates(wanted)) {
+      node = box.querySelector<HTMLElement>(`[data-item-id="${CSS.escape(candidate)}"]`);
+      if (node) break;
+    }
+    if (!node) {
+      // The item may still exist but above the visible prompt window (new
+      // prompts appended while away shrink the rendered slice) — expand the
+      // window to reveal it; the effect re-runs and positions the scroll.
+      const need = scrollAnchorRevealPrompts(timeline, wanted);
+      if (need !== undefined) {
+        if (need > visiblePromptCount) setVisiblePromptCount(need);
+        return;
+      }
+      // The anchored id vanished entirely (rebuilt/regrouped item ids) — a
+      // pending anchor that can never resolve would leave the restored view
+      // pinned wherever the shorter child timeline clamped it (the "scrolled
+      // up" report). Fall back to the bottom.
+      useStore.setState({ _pendingScrollAnchor: undefined });
+      stickToBottomRef.current = true;
+      endRef.current?.scrollIntoView({ behavior: "auto", block: "end" });
+      return;
+    }
     stickToBottomRef.current = false;
     const top = box.getBoundingClientRect().top;
     box.scrollTop += node.getBoundingClientRect().top - top - pendingScrollAnchor.offsetPx;
     useStore.setState({ _pendingScrollAnchor: undefined });
-  }, [pendingScrollAnchor, runId, timeline]);
+  }, [pendingScrollAnchor, runId, timeline, visiblePromptCount]);
 
   return (
     <div
