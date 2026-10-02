@@ -558,7 +558,7 @@ func (s *InteractiveService) maybeParkVibeResumeConfirm(parentRunID string) {
 	}
 	r.vibeResumeConfirm = true
 	r.vibeResumeFromNode = from
-	s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
+	snap := s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
 		st.Status = "blocked"
 		st.BlockReason = vibeResumePausedReason
 		st.GateReason = fmt.Sprintf("Resume from %s?", from)
@@ -566,6 +566,14 @@ func (s *InteractiveService) maybeParkVibeResumeConfirm(parentRunID string) {
 	})
 	s.mu.Unlock()
 	s.parkFlowForAwaitingUser(parentRunID)
+	// BUG-592 (live run-139670): the armed resume-confirm gate must reach the
+	// client — without the graph event + dirty mark the mux lane keeps its old
+	// fingerprint and the vibe-gate-resume decision is projected but never
+	// flushed, leaving a phantom "Resume from X?" wait with no card.
+	// Mirrors the BUG-365 requirement-park emit.
+	s.emitAgentGraph(parentRunID, snap)
+	s.markRunRealtimeDirty(parentRunID)
+	go s.persistParentSession(parentRunID)
 }
 
 // forceStartVibeSprintAtTdd starts (or restarts) vibe-sprint at tdd.

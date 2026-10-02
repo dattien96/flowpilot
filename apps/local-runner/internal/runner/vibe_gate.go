@@ -181,6 +181,11 @@ func (s *InteractiveService) startVibeOwnerDebate(hub, gatedRunID, message strin
 	// nested-mount wedge from live run-3362.
 	if !s.stashVibeFlowForDebate(hub, gatedRunID) {
 		log.Printf("[vibe-gate] owner debate mount suppressed hub=%s gated=%s: debate already active", hub, gatedRunID)
+		// BUG-589 (live run-139670): the claim may be a zombie — the debate
+		// can already be concluded without a restore, leaving every gated
+		// outcome orphaned. Run the unambiguous heal; a live debate is
+		// untouched by it.
+		s.maybeResolveZombieVibeDebate(hub)
 		return
 	}
 	go s.startResolvedFlow(context.Background(), hub, workingmode.PackPrefix+vibeOwnerDebateFlowID, message)

@@ -42,6 +42,7 @@ func (s *InteractiveService) sweepWedgedFlowWork() {
 	}
 	var gateRuns []string
 	var deferred []deferredAudit
+	var zombieDebates []string
 	type healWait struct {
 		runID string
 	}
@@ -52,6 +53,12 @@ func (s *InteractiveService) sweepWedgedFlowWork() {
 	for id, rs := range s.runs {
 		if rs == nil {
 			continue
+		}
+		// (5) zombie owner-debate claim — parkedNodes still held while the
+		// debate can no longer resolve itself (BUG-589). The dedicated helper
+		// re-checks liveness/shape under its own guards before acting.
+		if len(rs.vibeParkedNodes) > 0 {
+			zombieDebates = append(zombieDebates, id)
 		}
 		// (1) armed settle, driverless.
 		if rs.pendingFlowGateSettle && rs.gateClaimID == "" &&
@@ -120,6 +127,9 @@ func (s *InteractiveService) sweepWedgedFlowWork() {
 	}
 	for _, d := range deferred {
 		s.maybeRedispatchDeferredAudit(d.runID, d.edges, d.nodes, d.node)
+	}
+	for _, id := range zombieDebates {
+		s.maybeResolveZombieVibeDebate(id)
 	}
 }
 

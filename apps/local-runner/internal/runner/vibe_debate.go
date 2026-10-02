@@ -216,6 +216,52 @@ func (s *InteractiveService) maybeResumeVibeDebateSynthesis(parentRunID string) 
 	}
 }
 
+// maybeResolveZombieVibeDebate heals a debate overlay that is claimed but
+// dead: vibeParkedNodes still owns the real flow and every subsequent gate
+// divert is swallowed by "debate already active" while nothing can ever emit
+// the done that unmounts it (live run-139670: the owner cohort join
+// mis-dispatched into the sprint's `synthesis` step, the debate_synthesis hub
+// reinvoke failed, and the coder's turn_completed was orphaned twice).
+//
+// Healing only fires on unambiguous terminal shapes — the same shapes the
+// restart path already resolves (BUG-567): synthesis DONE but the restore
+// missed (replay it — idempotent), or both owners DONE with synthesis never
+// started (re-drive the synthesis hub). A debate with any live member
+// (running owner/synthesis, or a pending debate decision) is left alone —
+// suppression stays suppression.
+func (s *InteractiveService) maybeResolveZombieVibeDebate(parentRunID string) {
+	if s == nil || strings.TrimSpace(parentRunID) == "" {
+		return
+	}
+	s.mu.Lock()
+	rs := s.runs[parentRunID]
+	ok := rs != nil && rs.parentRunID == "" && rs.workingMode == workingmode.Vibe &&
+		len(rs.vibeParkedNodes) > 0 &&
+		(vibeOwnerDebateGraph(rs.activeFlowNodes) ||
+			workingmode.BareFlowID(rs.chatFlowRef) == vibeOwnerDebateFlowID)
+	s.mu.Unlock()
+	if !ok {
+		return
+	}
+	_, st1, st2, stSyn := s.vibeOwnerDebateStepStatuses(parentRunID)
+	if stSyn == StepStatusRunning || stSyn == StepStatusWaitingUserApr ||
+		st1 == StepStatusRunning || st2 == StepStatusRunning {
+		return // the debate is still live — let it conclude itself
+	}
+	if stSyn == StepStatusDone {
+		s.flowDiagLog(parentRunID, "vibe_debate_zombie_restored",
+			"debate claim outlived a resolved synthesis; replaying parked-flow restore")
+		s.restoreVibeFlowAfterDebate(parentRunID)
+		return
+	}
+	if st1 == StepStatusDone && st2 == StepStatusDone {
+		s.flowDiagLog(parentRunID, "vibe_debate_zombie_redrive",
+			"owners settled but debate_synthesis never ran on the live path; re-driving synthesis hub")
+		s.maybeResumeVibeDebateSynthesis(parentRunID)
+	}
+	// owner-fail / starved / lopsided shapes stay with maybeSettleVibeOwnerDebate.
+}
+
 func (s *InteractiveService) vibeOwnerDebateStepStatuses(parentRunID string) (stTrig, st1, st2, stSyn RuntimeWorkflowStepStatus) {
 	if s.workflowStore == nil {
 		return "", "", "", ""
