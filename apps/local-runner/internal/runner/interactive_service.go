@@ -2338,6 +2338,16 @@ func isValidationNotVerifiedReason(reason string) bool {
 	return strings.Contains(strings.ToLower(reason), "validation was not positively verified")
 }
 
+// isSprintEvidenceIncompleteReason reports whether an escalate GateReason is
+// the vibe audit block on unfinished sprint evidence (BUG-561): "Audit
+// blocked: sprint evidence incomplete (open issues or unfinished coder leg);
+// cannot auto-finalize." Continue on that park must reinvoke the sprint hub —
+// the remediation owner that spawned the deficient leg — not re-enter the
+// audit node, which re-evaluates identical state and re-parks forever.
+func isSprintEvidenceIncompleteReason(reason string) bool {
+	return strings.Contains(strings.ToLower(reason), "sprint evidence incomplete")
+}
+
 // upstreamNodeByBehavior walks forward edges backwards from nodeID and
 // returns the nearest upstream node whose canonical behavior matches.
 // Only forward edges are followed so continue back-edges cannot loop;
@@ -2744,6 +2754,27 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 	if prevBlockReason == "escalate" && isReviewVerdictGateReason(prevGateReason) {
 		if s.resumeVerdictDeficientMembers(parentRunID) {
 			return snap, nil
+		}
+	}
+	// BUG-561 (live run-60899): an audit escalate for incomplete sprint
+	// evidence (open issues or an unfinished coder leg) cannot be resolved by
+	// re-entering the audit node — the evidence only changes when the sprint
+	// hub re-drives a remediation leg or re-adjudicates. The generic inline
+	// re-entry re-parked identically forever (the live run needed a manual
+	// flow-control poke with issues:[]). Route Continue to the sprint hub —
+	// the remediation owner — with an explicit directive; the audit re-runs
+	// on its own edge once the sprint settles. Hub-less flows keep the
+	// existing audit re-entry below.
+	if prevBlockReason == "escalate" && escalatedNodeID != "" && hubInline != "" && isSprintEvidenceIncompleteReason(prevGateReason) {
+		if node, ok := findFlowNode(nodes, escalatedNodeID); ok {
+			if canonical, ok := agentpack.NormalizeBehaviorID(node.Behavior); ok && canonical == "artifact.audit_draft" {
+				note := "[flow-engine] The audit gate is blocked: sprint evidence is incomplete (open issues or an unfinished writer leg). Re-drive the remediation — continue the loop so the deficient leg produces fresh evidence; the audit re-runs on its own edge once the sprint settles."
+				if strings.TrimSpace(feedback) != "" {
+					note = strings.TrimSpace(feedback) + "\n\n---\n\n" + note
+				}
+				go s.maybeAutoReinvokeHubWithNote(parentRunID, note)
+				return snap, nil
+			}
 		}
 	}
 	// Run-144900: writer parks (agent.code / agent.delegate) must retry the

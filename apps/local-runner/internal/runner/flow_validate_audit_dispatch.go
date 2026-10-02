@@ -1371,7 +1371,14 @@ func (s *InteractiveService) runAuditNode(ctx context.Context, parentRunID strin
 		// cohort resolves. Infra escalates above (observe/persist failure)
 		// are unaffected; the ready→done path is already guarded by
 		// applyFlowControl's own open-cohort soft-defer.
-		if s.agentOrchestrator != nil && s.agentOrchestrator.hasOpenCohort(parentRunID) {
+		// BUG-561 (live run-60899): same provisional-evidence class through a
+		// non-cohort spawn shape — vibe coder/reviewer legs are hub ad-hoc
+		// spawn_agent calls with no flow_cohort_id, so hasOpenCohort misses a
+		// mid-run leg while its node step still reads RUNNING. Defer on a
+		// RUNNING non-audit step too: it is owed a terminal transition whose
+		// settle re-drives the flow (and re-dispatches this audit).
+		if s.agentOrchestrator != nil && (s.agentOrchestrator.hasOpenCohort(parentRunID) ||
+			(s.isVibeWorkingMode(parentRunID) && s.hasRunningSprintStep(parentRunID, node.ID))) {
 			s.flowDiagLog(parentRunID, "flow_audit_deferred_open_cohort",
 				"audit not ready while an upstream cohort is still open; deferring until members join",
 				"node_id", node.ID, "status", draft.Status,
@@ -1522,6 +1529,31 @@ func (s *InteractiveService) vibeSprintEvidenceComplete(parentRunID string) bool
 		}
 	}
 	return true
+}
+
+// hasRunningSprintStep reports whether any active flow node other than
+// excludeID is still RUNNING — a live leg owed a terminal transition whose
+// settle re-drives the flow. Used by the BUG-561 audit defer: a not-ready
+// audit while a sprint leg is in flight is provisional evidence, the same
+// class as an open cohort (BUG-560), but hub ad-hoc spawns carry no
+// flow_cohort_id so the barrier check alone misses them.
+func (s *InteractiveService) hasRunningSprintStep(parentRunID, excludeID string) bool {
+	s.mu.Lock()
+	var ids []string
+	if rs := s.runs[parentRunID]; rs != nil {
+		for _, n := range rs.activeFlowNodes {
+			if id := strings.TrimSpace(n.ID); id != "" && id != excludeID {
+				ids = append(ids, id)
+			}
+		}
+	}
+	s.mu.Unlock()
+	for _, id := range ids {
+		if s.lookupFlowStepStatus(parentRunID, id) == StepStatusRunning {
+			return true
+		}
+	}
+	return false
 }
 
 // auditCtxCancelled is true when Stop cancelled the inline flow context â€”
