@@ -2609,7 +2609,16 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 				escalatedIsHub = esc == "" || esc == hubID
 			}
 			if escalatedIsHub || pendingPrompt != "" {
-				s.setFlowStepStatus(context.Background(), parentRunID, hubID, StepStatusRunning)
+				// BUG-585 (live run-139670): esc=="" also covers gates parked
+				// on NON-hub nodes (vibe_lock parks cp_lock, requirement parks
+				// none) — resumeVibeLock/resumeVibeRequirement advance without
+				// a hub turn, so stamping the hub RUNNING re-stamps an already
+				// DONE node and wedges it forever with no leg behind it. Only
+				// un-park the hub when its own step is actually WAITING (the
+				// escalate/cap park stamped it), or a real hub reinvoke is owed.
+				if pendingPrompt != "" || s.lookupFlowStepStatus(parentRunID, hubID) == StepStatusWaitingUserApr {
+					s.setFlowStepStatus(context.Background(), parentRunID, hubID, StepStatusRunning)
+				}
 			}
 		}
 	}
