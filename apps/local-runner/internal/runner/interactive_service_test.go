@@ -3268,9 +3268,16 @@ func TestAutoReinvokeHubNoPendingContextNoDefer(t *testing.T) {
 }
 
 // TestAutoReinvokeHubWithNoteDedupesEmbeddedNoteFromPendingContext verifies
-// BUG-275: when the idle path embeds cohortNote in the synthesis prompt, that
-// exact note is removed from pendingAgentContext so startTurn does not also
-// wrap it under the sub-agents system note (duplicate joined result).
+// BUG-275: when the idle path embeds cohortNote in the synthesis prompt,
+// owed pendingAgentContext notes are consumed by that same prompt — moved
+// inline, not re-wrapped under the sub-agents system note (duplicate joined
+// result). BUG-555 (live run-38799) widened the drain from "remove exactly
+// cohortNote" to "drain ALL owed context into the inline prompt": a deferred
+// reinvoke fires this path with an EMPTY note, and owed context delivered
+// only via the invisible system-note block provably never reaches the hub on
+// resumed provider threads. "other-note" is therefore embedded inline too —
+// bug555_*_test.go pins the prompt-level embedding; this test pins that the
+// queue is consumed and nothing remains to double-render.
 func TestAutoReinvokeHubWithNoteDedupesEmbeddedNoteFromPendingContext(t *testing.T) {
 	svc, _ := newTestServer(t)
 	handle, _ := svc.createRun(StartRunInput{ProjectID: "p", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
@@ -3290,8 +3297,8 @@ func TestAutoReinvokeHubWithNoteDedupesEmbeddedNoteFromPendingContext(t *testing
 	if !rs.reinvokeInFlight {
 		t.Fatal("expected reinvokeInFlight after idle schedule")
 	}
-	if len(rs.pendingAgentContext) != 1 || rs.pendingAgentContext[0] != "other-note" {
-		t.Fatalf("pendingAgentContext = %#v, want only other-note after dedupe", rs.pendingAgentContext)
+	if len(rs.pendingAgentContext) != 0 {
+		t.Fatalf("pendingAgentContext = %#v, want drained empty — owed notes ride the scheduled prompt inline (BUG-555)", rs.pendingAgentContext)
 	}
 }
 

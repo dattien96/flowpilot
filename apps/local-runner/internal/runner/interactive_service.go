@@ -3921,12 +3921,24 @@ func (s *InteractiveService) maybeAutoReinvokeHubWithNote(parentRunID, cohortNot
 	stepID := s.nextID("step")
 	parent.reinvokeInFlight = true
 	touchHubProgressLocked(parent)
-	// BUG-275: join handler already put cohortNote in pendingAgentContext, and
-	// we embed the same note in the scheduled prompt. Remove one exact copy so
-	// startTurn's composeAgentContextBlock does not also wrap it under
-	// "[FlowPilot system note — sub-agents...]" (duplicate joined note).
-	if strings.TrimSpace(cohortNote) != "" {
-		parent.pendingAgentContext = removeOnePendingAgentContext(parent.pendingAgentContext, cohortNote)
+	// BUG-555 (live run-38799): drain ALL owed pendingAgentContext into the
+	// reinvoke prompt inline — not just a provided cohortNote. A note-bearing
+	// join deferred by an in-flight turn re-arms only the bool
+	// pendingHubReinvoke, so every drain site (runTurn, notifyTurnIdle,
+	// drainArmedPendingHubReinvoke, hub_stall watchdog, resume tail) fires this
+	// function with an EMPTY note. Without this pull the joined note reached
+	// the hub solely inside composeAgentContextBlock's "[FlowPilot system
+	// note]" wrapper — invisible to resumed-thread providers — and the hub
+	// escalated on an empty synthesis forever. Owed entries are removed so
+	// startTurn's context block does not double-wrap them (BUG-275's dedupe
+	// preserved: an already-queued cohortNote is not embedded twice).
+	if len(parent.pendingAgentContext) > 0 {
+		owed := parent.pendingAgentContext
+		parent.pendingAgentContext = nil
+		if n := strings.TrimSpace(cohortNote); n != "" && !pendingAgentContextContains(owed, cohortNote) {
+			owed = append(owed, cohortNote)
+		}
+		cohortNote = strings.Join(owed, "\n\n---\n\n")
 	}
 	s.mu.Unlock()
 	s.flowDiagLog(parentRunID, "hub_reinvoke_scheduled", "hub reinvoke scheduled",
