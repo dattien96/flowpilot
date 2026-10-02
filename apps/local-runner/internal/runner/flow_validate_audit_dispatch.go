@@ -1361,6 +1361,26 @@ func (s *InteractiveService) runAuditNode(ctx context.Context, parentRunID strin
 		if auditCtxCancelled(ctx, parentRunID, node.ID, "draft_not_ready") {
 			return false
 		}
+		// BUG-560 (live run-60899): a not-ready verdict while an upstream
+		// cohort barrier is still open is provisional — the pending member's
+		// result (e.g. the reviewer verdict) is exactly the evidence the audit
+		// is missing. Escalating now would park the flow, and the park would
+		// cancel that member mid-turn and drain its barrier as cancelled, so
+		// nothing could rejoin. Defer instead: the node goes back to PENDING
+		// and is re-dispatched by the join → hub → done-edge path once the
+		// cohort resolves. Infra escalates above (observe/persist failure)
+		// are unaffected; the ready→done path is already guarded by
+		// applyFlowControl's own open-cohort soft-defer.
+		if s.agentOrchestrator != nil && s.agentOrchestrator.hasOpenCohort(parentRunID) {
+			s.flowDiagLog(parentRunID, "flow_audit_deferred_open_cohort",
+				"audit not ready while an upstream cohort is still open; deferring until members join",
+				"node_id", node.ID, "status", draft.Status,
+			)
+			if s.isFlowEngineDriven(parentRunID) {
+				s.setFlowStepStatus(ctx, parentRunID, node.ID, StepStatusPending)
+			}
+			return true
+		}
 		// Vibe: missing feature key is not operator-actionable (Retry re-parks
 		// forever). Auto-finalize — CP-60 non-requirement gates auto-resolve.
 		// CA-1096: only when the sprint evidence is complete — open gate
