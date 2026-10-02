@@ -66,12 +66,22 @@ func IsFrozenStoreBookkeepingPath(p string) bool {
 // false-positive as scope drift (BUG-327). CA-649: gate-metrics.ndjson is
 // appended by the gate itself on EVERY gate pass, so it is always dirty at the
 // moment the coder's own FrozenContractScopeDrift check runs — without the
-// exemption the gate parks itself on its own observability file.
+// exemption the gate parks itself on its own observability file. BUG-554
+// (live run-38799): three more ledger/catalog writes joined the same class —
+// the changeledger scan cursor (ledger.go CursorPath) and its
+// ledger-needs-update sentinel (hook.go ledgerSentinelFile), plus the
+// contextsync feature catalog (featurecatalog writes catalog/features.ndjson
+// every engine init — same context-input class as chat_summary/feature_history
+// already exempted here). None are gate-decision inputs; exact paths only, so
+// forged contract/ledger siblings still drift (CA-427 Finding 2).
 func RunnerLedgerBookkeepingPaths() []string {
 	return []string{
 		path.Join(".flowpilot", "manifest.json"),
 		path.Join(".flowpilot", "ledger", "chat_summary.ndjson"),
 		path.Join(".flowpilot", "ledger", "feature_history.ndjson"),
+		path.Join(".flowpilot", "ledger", ".cursor"),
+		path.Join(".flowpilot", "ledger-needs-update"),
+		path.Join(".flowpilot", "catalog", "features.ndjson"),
 		path.Join(".flowpilot", "gate-metrics.ndjson"),
 	}
 }
@@ -234,6 +244,13 @@ func IsLegacyContractsStorePath(p string) bool {
 //     own diff window, never the writer's write (CA-1089, live run-3362:
 //     writers parked "scope drift" on it and the escalate mounted a wedged
 //     owner debate; same self-park class as CA-649's gate-metrics).
+//   - .flowpilot/engine-init.json + .flowpilot/tooling.json: runner engine
+//     init/tooling snapshots (BUG-554, live run-38799). runEngineInit rewrites
+//     engine-init.json for init idempotency and tooling.CheckAll persists
+//     tooling.json; neither is a gate input — CheckTool re-probes binaries via
+//     exec and loadEngineInitState only decides whether init reruns, so a
+//     forged file gains the writer nothing (same precedent as gate-config.json
+//     above).
 //
 // Exact paths only per CA-427 Finding 2 — .flowpilot/settings/flow-rules.json,
 // .flowpilot/contracts/*.ndjson and every other .flowpilot/** or .devin/**
@@ -244,6 +261,8 @@ func RunnerOwnedConfigPaths() []string {
 		path.Join(".flowpilot", "settings", "gate-config.json"),
 		path.Join(".devin", "mcp_config.local.json"),
 		path.Join(".flowpilot", "workflow_drift_events.json"),
+		path.Join(".flowpilot", "engine-init.json"),
+		path.Join(".flowpilot", "tooling.json"),
 	}
 }
 
