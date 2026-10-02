@@ -163,6 +163,12 @@ function statusFromEvent(e: ProviderEventDTO, prev: RunStatus): RunStatus {
       // blocked while the run is parked (Q-1 prose fallback rides the
       // feedback box, not the composer).
       return "waiting_question";
+    case "agent_activity":
+      // BUG-583/584: a forwarded leg-liveness stamp is metadata, not a
+      // state transition — without this pin the default branch flips a
+      // parked waiting_approval/waiting_question run back to "running"
+      // on every heartbeat, flapping the status chip each throttle tick.
+      return prev;
     default:
       return prev === "waiting_approval" || prev === "waiting_question" ? "running" : prev;
   }
@@ -571,6 +577,13 @@ export function applyTimelineEvent(s: TimelineState, e: ProviderEventDTO): Parti
           tone: e.flowAuditDraft.status === "ready" ? "info" : "warn",
         });
       }
+      shouldKeepThinking = thinkingItem !== undefined;
+      break;
+    case "agent_activity":
+      // BUG-582/584: forwarded leg-liveness stamp — pure metadata for the
+      // activity chip, never a timeline row. Treated like the other
+      // annotation events: keep an existing thinking row, never create one
+      // (otherwise every 3s heartbeat appends a blank "Thinking..." line).
       shouldKeepThinking = thinkingItem !== undefined;
       break;
   }

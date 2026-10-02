@@ -20,6 +20,18 @@ export function eventActivityRunId(e: ProviderEventDTO): string {
   return e.workflowRunId;
 }
 
+/** BUG-584: agent_activity arrives on the parent's stream but reports a
+ *  leg's liveness — credit BOTH lanes (leg id + parent workflowRunId) so the
+ *  family chip warms even if the leg's agentRuns row is momentarily stale. */
+function eventActivityRunIds(e: ProviderEventDTO): string[] {
+  if (e.type === "agent_activity") {
+    const ids = [e.childRunId, e.workflowRunId].filter((v): v is string => Boolean(v));
+    return [...new Set(ids)];
+  }
+  const id = eventActivityRunId(e);
+  return id ? [id] : [];
+}
+
 /** Next lastActivityByRun after one arrival. Returns the same ref when the
  *  event carries no run identity so zustand subscribers do not re-render on
  *  a no-op stamp. */
@@ -28,9 +40,11 @@ export function stampRunActivity(
   e: ProviderEventDTO,
   at: number,
 ): Record<string, number> {
-  const runId = eventActivityRunId(e);
-  if (!runId) return byRun;
-  return { ...byRun, [runId]: at };
+  const ids = eventActivityRunIds(e);
+  if (ids.length === 0) return byRun;
+  const next = { ...byRun };
+  for (const id of ids) next[id] = at;
+  return next;
 }
 
 /** Runs whose stamps count toward a flow's liveness: terminal lanes are

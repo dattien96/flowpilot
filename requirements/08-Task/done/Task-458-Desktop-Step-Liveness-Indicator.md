@@ -3,7 +3,7 @@
 - Document ID: `Task-458`
 - Title: `Surface a per-run/step liveness signal in the desktop UI so a "thinking" step is distinguishable from a silently stuck one`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `dat.nguyen`
 - Reviewers: ``
 - Created: `2026-10-02`
@@ -82,3 +82,22 @@
   coder/reviewer legs the UI was indistinguishable from a hang; the only
   way to confirm liveness was tailing
   `.flowpilot/logs/features/agent-flow-engine/<run>.ndjson`.
+
+## 11. Completion Notes
+
+- result: `lastActivityByRun` stamped on every live SSE arrival in the four
+  stream consumers (`consumeStream`, `consumeHistoryReplayStream` live tail,
+  `consumeAgentStream`, `consumeOrchestrationStream`); `runActivity.ts`
+  carries the routing/derivation helpers; `FlowTimelineSidebar` renders a
+  `live — last event Ns ago` / `quiet Nm` chip on the running step with a
+  1s local tick that only runs while a step is RUNNING.
+- stamping deliberately lives in the consumers, not `applyEvent`, so
+  replayed backlog (`seq <= afterSeq` / persisted replay) cannot fake
+  freshness. Terminal/parked runs show no indicator — read-side gating via
+  step status plus `activityCountsForStatus` exclusion of terminal legs.
+- run-level rollup (main + non-terminal legs) chosen over step-level for
+  v1 per D-2/scope; child legs only stamp when their stream is focused or
+  mirrored — honest signal, documented limitation.
+- follow-ups: none.
+- upstream docs updated: this file.
+- audit: `change-audit/CA-1115-task458-run-liveness-indicator.md`

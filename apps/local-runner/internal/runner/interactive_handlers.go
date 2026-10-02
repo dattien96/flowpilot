@@ -1962,10 +1962,31 @@ func (s *InteractiveService) workflowStepsRuntime(ctx context.Context, runID str
 	rs, exists := s.runs[runID]
 	var runProvider, runModel string
 	var runYolo bool
+	var topologyFilter map[string]bool
 	if exists {
 		runProvider = string(rs.providerKey)
 		runModel = rs.modelName
 		runYolo = rs.yolo
+		// BUG-582 (live run-100368): BUG-562 merge keeps rows for nodes no
+		// longer in the resolved topology as "historical" — a settled debate
+		// overlay therefore pollutes the sprint timeline forever (~14 rows
+		// for a 9-node sprint). The client projection shows only the run's
+		// current topology: active nodes plus parked nodes suspended under a
+		// mounted overlay. The durable rows stay (transition log honesty);
+		// this only narrows the view. Fail open when nothing is tracked so a
+		// restarted/durable-only run replays its full history.
+		if rs.flowEngineDriven {
+			topologyFilter = map[string]bool{}
+			for _, n := range rs.activeFlowNodes {
+				topologyFilter[n.ID] = true
+			}
+			for _, n := range rs.vibeParkedNodes {
+				topologyFilter[n.ID] = true
+			}
+			if len(topologyFilter) == 0 {
+				topologyFilter = nil
+			}
+		}
 	}
 	s.mu.Unlock()
 	if !exists {
@@ -1994,9 +2015,12 @@ func (s *InteractiveService) workflowStepsRuntime(ctx context.Context, runID str
 	if err != nil {
 		return workflowStepsRuntimeSnapshot{}, newAPIErr(http.StatusInternalServerError, "load_steps_failed", err.Error())
 	}
-	out := make([]workflowStepRuntimeView, len(steps))
-	for i, st := range steps {
-		out[i] = workflowStepRuntimeView{
+	out := make([]workflowStepRuntimeView, 0, len(steps))
+	for _, st := range steps {
+		if topologyFilter != nil && st.NodeID != "" && !topologyFilter[st.NodeID] {
+			continue
+		}
+		out = append(out, workflowStepRuntimeView{
 			StepID:           st.ID,
 			StepType:         st.StepType,
 			Status:           st.Status,
@@ -2011,7 +2035,7 @@ func (s *InteractiveService) workflowStepsRuntime(ctx context.Context, runID str
 			Provider:         st.Provider,
 			Model:            st.Model,
 			YoloMode:         st.YoloMode,
-		}
+		})
 	}
 	return workflowStepsRuntimeSnapshot{RunID: runID, Steps: out, Provider: runProvider, Model: runModel, YoloMode: runYolo}, nil
 }

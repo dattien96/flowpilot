@@ -85,6 +85,31 @@ test("eventActivityRunId falls back to workflowRunId for non-orchestration types
   assert.equal(eventActivityRunId(baseEvent({ type: "tool_started", toolName: "bash" })), "run-1");
 });
 
+// BUG-584 (live run-100368): a leg's events ride its own stream, which the
+// app never subscribes — the parent's chip went quiet through a 20-minute
+// leg turn. The runner now forwards a throttled agent_activity stamp on the
+// parent's stream; it must credit BOTH the producing leg and the parent so
+// the family rollup warms even if the leg's agentRuns row is stale.
+test("agent_activity stamps both the leg and parent lanes", () => {
+  const e = baseEvent({
+    type: "agent_activity",
+    workflowRunId: "run-parent",
+    childRunId: "run-leg-9",
+  });
+  const next = stampRunActivity({}, e, 5000);
+  assert.equal(next["run-leg-9"], 5000);
+  assert.equal(next["run-parent"], 5000);
+});
+
+test("agent_activity with no childRunId still stamps the parent lane", () => {
+  const e = baseEvent({
+    type: "agent_activity",
+    workflowRunId: "run-parent",
+  });
+  const next = stampRunActivity({}, e, 7000);
+  assert.equal(next["run-parent"], 7000);
+});
+
 test("formatActivityAge renders coarse seconds/minutes/hours", () => {
   assert.equal(formatActivityAge(4000), "4s");
   assert.equal(formatActivityAge(3 * 60_000), "3m");

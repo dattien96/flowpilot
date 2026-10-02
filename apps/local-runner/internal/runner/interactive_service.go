@@ -673,6 +673,10 @@ type interactiveRun struct {
 	// resurrect it. Cleared when a new parseable draft is stashed. Persisted
 	// so a restart cannot resurrect a superseded draft either.
 	preflightDraftStale bool
+	// legActivityForwardedAt is the per-child throttle ledger for the
+	// agent_activity stamp forwarded onto this run's stream (BUG-584).
+	// RAM-only: a restart simply re-arms the interval.
+	legActivityForwardedAt map[string]time.Time
 	// lastProviderEventAt is stamped on every emitLocked for stall detection
 	// (Task-241 T-11). Zero means no event yet (member just spawned).
 	lastProviderEventAt time.Time
@@ -5766,7 +5770,9 @@ func (s *InteractiveService) persistEvent(event ProviderEvent) error {
 	// two writers share one call graph.
 	s.recordChatTranscript(event)
 	store := s.persistenceStore()
-	if store == nil || event.Type == EventMessageDelta {
+	// agent_activity is a broadcast-only liveness stamp (BUG-584) — like
+	// message_delta it must not pollute the durable event log/replay.
+	if store == nil || event.Type == EventMessageDelta || event.Type == EventAgentActivity {
 		return nil
 	}
 	return store.AppendEvent(context.Background(), event)
@@ -7016,6 +7022,13 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 	rs.updatedAt = ev.OccurredAt
 	// Task-241 T-11: stall detector measures "no provider event" from this stamp.
 	rs.lastProviderEventAt = time.Now().UTC()
+	// BUG-584 (live run-100368): a leg's events flow on its own stream, which
+	// the desktop never subscribes — a 20-minute leg turn read "quiet" on the
+	// live chip. Forward a throttled stamp onto the parent's stream so any
+	// leg event keeps the family chip warm.
+	if rs.parentRunID != "" && ev.Type != EventAgentActivity {
+		s.forwardLegActivityStampLocked(rs)
+	}
 	// Arm delayed stall sweep for the parent when this child is in an open cohort
 	// (Codex review Important #2 — do not rely solely on Continue).
 	if rs.parentRunID != "" && rs.flowCohortId != "" {
@@ -7387,6 +7400,45 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 	// dirty mark is O(1) per subscriber; the drain fingerprint-gates pushes.
 	s.markRunRealtimeDirtyLocked(rs.id)
 	return ev
+}
+
+// legActivityForwardInterval bounds how often one child's events forward an
+// agent_activity stamp to the parent's stream (BUG-584). Var so tests can
+// shrink it.
+var legActivityForwardInterval = 3 * time.Second
+
+// forwardLegActivityStampLocked emits a throttled agent_activity stamp on the
+// child's parent stream (caller holds s.mu). A leg's own stream is not what
+// the desktop subscribes, so without this a long leg turn reads "quiet" even
+// though the provider is producing events. Throttled per child; RAM-only.
+func (s *InteractiveService) forwardLegActivityStampLocked(child *interactiveRun) {
+	// Walk the whole ancestor chain, not just the direct parent: the desktop
+	// subscribes the FOCUSED run's stream only, so a grandchild leg's events
+	// must still warm the root chip. Throttle ledger is per ancestor.
+	now := time.Now().UTC()
+	// Depth cap: a corrupt/cyclic parent chain must not spin under s.mu.
+	for parentID, depth := child.parentRunID, 0; parentID != "" && depth < 8; depth++ {
+		parent := s.runs[parentID]
+		if parent == nil {
+			return
+		}
+		if parent.legActivityForwardedAt == nil {
+			parent.legActivityForwardedAt = map[string]time.Time{}
+		}
+		if t, ok := parent.legActivityForwardedAt[child.id]; ok && now.Sub(t) < legActivityForwardInterval {
+			// Already stamped this ancestor recently — ancestors above it were
+			// stamped in the same tick, so the walk can stop.
+			return
+		}
+		parent.legActivityForwardedAt[child.id] = now
+		next := parent.parentRunID
+		s.emitLocked(parent, ProviderEvent{
+			Type:       EventAgentActivity,
+			ChildRunID: child.id,
+			AgentName:  child.agentName,
+		})
+		parentID = next
+	}
 }
 
 func shouldEmitAgentGraphForChildEvent(eventType ProviderEventType) bool {

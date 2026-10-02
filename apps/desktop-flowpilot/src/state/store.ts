@@ -3794,9 +3794,17 @@ export const useStore = create<AppState>((set, get) => ({
     // BUG-340 follow-up: when the history row is missing entirely (restored/terminal
     // chat resumed without a row), fall back to the handle's runKind so a terminal chat
     // with a chatId still marks detached — a workflow handle never carries a chatId.
+    // BUG-575 (live run-100368): a vibe/flow run's history row can carry
+    // runKind "chat" (the run launched from a chat surface), which flipped
+    // the reopened view back to Chat mode and hid every Flow Mode surface
+    // even though flowArm was "started". flowArm:"started" is the durable
+    // authority that a flow actually ran — treat it as workflow-driven
+    // regardless of the row's runKind.
+    const flowArmStarted =
+      (handle.flowArm ?? historyItem?.flowArm) === "started";
     const isWorkflowHistoryItem = historyItem === undefined
-      ? handleRunKind === "workflow"
-      : historyItem.runKind !== "chat";
+      ? handleRunKind === "workflow" || flowArmStarted
+      : historyItem.runKind !== "chat" || flowArmStarted;
     // BUG-263: same "restore the mode this run actually was" gap as BUG-170
     // above, but for the Chat-Mode orchestration picker (Bug tab / Built-in
     // orchestration select) instead of chatMode/launchMode. Without this,
@@ -5222,6 +5230,23 @@ export function mergeAgentRunsById(existing: AgentRunSummary[], incoming: AgentR
 
 export function applyEvent(s: AppState, e: ProviderEventDTO): Partial<AppState> {
   const next = applyTimelineEvent(s, e);
+  // BUG-576 (live run-100368): on a flow-driven run the hub's provider
+  // turn_completed is not the run's terminal — the sprint keeps driving via
+  // legs, but statusFromEvent stamped "completed" and no graph update arrived
+  // during a long silent leg turn, so the chip sat on Completed while the
+  // backend was running. When the run's own loop is still open, re-derive the
+  // status from the agent graph (running/blocked) instead of trusting the
+  // turn boundary.
+  if (
+    e.type === "turn_completed" &&
+    s.agentGraphSnapshot &&
+    s.agentGraphSnapshot.parentRunId === e.workflowRunId
+  ) {
+    const loopStatus = s.agentGraphSnapshot.loopState.status;
+    if (loopStatus && loopStatus !== "done" && loopStatus !== "stopped") {
+      next.status = deriveOrchestrationRunStatus(next.status ?? s.status, s.agentGraphSnapshot);
+    }
+  }
   const nextReplaySeq = {
     ...s._runReplaySeq,
     [e.workflowRunId]: e.seq,

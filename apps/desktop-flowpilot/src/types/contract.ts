@@ -915,6 +915,15 @@ export type ProviderEventDTO =
   | (ProviderEventBaseDTO & { type: "agent_graph_updated"; agentGraphSnapshot: AgentGraphSnapshot })
   | (ProviderEventBaseDTO & { type: "agent_bus_message"; agentBusMessage: AgentBusMessage })
   | (ProviderEventBaseDTO & { type: "agent_spawned_by_user"; agentName: string; childRunId: string })
+  | (ProviderEventBaseDTO & {
+      /** BUG-584: throttled liveness stamp the runner forwards onto the
+       *  parent's stream when one of its legs emits an event — a leg's own
+       *  stream is never subscribed, so without this a long leg turn reads
+       *  "quiet". Broadcast-only; carries the producing leg's run id. */
+      type: "agent_activity";
+      childRunId?: string;
+      agentName?: string;
+    })
   | (ProviderEventBaseDTO & { type: "agent_result_injected"; agentName: string; childRunId: string; finalMessage: string })
   | (ProviderEventBaseDTO & {
       type: "flow_gate_violation";

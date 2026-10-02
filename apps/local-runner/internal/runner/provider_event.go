@@ -104,6 +104,12 @@ const (
 	// the session row's leg_closed_reason=claim_reclaimed state is the twin
 	// record on the claim itself.
 	EventLegClaimReclaimed ProviderEventType = "leg_claim_reclaimed"
+	// EventAgentActivity (BUG-584): throttled liveness stamp forwarded onto the
+	// PARENT run's stream whenever a leg emits an event — the desktop only
+	// subscribes the parent's SSE, so a 20-minute leg turn otherwise reads
+	// "quiet". Carries ChildRunID (+ AgentName); broadcast-only, never
+	// persisted (like message_delta).
+	EventAgentActivity ProviderEventType = "agent_activity"
 )
 
 // ProviderLimitKind is the normalized provider-limit taxonomy (Task-445 T-1).
