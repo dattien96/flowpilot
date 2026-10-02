@@ -330,6 +330,53 @@ func (s *InteractiveService) hubDoneVerdictError(parentRunID, hubID string) erro
 	return nil
 }
 
+// missingVerdictLabelsWithLiveMember returns the expected inbound-cohort
+// labels for hubID whose machine verdict is still missing AND whose member
+// leg is still live — a non-terminal child run with the label, or the flow
+// step row still RUNNING (hub ad-hoc spawns carry no flow_cohort_id, so the
+// cohort barrier alone misses them — BUG-561's same class on the audit side).
+// BUG-565 (live run-69320): escalating on a missing verdict while its member
+// is still in flight parks the flow and cancels the member mid-turn, so the
+// verdict can never arrive. Callers must DEFER, not escalate.
+func (s *InteractiveService) missingVerdictLabelsWithLiveMember(parentRunID, hubID string) []string {
+	cohort := hubInboundCohortName(hubID)
+	if cohort == "" {
+		return nil
+	}
+	s.mu.Lock()
+	parent := s.runs[parentRunID]
+	var nodes []agentpack.FlowNode
+	var verdicts map[string]string
+	if parent != nil {
+		nodes = parent.activeFlowNodes
+		verdicts = mergePendingReviewVerdictsLocked(parent, parent.lastReviewCohortVerdicts)
+	}
+	expected := cohortNodeLabels(nodes, cohort)
+	live := map[string]bool{}
+	for _, childID := range s.agentOrchestrator.listChildren(parentRunID) {
+		child := s.runs[childID]
+		if child == nil {
+			continue
+		}
+		switch child.status {
+		case RunStatusCompleted, RunStatusFailed, RunStatusCancelled:
+		default:
+			live[child.label] = true
+		}
+	}
+	s.mu.Unlock()
+	var out []string
+	for _, label := range expected {
+		if strings.TrimSpace(verdicts[label]) != "" {
+			continue // verdict already recorded — not provisional
+		}
+		if live[label] || s.lookupFlowStepStatus(parentRunID, label) == StepStatusRunning {
+			out = append(out, label)
+		}
+	}
+	return out
+}
+
 // isReviewVerdictGateReason reports whether an escalate GateReason belongs to
 // the hub-done verdict-gate family (hubDoneVerdictError /
 // synthesisDoneVerdictError): a cohort member produced no machine verdict, or
@@ -393,10 +440,15 @@ func (s *InteractiveService) resumeVerdictDeficientMembers(parentRunID string) b
 		child.verdictRepromptInFlight = true
 		labels = append(labels, child.label)
 	}
+	// BUG-565 (live run-69320): a deficient label may have NO child at all —
+	// the member was never dispatched (e.g. a stale-hub-done consumed the
+	// dispatch outcome before the reviewer leg spawned). Re-drive only covers
+	// existing children; collect the never-spawned labels so the caller can
+	// spawn a fresh member leg instead of looping the hub re-prompt.
+	// parent was captured above — reuse its node list for the spawn lookup.
+	nodes := parent.activeFlowNodes
 	s.mu.Unlock()
-	if len(labels) == 0 {
-		return false
-	}
+
 	prompt := "[flow-engine] The synthesis gate rejected the hub's done: your machine verdict " +
 		"was missing or not approved. Re-evaluate and call submit_review_outcome as the FIRST " +
 		"action of this turn with status=approved|changes_requested|blocked and a verdicts " +
@@ -412,10 +464,24 @@ func (s *InteractiveService) resumeVerdictDeficientMembers(parentRunID string) b
 			redriven = true
 		}
 	}
+	var spawned []string
+	for label := range deficient {
+		if seen[label] {
+			continue
+		}
+		node, ok := findFlowNode(nodes, label)
+		if !ok {
+			continue
+		}
+		if s.spawnFlowDelegateLeg(context.Background(), parentRunID, node, prompt) {
+			spawned = append(spawned, label)
+			redriven = true
+		}
+	}
 	if redriven {
 		s.flowDiagLog(parentRunID, "verdict_deficient_member_redrive",
 			"missing/deficient verdict park: re-driving cohort members",
-			"labels", strings.Join(labels, ","))
+			"labels", strings.Join(labels, ","), "spawned", strings.Join(spawned, ","))
 	}
 	return redriven
 }

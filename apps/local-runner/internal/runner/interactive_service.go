@@ -1841,6 +1841,30 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 			s.mu.Unlock()
 			if requireVerdict {
 				if err := s.synthesisDoneVerdictError(parentRunID); err != nil {
+					// BUG-565 (live run-69320 14:28): a missing verdict whose
+					// member leg is still in flight is provisional — the verdict
+					// can still arrive. Escalating parks the flow and cancels the
+					// member mid-turn, so it never lands. Defer exactly like
+					// rejected_cohort_incomplete: unstamp the decision, keep the
+					// loop running; the member's settle/join re-invokes the hub.
+					if labels := s.missingVerdictLabelsWithLiveMember(parentRunID, "synthesis"); len(labels) > 0 {
+						s.mu.Lock()
+						if r := s.runs[parentRunID]; r != nil && r.currentTurnID != "" && r.lastFlowControlTurnID == r.currentTurnID {
+							r.lastFlowControlTurnID = ""
+						}
+						s.mu.Unlock()
+						s.flowDiagLog(parentRunID, "flow_control_deferred_verdict_member_in_flight",
+							"synthesis done deferred: reviewer machine verdict pending while member still in flight",
+							"labels", strings.Join(labels, ","), "error", err.Error(),
+						)
+						snap := s.agentOrchestrator.graphSnapshot(parentRunID)
+						return FlowControlResult{
+							Status:     in.Status,
+							Round:      snap.LoopState.Round,
+							Cap:        effectiveCap(snap.LoopState),
+							NextAction: "deferred_member_in_flight",
+						}, nil
+					}
 					s.flowDiagLog(parentRunID, "flow_control_rejected_missing_review_verdict",
 						"synthesis done blocked: reviewer machine verdict missing or not approved",
 						"error", err.Error(),
@@ -8013,6 +8037,30 @@ func (s *InteractiveService) advanceHubDoneThroughEdge(targetRunID string, in Fl
 					"error", verdictErr.Error(),
 				)
 				return s.applyHubDoneVerdictTransition(targetRunID, "continue", verdictErr.Error())
+			}
+			// BUG-565 (live run-69320 14:28): the missing verdict may be
+			// provisional — the member leg is still in flight and the escalate
+			// park would cancel it mid-turn so the verdict can never arrive.
+			// Defer: unstamp the decision, keep the loop running; the member's
+			// settle/join re-invokes the hub, which re-submits done.
+			if labels := s.missingVerdictLabelsWithLiveMember(targetRunID, hubID); len(labels) > 0 {
+				s.mu.Lock()
+				if r := s.runs[targetRunID]; r != nil && r.currentTurnID != "" && r.lastFlowControlTurnID == r.currentTurnID {
+					r.lastFlowControlTurnID = ""
+				}
+				s.mu.Unlock()
+				s.flowDiagLog(targetRunID, "flow_control_deferred_verdict_member_in_flight",
+					"hub done deferred: reviewer machine verdict pending while member still in flight",
+					"hub", hubID, "labels", strings.Join(labels, ","), "error", verdictErr.Error(),
+				)
+				st := s.agentOrchestrator.loopStateFor(targetRunID)
+				return FlowControlResult{
+					Status:     in.Status,
+					Round:      st.Round,
+					Cap:        effectiveCap(st),
+					OpenIssues: st.OpenIssues,
+					NextAction: "deferred_member_in_flight",
+				}, true
 			}
 			s.flowDiagLog(targetRunID, "flow_control_rejected_missing_review_verdict",
 				"hub done blocked: reviewer machine verdict missing or not approved",

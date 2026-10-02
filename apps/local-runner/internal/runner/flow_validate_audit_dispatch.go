@@ -1060,33 +1060,10 @@ func (s *InteractiveService) advanceToNextInlineOrDelegate(ctx context.Context, 
 		markSourceDone()
 		return true
 	case "agent.delegate":
-		agentName := flowNodeAgentName(nextNode)
-		if agentName == "" {
-			return false
-		}
-		// Task-247 / CP-50 P-4: inline-dispatch delegate must carry change.contract.
-		cwd := s.workspaceCwdFor(parentRunID)
-		prompt := composeFlowNodeAgentPrompt(cwd, resultMessage, nextNode)
-		prompt = appendResolvedVibeTemplatedInputs(prompt, nextNode, s.vibeResolvedSlicerSource(parentRunID))
-		prompt = appendChangeContractIfAnyWithSecret(cwd, parentRunID, prompt, s.markerSecret)
-		agentDef, _ := resolvePackAgentDefinition(agentName)
-		if _, err := s.spawnChildRun(ctx, parentRunID, SpawnAgentInput{
-			Agent:            agentName,
-			Prompt:           prompt,
-			Wait:             false,
-			Label:            nextNode.ID,
-			AutoOrchestrate:  true,
-			AgentDefOverride: agentDef,
-			Model:            s.delegateSpawnModel(ctx, parentRunID, nextNode),
-		}); err != nil {
-			log.Printf("[flow-executor] advance: spawn %q failed: %v", nextNode.ID, err)
+		if !s.spawnFlowDelegateLeg(ctx, parentRunID, nextNode, resultMessage) {
 			return false
 		}
 		markSourceDone()
-		if s.isFlowEngineDriven(parentRunID) {
-			s.setFlowStepStatus(ctx, parentRunID, nextNode.ID, StepStatusRunning)
-			s.stampFlowNodePosture(ctx, parentRunID, nextNode)
-		}
 		return true
 	default:
 		// run-201295: this switch had drifted from tryAdvanceFlowThroughInline —
@@ -1103,6 +1080,46 @@ func (s *InteractiveService) advanceToNextInlineOrDelegate(ctx context.Context, 
 		}
 		return false
 	}
+}
+
+// spawnFlowDelegateLeg dispatches a flow agent.delegate node as a child run —
+// the same spawn shape advanceToNextInlineOrDelegate uses on a done edge.
+// Shared by the verdict-gate remediation path (BUG-565): Continue on a
+// missing-verdict park where the member leg was never dispatched must spawn
+// it, not re-prompt the hub. Returns false when the node is not a delegate or
+// the spawn fails.
+func (s *InteractiveService) spawnFlowDelegateLeg(ctx context.Context, parentRunID string, node agentpack.FlowNode, resultMessage string) bool {
+	canonical, ok := agentpack.NormalizeBehaviorID(node.Behavior)
+	if !ok || canonical != "agent.delegate" {
+		return false
+	}
+	agentName := flowNodeAgentName(node)
+	if agentName == "" {
+		return false
+	}
+	// Task-247 / CP-50 P-4: inline-dispatch delegate must carry change.contract.
+	cwd := s.workspaceCwdFor(parentRunID)
+	prompt := composeFlowNodeAgentPrompt(cwd, resultMessage, node)
+	prompt = appendResolvedVibeTemplatedInputs(prompt, node, s.vibeResolvedSlicerSource(parentRunID))
+	prompt = appendChangeContractIfAnyWithSecret(cwd, parentRunID, prompt, s.markerSecret)
+	agentDef, _ := resolvePackAgentDefinition(agentName)
+	if _, err := s.spawnChildRun(ctx, parentRunID, SpawnAgentInput{
+		Agent:            agentName,
+		Prompt:           prompt,
+		Wait:             false,
+		Label:            node.ID,
+		AutoOrchestrate:  true,
+		AgentDefOverride: agentDef,
+		Model:            s.delegateSpawnModel(ctx, parentRunID, node),
+	}); err != nil {
+		log.Printf("[flow-executor] spawn delegate leg %q failed: %v", node.ID, err)
+		return false
+	}
+	if s.isFlowEngineDriven(parentRunID) {
+		s.setFlowStepStatus(ctx, parentRunID, node.ID, StepStatusRunning)
+		s.stampFlowNodePosture(ctx, parentRunID, node)
+	}
+	return true
 }
 
 // runAuditNode implements F-2: wires artifact.audit_draft to the real
