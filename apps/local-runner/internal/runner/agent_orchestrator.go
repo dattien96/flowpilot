@@ -111,10 +111,13 @@ func (o *AgentOrchestrator) preRegisterCohort(parentRunID, cohortID string, coun
 // cohortKey returns the map key used to index a cohort buffer.
 func cohortKey(parentRunID, cohortID string) string { return parentRunID + "/" + cohortID }
 
-// appendCohortResult adds one member's result to the cohort buffer.
+// appendCohortResult adds one member's result to the cohort buffer and reports
+// whether the entry was dropped on a drained (already-delivered) cohort —
+// callers carrying a machine verdict must rescue it instead of losing it with
+// the drop (BUG-580, live run-100368).
 // Task-241: idempotent by Label — a second append for the same label is a no-op
 // so stop + turn-failed cannot double-count the same member toward the barrier.
-func (o *AgentOrchestrator) appendCohortResult(parentRunID, cohortID string, e cohortEntry) {
+func (o *AgentOrchestrator) appendCohortResult(parentRunID, cohortID string, e cohortEntry) (dropped bool) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	k := cohortKey(parentRunID, cohortID)
@@ -124,7 +127,7 @@ func (o *AgentOrchestrator) appendCohortResult(parentRunID, cohortID string, e c
 	if o.cohortDrained[k] {
 		cohortDiagLog("appendCohortResult drop-drained parent=%q cohort=%q label=%q status=%q",
 			parentRunID, cohortID, e.Label, e.Status)
-		return
+		return true
 	}
 	if label := strings.TrimSpace(e.Label); label != "" {
 		for i, existing := range o.cohort[k] {
@@ -144,12 +147,13 @@ func (o *AgentOrchestrator) appendCohortResult(parentRunID, cohortID string, e c
 				cohortDiagLog("appendCohortResult skip-duplicate parent=%q cohort=%q label=%q",
 					parentRunID, cohortID, label)
 			}
-			return
+			return false
 		}
 	}
 	o.cohort[k] = append(o.cohort[k], e)
 	cohortDiagLog("appendCohortResult parent=%q cohort=%q label=%q status=%q bufferLen=%d expected=%d",
 		parentRunID, cohortID, e.Label, e.Status, len(o.cohort[k]), o.cohortExpected[k])
+	return false
 }
 
 // cohortComplete returns true when the number of buffered results equals the registered

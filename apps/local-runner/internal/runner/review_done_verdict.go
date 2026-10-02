@@ -144,24 +144,36 @@ func (s *InteractiveService) snapshotReviewCohortVerdicts(parentRunID string, en
 	s.snapshotReviewCohortVerdictsLocked(parentRunID, entries)
 }
 
-// snapshotReviewCohortVerdictsLocked writes lastReviewCohortVerdicts.
-// Caller holds s.mu (settleFlowChildTurnCompletedLocked already holds it).
+// snapshotReviewCohortVerdictsLocked folds a just-joined cohort's verdicts
+// into lastReviewCohortVerdicts. Caller holds s.mu
+// (settleFlowChildTurnCompletedLocked already holds it).
+//
+// BUG-580 (live run-100368): this used to REPLACE the map on every join, so a
+// later non-review cohort (owner_debate) erased the reviewer's recorded
+// verdict and the synthesis gate read missing forever. Per-label merge: a
+// member's fresh verdict overwrites only its own label; a member re-joining
+// verdict-less clears its own stale entry (a superseded approval must not
+// satisfy the gate for a round that produced nothing); labels absent from
+// this join are left untouched.
 func (s *InteractiveService) snapshotReviewCohortVerdictsLocked(parentRunID string, entries []cohortEntry) {
 	parent := s.runs[parentRunID]
 	if parent == nil {
 		return
 	}
-	verdicts := make(map[string]string, len(entries))
+	if parent.lastReviewCohortVerdicts == nil {
+		parent.lastReviewCohortVerdicts = make(map[string]string, len(entries))
+	}
 	for _, e := range entries {
 		label := strings.TrimSpace(e.Label)
 		if label == "" {
 			continue
 		}
 		if v := strings.TrimSpace(e.MachineVerdict); v != "" {
-			verdicts[label] = v
+			parent.lastReviewCohortVerdicts[label] = v
+		} else {
+			delete(parent.lastReviewCohortVerdicts, label)
 		}
 	}
-	parent.lastReviewCohortVerdicts = verdicts
 }
 
 // hubProseVerdictDerivesFlowStatus reports the flow transition a prose-only hub

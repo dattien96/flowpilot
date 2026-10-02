@@ -4386,7 +4386,7 @@ func (s *InteractiveService) maybeReinvokeCoderForContinue(parentRunID, prompt s
 		if canonical, ok := agentpack.NormalizeBehaviorID(composeNode.Behavior); ok && canonical == "agent.delegate" {
 			if s.reinvokeMatchingFlowChild(parentRunID, prompt, func(child *interactiveRun) bool {
 				if targetNodeID != "" {
-					return child.label == targetNodeID
+					return childMatchesFlowNodeID(child, targetNodeID, composeNode)
 				}
 				return isCoderRun(child)
 			}) {
@@ -4403,12 +4403,55 @@ func (s *InteractiveService) maybeReinvokeCoderForContinue(parentRunID, prompt s
 	// "continue"), so its coder reappeared miscategorized as "closed" in the
 	// desktop with no new main-chat card even though the backend was already
 	// running it again.
-	s.reinvokeMatchingFlowChild(parentRunID, prompt, func(child *interactiveRun) bool {
+	if s.reinvokeMatchingFlowChild(parentRunID, prompt, func(child *interactiveRun) bool {
 		if targetNodeID != "" {
-			return child.label == targetNodeID
+			return childMatchesFlowNodeID(child, targetNodeID, composeNode)
 		}
 		return isCoderRun(child)
-	})
+	}) {
+		return
+	}
+	// BUG-569 (live run-100368): a continue back-edge whose target child exists
+	// only under a task-scoped label used to silent-no-op here, leaving the
+	// step stamped RUNNING forever. The widened match above covers that; if
+	// even that finds nothing (leg never spawned), log loudly instead of
+	// silently wedging the step.
+	s.flowDiagLog(parentRunID, "continue_backedge_no_child",
+		"continue back-edge matched no existing child and did not spawn one",
+		"target_node", targetNodeID)
+}
+
+// childMatchesFlowNodeID reports whether a child run's label refers to the
+// given flow node. Flow-spawned legs carry the bare node id; hub ad-hoc
+// spawns may use task-scoped labels ("task025_coder") with an optional
+// trailing round suffix ("task025_coder_r2") — BUG-569 (live run-100368):
+// exact-match-only missed those legs and the synthesis→coder continue
+// back-edge silently no-oped with the step stamped RUNNING.
+func childMatchesFlowNodeID(child *interactiveRun, nodeID string, node agentpack.FlowNode) bool {
+	label := strings.TrimSpace(child.label)
+	nodeID = strings.TrimSpace(nodeID)
+	if label != "" && nodeID != "" {
+		if label == nodeID {
+			return true
+		}
+		base := label
+		if i := strings.LastIndex(base, "_r"); i > 0 && i+2 < len(base) {
+			if _, err := strconv.Atoi(base[i+2:]); err == nil {
+				base = base[:i]
+			}
+		}
+		if strings.HasSuffix(base, "_"+nodeID) {
+			return true
+		}
+	}
+	// Hub ad-hoc spawns do not always echo the node id in the label at all —
+	// fall back to the node's declared agent identity (agents/coder.md →
+	// "coder" matches a child whose agentName/role is "coder"). The caller's
+	// newest-first scan keeps this preference ordered toward the latest leg.
+	if agent := flowNodeAgentName(node); agent != "" {
+		return isAgentRole(child, agent)
+	}
+	return false
 }
 
 func isAgentRole(rs *interactiveRun, role string) bool {
@@ -6575,7 +6618,7 @@ func (s *InteractiveService) settleFlowChildTurnCompletedLocked(rs *interactiveR
 				return
 			}
 		}
-		s.agentOrchestrator.appendCohortResult(rs.parentRunID, rs.flowCohortId, cohortEntry{
+		dropped := s.agentOrchestrator.appendCohortResult(rs.parentRunID, rs.flowCohortId, cohortEntry{
 			Label:          rs.label,
 			Provider:       string(rs.providerKey),
 			FinalMessage:   truncateDisplayField(finalMsg, 1500),
@@ -6583,6 +6626,29 @@ func (s *InteractiveService) settleFlowChildTurnCompletedLocked(rs *interactiveR
 			MachineVerdict: machineVerdict,
 			VerdictDetail:  truncateDisplayField(machineVerdictDetail, 1500),
 		})
+		// BUG-580 (live run-100368): a BUG-565 verdict-deficient redrive can
+		// complete into a cohort whose barrier already delivered — the entry is
+		// rightly dropped, but the verdict it carried was already consumed out
+		// of the pending map above and would be lost from BOTH places, leaving
+		// the hub gate reading missing forever. Restore it to the pending map;
+		// mergePendingReviewVerdictsLocked surfaces it on the next gate read.
+		if dropped && machineVerdict != "" {
+			if parent := s.runs[rs.parentRunID]; parent != nil {
+				if parent.pendingReviewVerdictByLabel == nil {
+					parent.pendingReviewVerdictByLabel = make(map[string]string)
+				}
+				parent.pendingReviewVerdictByLabel[rs.label] = machineVerdict
+				if machineVerdictDetail != "" {
+					if parent.pendingReviewVerdictDetailByLabel == nil {
+						parent.pendingReviewVerdictDetailByLabel = make(map[string]string)
+					}
+					parent.pendingReviewVerdictDetailByLabel[rs.label] = machineVerdictDetail
+				}
+			}
+			s.flowDiagLog(rs.parentRunID, "cohort_verdict_restored_after_drain",
+				"member re-completion dropped on a drained cohort; verdict restored to pending map",
+				"child_run_id", rs.id, "cohort_id", rs.flowCohortId, "label", rs.label)
+		}
 		s.flowDiagLog(rs.parentRunID, "cohort_member_completed", "cohort member completed and buffered",
 			"child_run_id", rs.id,
 			"cohort_id", rs.flowCohortId,
