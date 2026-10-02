@@ -408,6 +408,20 @@ func (s *InteractiveService) runFlowGateAtEpoch(
 			tr.ReproduceCompileFailed, tr.Tests.Failed)
 	}
 
+	// 7c. BUG-587 (live run-139670): a parent hub turn gated a suite that was
+	// red BY CONTRACT — the sprint's scaffold/coder leg was mid-flight and
+	// owns the suite's color via its own gate (r-scaffold-red /
+	// r-signature-lock). Escalating the parent's r-tests/r-reg adjudicated an
+	// expected state and parked the sprint in owner debate. Suppress the
+	// tier-2 test rules on parent turns inside the expected-red window.
+	s.mu.Lock()
+	expectedRed := s.expectedRedSuiteWindowLocked(rs)
+	s.mu.Unlock()
+	if !reproduceTurn && expectedRed {
+		rules = flowgate.SuppressTestRules(rules)
+		log.Printf("[gate] expected-red window: scaffold/coder leg in flight — r-tests/r-reg suppressed on parent turn")
+	}
+
 	// 8. Evaluate rule set.
 	violations := flowgate.Evaluate(tr, rules)
 	hasCA := flowgate.HasChangeAuditNote(diff)
@@ -2166,6 +2180,30 @@ func parentFlowHasValidateNode(s *InteractiveService, parentRunID string) bool {
 	}
 	for _, n := range parent.activeFlowNodes {
 		if canonical, ok := agentpack.NormalizeBehaviorID(n.Behavior); ok && canonical == "command.validate" {
+			return true
+		}
+	}
+	return false
+}
+
+// expectedRedSuiteWindowLocked reports whether rs is a flow-driven parent
+// whose writing phase (scaffold or code-writer node) is still in flight —
+// RUNNING or WAITING_USER_APPROVAL. In that window the suite's red state is
+// contractual (stubs/tests land before the coder fills them) and belongs to
+// the child legs' own gates (r-scaffold-red / r-signature-lock), never to a
+// parent hub turn's r-tests/r-reg (BUG-587, live run-139670).
+// Caller MUST hold s.mu.
+func (s *InteractiveService) expectedRedSuiteWindowLocked(rs *interactiveRun) bool {
+	if rs == nil || rs.parentRunID != "" || !rs.flowEngineDriven {
+		return false
+	}
+	for _, n := range rs.activeFlowNodes {
+		canonical, ok := agentpack.NormalizeBehaviorID(n.Behavior)
+		if !ok || (canonical != "agent.scaffold" && canonical != "agent.code") {
+			continue
+		}
+		switch s.lookupFlowStepStatus(rs.id, n.ID) {
+		case StepStatusRunning, StepStatusWaitingUserApr:
 			return true
 		}
 	}

@@ -141,9 +141,9 @@ func (s *InteractiveService) mergeReseedSteps(parentRunID string, fresh []Runtim
 	if !flowOwned {
 		return fresh
 	}
-	inNew := make(map[string]bool, len(fresh))
+	byID := make(map[string]int, len(fresh))
 	for i := range fresh {
-		inNew[fresh[i].NodeID] = true
+		byID[fresh[i].NodeID] = i
 		if old, ok := prior[fresh[i].NodeID]; ok {
 			fresh[i].Status = old.Status
 			fresh[i].StartedAt = old.StartedAt
@@ -152,12 +152,31 @@ func (s *InteractiveService) mergeReseedSteps(parentRunID string, fresh []Runtim
 			fresh[i].RejectionNote = old.RejectionNote
 		}
 	}
+	// BUG-586 (live run-139670): rows must keep execution order — the order
+	// they first entered the step list. Iterating `existing` first preserves
+	// each prior row's position (ingest nodes stay ahead of a sprint topology
+	// mounted later); brand-new nodes append in their own topology order.
+	// Previously new-topology rows went first and orphans were appended, so a
+	// later sprint rendered above the ingest chain that ran before it.
+	merged := make([]RuntimeWorkflowStep, 0, len(existing)+len(fresh))
+	seen := make(map[string]bool, len(existing)+len(fresh))
 	for _, row := range existing {
-		if row.NodeID != "" && !inNew[row.NodeID] {
-			fresh = append(fresh, row)
+		if row.NodeID == "" || seen[row.NodeID] {
+			continue
+		}
+		if idx, ok := byID[row.NodeID]; ok {
+			merged = append(merged, fresh[idx])
+		} else {
+			merged = append(merged, row)
+		}
+		seen[row.NodeID] = true
+	}
+	for _, fr := range fresh {
+		if !seen[fr.NodeID] {
+			merged = append(merged, fr)
 		}
 	}
-	return fresh
+	return merged
 }
 
 // reseedFlowStepRuntimeForResume rebuilds runID's step list from persisted flow

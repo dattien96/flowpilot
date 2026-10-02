@@ -4442,6 +4442,36 @@ func (s *InteractiveService) maybeReinvokeCoderForContinue(parentRunID, prompt s
 	s.flowDiagLog(parentRunID, "continue_backedge_no_child",
 		"continue back-edge matched no existing child and did not spawn one",
 		"target_node", targetNodeID)
+	// BUG-588 (live run-139670): the round-reset already stamped the re-entry
+	// node RUNNING — that stamp is a lie while the only live leg belongs to a
+	// sibling node still feeding this re-entry (tdd leg alive, coder claimed
+	// RUNNING for minutes). Revert to PENDING; the sibling's own advance
+	// spawns + stamps the node when it actually starts. When no sibling leg
+	// is in flight the stamp is kept — a leg may still be provisioning.
+	if targetNodeID != "" && flowDriven && s.hasLiveSiblingLeg(parentRunID, targetNodeID) {
+		s.setFlowStepStatus(context.Background(), parentRunID, targetNodeID, StepStatusPending)
+		s.flowDiagLog(parentRunID, "continue_backedge_stamp_reverted",
+			"reverted premature RUNNING stamp — sibling leg still in flight",
+			"target_node", targetNodeID)
+	}
+}
+
+// hasLiveSiblingLeg reports whether parentRunID has any non-terminal child
+// leg other than the one carrying label == nodeID. Used to distinguish a
+// premature re-entry stamp (sibling still running) from a genuine re-entry.
+func (s *InteractiveService) hasLiveSiblingLeg(parentRunID, nodeID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, childID := range s.agentOrchestrator.listChildren(parentRunID) {
+		child := s.runs[childID]
+		if child == nil || child.label == nodeID {
+			continue
+		}
+		if child.status == RunStatusRunning || child.turnInFlight {
+			return true
+		}
+	}
+	return false
 }
 
 // childMatchesFlowNodeID reports whether a child run's label refers to the
@@ -12918,6 +12948,39 @@ func (s *InteractiveService) AskWorkflowQuestion(ctx context.Context, runID, pro
 func (s *InteractiveService) Interrupt(runID string) *apiErr {
 	s.mu.Lock()
 	rs := s.runs[runID]
+	if rs == nil {
+		s.mu.Unlock()
+		return newAPIErr(http.StatusNotFound, "run_not_found", "workflow run not found")
+	}
+	s.mu.Unlock()
+	// BUG-593 (live run-139670): ctx.Err() alone is defense-in-depth, not the
+	// guard — interrupt previously cancelled in-flight turns while the
+	// dispatch CAS stayed open, so the flow engine spawned a new leg after
+	// the API had already reported "cancelling". Write the durable run-stop
+	// fence for the run AND its children first (same linearization point as
+	// stopAgentLoop); a fenced send cannot be claimed, and a user follow-up
+	// releases the fence via releaseHubStopFenceForFollowUp.
+	if s.dispatchStore != nil {
+		stopCtx := context.Background()
+		var fenceErr error
+		if err := s.requestRunStopV2(stopCtx, runID); err != nil {
+			fenceErr = err
+			log.Printf("[dispatch] durable interrupt fence failed run=%s: %v", runID, err)
+		}
+		for _, childID := range s.agentOrchestrator.listChildren(runID) {
+			if err := s.requestRunStopV2(stopCtx, childID); err != nil && fenceErr == nil {
+				fenceErr = err
+				log.Printf("[dispatch] durable interrupt fence failed run=%s (child of %s): %v", childID, runID, err)
+			}
+		}
+		if fenceErr != nil {
+			// Fail closed: without the durable fence we cannot guarantee no
+			// new leg spawns — report the failure instead of "cancelling".
+			return newAPIErr(http.StatusInternalServerError, "stop_fence_failed", fenceErr.Error())
+		}
+	}
+	s.mu.Lock()
+	rs = s.runs[runID]
 	if rs == nil {
 		s.mu.Unlock()
 		return newAPIErr(http.StatusNotFound, "run_not_found", "workflow run not found")

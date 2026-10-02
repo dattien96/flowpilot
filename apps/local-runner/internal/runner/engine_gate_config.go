@@ -5,15 +5,28 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 type gateConfigPayload struct {
 	GateMode string `json:"gateMode"`
 }
 
+// setGateConfigRequest accepts both casings — the response speaks `gateMode`
+// (camelCase) while the persisted file and the original request used
+// `gate_mode`; asymmetric readers were silently normalized to enforce
+// (BUG-590). snake_case wins when both are present.
 type setGateConfigRequest struct {
-	WorkingDirectory string `json:"workingDirectory"`
-	GateMode         string `json:"gate_mode"`
+	WorkingDirectory  string `json:"workingDirectory"`
+	GateMode          string `json:"gate_mode"`
+	GateModeCamelCase string `json:"gateMode"`
+}
+
+func (r setGateConfigRequest) resolvedGateMode() string {
+	if strings.TrimSpace(r.GateMode) != "" {
+		return strings.TrimSpace(r.GateMode)
+	}
+	return strings.TrimSpace(r.GateModeCamelCase)
 }
 
 // readGateMode reads gate_mode from .flowpilot/settings/gate-config.json.
@@ -104,7 +117,15 @@ func (s *InteractiveService) handleSetEngineGateConfig(w http.ResponseWriter, r 
 		return
 	}
 	dotFP := filepath.Join(workingDirectory, ".flowpilot")
-	if err := writeGateMode(dotFP, req.GateMode); err != nil {
+	mode := req.resolvedGateMode()
+	if mode != "enforce" && mode != "warn" {
+		// BUG-590: reject rather than normalize — a dropped/typo'd mode must
+		// not silently persist enforce and report success.
+		writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "invalid_gate_mode",
+			"gate mode must be \"enforce\" or \"warn\""))
+		return
+	}
+	if err := writeGateMode(dotFP, mode); err != nil {
 		writeInteractiveError(w, newAPIErr(http.StatusInternalServerError, "write_failed", err.Error()))
 		return
 	}

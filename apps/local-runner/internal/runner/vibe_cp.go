@@ -653,7 +653,11 @@ func (s *InteractiveService) restartVibeTaskSlicerForMissingTasks(parentRunID st
 	if !vibeCPArtifactsPresent(cwd) {
 		return false
 	}
-	if len(collectVibeTaskPlanForCP(cwd, cpID)) > 0 {
+	// BUG-591 (live run-139670): "missing" means absent from BOTH todo/ and
+	// done/ — a finished CP's tasks move to done/, leaving the scoped todo/
+	// glob empty; the bare check then read a completed sprint as a deletion
+	// and force-started the slicer, which rebound the run to a foreign CP.
+	if len(collectVibeTaskPlanForCP(cwd, cpID)) > 0 || len(collectVibeDoneTasksForCP(cwd, cpID)) > 0 {
 		return false
 	}
 	// Require evidence we already passed slicer / entered sprint — not mere
@@ -875,6 +879,52 @@ func collectVibeTaskPlanForCP(cwd, cpID string) []string {
 			}
 		}
 	}
+	return out
+}
+
+// collectVibeDoneTasksForCP is the done/ counterpart of
+// collectVibeTaskPlanForCP: same Parent-Documents scoping over
+// requirements/08-Task/done/. Presence in done/ proves the CP's tasks exist —
+// only a file absent from both directories counts as deleted (BUG-591).
+func collectVibeDoneTasksForCP(cwd, cpID string) []string {
+	if strings.TrimSpace(cwd) == "" {
+		return nil
+	}
+	matches, err := filepath.Glob(filepath.Join(cwd, "requirements", "08-Task", "done", "Task-*.md"))
+	if err != nil || len(matches) == 0 {
+		return nil
+	}
+	cpID = strings.ToUpper(strings.TrimSpace(cpID))
+	if cpID == "" {
+		out := make([]string, 0, len(matches))
+		for _, abs := range matches {
+			if rel, err := filepath.Rel(cwd, abs); err == nil {
+				out = append(out, filepath.ToSlash(rel))
+			}
+		}
+		sort.Strings(out)
+		return out
+	}
+	out := make([]string, 0, len(matches))
+	for _, abs := range matches {
+		b, err := os.ReadFile(abs)
+		if err != nil {
+			continue
+		}
+		m := vibeTaskParentDocsLine.FindSubmatch(b)
+		if len(m) < 2 {
+			continue
+		}
+		for _, ref := range vibeTaskCPRef.FindAll(m[1], -1) {
+			if strings.ToUpper(string(ref)) == cpID {
+				if rel, err := filepath.Rel(cwd, abs); err == nil {
+					out = append(out, filepath.ToSlash(rel))
+				}
+				break
+			}
+		}
+	}
+	sort.Strings(out)
 	return out
 }
 
