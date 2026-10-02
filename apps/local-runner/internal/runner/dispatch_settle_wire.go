@@ -101,6 +101,10 @@ func (s *InteractiveService) StartSettleSweep(ctx context.Context) {
 				return
 			case <-t.C:
 				s.driveOwedSettles(ctx)
+				// BUG-571/572/579/581: converge live-run armed/deferred
+				// state that lost its driver — the settle sweep is the only
+				// in-session watchdog, so piggyback it here.
+				s.sweepWedgedFlowWork()
 			}
 		}
 	}()
