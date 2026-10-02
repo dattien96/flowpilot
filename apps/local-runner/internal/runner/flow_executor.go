@@ -1878,21 +1878,19 @@ func (s *InteractiveService) delegateSpawnModel(ctx context.Context, parentRunID
 	return s.resolveFlowNodeModel(ctx, parentRunID, node)
 }
 
-// spawnAgentNodeModel resolves the step-configured model for a hub ad-hoc
-// spawn_agent call (BUG-556). The wire input cannot carry a model
-// (SpawnAgentInput.Model is json:"-"), so without this lookup the child
-// silently inherits the parent run's model even when the flow node's step row
-// pins a different one. The spawn is matched against the parent's active flow
-// nodes by node ID (agent or label) or by the node's agent ref basename;
-// zero or ambiguous matches return "" and the child inherits as before.
-func (s *InteractiveService) spawnAgentNodeModel(ctx context.Context, parentRunID, agent, label string, nodes []agentpack.FlowNode) string {
+// matchActiveFlowNode resolves a hub ad-hoc spawn_agent call to a node in the
+// parent's active flow topology (BUG-556/557). The wire input carries only an
+// agent name/label — no node binding — so the spawn is matched by node ID
+// (agent or label) or by the node's agent ref basename. Zero or ambiguous
+// matches return nil and the spawn stays a plain child.
+func matchActiveFlowNode(agent, label string, nodes []agentpack.FlowNode) *agentpack.FlowNode {
 	if len(nodes) == 0 {
-		return ""
+		return nil
 	}
 	want := strings.TrimSpace(agent)
 	wantLabel := strings.TrimSpace(label)
 	if want == "" && wantLabel == "" {
-		return ""
+		return nil
 	}
 	var match *agentpack.FlowNode
 	for i := range nodes {
@@ -1904,14 +1902,27 @@ func (s *InteractiveService) spawnAgentNodeModel(ctx context.Context, parentRunI
 			continue
 		}
 		if match != nil {
-			return ""
+			return nil
 		}
 		match = node
 	}
-	if match == nil {
-		return ""
+	return match
+}
+
+// flowNodeIsVerdictMember reports whether a matched flow node exists to emit
+// a machine verdict — a declared review-cohort member or a gated posture —
+// so a hub ad-hoc spawn bound to it needs cohort context to record the
+// verdict (BUG-557).
+func flowNodeIsVerdictMember(node agentpack.FlowNode) bool {
+	if strings.TrimSpace(node.Cohort) != "" {
+		return true
 	}
-	return s.resolveFlowNodeModel(ctx, parentRunID, *match)
+	switch strings.TrimSpace(node.Posture) {
+	case PostureReadOnly, PostureVerdictOnly:
+		return true
+	default:
+		return false
+	}
 }
 
 // resolveFlowNodeModel resolves a spawnable flow node's OWN configured

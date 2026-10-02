@@ -8291,10 +8291,27 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 	// flow-driven, resolve the matching active flow node through the same
 	// resolveFlowNodeModel the engine dispatch uses. Explicit in.Model
 	// (BUG-228) still wins — this only fills the empty channel.
-	if strings.TrimSpace(in.Model) == "" && parentFlowDriven {
-		if model := s.spawnAgentNodeModel(ctx, parentRunID, in.Agent, in.Label, parentActiveNodes); model != "" {
+	var matchedFlowNode *agentpack.FlowNode
+	if parentFlowDriven {
+		matchedFlowNode = matchActiveFlowNode(in.Agent, in.Label, parentActiveNodes)
+	}
+	if strings.TrimSpace(in.Model) == "" && matchedFlowNode != nil {
+		if model := s.resolveFlowNodeModel(ctx, parentRunID, *matchedFlowNode); model != "" {
 			in.Model = model
 		}
+	}
+	// BUG-557 (live run-38799): a hub ad-hoc spawn bound to a verdict-bearing
+	// node (declared review cohort or gated posture) also carries no cohort
+	// context — submit_review_outcome is never offered (the offer gate keys on
+	// flowCohortId) and the verdict can never be recorded, wedging synthesis on
+	// a missing machine verdict. Stamp a one-member ad-hoc cohort and bind the
+	// label to the node id so the verdict lands on the label synthesis expects.
+	if matchedFlowNode != nil && strings.TrimSpace(in.FlowCohortID) == "" && flowNodeIsVerdictMember(*matchedFlowNode) {
+		if !strings.EqualFold(strings.TrimSpace(in.Label), strings.TrimSpace(matchedFlowNode.ID)) {
+			in.Label = strings.TrimSpace(matchedFlowNode.ID)
+		}
+		in.FlowCohortID = "flow-adhoc-" + strings.TrimSpace(matchedFlowNode.ID)
+		in.CohortSize = 1
 	}
 
 	// Determine provider. BUG-228: in.Model — a flow node's own step-configured
