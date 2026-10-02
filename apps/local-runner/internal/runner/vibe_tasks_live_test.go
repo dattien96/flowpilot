@@ -217,6 +217,14 @@ func TestVibeTasks_ChainWalksFiveTaskPlan(t *testing.T) {
 		t.Fatalf("sprint-1 entry child not spawned (preflight_contract_plan children=%d)", got)
 	}
 
+	// Sprint-1 terminal means its legs settled — BUG-557 binds the read-only
+	// preflight leg to a one-member adhoc cohort whose join lands when the
+	// child's turn goroutine finishes. Wait for that barrier before simulating
+	// the terminal audit, or hasOpenCohort correctly refuses the park.
+	waitFor(t, func() bool {
+		return !svc.agentOrchestrator.hasOpenCohort(parent.RunID)
+	}, "sprint-1 entry cohort join")
+
 	// Sprint-1 terminal → boundary park on the NEXT plan task → ok → sprint-2.
 	if !svc.maybeParkVibeSprintBoundary(context.Background(), parent.RunID, "audit", false) {
 		t.Fatal("sprint-1 terminal must park the boundary gate (4 tasks remain)")

@@ -1138,7 +1138,7 @@ func (s *InteractiveService) runAuditNode(ctx context.Context, parentRunID strin
 	s.mu.Lock()
 	rs := s.runs[parentRunID]
 	var state FlowValidationRetryState
-	var workspace, changeType, baseSHA string
+	var workspace, changeType, baseSHA, sprintTaskDoc string
 	if rs != nil {
 		if rs.flowValidationRetryState != nil {
 			state = *rs.flowValidationRetryState
@@ -1151,6 +1151,11 @@ func (s *InteractiveService) runAuditNode(ctx context.Context, parentRunID strin
 		if baseSHA == "" {
 			baseSHA = rs.turnStartGitHead
 		}
+		// BUG-566: the sprint currently under audit owns a Task doc — settle
+		// it below, before observation.
+		if rs.vibeSprintIndex > 0 && len(rs.vibeTaskPlan) > 0 && inVibeSprintTopology(rs) {
+			sprintTaskDoc = rs.vibeTaskPlan[vibeSprintCurrentPlanIndex(rs.vibeSprintIndex, len(rs.vibeTaskPlan))]
+		}
 	}
 	s.mu.Unlock()
 
@@ -1158,6 +1163,27 @@ func (s *InteractiveService) runAuditNode(ctx context.Context, parentRunID strin
 	// F2 does not look pending while the audit gate runs (rag-harness F1).
 	if s.isFlowEngineDriven(parentRunID) {
 		s.setFlowStepStatus(ctx, parentRunID, node.ID, StepStatusRunning)
+	}
+
+	// BUG-566: the flow owns the todo→done transition for the sprint's Task
+	// doc. Settle before the aggregate diff is observed so the rename lands
+	// in changedFiles/tier-3 observation and task_referenced is satisfied by
+	// the move itself — live run-69320 parked here until an operator git mv'd
+	// the doc by hand. Best-effort: a rename failure only leaves the old gate
+	// behavior. The plan entry is re-pointed at done/ so downstream status
+	// reads and the boundary DoD stamp resolve the moved file.
+	if sprintTaskDoc != "" && workspace != "" {
+		if settled := settleVibeTaskDocDone(workspace, sprintTaskDoc); settled != "" && settled != sprintTaskDoc {
+			s.mu.Lock()
+			if r := s.runs[parentRunID]; r != nil {
+				if i := vibeSprintCurrentPlanIndex(r.vibeSprintIndex, len(r.vibeTaskPlan)); i < len(r.vibeTaskPlan) && r.vibeTaskPlan[i] == sprintTaskDoc {
+					r.vibeTaskPlan[i] = settled
+				}
+			}
+			s.mu.Unlock()
+			s.flowDiagLog(parentRunID, "vibe_task_doc_settled", "sprint task doc moved todo→done",
+				"node_id", node.ID, "task_doc", settled)
+		}
 	}
 
 	// BuildAuditDraft derives SourceDocID from pkg.SourceDocIDs[0] itself

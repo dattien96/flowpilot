@@ -49,10 +49,78 @@ func resolveVibeWorkspacePath(cwd, rel string) string {
 	return filepath.Join(cwd, filepath.FromSlash(rel))
 }
 
+// resolveVibeTaskDocPath resolves a plan task path to its on-disk location:
+// the todo/ path itself when present, else the same file under done/ — a
+// sprint-settled doc (BUG-566). "" when neither exists.
+func resolveVibeTaskDocPath(cwd, rel string) string {
+	if abs := resolveVibeWorkspacePath(cwd, rel); abs != "" {
+		if _, err := os.Stat(abs); err == nil {
+			return abs
+		}
+	}
+	if !strings.Contains(rel, "/todo/") {
+		return ""
+	}
+	abs := resolveVibeWorkspacePath(cwd, strings.Replace(rel, "/todo/", "/done/", 1))
+	if abs == "" {
+		return ""
+	}
+	if _, err := os.Stat(abs); err == nil {
+		return abs
+	}
+	return ""
+}
+
+// settleVibeTaskDocDone moves the current sprint's Task doc from
+// requirements/08-Task/todo/ to requirements/08-Task/done/ so the flow — not
+// the operator — owns the todo→done lifecycle transition (BUG-566; live
+// run-69320 parked the audit gate on task_referenced until a human git mv'd
+// the doc). Pure rename: contents preserved byte-for-byte, status untouched
+// (BUG-367 keeps `done` off doc status; the directory carries that signal).
+// Returns the settled workspace-relative done/ path — also when the doc was
+// already settled — or "" when nothing applies (non-todo path, missing
+// source, I/O failure). An existing done/ file is never overwritten.
+func settleVibeTaskDocDone(cwd, rel string) string {
+	rel = strings.TrimSpace(rel)
+	if rel == "" || !strings.Contains(rel, "/todo/") {
+		return ""
+	}
+	doneRel := strings.Replace(rel, "/todo/", "/done/", 1)
+	dst := resolveVibeWorkspacePath(cwd, doneRel)
+	if dst == "" {
+		return ""
+	}
+	if _, err := os.Stat(dst); err == nil {
+		return filepath.ToSlash(doneRel)
+	}
+	src := resolveVibeWorkspacePath(cwd, rel)
+	if src == "" {
+		return ""
+	}
+	if _, err := os.Stat(src); err != nil {
+		return ""
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return ""
+	}
+	if err := os.Rename(src, dst); err != nil {
+		return ""
+	}
+	return filepath.ToSlash(doneRel)
+}
+
 // readVibeDocStatus returns draft|in_progress|approved|done from a Task/CP
-// frontmatter or Metadata Status line (empty if unread/unknown).
+// frontmatter or Metadata Status line (empty if unread/unknown). Task docs
+// resolve through todo/ then done/ so a sprint-settled doc still reports
+// its real status (BUG-566).
 func readVibeDocStatus(cwd, rel string) string {
 	abs := resolveVibeWorkspacePath(cwd, rel)
+	if abs == "" {
+		return ""
+	}
+	if _, err := os.Stat(abs); os.IsNotExist(err) {
+		abs = resolveVibeTaskDocPath(cwd, rel)
+	}
 	if abs == "" {
 		return ""
 	}
@@ -85,9 +153,11 @@ func stampVibeTaskInProgress(cwd, taskPath string) {
 }
 
 // stampVibeTaskDoDChecked ticks DoD / Acceptance Check boxes on the completed
-// Task and forces status off `done` onto `in_progress`.
+// Task and forces status off `done` onto `in_progress`. The doc is resolved
+// through todo/ then done/ — a sprint already settled by the audit (BUG-566)
+// still gets its boxes ticked on the moved file.
 func stampVibeTaskDoDChecked(cwd, taskPath string) {
-	abs := resolveVibeWorkspacePath(cwd, taskPath)
+	abs := resolveVibeTaskDocPath(cwd, taskPath)
 	if abs == "" {
 		return
 	}
