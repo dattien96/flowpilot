@@ -173,6 +173,25 @@ func (s *InteractiveService) startResolvedFlowFromNode(ctx context.Context, pare
 	// which startTurn now skips for these runs) owns every transition.
 	if s.isFlowEngineDriven(parentRunID) {
 		s.reseedFlowStepRuntime(parentRunID, record.Definition.Nodes)
+		// BUG-577 (live run-100368): every vibe sprint re-resolves the SAME
+		// vibe-sprint topology, so BUG-562's merge reseed carries the previous
+		// sprint's terminal rows into the next sprint — coder/validate/
+		// reviewer/synthesis/audit all read DONE before sprint N+1 wrote a
+		// byte, defeating maybeReparkVibeSprintBoundary's "audit no longer
+		// DONE" guard and letting vibeSprintEvidenceComplete auto-finalize on
+		// stale evidence. A sprint start is a new round for the whole node
+		// set: reset every node to PENDING first, then let the entry stamp
+		// RUNNING and a mid-sprint resume mark its upstream once-only
+		// predecessors SKIPPED (order matters — markForwardDonePredecessorsSkipped
+		// must run after the reset).
+		if workingmode.BareFlowID(flowRef) == vibeSprintFlowID {
+			for _, n := range record.Definition.Nodes {
+				if strings.TrimSpace(n.ID) == "" {
+					continue
+				}
+				s.setFlowStepStatus(ctx, parentRunID, n.ID, StepStatusPending)
+			}
+		}
 		if startNodeID != "" {
 			s.markForwardDonePredecessorsSkipped(ctx, parentRunID, record.Definition.Edges, startNodeID)
 		}

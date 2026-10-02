@@ -752,7 +752,30 @@ func (s *InteractiveService) inferredFlowNodeByLegacyCohort(rs *interactiveRun, 
 }
 
 func (s *InteractiveService) resumedFlowStepRows(rs *interactiveRun, st ProviderSessionState) ([]RuntimeWorkflowStep, error) {
-	if len(rs.activeFlowNodes) == 0 {
+	resumeNodes := rs.activeFlowNodes
+	// BUG-568 (live run-100368): a restart while the owner-debate overlay is
+	// mounted leaves activeFlowNodes = the debate graph and the sprint
+	// topology parked in vibeParkedNodes. Rows built from the debate graph
+	// alone carry no sprint node rows, so transition-log replay cannot restore
+	// them (applyStepTransitionReplay skips row-less nodes) and the
+	// post-debate restore's merge reseed re-seeds a DONE coder as PENDING —
+	// vibeSprintEvidenceComplete then fails forever. Union the parked topology
+	// so its nodes get real rows and replay restores their settled statuses.
+	if len(rs.vibeParkedNodes) > 0 {
+		merged := append([]agentpack.FlowNode(nil), rs.activeFlowNodes...)
+		seen := make(map[string]bool, len(merged))
+		for _, n := range merged {
+			seen[n.ID] = true
+		}
+		for _, n := range rs.vibeParkedNodes {
+			if !seen[n.ID] {
+				merged = append(merged, n)
+				seen[n.ID] = true
+			}
+		}
+		resumeNodes = merged
+	}
+	if len(resumeNodes) == 0 {
 		return nil, nil
 	}
 	// BUG-260: a flow can reach a genuinely terminal loop state ("done") even
@@ -767,7 +790,7 @@ func (s *InteractiveService) resumedFlowStepRows(rs *interactiveRun, st Provider
 	// node, or a legacy run with no persisted children) — per-child evidence,
 	// including FAILED, set below always wins over that default.
 	flowComplete := resumedFlowStepsComplete(st)
-	rows := s.flowStepRowsFromNodes(context.Background(), rs.id, rs.activeFlowNodes, StepStatusPending, "")
+	rows := s.flowStepRowsFromNodes(context.Background(), rs.id, resumeNodes, StepStatusPending, "")
 	byID := make(map[string]*RuntimeWorkflowStep, len(rows))
 	for i := range rows {
 		byID[rows[i].ID] = &rows[i]
@@ -785,7 +808,7 @@ func (s *InteractiveService) resumedFlowStepRows(rs *interactiveRun, st Provider
 				if session.ParentRunID != rs.id {
 					continue
 				}
-				nodeID := matchFlowNodeForSession(rs.activeFlowNodes, session)
+				nodeID := matchFlowNodeForSession(resumeNodes, session)
 				if nodeID == "" {
 					nodeID = legacyCohortNodeByRun[session.RunID]
 				}
@@ -1733,7 +1756,13 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 	// from workspace files and would re-arm markers on a run that never ran
 	// its flow. Skip the whole sweep until an explicit forwardFlow starts it.
 	if rs.parentRunID == "" && !rs.suppressAutoGateResume && rs.flowArm != FlowArmPending {
-		go s.maybeSettleVibeOwnerDebate(rs.id)
+		go func() {
+			// BUG-567: the fail/starved ladder first, then the synthesis
+			// redrive — sequential so a fresh retry's freshly-spawned owner
+			// legs are not mistaken for settled evidence.
+			s.maybeSettleVibeOwnerDebate(rs.id)
+			s.maybeResumeVibeDebateSynthesis(rs.id)
+		}()
 		s.healVibeFailedForReopenPark(rs.id)
 		// Boundary first: it owns the next decision when a sprint just
 		// finished (resume-confirm no-ops while boundary is pending, but

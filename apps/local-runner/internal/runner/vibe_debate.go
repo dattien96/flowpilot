@@ -145,6 +145,77 @@ func (s *InteractiveService) maybeSettleVibeOwnerDebate(parentRunID string) bool
 	return true
 }
 
+// vibeDebateSynthesisResumePrompt re-drives the debate hub's synthesis turn
+// after a restart orphaned it: the owners settled but the cohort join that
+// re-invokes the hub lived in RAM and died with the process (BUG-567).
+const vibeDebateSynthesisResumePrompt = "[flow-engine] The owner-debate flow was interrupted by a restart: both owner legs already settled, but the debate_synthesis evaluation turn was lost with the process. Synthesize the owners' verdicts from the joined results and call flow_control with status=done (or submit_review_outcome) so the parked sprint flow restores and the chain resumes."
+
+// maybeResumeVibeDebateSynthesis unsticks an owner-debate overlay that a
+// restart left mounted past its conclusion (BUG-567, live run-100368):
+// without this the overlay stays mounted forever — the review cohort is
+// invisible to flowRequiresHubMachineVerdict and submit_review_outcome is
+// never offered to review legs.
+//
+//   - debate_synthesis DONE but the restore died with the process → replay
+//     restoreVibeFlowAfterDebate directly (idempotent).
+//   - both owners DONE but synthesis never ran → re-invoke the debate hub so
+//     it can emit done and unmount the overlay.
+//
+// Other shapes are owned elsewhere: both-failed / starved owners retry through
+// maybeSettleVibeOwnerDebate, a live owner still owes its own completion, and
+// a lopsided terminal pair must NOT respawn the debate (CA-796).
+func (s *InteractiveService) maybeResumeVibeDebateSynthesis(parentRunID string) {
+	if s == nil || strings.TrimSpace(parentRunID) == "" {
+		return
+	}
+	s.mu.Lock()
+	rs := s.runs[parentRunID]
+	ok := rs != nil && rs.parentRunID == "" && rs.workingMode == workingmode.Vibe &&
+		len(rs.vibeParkedNodes) > 0 && vibeOwnerDebateGraph(rs.activeFlowNodes)
+	s.mu.Unlock()
+	if !ok {
+		return
+	}
+	_, st1, st2, stSyn := s.vibeOwnerDebateStepStatuses(parentRunID)
+	if stSyn == StepStatusRunning || stSyn == StepStatusWaitingUserApr {
+		return // a synthesis evaluation is already owed or in flight
+	}
+	if stSyn != StepStatusDone && (st1 != StepStatusDone || st2 != StepStatusDone) {
+		return // fail / starved / lopsided owners: the retry ladder owns it
+	}
+	// Revive the interrupted run the same way the vibe resume helpers do —
+	// a reconstructed run normalized to cancelled, so the reinvoke guard
+	// (autoOrchestrate) and spawn paths would refuse the redrive otherwise.
+	s.mu.Lock()
+	if r := s.runs[parentRunID]; r != nil {
+		if r.status == RunStatusCancelled || r.status == RunStatusFailed {
+			r.status = RunStatusRunning
+			r.agentStatus = string(RunStatusRunning)
+		}
+		r.autoOrchestrate = true
+	}
+	s.mu.Unlock()
+	s.releaseHubStopFenceForFollowUp(context.Background(), parentRunID)
+	s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
+		st.Status = "running"
+		st.BlockReason = ""
+		st.GateReason = ""
+		return st
+	})
+	switch stSyn {
+	case StepStatusDone:
+		// The debate resolved pre-restart but the restore transition died
+		// with it — replay the missed handoff (idempotent restore).
+		s.flowDiagLog(parentRunID, "vibe_debate_synthesis_replayed",
+			"debate_synthesis DONE before restart; replaying parked-flow restore")
+		s.restoreVibeFlowAfterDebate(parentRunID)
+	default:
+		s.flowDiagLog(parentRunID, "vibe_debate_synthesis_redrive",
+			"owners settled but debate_synthesis never ran; re-driving synthesis hub")
+		s.maybeAutoReinvokeHubWithPrompt(parentRunID, vibeDebateSynthesisResumePrompt)
+	}
+}
+
 func (s *InteractiveService) vibeOwnerDebateStepStatuses(parentRunID string) (stTrig, st1, st2, stSyn RuntimeWorkflowStepStatus) {
 	if s.workflowStore == nil {
 		return "", "", "", ""
