@@ -1332,6 +1332,7 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 		// BUG-360: restore the cached scout draft so post-restart freeze can
 		// parse it after the transient scout child is gone.
 		preflightDraftResult:      st.PreflightDraftResult,
+		preflightDraftStale:       st.PreflightDraftStale,
 		lastFailedDelegateNodeID:  st.LastFailedDelegateNodeID,
 		lastEscalatedInlineNodeID: st.LastEscalatedInlineNodeID,
 	}

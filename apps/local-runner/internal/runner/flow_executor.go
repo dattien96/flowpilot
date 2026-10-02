@@ -1741,8 +1741,13 @@ func (s *InteractiveService) reinvokeMatchingFlowChild(parentRunID, prompt strin
 	var runID, stepID string
 	var snap AgentGraphSnapshot
 	var agentName string
-	for _, childID := range s.agentOrchestrator.listChildren(parentRunID) {
-		child := s.runs[childID]
+	// BUG-559: scan newest-first — listChildren is spawn-ordered, and with one
+	// same-label leg per vibe sprint (e.g. preflight_contract_plan) a forward
+	// scan would re-drive an earlier sprint's stale leg instead of the live
+	// one. Single-label-per-flow callers are unaffected.
+	children := s.agentOrchestrator.listChildren(parentRunID)
+	for i := len(children) - 1; i >= 0; i-- {
+		child := s.runs[children[i]]
 		if child == nil || !match(child) {
 			continue
 		}
@@ -1753,6 +1758,9 @@ func (s *InteractiveService) reinvokeMatchingFlowChild(parentRunID, prompt strin
 		child.activationSeq++
 		child.status = RunStatusRunning
 		child.agentStatus = string(RunStatusRunning)
+		// BUG-559: a real re-drive supersedes any pending verdict-reprompt
+		// marker — the new turn is a fresh attempt, not a verdict reprompt.
+		child.verdictRepromptInFlight = false
 		s.agentOrchestrator.upsertSummary(parentRunID, AgentRunSummary{
 			RunID:         child.id,
 			AgentName:     child.agentName,

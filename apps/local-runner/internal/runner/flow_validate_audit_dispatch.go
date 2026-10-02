@@ -1843,8 +1843,56 @@ func baselineWorktreeFingerprint(workspace string) map[string]string {
 // mint-vs-reuse version number is derived from the store instead of
 // hardcoded, so a future superseded/abandoned version cannot permanently
 // collide with a fresh one.
+// vibeTaskDocID extracts the "Task-NNN" document id from a task file name
+// like "Task-023-shredder-ndk-fdguard-ringbuffer.md" (or an already-bare
+// "Task-023"). Returns "" for anything not shaped like a task ref (BUG-559).
+func vibeTaskDocID(name string) string {
+	n := strings.TrimSuffix(strings.TrimSpace(filepath.Base(name)), ".md")
+	rest, ok := strings.CutPrefix(n, "Task-")
+	if !ok {
+		return ""
+	}
+	i := 0
+	for i < len(rest) && rest[i] >= '0' && rest[i] <= '9' {
+		i++
+	}
+	if i == 0 {
+		return ""
+	}
+	return n[:len("Task-")+i]
+}
+
+// rearmCohortIfDrainedLocked re-opens a delivered/drained cohort for a child
+// about to be re-driven so its next completion rejoins a live barrier instead
+// of being dropped (BUG-559: a retried cohort-member scout's join note was
+// silently discarded, so the join target — e.g. contract.freeze — was never
+// re-dispatched). Caller holds s.mu (match predicates run under it).
+func (s *InteractiveService) rearmCohortIfDrainedLocked(child *interactiveRun) {
+	if child == nil || strings.TrimSpace(child.parentRunID) == "" {
+		return
+	}
+	cid := strings.TrimSpace(child.flowCohortId)
+	if cid == "" || s.agentOrchestrator == nil {
+		return
+	}
+	if s.agentOrchestrator.cohortExpectedCount(child.parentRunID, cid) > 0 {
+		return // live barrier — never inflate an open cohort
+	}
+	s.agentOrchestrator.preRegisterCohort(child.parentRunID, cid, 1)
+}
+
 // findPlannerResultForFreeze retrieves the planner output from the predecessor child run
 // when plannerResult is empty or unparseable (e.g. user submitted "/continue" feedback).
+//
+// BUG-559: every candidate is parse-gated — the latest FinalMessage alone is
+// NOT acceptable because a later verdict/reasoning turn on the same leg masks
+// an earlier valid draft (live run-60899: freeze strict-parsed verdict prose
+// carrying a malformed {…flase…} detail and escalated). Candidates are scanned
+// newest-first across spawn order: with one planner leg per vibe sprint the
+// newest leg is the live one, and a draft whose source_doc_id resolves to a
+// different Task-NNN than the run's current sprint task is never accepted for
+// it. When a genuine scout re-run already failed draft-less (preflightDraftStale),
+// the event scan is skipped entirely so a superseded draft cannot resurrect.
 func (s *InteractiveService) findPlannerResultForFreeze(parentRunID string, edges []agentpack.FlowEdge, nodes []agentpack.FlowNode, freezeNodeID string) string {
 	var fromNodeID string
 	for _, e := range edges {
@@ -1855,38 +1903,87 @@ func (s *InteractiveService) findPlannerResultForFreeze(parentRunID string, edge
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, child := range s.runs {
-		if child.parentRunID != parentRunID {
-			continue
-		}
-		if fromNodeID != "" && (child.label == fromNodeID || child.stepID == fromNodeID) {
-			for i := len(child.events) - 1; i >= 0; i-- {
-				if child.events[i].Type == EventTurnCompleted && child.events[i].FinalMessage != "" {
-					return child.events[i].FinalMessage
-				}
-			}
-		}
+	rs := s.runs[parentRunID]
+	currentTaskDoc := ""
+	if rs != nil && len(rs.vibeTaskPlan) > 0 {
+		currentTaskDoc = vibeTaskDocID(rs.vibeTaskPlan[vibeSprintCurrentPlanIndex(rs.vibeSprintIndex, len(rs.vibeTaskPlan))])
 	}
-	for _, child := range s.runs {
-		if child.parentRunID != parentRunID {
-			continue
+	accept := func(msg string) (string, bool) {
+		msg = strings.TrimSpace(msg)
+		if msg == "" {
+			return "", false
 		}
-		for i := len(child.events) - 1; i >= 0; i-- {
-			if child.events[i].Type == EventTurnCompleted && child.events[i].FinalMessage != "" {
-				if _, err := changecontract.ParsePreflightDraft(child.events[i].FinalMessage); err == nil {
-					return child.events[i].FinalMessage
+		draft, err := changecontract.ParsePreflightDraft(msg)
+		if err != nil {
+			return "", false
+		}
+		if src := vibeTaskDocID(draft.SourceDocID); src != "" && currentTaskDoc != "" && src != currentTaskDoc {
+			return "", false
+		}
+		return msg, true
+	}
+	if rs == nil || !rs.preflightDraftStale {
+		// Spawn-ordered children from the orchestrator, scanned newest-first.
+		// Children present in the run map but missing from the registry
+		// (direct-seeded fixtures, restore gaps) still get scanned — appended
+		// after the ordered ones so registered children always win ties.
+		var listed []string
+		if s.agentOrchestrator != nil {
+			listed = s.agentOrchestrator.listChildren(parentRunID)
+		}
+		seen := make(map[string]bool, len(listed))
+		children := make([]string, 0, len(listed)+4)
+		for i := len(listed) - 1; i >= 0; i-- {
+			seen[listed[i]] = true
+			children = append(children, listed[i])
+		}
+		var extra []string
+		for id, child := range s.runs {
+			if child == nil || child.parentRunID != parentRunID || seen[id] {
+				continue
+			}
+			extra = append(extra, id)
+		}
+		sort.Slice(extra, func(i, j int) bool {
+			return s.runs[extra[i]].createdAt > s.runs[extra[j]].createdAt
+		})
+		children = append(children, extra...)
+		scan := func(matchSourceNode bool) string {
+			for _, childID := range children {
+				child := s.runs[childID]
+				if child == nil {
+					continue
+				}
+				isSource := fromNodeID != "" && (child.label == fromNodeID || child.stepID == fromNodeID)
+				if isSource != matchSourceNode {
+					continue
+				}
+				for j := len(child.events) - 1; j >= 0; j-- {
+					if child.events[j].Type != EventTurnCompleted {
+						continue
+					}
+					if msg, ok := accept(child.events[j].FinalMessage); ok {
+						return msg
+					}
 				}
 			}
+			return ""
+		}
+		if msg := scan(true); msg != "" {
+			return msg
+		}
+		if msg := scan(false); msg != "" {
+			return msg
 		}
 	}
 	// BUG-360: post-restart the transient scout child is gone — fall back to
 	// the draft cached on the parent at scout completion (durable via session
 	// snapshot + runtime blob). Parse-gated like every other source here, so
 	// a stale/corrupt cache can never satisfy the freeze.
-	if rs := s.runs[parentRunID]; rs != nil {
+	if rs != nil {
 		if cached := strings.TrimSpace(rs.preflightDraftResult); cached != "" {
-			if _, err := changecontract.ParsePreflightDraft(cached); err == nil {
-				return cached
+			if msg, ok := accept(cached); ok {
+				return msg
 			}
 		}
 	}

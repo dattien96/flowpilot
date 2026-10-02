@@ -345,6 +345,10 @@ type ProviderSessionState struct {
 	// after the transient scout child is gone. Local file store carries the
 	// full struct; Supabase rides the session_runtime blob (no migration).
 	PreflightDraftResult string `json:"preflight_draft_result,omitempty"`
+	// PreflightDraftStale (BUG-559) marks the stash superseded after a scout
+	// re-run completed draft-less — persists so a restart cannot resurrect a
+	// superseded draft from child turn history either.
+	PreflightDraftStale bool `json:"preflight_draft_stale,omitempty"`
 	// DispatchProtocolVersion is a derived mirror of the dispatch-store
 	// activation (SD-24 D-1/D-10). Authority is GetRunProtocolVersion — never
 	// this field alone. NEVER store DispatchRecord slices here (two-sources-of-truth).

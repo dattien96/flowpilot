@@ -387,6 +387,10 @@ func (s *InteractiveService) resumeVerdictDeficientMembers(parentRunID string) b
 		// BUG-403: arm the flag so a failed scheduled turn retries/drains
 		// instead of silently dropping the verdict retry.
 		child.reinvokeInFlight = true
+		// BUG-559: same marker as the settle-path reprompt — this re-drive is
+		// a verdict turn, not a draft attempt; its completion must not clear
+		// a stashed preflight draft.
+		child.verdictRepromptInFlight = true
 		labels = append(labels, child.label)
 	}
 	s.mu.Unlock()

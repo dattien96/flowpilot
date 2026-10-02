@@ -139,6 +139,8 @@ type sessionRuntimeBlob struct {
 	Yolo bool `json:"yolo,omitempty"`
 	// BUG-360: cached scout preflight draft (additive; missing on legacy blobs).
 	PreflightDraftResult string `json:"preflight_draft_result,omitempty"`
+	// BUG-559: stash superseded marker (additive; missing on legacy blobs).
+	PreflightDraftStale bool `json:"preflight_draft_stale,omitempty"`
 }
 
 func sessionRuntimeFromState(s ProviderSessionState) sessionRuntimeBlob {
@@ -178,6 +180,7 @@ func sessionRuntimeFromState(s ProviderSessionState) sessionRuntimeBlob {
 		MarkerProvenanceRunIDs:             s.MarkerProvenanceRunIDs,
 		Yolo:                               s.Yolo,
 		PreflightDraftResult:               s.PreflightDraftResult,
+		PreflightDraftStale:                s.PreflightDraftStale,
 	}
 }
 
@@ -326,6 +329,7 @@ func applySessionRuntimeBlob(sess *ProviderSessionState, b sessionRuntimeBlob) {
 	sess.MarkerProvenanceRunIDs = append([]string(nil), b.MarkerProvenanceRunIDs...)
 	sess.Yolo = b.Yolo
 	sess.PreflightDraftResult = b.PreflightDraftResult
+	sess.PreflightDraftStale = b.PreflightDraftStale
 }
 
 func (s *SupabaseWorkflowStore) headers(prefer string) map[string]string {

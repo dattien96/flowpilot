@@ -43,9 +43,15 @@ const (
 // same call freeze uses. Last parseable wins; a scout-labeled completion
 // with unparseable output (prose or empty) clears a stale stash so a re-run
 // scout failure fails closed (escalate) instead of freezing on outdated
-// scope. Returns true when the stash was mutated (write or scout-labeled
-// clear) so the caller persists it — a RAM-only clear would be resurrected
-// from disk on restart (review turn-2). Pure no-ops return false.
+// scope — and marks the stash stale (BUG-559) so turn-history scans cannot
+// resurrect a superseded draft. A verdict turn — the engine-issued
+// missing-verdict reprompt (verdictRepromptInFlight) or a completion that
+// carried a buffered submit_review_outcome — was never asked for a draft, so
+// its draft-less output clears nothing (live run-60899: the verdict turn
+// wiped the Task-023 stash and let a stale sibling draft win later). Returns
+// true when the stash was mutated (write, clear, or stale-flag flip) so the
+// caller persists it — a RAM-only clear would be resurrected from disk on
+// restart (review turn-2). Pure no-ops return false.
 // Caller must hold s.mu.
 func (s *InteractiveService) cachePreflightDraftLocked(rs *interactiveRun, finalMsg string) bool {
 	if s == nil || rs == nil || strings.TrimSpace(rs.parentRunID) == "" {
@@ -57,24 +63,35 @@ func (s *InteractiveService) cachePreflightDraftLocked(rs *interactiveRun, final
 	}
 	msg := strings.TrimSpace(finalMsg)
 	isScout := strings.EqualFold(strings.TrimSpace(rs.label), scoutNodeID)
+	// BUG-559: a verdict-bearing turn is not a draft attempt. The marker is
+	// set when the engine schedules the reprompt; the buffered verdict covers
+	// the completing turn itself (consumed later in the same settle).
+	verdictTurn := rs.verdictRepromptInFlight ||
+		(parent.pendingReviewVerdictByLabel != nil &&
+			strings.TrimSpace(parent.pendingReviewVerdictByLabel[rs.label]) != "")
 	if msg == "" {
 		// An empty scout completion is still a failed scout re-run — clear a
 		// stale stash the same as prose. Non-scout empties stay no-ops.
-		if !isScout || parent.preflightDraftResult == "" {
+		if !isScout || verdictTurn {
 			return false
 		}
+		changed := parent.preflightDraftResult != "" || !parent.preflightDraftStale
 		parent.preflightDraftResult = ""
-		return true
+		parent.preflightDraftStale = true
+		return changed
 	}
 	if _, err := changecontract.ParsePreflightDraft(msg); err == nil {
 		parent.preflightDraftResult = msg
+		parent.preflightDraftStale = false
 		return true
 	}
-	if !isScout || parent.preflightDraftResult == "" {
+	if !isScout || verdictTurn {
 		return false
 	}
+	changed := parent.preflightDraftResult != "" || !parent.preflightDraftStale
 	parent.preflightDraftResult = ""
-	return true
+	parent.preflightDraftStale = true
+	return changed
 }
 
 // planLoopChurned reports whether the plan_writer child of parentRunID was

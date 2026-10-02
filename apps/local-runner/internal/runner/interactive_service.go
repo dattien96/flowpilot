@@ -603,6 +603,13 @@ type interactiveRun struct {
 	// submit_review_outcome call cancelled in flight, so the verdict never
 	// reaches the bridge — reprompting is the only recovery).
 	verdictRepromptCount int
+	// verdictRepromptInFlight marks the currently-running turn as an
+	// engine-issued missing-verdict reprompt (BUG-559): it was never asked
+	// for a draft, so cachePreflightDraftLocked must not let its
+	// draft-less completion clear a stashed preflight draft. RAM-only —
+	// a restart degrades to the old clear, which the freeze retry path
+	// still recovers from.
+	verdictRepromptInFlight bool
 
 	status          RunStatus
 	createdAt       string
@@ -660,6 +667,12 @@ type interactiveRun struct {
 	// loop. Only ever overwritten by another parseable draft — prose never
 	// clobbers it. Persisted via ProviderSessionState + session_runtime blob.
 	preflightDraftResult string
+	// preflightDraftStale (BUG-559) is set when a genuine scout re-run
+	// completes without a parseable draft: every earlier draft in turn
+	// history is then superseded and findPlannerResultForFreeze must not
+	// resurrect it. Cleared when a new parseable draft is stashed. Persisted
+	// so a restart cannot resurrect a superseded draft either.
+	preflightDraftStale bool
 	// lastProviderEventAt is stamped on every emitLocked for stall detection
 	// (Task-241 T-11). Zero means no event yet (member just spawned).
 	lastProviderEventAt time.Time
@@ -2792,9 +2805,15 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 			expectedAgent := flowNodeAgentName(node)
 			reinvoked := s.reinvokeMatchingFlowChild(parentRunID, resumePrompt, func(child *interactiveRun) bool {
 				if child.label == failedDelegateNodeID {
+					// BUG-559: a retried cohort member (e.g. the ad-hoc scout
+					// cohort) must rejoin a live barrier — otherwise its new
+					// completion is dropped and the join target is never
+					// re-dispatched.
+					s.rearmCohortIfDrainedLocked(child)
 					return true
 				}
 				if strings.TrimSpace(child.label) == "" && expectedAgent != "" && strings.EqualFold(strings.TrimSpace(child.agentName), expectedAgent) {
+					s.rearmCohortIfDrainedLocked(child)
 					return true
 				}
 				return false
@@ -5396,6 +5415,7 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 		// BUG-360: round-trip the cached scout draft so post-restart freeze
 		// can parse it after the transient scout child is gone.
 		PreflightDraftResult:      rs.preflightDraftResult,
+		PreflightDraftStale:       rs.preflightDraftStale,
 		LastFailedDelegateNodeID:  rs.lastFailedDelegateNodeID,
 		LastEscalatedInlineNodeID: rs.lastEscalatedInlineNodeID,
 		// BUG-478: the parked merge card is only durable if its inputs are —
@@ -6376,6 +6396,9 @@ func (s *InteractiveService) settleFlowChildTurnCompletedLocked(rs *interactiveR
 	if s.cachePreflightDraftLocked(rs, finalMsg) && rs != nil {
 		go s.persistParentSession(rs.parentRunID)
 	}
+	// BUG-559: consume the verdict-reprompt marker AFTER the draft cache has
+	// consulted it — this completion has now been recorded either way.
+	rs.verdictRepromptInFlight = false
 	// Close the parent's agent card for this child. Flow auto-spawn uses wait:false,
 	// so the Wait=true path in spawnAgent never emits agent_result_injected — without
 	// this the live main-chat card stays open forever and reinvoke of the same
@@ -6477,6 +6500,10 @@ func (s *InteractiveService) settleFlowChildTurnCompletedLocked(rs *interactiveR
 				// escaped recovery entirely — the verdict was silently lost and
 				// the hub timed out (CP58-1 deterministic wedge).
 				rs.reinvokeInFlight = true
+				// BUG-559: this turn is a verdict reprompt — it was never
+				// asked for a draft, so its draft-less completion must not
+				// clear the parent's stashed preflight draft.
+				rs.verdictRepromptInFlight = true
 				touchHubProgressLocked(rs)
 				s.scheduleChildTurn(rs.id, stepID, prompt)
 				return

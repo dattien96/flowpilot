@@ -368,6 +368,8 @@ type ndjsonSessionRecord struct {
 	LastEscalatedInlineNodeID string `json:"last_escalated_inline_node_id,omitempty"`
 	// BUG-360: cached scout preflight draft (additive on legacy rows).
 	PreflightDraftResult string `json:"preflight_draft_result,omitempty"`
+	// BUG-559: stash superseded by a failed scout re-run (additive).
+	PreflightDraftStale bool `json:"preflight_draft_stale,omitempty"`
 }
 
 // loadFromDisk reads the NDJSON file, applies last-wins dedup per run_id, and
@@ -991,6 +993,7 @@ func sessionStateFromRecord(r ndjsonSessionRecord) ProviderSessionState {
 		LastFailedDelegateNodeID:           r.LastFailedDelegateNodeID,
 		LastEscalatedInlineNodeID:          r.LastEscalatedInlineNodeID,
 		PreflightDraftResult:               r.PreflightDraftResult,
+		PreflightDraftStale:                r.PreflightDraftStale,
 	}
 }
 
@@ -1529,6 +1532,7 @@ func sessionRecordFrom(s ProviderSessionState) ndjsonSessionRecord {
 		LastFailedDelegateNodeID:           s.LastFailedDelegateNodeID,
 		LastEscalatedInlineNodeID:          s.LastEscalatedInlineNodeID,
 		PreflightDraftResult:               s.PreflightDraftResult,
+		PreflightDraftStale:                s.PreflightDraftStale,
 	}
 }
 
