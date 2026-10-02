@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
+import { sidebarScrollRestoreTarget } from "@/components/sidebarScrollPreserve";
 import { filterNavigatorWorkflows } from "@/app/navigatorCatalog";
 import { filterWorkflowsForWorkingMode } from "@/state/workingMode";
 import { Navigator } from "@/components/Navigator";
@@ -559,6 +560,10 @@ export function ChatWorkspace({
   const isRunning = runStatus === "running";
   const defaultWidthsAppliedRef = useRef(false);
   const shellRef = useRef<HTMLDivElement>(null);
+  // BUG-563: preserve the right rail's scroll offset across focus-switch
+  // re-renders — see sidebarScrollPreserve.ts for the contract.
+  const rightStackRef = useRef<HTMLDivElement | null>(null);
+  const rightStackScrollTop = useRef(0);
   const dragStateRef = useRef<{
     side: "left" | "right";
     startX: number;
@@ -585,6 +590,13 @@ export function ChatWorkspace({
     setRightSidebarWidth(rightDefault);
     defaultWidthsAppliedRef.current = true;
   }, [leftSidebarVisible, rightSidebarVisible]);
+
+  useLayoutEffect(() => {
+    const stack = rightStackRef.current;
+    if (!stack) return;
+    const restore = sidebarScrollRestoreTarget(stack.scrollTop, rightStackScrollTop.current);
+    if (restore !== null) stack.scrollTop = restore;
+  });
 
   useEffect(() => {
     const onPointerMove = (event: PointerEvent) => {
@@ -692,7 +704,13 @@ export function ChatWorkspace({
             onPointerDown={beginResize("right")}
           />
           <aside className="sidebar sidebar-right">
-            <div className="right-sidebar-stack">
+            <div
+              className="right-sidebar-stack"
+              ref={rightStackRef}
+              onScroll={(e) => {
+                rightStackScrollTop.current = e.currentTarget.scrollTop;
+              }}
+            >
               <LSPStatusNotice />
               <WorkflowControlPanel />
               <ChatPosturePanel />
