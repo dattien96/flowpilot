@@ -119,6 +119,42 @@ func (s *InteractiveService) applyVibeGateResolver(runID, parentID, turnID strin
 		if parentID != "" {
 			hub = parentID
 		}
+		// BUG-570 (live run-100368): a reprompt-class violation routed to the
+		// owner debate IS the remediation reprompt — the debate's own verdict
+		// orders the gated child to redo the work. The dev/child reprompt
+		// branches bound this loop with repromptAttempts/maxFlowGateReprompts,
+		// but this route returned early and never counted, so a stubborn
+		// violation mounted an unbounded debate → reprompt → debate cycle.
+		// Consume the same budget here; on exhaustion escalate like the
+		// sibling reprompt paths instead of mounting another debate.
+		if result.Action == "reprompt" {
+			s.mu.Lock()
+			gated := s.runs[runID]
+			attempts := 0
+			if gated != nil {
+				attempts = gated.repromptAttempts
+				gated.repromptAttempts++
+			}
+			s.mu.Unlock()
+			if attempts >= maxFlowGateReprompts {
+				log.Printf("[vibe-gate] debate-routed reprompt budget exhausted run=%s attempts=%d — escalating instead of mounting another debate", runID, attempts)
+				if parentID != "" {
+					s.mu.Lock()
+					s.stampEscalatedChildNodeLocked(parentID, childEscalatedNodeID(rs))
+					s.mu.Unlock()
+					_, _ = s.applyFlowControl(parentID, FlowControlInput{
+						Status:  "escalate",
+						Summary: "owner-debate remediation reprompts exhausted: " + result.Message,
+					})
+				} else {
+					_, _ = s.applyFlowControl(runID, FlowControlInput{
+						Status:  "escalate",
+						Summary: "owner-debate remediation reprompts exhausted: " + result.Message,
+					})
+				}
+				return true
+			}
+		}
 		message := result.Message
 		if message == "" {
 			message = fmt.Sprintf("vibe drift score %d (>= %d): owner debate to choose remediation",

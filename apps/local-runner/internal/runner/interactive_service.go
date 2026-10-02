@@ -2834,6 +2834,25 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 					return snap, nil
 				}
 			} else if flowNodeInlineDispatchable(node) {
+				// BUG-578 (live run-100368): retrying an escalated
+				// debate_synthesis via the generic inline dispatch re-drives
+				// the hub with a bare "reached step" prompt — the owners'
+				// joined result note was already consumed by the first
+				// synthesis turn, so the hub has no verdicts to synthesize
+				// and re-escalates identically forever. Re-attach the last
+				// joined cohort note (plus the operator's feedback) so the
+				// retry turn sees the decisions it must consolidate.
+				if escalatedNodeID == vibeDebateSynthesisNodeID {
+					prompt := composeHubNotifyPrompt(node)
+					if note := s.lastCohortNoteFor(parentRunID); strings.TrimSpace(note) != "" {
+						prompt = note + "\n\n" + prompt
+					}
+					if strings.TrimSpace(feedback) != "" {
+						prompt = strings.TrimSpace(feedback) + "\n\n---\n\n" + prompt
+					}
+					go s.dispatchHubNotifyNodeWithPrompt(parentRunID, node, prompt)
+					return snap, nil
+				}
 				go s.tryAdvanceFlowThroughInline(parentRunID, edges, nodes, node, feedback)
 				return snap, nil
 			} else {
