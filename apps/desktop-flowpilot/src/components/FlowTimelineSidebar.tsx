@@ -1,6 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { FlowStepTimeline } from "@/components/FlowStepTimeline";
 import { activeWorkflowStep, isFlowModeRun, useStore } from "@/state/store";
+import {
+  activityCountsForStatus,
+  formatActivityAge,
+  lastActivityAt,
+  runActivityKind,
+} from "@/state/runActivity";
 import { ChevronLeftIcon, ChevronRightIcon } from "@/components/icons";
 
 // BUG-156: dedicated collapsible middle sidebar for Flow Mode's step timeline,
@@ -32,6 +38,11 @@ export function FlowTimelineSidebar(): React.ReactElement | null {
   const vibeTaskIndex = useStore((s) => s.agentGraphSnapshot?.loopState?.vibeTaskIndex ?? 0);
   const vibeTaskTotal = useStore((s) => s.agentGraphSnapshot?.loopState?.vibeTaskTotal ?? 0);
   const vibeTaskName = useStore((s) => s.agentGraphSnapshot?.loopState?.vibeTaskName ?? "");
+  // Task-458: liveness is stamped per run id on every live SSE arrival
+  // (store.lastActivityByRun). Roll the family up — main run + non-terminal
+  // legs — so a focused child mid-exec and a hub turn both keep the chip warm.
+  const lastActivityByRun = useStore((s) => s.lastActivityByRun);
+  const agentRuns = useStore((s) => s.agentRuns);
   const [expanded, setExpanded] = useState(true);
   // Auto-collapse the step rail on narrow windows; restores the user's choice
   // when the window widens back past the breakpoint.
@@ -72,9 +83,26 @@ export function FlowTimelineSidebar(): React.ReactElement | null {
     void refreshWorkflowStepRuntime();
   }, [visible, refreshWorkflowStepRuntime, mainRunId]);
 
+  // Task-458: 1s local tick ages the liveness chip. The interval only runs
+  // while a step is RUNNING and the sidebar is visible — an idle, parked or
+  // terminal flow never burns a render loop.
+  const hasRunningStep = steps.some((s) => s.status === "RUNNING");
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!visible || !hasRunningStep) return;
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [visible, hasRunningStep]);
+
   if (!visible) return null;
 
   const current = activeWorkflowStep(steps);
+  const activeRunIds = [
+    ...(mainRunId ? [mainRunId] : []),
+    ...agentRuns.filter((r) => activityCountsForStatus(r.status)).map((r) => r.runId),
+  ];
+  const liveLastAt = lastActivityAt(lastActivityByRun, activeRunIds);
+  const liveKind = liveLastAt !== undefined ? runActivityKind(liveLastAt, now) : undefined;
   // BUG-159: "reached" (done, or currently on it), not just "fully done" — the
   // user is standing ON step 1 while it runs, so that should read "1/4", not "0/4".
   const reachedCount = steps.filter(
@@ -112,6 +140,19 @@ export function FlowTimelineSidebar(): React.ReactElement | null {
               {reachedCount}/{steps.length} steps
             </span>
             {current && <span className="flow-sidebar-current">{current.nodeId || current.stepType}</span>}
+            {/* Task-458: freshness of the run's own SSE stream — no log text.
+                Rendered only while a step is RUNNING; a step parked on an
+                approval/question is not "live" even though it is active. */}
+            {current?.status === "RUNNING" && liveLastAt !== undefined && liveKind && (
+              <span
+                className={`flow-sidebar-live flow-sidebar-live-${liveKind}`}
+                title="Age of the last event received on this run's stream"
+              >
+                {liveKind === "live"
+                  ? `live — last event ${formatActivityAge(now - liveLastAt)} ago`
+                  : `quiet ${formatActivityAge(now - liveLastAt)}`}
+              </span>
+            )}
             <span className="flow-sidebar-meta">
               {meta.provider && (
                 <span className={`pill-prov prov-${meta.provider}`}>{meta.provider.toUpperCase()}</span>

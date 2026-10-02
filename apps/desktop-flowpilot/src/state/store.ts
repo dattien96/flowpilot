@@ -41,6 +41,7 @@ import { getAdminUseCases } from "@/clientCore";
 import { ADMIN_WEB_URL } from "@/config";
 import { isSyncableRun } from "@/components/navigatorHistory";
 import { attentionQueue, type AttentionItem } from "@/state/attentionQueue";
+import { stampRunActivity } from "@/state/runActivity";
 import {
   dispatchScaffold,
   fetchScaffoldProgress,
@@ -698,6 +699,12 @@ export interface AppState {
   _workflowStepRuntimeLoadSeq: number;
   _runSnapshots: Record<string, RunSnapshot>;
   _runReplaySeq: Record<string, number>;
+  /** Task-458: epoch ms of the last live SSE arrival per run id. Stamped in
+   *  the stream consumers (not in applyEvent) so replayed backlog — events
+   *  at/below the stream's resume boundary — cannot fake freshness. Display
+   *  gating lives at read time: only a RUNNING step shows the indicator, so
+   *  stamps on terminal/parked runs never surface as liveness (AC-3). */
+  lastActivityByRun: Record<string, number>;
   agentSpawnGuideOpen: boolean;
   agentSpawnGuideAgentName?: string;
   // True while openHistoryRun is replaying a persisted transcript. The replay drives the
@@ -999,6 +1006,7 @@ export const useStore = create<AppState>((set, get) => ({
   _workflowStepRuntimeLoadSeq: 0,
   _runSnapshots: {},
   _runReplaySeq: {},
+  lastActivityByRun: {},
   _gateBlockedRunIds: {},
   _streamRunSeq: 0,
   _orchestrationStreamSeq: 0,
@@ -1752,6 +1760,7 @@ export const useStore = create<AppState>((set, get) => ({
           agentSpawnGuideOpen: false,
           agentSpawnGuideAgentName: undefined,
           _runReplaySeq: {},
+          lastActivityByRun: {},
           _runSnapshots: {},
           _historyReplaying: false,
           _streamRunSeq: state._streamRunSeq + 1,
@@ -1815,6 +1824,7 @@ export const useStore = create<AppState>((set, get) => ({
         agentSpawnGuideOpen: false,
         agentSpawnGuideAgentName: undefined,
         _runReplaySeq: {},
+        lastActivityByRun: {},
         _runSnapshots: {},
         _historyReplaying: false,
         _streamRunSeq: state._streamRunSeq + 1,
@@ -3866,6 +3876,7 @@ export const useStore = create<AppState>((set, get) => ({
       agentSpawnGuideOpen: false,
       agentSpawnGuideAgentName: undefined,
       _runReplaySeq: {},
+      lastActivityByRun: {},
       _pendingScrollAnchor: cached?.scrollAnchor ? { runId, ...cached.scrollAnchor } : undefined,
       // Task-433: keep _runSnapshots across opens (LRU-bounded, keyed by runId)
       // — the BUG-111 wipe is superseded by per-run restore + mandatory replay
@@ -4000,6 +4011,7 @@ export const useStore = create<AppState>((set, get) => ({
       _streamingAssistantId: undefined,
       _pendingScrollAnchor: undefined,
       _runReplaySeq: {},
+      lastActivityByRun: {},
       chatStartMode: "normal",
       chatSourceDocId: "",
       flowRef: undefined,
@@ -4379,6 +4391,7 @@ async function consumeStream(
       return;
     }
     if (!isEventForRun(e, runId)) continue;
+    set((s) => ({ lastActivityByRun: stampRunActivity(s.lastActivityByRun, e, Date.now()) }));
     set((s) => applyEvent(s, e));
     // BUG-180: the hub's first turn is consumed here (not the orchestration
     // stream, which only starts after the turn), and the flow executor reseeds +
@@ -4433,6 +4446,9 @@ async function consumeHistoryReplayStream(
       if (shouldStopHistoryReplay(resumedStatus, e, lastEventSeq)) break;
       continue;
     }
+    // Task-458: only the live tail counts — persisted backlog above is skipped
+    // via `continue` so reopening an old run cannot stamp fake freshness.
+    set((s) => ({ lastActivityByRun: stampRunActivity(s.lastActivityByRun, e, Date.now()) }));
     if (e.type !== "agent_graph_updated" && e.type !== "agent_bus_message") {
       set((s) => applyEvent(s, e));
       settleTerminalReplayVisuals(runId, resumedStatus, set);
@@ -4605,6 +4621,9 @@ async function consumeAgentStream(
     if (isStale()) return;
     if (!isEventForRun(e, runId)) continue;
     if (e.seq <= afterSeq) continue;
+    // Task-458: a live arrival is liveness evidence even when the event is one
+    // this stream delegates elsewhere (orchestration types below).
+    set((s) => ({ lastActivityByRun: stampRunActivity(s.lastActivityByRun, e, Date.now()) }));
     // Skip orchestration events — consumeOrchestrationStream owns agent_graph_updated
     // and agent_bus_message. Processing them here would duplicate agentBusMessages
     // entries when the gap between restore.lastEventSeq and afterSeq is replayed. (BUG-109)
@@ -4633,6 +4652,11 @@ async function consumeOrchestrationStream(
     if (isStale()) return;
     if (!isEventForRun(e, runId)) continue;
     if (e.seq <= afterSeq) continue;
+    // Task-458: stamp before the graph/bus vs timeline split — hub turns,
+    // reprompts and child-lifecycle graph updates are all liveness signal,
+    // including main-run events dropped by the focus guard below (the arrival
+    // still happened; only the shared timeline skips them).
+    set((s) => ({ lastActivityByRun: stampRunActivity(s.lastActivityByRun, e, Date.now()) }));
     if (e.type === "agent_graph_updated" || e.type === "agent_bus_message") {
       set((s) => applyOrchestrationEvent(s, e));
       // BUG-180: the flow executor's step transitions (node spawn → RUNNING,

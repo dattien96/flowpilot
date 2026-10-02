@@ -594,6 +594,30 @@ body[data-platform="darwin"] .app-header {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* Task-458: SSE-arrival liveness chip next to the running-step name.
+   "live" reads as a soft green pulse, "quiet" as a muted warning — no log
+   text, just the freshness signal. */
+.flow-sidebar-live {
+  font-size: 9px;
+  font-weight: 700;
+  border-radius: var(--radius-md);
+  padding: 1px var(--space-1);
+  white-space: nowrap;
+  border: 1px solid transparent;
+}
+.flow-sidebar-live::before {
+  content: "●";
+  margin-right: 3px;
+  font-size: 7px;
+}
+.flow-sidebar-live-live {
+  color: var(--ok);
+  border-color: var(--ok);
+}
+.flow-sidebar-live-quiet {
+  color: var(--warn);
+  border-color: var(--warn);
+}
 .flow-sidebar-meta {
   display: flex;
   align-items: center;
