@@ -31,9 +31,14 @@ shaped exactly like this, with your own values substituted in place of the
 - `intent`: one sentence describing what will change and why.
 - `declared_paths`: concrete source files (not directories, not globs, not
   docs) you expect the coder to touch. Name every file you can identify now —
-  a narrow initial scope is not penalized, and the contract can be amended
-  later if the coder needs to touch a file you didn't foresee. But nothing
-  outside this list (once frozen) can be written without an amendment.
+  and count the **non-source files the change needs to build and verify**:
+  build/wiring files (e.g. `build.gradle.kts`, `CMakeLists.txt`, `pom.xml`),
+  new or updated test files, and registration/manifest edits belong in this
+  list too, not just the implementation files. A narrow initial scope is not
+  penalized, and the contract can be amended later if the coder needs to
+  touch a file you didn't foresee — but amending mid-flight costs a loop
+  round, so prefer listing the obvious wiring now. Nothing outside this list
+  (once frozen) can be written without an amendment.
 - `source_doc_id` (optional): the Task/BUG/CP id this change is tracked under,
   if one is named in the issue.
 
