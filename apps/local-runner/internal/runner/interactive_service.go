@@ -4580,16 +4580,27 @@ func (s *InteractiveService) scheduleChildTurn(runID, stepID, prompt string) {
 				if strings.TrimSpace(prompt) != "" && strings.TrimSpace(rs.pendingHubReinvokePrompt) == "" {
 					rs.pendingHubReinvokePrompt = prompt
 				}
-				rs.hubReinvokeStartFailCount++
-				// Cap active retries so permanent startTurn failures cannot
-				// tight-loop scheduleChildTurn → notifyTurnIdle → reinvoke.
-				// Remaining pending is visible to F-0 once not counted as busy.
-				shouldDrain = rs.hubReinvokeStartFailCount <= 3
-				// turn_in_progress / gate_in_progress / hub_parked: notifyTurnIdle
-				// is a no-op while busy, so schedule a short deferred drain once
-				// the gate/turn window can clear (BUG-284 stranded reinvoke).
-				if err.code == "turn_in_progress" || err.code == "gate_in_progress" || err.code == "hub_parked" {
+				// BUG-564 (live run-69320): hub_parked is a transient
+				// settle-window busy — children can take minutes to settle —
+				// not a real startTurn failure. Counting it against the
+				// consecutive-fail cap and refiring at +25ms burned all 3
+				// retries inside ~1s and stranded the armed pending until the
+				// watchdog parked the flow. Keep pending armed and leave the
+				// re-fire to the CA-1091 child-settle drain + stall tick.
+				if err.code == "hub_parked" {
 					transientBusy = true
+				} else {
+					rs.hubReinvokeStartFailCount++
+					// Cap active retries so permanent startTurn failures cannot
+					// tight-loop scheduleChildTurn → notifyTurnIdle → reinvoke.
+					// Remaining pending is visible to F-0 once not counted as busy.
+					shouldDrain = rs.hubReinvokeStartFailCount <= 3
+					// turn_in_progress / gate_in_progress: notifyTurnIdle is a
+					// no-op while busy, so schedule a short deferred drain once
+					// the gate/turn window can clear (BUG-284 stranded reinvoke).
+					if err.code == "turn_in_progress" || err.code == "gate_in_progress" {
+						transientBusy = true
+					}
 				}
 				touchHubProgressLocked(rs)
 			}

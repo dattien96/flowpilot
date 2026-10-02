@@ -223,6 +223,13 @@ func TestBug289_A6_OneDecisionGuardAfterStamp(t *testing.T) {
 
 // BUG-289 F-0: hub watchdog blocks when no progress.
 // Also: pendingHubReinvoke alone must NOT suppress stall (H1 review blind spot).
+//
+// BUG-564 contract update: an armed pendingHubReinvoke is now progress OWED —
+// the stall tick drains it first (CA-1091's debate-scoped drain generalized to
+// any flow). The park below is the post-drain terminal: a pending whose
+// consecutive-fail budget is already spent (hubReinvokeStartFailCount > 3)
+// means the reinvoke kept rejecting for real, so hub_stalled still surfaces.
+// This fixture sets the spent budget to pin exactly that terminal contract.
 func TestBug289_F0_HubStallBlocksWhenIdleTooLong(t *testing.T) {
 	svc := bug289Service(t)
 	runID := "run-f0"
@@ -232,9 +239,10 @@ func TestBug289_F0_HubStallBlocksWhenIdleTooLong(t *testing.T) {
 		status:            RunStatusRunning,
 		hubLastProgressAt: time.Now().UTC().Add(-10 * time.Minute),
 		stallTimeout:      time.Second,
-		// Stuck pending without live turn — F-0 must still fire.
-		pendingHubReinvoke: true,
-		subs:               map[int64]chan ProviderEvent{},
+		// Stranded pending whose drain budget is already spent — F-0 must fire.
+		pendingHubReinvoke:        true,
+		hubReinvokeStartFailCount: 4,
+		subs:                      map[int64]chan ProviderEvent{},
 	}
 	svc.mu.Lock()
 	svc.runs[runID] = rs
