@@ -341,12 +341,97 @@ func parseSuiteTestNames(testCmd, output string) (passed, failed []string, err e
 					}
 				}
 			}
+		default:
+			// BUG-574 (live run-100368): gtest / ctest / TAP output from an
+			// unrecognized command (bash harness, ./suite binary, ctest)
+			// produced zero parsed names — oracle.Failed stayed empty and a
+			// red suite surfaced as no-failure (false green at rules level
+			// when the baseline was captured red). Parse the three standard
+			// shapes; all are unambiguous cross-runner markers.
+			if name, isFail, ok := parseGtestCtestTapLine(line); ok {
+				if isFail {
+					failed = append(failed, name)
+				} else {
+					passed = append(passed, name)
+				}
+			}
 		}
 	}
 	if scanErr := scanner.Err(); scanErr != nil {
 		err = fmt.Errorf("suite output scan truncated: %w", scanErr)
 	}
 	return
+}
+
+// parseGtestCtestTapLine extracts a named pass/fail from the three common
+// non-go/npm/pytest suite formats (BUG-574). Returns ok=false for anything
+// else so unrecognized lines stay invisible, never guessed.
+//
+//   - gtest:  `[       OK ] Suite.Test` / `[  FAILED  ] Suite.Test`
+//     (summary lines like `[  PASSED  ] 2 tests.` are skipped — the token
+//     after the marker is a count, not a name).
+//   - ctest:  `2/3 Test #2: audit_log_test .....   Passed 0.02 sec`
+//   - TAP:    `ok 1 name` / `not ok 2 name`
+func parseGtestCtestTapLine(line string) (name string, isFail bool, ok bool) {
+	// gtest per-test verdicts — marker anywhere on the line (BUG-390 style),
+	// name is the first token after it.
+	for _, m := range []struct {
+		marker string
+		fail   bool
+	}{
+		{"[  FAILED  ]", true},
+		{"[       OK ]", false},
+	} {
+		if idx := strings.Index(line, m.marker); idx >= 0 {
+			f := strings.Fields(strings.TrimSpace(line[idx+len(m.marker):]))
+			if len(f) == 0 {
+				return "", false, false
+			}
+			// Skip suite-summary lines: "[  FAILED  ] 1 test, listed below"
+			// and "[  PASSED  ] 2 tests." carry a count, not a name.
+			if isNumericToken(f[0]) {
+				return "", false, false
+			}
+			return f[0], m.fail, true
+		}
+	}
+	// ctest: `N/M Test #K: name .....   Passed/Failed`
+	if strings.Contains(line, "Test #") {
+		f := strings.Fields(line)
+		for i, tok := range f {
+			if strings.HasPrefix(tok, "#") && strings.HasSuffix(tok, ":") && i+1 < len(f) && i > 0 && f[i-1] == "Test" {
+				nm := f[i+1]
+				switch {
+				case strings.Contains(line, "Passed"):
+					return nm, false, true
+				case strings.Contains(line, "Failed"):
+					return nm, true, true
+				}
+				return "", false, false
+			}
+		}
+	}
+	// TAP: `ok N name` / `not ok N name`
+	f := strings.Fields(strings.TrimSpace(line))
+	if len(f) >= 2 && f[0] == "ok" && isNumericToken(f[1]) {
+		return strings.Join(f[2:], " "), false, true
+	}
+	if len(f) >= 3 && f[0] == "not" && f[1] == "ok" && isNumericToken(f[2]) {
+		return strings.Join(f[3:], " "), true, true
+	}
+	return "", false, false
+}
+
+func isNumericToken(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func isContextAbortError(msg string) bool {

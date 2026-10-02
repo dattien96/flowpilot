@@ -128,6 +128,11 @@ var reTestKt = regexp.MustCompile(`Test\.kt$`)
 var reTestJava = regexp.MustCompile(`Tests?\.java$`)
 var reTestSwift = regexp.MustCompile(`Tests?\.swift$`)
 
+// BUG-573: C/C++ test shapes — gtest `FooTest.cpp`, `_test.cc`/`_tests.cxx`
+// suffixes, and `test_foo.cpp` prefixes. Capital-T suffix required so
+// `latest.cpp`/`contest.cpp` do not false-match.
+var reTestCpp = regexp.MustCompile(`(_tests?|Tests?)\.(cpp|cc|cxx)$|(^|/)test_[^/]*\.(cpp|cc|cxx)$`)
+
 func IsTestFile(path string) bool {
 	return reTestGo.MatchString(path) ||
 		reTestJS.MatchString(path) ||
@@ -135,7 +140,8 @@ func IsTestFile(path string) bool {
 		reTestDart.MatchString(path) ||
 		reTestKt.MatchString(path) ||
 		reTestJava.MatchString(path) ||
-		reTestSwift.MatchString(path)
+		reTestSwift.MatchString(path) ||
+		reTestCpp.MatchString(path)
 }
 
 // DetectTestCommand returns just the command string for the detected runner (root
