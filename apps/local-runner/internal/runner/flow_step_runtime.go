@@ -101,12 +101,63 @@ func (s *InteractiveService) activeHubNodeIDFor(parentRunID string) string {
 // steps a workflow-picker launch seeds. Each step's ID equals its node id, so
 // setFlowStepStatus can transition it directly by node id. No-op unless the
 // workflowStore supports seeding (see file header).
+//
+// BUG-562 (live run-69320): a re-resolve must MERGE, not replace. Every
+// sub-flow mount/settle and sprint re-resolve reseeds — projecting every row
+// PENDING wiped settled statuses ("0/10 pending" on the timeline) and, worse,
+// flipped a DONE hub row back to PENDING, so CA-1087's stale-done guard
+// consumed the next legit child done as flow_control_stale_hub_done and the
+// chain stranded. Merge contract: rows the flow already owns (non-empty
+// NodeID) keep status + timestamps + rejection note + retry count; node ids
+// new to the topology seed PENDING; prior flow rows no longer in the resolved
+// node set stay as historical rows. Catalog-seeded rows (empty NodeID, the
+// workflow-picker shape) are still replaced wholesale on first reseed.
 func (s *InteractiveService) reseedFlowStepRuntime(parentRunID string, nodes []agentpack.FlowNode) {
 	seeder, ok := s.workflowStore.(workflowRunSeeder)
 	if !ok || len(nodes) == 0 {
 		return
 	}
-	seeder.seed(parentRunID, s.flowStepRowsFromNodes(context.Background(), parentRunID, nodes, StepStatusPending, ""))
+	fresh := s.flowStepRowsFromNodes(context.Background(), parentRunID, nodes, StepStatusPending, "")
+	seeder.seed(parentRunID, s.mergeReseedSteps(parentRunID, fresh))
+}
+
+// mergeReseedSteps overlays fresh seeded rows onto the run's existing step
+// list with BUG-562 merge semantics (see reseedFlowStepRuntime). Returns
+// fresh unchanged when there is nothing flow-owned to preserve.
+func (s *InteractiveService) mergeReseedSteps(parentRunID string, fresh []RuntimeWorkflowStep) []RuntimeWorkflowStep {
+	existing, err := s.workflowStore.LoadRunSteps(context.Background(), parentRunID)
+	if err != nil || len(existing) == 0 {
+		return fresh
+	}
+	prior := make(map[string]RuntimeWorkflowStep, len(existing))
+	flowOwned := false
+	for _, row := range existing {
+		if row.NodeID == "" {
+			continue // catalog-seeded row — replaced on first flow reseed
+		}
+		flowOwned = true
+		prior[row.NodeID] = row
+	}
+	if !flowOwned {
+		return fresh
+	}
+	inNew := make(map[string]bool, len(fresh))
+	for i := range fresh {
+		inNew[fresh[i].NodeID] = true
+		if old, ok := prior[fresh[i].NodeID]; ok {
+			fresh[i].Status = old.Status
+			fresh[i].StartedAt = old.StartedAt
+			fresh[i].FinishedAt = old.FinishedAt
+			fresh[i].RetryCount = old.RetryCount
+			fresh[i].RejectionNote = old.RejectionNote
+		}
+	}
+	for _, row := range existing {
+		if row.NodeID != "" && !inNew[row.NodeID] {
+			fresh = append(fresh, row)
+		}
+	}
+	return fresh
 }
 
 // reseedFlowStepRuntimeForResume rebuilds runID's step list from persisted flow
