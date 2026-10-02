@@ -8180,6 +8180,8 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 	parentProviderKey := ProviderKey("")
 	parentYolo := false
 	parentWorkingMode := ""
+	parentFlowDriven := false
+	var parentActiveNodes []agentpack.FlowNode
 	boundaryStart := false
 	if parentRun != nil {
 		cwd = parentRun.workspaceCwd
@@ -8191,6 +8193,8 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 		parentReasoningEffort = parentRun.reasoningEffort
 		parentProviderKey = parentRun.providerKey
 		parentYolo = parentRun.yolo
+		parentFlowDriven = parentRun.flowEngineDriven
+		parentActiveNodes = append(parentActiveNodes, parentRun.activeFlowNodes...)
 		boundaryStart = parentRun.vibeSprintStartInFlight
 	}
 	s.mu.Unlock()
@@ -8276,6 +8280,20 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 			if errors.As(err, &invalid) {
 				return SpawnAgentResult{}, fmt.Errorf("%q is a flow definition, not an agent — spawn_agent only accepts agent names; gated flows are mounted by the flow engine", in.Agent)
 			}
+		}
+	}
+
+	// BUG-556 (live run-38799): a hub ad-hoc spawn_agent call cannot carry a
+	// model — SpawnAgentInput.Model is json:"-", internal-only — so the child
+	// silently inherited the parent's model while the node's step-configured
+	// model sat unused (reviewer spawned as devin/swe-2-high with the step card
+	// showing grok-4.7). When the input carries no model and the parent is
+	// flow-driven, resolve the matching active flow node through the same
+	// resolveFlowNodeModel the engine dispatch uses. Explicit in.Model
+	// (BUG-228) still wins — this only fills the empty channel.
+	if strings.TrimSpace(in.Model) == "" && parentFlowDriven {
+		if model := s.spawnAgentNodeModel(ctx, parentRunID, in.Agent, in.Label, parentActiveNodes); model != "" {
+			in.Model = model
 		}
 	}
 

@@ -1878,6 +1878,42 @@ func (s *InteractiveService) delegateSpawnModel(ctx context.Context, parentRunID
 	return s.resolveFlowNodeModel(ctx, parentRunID, node)
 }
 
+// spawnAgentNodeModel resolves the step-configured model for a hub ad-hoc
+// spawn_agent call (BUG-556). The wire input cannot carry a model
+// (SpawnAgentInput.Model is json:"-"), so without this lookup the child
+// silently inherits the parent run's model even when the flow node's step row
+// pins a different one. The spawn is matched against the parent's active flow
+// nodes by node ID (agent or label) or by the node's agent ref basename;
+// zero or ambiguous matches return "" and the child inherits as before.
+func (s *InteractiveService) spawnAgentNodeModel(ctx context.Context, parentRunID, agent, label string, nodes []agentpack.FlowNode) string {
+	if len(nodes) == 0 {
+		return ""
+	}
+	want := strings.TrimSpace(agent)
+	wantLabel := strings.TrimSpace(label)
+	if want == "" && wantLabel == "" {
+		return ""
+	}
+	var match *agentpack.FlowNode
+	for i := range nodes {
+		node := &nodes[i]
+		id := strings.TrimSpace(node.ID)
+		matched := (wantLabel != "" && strings.EqualFold(id, wantLabel)) ||
+			(want != "" && (strings.EqualFold(id, want) || strings.EqualFold(flowNodeAgentName(*node), want)))
+		if !matched {
+			continue
+		}
+		if match != nil {
+			return ""
+		}
+		match = node
+	}
+	if match == nil {
+		return ""
+	}
+	return s.resolveFlowNodeModel(ctx, parentRunID, *match)
+}
+
 // resolveFlowNodeModel resolves a spawnable flow node's OWN configured
 // model, so it can run on a different model/provider than the flow's own
 // resolved model instead of always inheriting it (BUG-228). After BUG-236,
