@@ -654,6 +654,16 @@ func (s *InteractiveService) childPendingGateNodeIDs(rs *interactiveRun) ([]stri
 	return out, nil
 }
 
+// sessionBelongsToVibeSprint scopes resume evidence to the current sprint:
+// a child stamped with a vibe_task_index different from the reconstructed
+// run's vibeSprintIndex belongs to a different sprint and must not satisfy
+// this sprint's nodes or cohort barriers (BUG-616). Unstamped sessions
+// (index 0) and non-vibe runs (sprintIndex 0) fail open — unknown provenance
+// is not foreign.
+func sessionBelongsToVibeSprint(session ProviderSessionState, sprintIndex int) bool {
+	return session.VibeTaskIndex <= 0 || sprintIndex <= 0 || session.VibeTaskIndex == sprintIndex
+}
+
 func matchFlowNodeForSession(nodes []agentpack.FlowNode, session ProviderSessionState) string {
 	if label := strings.TrimSpace(session.Label); label != "" {
 		for _, node := range nodes {
@@ -806,6 +816,15 @@ func (s *InteractiveService) resumedFlowStepRows(rs *interactiveRun, st Provider
 			legacyCohortNodeByRun := s.inferredFlowNodeByLegacyCohort(rs, sessions)
 			for _, session := range sessions {
 				if session.ParentRunID != rs.id {
+					continue
+				}
+				// BUG-616: a leg stamped for a different vibe sprint is
+				// foreign evidence — sprint-N legs stay leg:active after their
+				// sprint ends, so without the index check a finished sprint-1
+				// coder satisfies sprint-2's coder node, and the fabricated
+				// evidence lets audit auto-finalize and the boundary advance
+				// while the sprint's own legs never ran.
+				if !sessionBelongsToVibeSprint(session, rs.vibeSprintIndex) {
 					continue
 				}
 				nodeID := matchFlowNodeForSession(resumeNodes, session)
@@ -2602,6 +2621,15 @@ func (s *InteractiveService) reconstructPendingChildSessions(parentRunID string)
 	ahr, hasAHR := s.workflowStore.(ApprovalHistoryReader)
 	qhr, hasQHR := s.workflowStore.(QuestionHistoryReader)
 
+	// BUG-616: vibe sprint index of the reconstructed parent — foreign-sprint
+	// sessions must not feed this sprint's cohort barriers.
+	s.mu.Lock()
+	parentSprintIndex := 0
+	if parent := s.runs[parentRunID]; parent != nil {
+		parentSprintIndex = parent.vibeSprintIndex
+	}
+	s.mu.Unlock()
+
 	children := make([]ProviderSessionState, 0)
 	for _, session := range sessions {
 		if session.ParentRunID != parentRunID || strings.TrimSpace(session.RunID) == "" {
@@ -2727,7 +2755,7 @@ func (s *InteractiveService) reconstructPendingChildSessions(parentRunID string)
 		loadedIDs = append(loadedIDs, session.RunID)
 		// Re-register parent→child edge for graph/release paths.
 		s.agentOrchestrator.registerChild(parentRunID, session.RunID)
-		if cid := strings.TrimSpace(session.FlowCohortID); cid != "" {
+		if cid := strings.TrimSpace(session.FlowCohortID); cid != "" && sessionBelongsToVibeSprint(session, parentSprintIndex) {
 			cohortMembers[cid] = append(cohortMembers[cid], session)
 		}
 	}

@@ -1547,6 +1547,31 @@ func (s *InteractiveService) runAuditNode(ctx context.Context, parentRunID strin
 	return true
 }
 
+// vibeSprintTopologyNodes returns the sprint node set as the union of the
+// mounted graph and the parked topology — while the owner-debate overlay is
+// mounted (BUG-404), activeFlowNodes holds only debate nodes and the real
+// sprint steps live in vibeParkedNodes. Callers must hold s.mu.
+func vibeSprintTopologyNodes(rs *interactiveRun) []agentpack.FlowNode {
+	if rs == nil || len(rs.vibeParkedNodes) == 0 {
+		if rs == nil {
+			return nil
+		}
+		return rs.activeFlowNodes
+	}
+	merged := append([]agentpack.FlowNode(nil), rs.activeFlowNodes...)
+	seen := make(map[string]bool, len(merged))
+	for _, n := range merged {
+		seen[n.ID] = true
+	}
+	for _, n := range rs.vibeParkedNodes {
+		if !seen[n.ID] {
+			merged = append(merged, n)
+			seen[n.ID] = true
+		}
+	}
+	return merged
+}
+
 // vibeSprintEvidenceComplete reports whether a vibe sprint's audit may
 // auto-finalize on a non-requirement gate (CA-1096): the loop must carry no
 // open issues and every declared agent.code writer leg must have reached
@@ -1559,7 +1584,12 @@ func (s *InteractiveService) vibeSprintEvidenceComplete(parentRunID string) bool
 	var coderIDs []string
 	s.mu.Lock()
 	if rs := s.runs[parentRunID]; rs != nil {
-		for _, n := range rs.activeFlowNodes {
+		// BUG-616: while the owner-debate overlay is mounted the sprint
+		// topology lives in vibeParkedNodes — scanning activeFlowNodes alone
+		// finds zero agent.code nodes and the evidence check vacuously
+		// passes, letting audit auto-finalize mid-sprint (live run-150388:
+		// boundary advanced to Task-033 with sprint-2 coder never run).
+		for _, n := range vibeSprintTopologyNodes(rs) {
 			if c, ok := agentpack.NormalizeBehaviorID(n.Behavior); ok && c == string(BehaviorAgentCode) {
 				coderIDs = append(coderIDs, n.ID)
 			}
@@ -1584,7 +1614,10 @@ func (s *InteractiveService) hasRunningSprintStep(parentRunID, excludeID string)
 	s.mu.Lock()
 	var ids []string
 	if rs := s.runs[parentRunID]; rs != nil {
-		for _, n := range rs.activeFlowNodes {
+		// BUG-616: same parked-topology union as vibeSprintEvidenceComplete —
+		// during a debate the live sprint steps sit in vibeParkedNodes and a
+		// scan of activeFlowNodes alone misses a RUNNING tdd/coder leg.
+		for _, n := range vibeSprintTopologyNodes(rs) {
 			if id := strings.TrimSpace(n.ID); id != "" && id != excludeID {
 				ids = append(ids, id)
 			}
