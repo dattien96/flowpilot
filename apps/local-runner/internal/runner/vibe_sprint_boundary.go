@@ -114,6 +114,19 @@ func inVibeSprintTopology(rs *interactiveRun) bool {
 // existing settle behavior untouched (non-vibe, empty plan, last sprint,
 // open cohort — the audit re-drives after the join, as before).
 func (s *InteractiveService) maybeAutoAdvanceVibeSprintBoundary(ctx context.Context, parentRunID, auditNodeID string) bool {
+	// BUG-619: the boundary must never arm on unverifiable sprint work — a
+	// spurious or re-evaluated audit settle (resume re-drive, deferred join)
+	// reached this path with sprint legs still PENDING and stamped the task
+	// complete while VaultContainer.cpp was still stubs (live run-150388
+	// skipped Task-032 twice). The same CA-1096 evidence gate that guards the
+	// blocked-key branch guards every advance: no open issues, every declared
+	// agent.code leg DONE, and no other sprint step still RUNNING. Called
+	// before s.mu — both helpers take it internally; DONE/open-issue state is
+	// terminal so the check cannot be raced into a false pass.
+	if !s.vibeSprintEvidenceComplete(parentRunID) ||
+		s.hasRunningSprintStep(parentRunID, auditNodeID) {
+		return false
+	}
 	s.mu.Lock()
 	rs := s.runs[parentRunID]
 	if rs == nil || rs.parentRunID != "" || !inVibeSprintTopology(rs) ||
