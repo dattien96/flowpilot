@@ -1702,6 +1702,45 @@ func findFlowNode(nodes []agentpack.FlowNode, id string) (agentpack.FlowNode, bo
 	return agentpack.FlowNode{}, false
 }
 
+// singleMemberDelegateJoinTarget reports whether a closed cohort barrier
+// holds exactly one completed member whose declared forward "done" targets
+// are ALL delegate-spawnable nodes (BUG-623). In that shape there is no
+// shared inline join target for the cohort to dispatch and no reviewer
+// verdict the hub could weigh — the member's own edge advance is the only
+// continuation that can produce the next leg (vibe-sprint tdd -> coder:
+// the hub's `continue` resolves synthesis->coder and only reinvokes an
+// existing child, so a never-spawned coder dead-ended the sprint).
+// Returns the member's node label + final message for tryAdvanceFlowFromNode.
+// Any inline/done/unknown target — or a multi-member cohort — keeps the
+// existing shared-inline / hub-note join semantics untouched.
+func singleMemberDelegateJoinTarget(nodes []agentpack.FlowNode, edges []agentpack.FlowEdge, entries []cohortEntry) (memberLabel, memberMsg string, ok bool) {
+	if len(entries) != 1 {
+		return "", "", false
+	}
+	entry := entries[0]
+	if entry.Status != "completed" {
+		return "", "", false
+	}
+	targets := forwardDoneTargets(edges, entry.Label)
+	if len(targets) == 0 {
+		return "", "", false
+	}
+	for _, id := range targets {
+		target, ok := findFlowNode(nodes, id)
+		if !ok {
+			// "done" sentinel / unresolvable target — the hub decides.
+			return "", "", false
+		}
+		canonical, ok := agentpack.NormalizeBehaviorID(target.Behavior)
+		if !ok || !agentpack.ProviderBackedBehavior(canonical) {
+			// Inline-dispatchable target — the shared-inline arm or the
+			// hub note already covers it.
+			return "", "", false
+		}
+	}
+	return entry.Label, entry.FinalMessage, true
+}
+
 func flowNodeLifecycle(node agentpack.FlowNode) string {
 	switch strings.ToLower(strings.TrimSpace(node.Lifecycle)) {
 	case "spawn", "once":

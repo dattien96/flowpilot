@@ -6899,6 +6899,29 @@ func (s *InteractiveService) settleFlowChildTurnCompletedLocked(rs *interactiveR
 					}
 				}
 			}
+			// BUG-623 (live run-150388): every leg spawned through
+			// tryAdvanceFlowFromNode carries a flow-auto cohort id, so a
+			// SINGLE-member cohort join is the normal settle path. When that
+			// member's forward "done" target is a delegate (vibe-sprint
+			// tdd -> coder) there is no shared inline join target and no hub
+			// decision to make — the hub's only instrument resolves the HUB
+			// node's own edges and merely reinvokes existing children, so the
+			// run parked awaiting a decision that could never produce a coder
+			// leg. Detect that shape up front so the member's own done-edge
+			// advance fires below, and so the hub is not stamped RUNNING for
+			// a synthesis turn that never runs.
+			// Caller holds s.mu — read the topology straight off the run
+			// (activeFlowNodesFor would self-deadlock).
+			var joinNodes []agentpack.FlowNode
+			var joinEdges []agentpack.FlowEdge
+			if parent := s.runs[parentRunID]; parent != nil {
+				joinNodes = parent.activeFlowNodes
+				joinEdges = parent.activeFlowEdges
+			}
+			memberJoinLabel, memberJoinMsg, delegateJoin := "", "", false
+			if !writerJoin && flowDriven {
+				memberJoinLabel, memberJoinMsg, delegateJoin = singleMemberDelegateJoinTarget(joinNodes, joinEdges, entries)
+			}
 			if flowDriven {
 				for _, id := range reviewerNodeIDs {
 					// Caller holds s.mu (settleFlowChildTurnCompletedLocked).
@@ -6913,7 +6936,9 @@ func (s *InteractiveService) settleFlowChildTurnCompletedLocked(rs *interactiveR
 				// hub-RUNNING write below is not, so guard it here too.
 				// run-216140: cp_writer is not a reviewer; joining it must not
 				// revive ss_validator (changes_requested → second ss_lock).
-				if !writerJoin && hubNodeID != "" && s.loopIsAdvancing(parentRunID) {
+				// BUG-623: delegateJoin advances the member's own edge instead —
+				// no hub turn is scheduled, so RUNNING would be a ghost stamp.
+				if !writerJoin && !delegateJoin && hubNodeID != "" && s.loopIsAdvancing(parentRunID) {
 					s.setFlowStepStatusLocked(context.Background(), parentRunID, hubNodeID, StepStatusRunning)
 				}
 			}
@@ -6925,15 +6950,21 @@ func (s *InteractiveService) settleFlowChildTurnCompletedLocked(rs *interactiveR
 				// the SAME inline node (tournament candidates -> tournament_arbiter)
 				// the cohort barrier IS the declared join:all — dispatch that node
 				// in-process instead of reinvoking a hub the flow does not have.
-				// Caller holds s.mu — read the topology straight off the run
-				// (activeFlowNodesFor would self-deadlock).
-				var joinNodes []agentpack.FlowNode
-				var joinEdges []agentpack.FlowEdge
-				if parent := s.runs[parentRunID]; parent != nil {
-					joinNodes = parent.activeFlowNodes
-					joinEdges = parent.activeFlowEdges
-				}
-				if joinTarget, ok := flowSharedInlineJoinTarget(joinNodes, joinEdges, entries); ok {
+				if delegateJoin {
+					s.flowDiagLog(parentRunID, "cohort_join_delegate_advance", "single-member cohort joins to delegate target; firing member done-edge",
+						"cohort_id", rs.flowCohortId,
+						"member_node_id", memberJoinLabel,
+					)
+					memberLabel, memberMsg, note := memberJoinLabel, memberJoinMsg, capturedCohortNote
+					go func() {
+						// Same advance a non-cohorted leg gets via
+						// advanceOrNotifyHub; on no-edge fall back to the
+						// hub-note path unchanged.
+						if !s.tryAdvanceFlowFromNode(parentRunID, memberLabel, memberMsg) {
+							s.maybeAutoReinvokeHubWithNote(parentRunID, note)
+						}
+					}()
+				} else if joinTarget, ok := flowSharedInlineJoinTarget(joinNodes, joinEdges, entries); ok {
 					s.flowDiagLog(parentRunID, "cohort_join_inline_dispatch", "cohort join dispatches shared inline target",
 						"cohort_id", rs.flowCohortId,
 						"target_node_id", joinTarget.ID,
