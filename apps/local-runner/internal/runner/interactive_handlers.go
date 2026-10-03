@@ -1938,6 +1938,12 @@ type workflowStepRuntimeView struct {
 	Provider string `json:"provider,omitempty"`
 	Model    string `json:"model,omitempty"`
 	YoloMode bool   `json:"yoloMode,omitempty"`
+	// BUG-625 (live run-174243): while an overlay graph (owner debate) holds
+	// the run, the BUG-582 union projection must distinguish suspended sprint
+	// rows (Parked — their last stamp is not in-flight work) from live overlay
+	// members (Overlay — internal remediation, not part of the task chain).
+	Parked  bool `json:"parked,omitempty"`
+	Overlay bool `json:"overlay,omitempty"`
 }
 
 type workflowStepsRuntimeSnapshot struct {
@@ -1963,6 +1969,7 @@ func (s *InteractiveService) workflowStepsRuntime(ctx context.Context, runID str
 	var runProvider, runModel string
 	var runYolo bool
 	var topologyFilter map[string]bool
+	var parkedNodes map[string]bool
 	if exists {
 		runProvider = string(rs.providerKey)
 		runModel = rs.modelName
@@ -1985,6 +1992,15 @@ func (s *InteractiveService) workflowStepsRuntime(ctx context.Context, runID str
 			}
 			if len(topologyFilter) == 0 {
 				topologyFilter = nil
+			}
+			// BUG-625: parked membership tells the client which union rows
+			// are suspended under the mounted overlay (vs the overlay's own
+			// live nodes).
+			if len(rs.vibeParkedNodes) > 0 {
+				parkedNodes = map[string]bool{}
+				for _, n := range rs.vibeParkedNodes {
+					parkedNodes[n.ID] = true
+				}
 			}
 		}
 	}
@@ -2020,6 +2036,10 @@ func (s *InteractiveService) workflowStepsRuntime(ctx context.Context, runID str
 		if topologyFilter != nil && st.NodeID != "" && !topologyFilter[st.NodeID] {
 			continue
 		}
+		// BUG-625: while an overlay holds the run, every visible non-parked
+		// graph row is an overlay member (the active graph IS the overlay).
+		parked := parkedNodes[st.NodeID]
+		overlay := parkedNodes != nil && st.NodeID != "" && !parked
 		out = append(out, workflowStepRuntimeView{
 			StepID:           st.ID,
 			StepType:         st.StepType,
@@ -2035,6 +2055,8 @@ func (s *InteractiveService) workflowStepsRuntime(ctx context.Context, runID str
 			Provider:         st.Provider,
 			Model:            st.Model,
 			YoloMode:         st.YoloMode,
+			Parked:           parked,
+			Overlay:          overlay,
 		})
 	}
 	return workflowStepsRuntimeSnapshot{RunID: runID, Steps: out, Provider: runProvider, Model: runModel, YoloMode: runYolo}, nil

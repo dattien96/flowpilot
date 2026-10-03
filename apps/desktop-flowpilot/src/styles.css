@@ -572,6 +572,17 @@ body[data-platform="darwin"] .app-header {
   color: var(--accent);
   border-color: var(--accent);
 }
+/* BUG-625: chip shown while an overlay graph holds the run — the numbered
+   task chain is suspended and overlay nodes are kept out of the rail. */
+.flow-sidebar-overlay {
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--warn);
+  border: 1px solid var(--warn);
+  border-radius: var(--radius-md);
+  padding: 1px var(--space-1);
+  white-space: nowrap;
+}
 /* CA-1097: vibe-tasks "Task i/N — name" chip (mirrors the TUI chip). */
 .flow-sidebar-task {
   font-size: 9px;
@@ -7237,6 +7248,18 @@ body.is-resizing-sidebar {
 .fti-cancelled .fti-icon {
   border-color: var(--text-dim);
   background: rgba(154, 163, 191, 0.18);
+  color: var(--text-dim);
+}
+/* BUG-625: sprint rows suspended under a mounted overlay (owner debate).
+   Dimmed so a stale RUNNING stamp no longer reads as in-flight work. */
+.flow-timeline-item.fti-parked {
+  opacity: 0.45;
+}
+.flow-timeline-item.fti-parked.fti-running .fti-icon {
+  animation: none;
+  border-color: var(--text-dim);
+  background: transparent;
+  box-shadow: none;
   color: var(--text-dim);
 }
 @keyframes fti-pulse {

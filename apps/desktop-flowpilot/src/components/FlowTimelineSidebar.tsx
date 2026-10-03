@@ -96,7 +96,15 @@ export function FlowTimelineSidebar(): React.ReactElement | null {
 
   if (!visible) return null;
 
-  const current = activeWorkflowStep(steps);
+  // BUG-625 (live run-174243): while an overlay graph (owner debate) holds
+  // the run, its nodes project alongside the parked sprint rows — the task
+  // timeline numbers them inline (steps 12-15) and the sprint's stale
+  // hub-node stamp reads "running". Overlay members are engine-internal
+  // remediation, not task-flow steps: the rail shows only the parked task
+  // chain (dimmed) plus a one-line notice, and progress counts task steps.
+  const overlaySteps = steps.filter((s) => s.overlay);
+  const taskSteps = steps.filter((s) => !s.overlay);
+  const current = activeWorkflowStep(steps.filter((s) => !s.parked));
   const activeRunIds = [
     ...(mainRunId ? [mainRunId] : []),
     ...agentRuns.filter((r) => activityCountsForStatus(r.status)).map((r) => r.runId),
@@ -105,7 +113,7 @@ export function FlowTimelineSidebar(): React.ReactElement | null {
   const liveKind = liveLastAt !== undefined ? runActivityKind(liveLastAt, now) : undefined;
   // BUG-159: "reached" (done, or currently on it), not just "fully done" — the
   // user is standing ON step 1 while it runs, so that should read "1/4", not "0/4".
-  const reachedCount = steps.filter(
+  const reachedCount = taskSteps.filter(
     (s) =>
       s.status === "DONE" ||
       s.status === "RUNNING" ||
@@ -137,8 +145,13 @@ export function FlowTimelineSidebar(): React.ReactElement | null {
               </span>
             )}
             <span className="flow-sidebar-progress">
-              {reachedCount}/{steps.length} steps
+              {reachedCount}/{taskSteps.length} steps
             </span>
+            {overlaySteps.length > 0 && (
+              <span className="flow-sidebar-overlay" title="Owner-debate overlay resolving a gate failure — the task chain is suspended until the debate verdict restores it">
+                debate overlay active
+              </span>
+            )}
             {current && <span className="flow-sidebar-current">{current.nodeId || current.stepType}</span>}
             {/* Task-458: freshness of the run's own SSE stream — no log text.
                 Rendered only while a step is RUNNING; a step parked on an
@@ -173,10 +186,10 @@ export function FlowTimelineSidebar(): React.ReactElement | null {
       </div>
 
       <div className="flow-sidebar-body">
-        {steps.length === 0 ? (
+        {taskSteps.length === 0 ? (
           expanded && <div className="wsr-empty">No step-runtime data for this run yet.</div>
         ) : (
-          <FlowStepTimeline steps={steps} compact={!expanded} runProvider={meta.provider} runModel={meta.model} />
+          <FlowStepTimeline steps={taskSteps} compact={!expanded} runProvider={meta.provider} runModel={meta.model} />
         )}
       </div>
     </aside>

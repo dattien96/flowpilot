@@ -45,6 +45,18 @@ const STATE_LABEL: Record<WorkflowStepRuntimeStatus, string> = {
   SKIPPED: "skipped",
 };
 
+// BUG-625: a sprint node suspended under a mounted overlay keeps its last
+// stamp (e.g. the hub.inline node stays RUNNING) but no work advances on it —
+// a parked non-terminal row reads "parked", not "running". Terminal rows keep
+// their verdict (a DONE step is done whether suspended or not).
+function statusLabel(step: WorkflowStepRuntimeDTO): string {
+  if (step.parked && step.status !== "DONE" && step.status !== "CANCELED" &&
+      step.status !== "SKIPPED" && step.status !== "FAILED") {
+    return "parked";
+  }
+  return STATE_LABEL[step.status];
+}
+
 // A node's agentRef is stored as either a bare agent name or a full definition
 // path (the Agent-ref dropdown stores agent.path to disambiguate same-named
 // files across sources). The timeline only needs the human-readable name, which
@@ -100,7 +112,9 @@ export function FlowStepTimeline({
     <ol className={`flow-timeline ${compact ? "flow-timeline-compact" : ""}`}>
       {steps.map((step, index) => {
         const state = visualState(step.status);
-        const isCurrent = state === "running" || state === "approval";
+        // BUG-625: a parked row is suspended — it never takes the "you are
+        // here" highlight even while its last stamp says RUNNING.
+        const isCurrent = !step.parked && (state === "running" || state === "approval");
         const isLast = index === steps.length - 1;
         const lineState = state === "done" ? "done" : state === "running" ? "running" : "idle";
         const provider = step.provider || runProvider;
@@ -109,8 +123,8 @@ export function FlowStepTimeline({
         return (
           <li
             key={step.stepId}
-            className={`flow-timeline-item fti-${state} ${isCurrent ? "fti-current" : ""}`}
-            title={compact ? `${stepName(step)} — ${STATE_LABEL[step.status]}` : undefined}
+            className={`flow-timeline-item fti-${state} ${isCurrent ? "fti-current" : ""} ${step.parked ? "fti-parked" : ""}`}
+            title={compact ? `${stepName(step)} — ${statusLabel(step)}` : undefined}
           >
             <div className="fti-track">
               {/* BUG-173: number every step 1-2-3-4 in BOTH modes so the expanded
@@ -130,7 +144,7 @@ export function FlowStepTimeline({
               <div className="fti-body">
                 <div className="fti-title">{stepName(step)}</div>
                 <div className="fti-desc">
-                  {step.rejectionNote || STATE_LABEL[step.status]}
+                  {step.rejectionNote || statusLabel(step)}
                   {step.retryCount > 0 && <span className="wsr-retry-badge">Retry {step.retryCount}</span>}
                 </div>
                 {(provider || model || step.agentRef) && (

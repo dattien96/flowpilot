@@ -226,6 +226,12 @@ export interface WorkflowStepRuntimeDTO {
   provider?: string;
   model?: string;
   yoloMode?: boolean;
+  // BUG-625: while an overlay graph (owner debate) holds the run, the
+  // projection flags suspended sprint rows (parked) vs live overlay members
+  // (overlay) so the task timeline can split remediation work out of the
+  // numbered chain and stop reading parked stamps as in-flight.
+  parked?: boolean;
+  overlay?: boolean;
 }
 
 export interface WorkflowStepsRuntimeSnapshot {
