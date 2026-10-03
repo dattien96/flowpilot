@@ -4034,11 +4034,14 @@ func (s *InteractiveService) seedTranscriptFromDisk(rs *interactiveRun) {
 	// history reopen has the same user-visible content as the live transcript.
 	historical = mergeTurnLogAssistantsIntoTranscript(historical, allEntries)
 
-	historical = userFacingTranscriptEvents(historical)
+	historical = userFacingTranscriptEvents(historical, rsIsFlowHub(rs))
 	s.appendTranscriptReplayEvents(rs, historical)
 }
 
-func userFacingTranscriptEvents(historical []ProviderEvent) []ProviderEvent {
+// hubRun must be rsIsFlowHub(rs) for the run these events belong to — internal
+// classification is hub-only, so a "[flow-engine]" / "[FlowPilot sub-agent — …]"
+// prompt on a CHILD leg stays visible (it is the leg's own work instructions).
+func userFacingTranscriptEvents(historical []ProviderEvent, hubRun bool) []ProviderEvent {
 	if len(historical) == 0 {
 		return nil
 	}
@@ -4049,13 +4052,17 @@ func userFacingTranscriptEvents(historical []ProviderEvent) []ProviderEvent {
 	// prose events (bounded by the next turn_started) so the chat transcript
 	// mapper and desktop reducer drop them exactly like the live emitLocked
 	// path does. Two markers: the persisted e.Internal flag (new events) and
-	// isFlowEnginePrompt on the original prompt (reconstructed history). Gate
-	// reprompts and handoff seeds are deliberately NOT internal — their
-	// replies are user-visible output, same as the live path.
+	// isFlowEnginePrompt on the original prompt (reconstructed history) — the
+	// prompt marker counts only when hubRun is true. Gate reprompts and
+	// handoff seeds are deliberately NOT internal — their replies are
+	// user-visible output, same as the live path.
 	internal := false
 	for _, e := range historical {
 		if e.Type == EventTurnStarted {
-			internal = e.Internal || isFlowEnginePrompt(e.Prompt)
+			// The persisted Internal flag is honored on the hub only — turns
+			// misclassified on child legs before the hub-scope fix stay hidden
+			// forever otherwise.
+			internal = hubRun && (e.Internal || isFlowEnginePrompt(e.Prompt))
 		}
 		if isInternalTranscriptEvent(e) {
 			continue
@@ -4949,7 +4956,7 @@ func (s *InteractiveService) seedGrokTranscriptFromDisk(rs *interactiveRun) {
 	}
 	if len(sessionIDs) == 0 {
 		historical := mergeTurnLogAssistantsIntoTranscript(promptOnlyTurnLogEvents(rawPrompts), allEntries)
-		historical = userFacingTranscriptEvents(historical)
+		historical = userFacingTranscriptEvents(historical, rsIsFlowHub(rs))
 		if len(historical) > 0 {
 			s.appendTranscriptReplayEvents(rs, stampReplayPromptIDs(historical))
 		}
@@ -4982,7 +4989,7 @@ func (s *InteractiveService) seedGrokTranscriptFromDisk(rs *interactiveRun) {
 	if len(allEntries) > 0 {
 		historical = mergeTurnLogAssistantsIntoTranscript(historical, allEntries)
 	}
-	historical = userFacingTranscriptEvents(historical)
+	historical = userFacingTranscriptEvents(historical, rsIsFlowHub(rs))
 	if len(historical) == 0 {
 		return
 	}
@@ -5010,7 +5017,7 @@ func (s *InteractiveService) seedOpencodeTranscriptFromDisk(rs *interactiveRun) 
 		return
 	}
 	historical := mergeTurnLogAssistantsIntoTranscript(promptOnlyTurnLogEvents(rawPrompts), allEntries)
-	historical = userFacingTranscriptEvents(historical)
+	historical = userFacingTranscriptEvents(historical, rsIsFlowHub(rs))
 	if len(historical) == 0 {
 		return
 	}
@@ -5040,7 +5047,7 @@ func (s *InteractiveService) seedDevinTranscriptFromDisk(rs *interactiveRun) {
 		return
 	}
 	historical := mergeTurnLogAssistantsIntoTranscript(promptOnlyTurnLogEvents(rawPrompts), allEntries)
-	historical = userFacingTranscriptEvents(historical)
+	historical = userFacingTranscriptEvents(historical, rsIsFlowHub(rs))
 	if len(historical) == 0 {
 		return
 	}
@@ -5206,7 +5213,7 @@ func (s *InteractiveService) seedFlowHubTranscriptFromTurnLog(rs *interactiveRun
 		return
 	}
 	historical := buildFlowHubTranscriptEventsFromTurnLog(entries)
-	historical = userFacingTranscriptEvents(historical)
+	historical = userFacingTranscriptEvents(historical, rsIsFlowHub(rs))
 	if len(historical) == 0 {
 		return
 	}

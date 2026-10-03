@@ -183,7 +183,7 @@ func (s *InteractiveService) handleChatTimeline(w http.ResponseWriter, r *http.R
 			writeInteractiveError(w, newAPIErr(http.StatusInternalServerError, "chat_timeline_unavailable", err.Error()))
 			return
 		}
-		records = collapseRepeatedFinals(suppressInternalTurnRecords(recs))
+		records = collapseRepeatedFinals(suppressInternalTurnRecords(recs, s.legIsFlowHubFunc()))
 		if len(records) > 0 {
 			nextSeq = records[len(records)-1].ChatSeq
 		} else {
@@ -271,10 +271,16 @@ func (s *InteractiveService) backfillLegacyChatTranscript(ctx context.Context, c
 // Records stay on disk — this is a read-model collapse, same contract as
 // collapseRepeatedFinals.
 //
+// isHubLeg reports whether a LegRunID is the flow hub — the window may only
+// open on hub legs. Internal turns are hub-only by contract (turnIsInternal),
+// so both markers are gated by it: an internal flag or empty prompt on a
+// child/plain leg is either a misclassified pre-fix record or a legitimate
+// seed boundary, and its replies are real work that must stay visible.
+//
 // Non-internal redacted turns (handoff seeds, gate reprompts) write records
 // without the prompt key, so p.Prompt == nil fails open and their user-visible
 // replies are kept. Pre-fix records cannot be reclassified, so a legacy empty
-// prompt still opens the window — the internal-flag residue shrinks as chats
+// prompt still opens the window on hub legs — the residue shrinks as chats
 // advance.
 //
 // The window is per-leg (records interleave legs) and bounded by the next
@@ -288,7 +294,7 @@ func (s *InteractiveService) backfillLegacyChatTranscript(ctx context.Context, c
 // leaking one engine paragraph. New records stop being written at capture
 // time (chatRecordsFromProviderEvent honors event.Internal), so the residue
 // shrinks as chats advance.
-func suppressInternalTurnRecords(recs []ChatTranscriptRecord) []ChatTranscriptRecord {
+func suppressInternalTurnRecords(recs []ChatTranscriptRecord, isHubLeg func(string) bool) []ChatTranscriptRecord {
 	internal := map[string]bool{} // legRunID → inside an internal turn window
 	out := make([]ChatTranscriptRecord, 0, len(recs))
 	for _, rec := range recs {
@@ -299,7 +305,8 @@ func suppressInternalTurnRecords(recs []ChatTranscriptRecord) []ChatTranscriptRe
 				Internal bool    `json:"internal"`
 			}
 			if json.Unmarshal(rec.Payload, &p) == nil {
-				internal[leg] = p.Internal || (p.Prompt != nil && strings.TrimSpace(*p.Prompt) == "")
+				internal[leg] = isHubLeg != nil && isHubLeg(leg) &&
+					(p.Internal || (p.Prompt != nil && strings.TrimSpace(*p.Prompt) == ""))
 			} else {
 				internal[leg] = false
 			}

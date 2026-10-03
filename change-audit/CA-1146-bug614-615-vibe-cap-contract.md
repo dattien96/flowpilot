@@ -80,3 +80,31 @@ and subagent/debate prose rendered as ordinary chat rows in the main UI.
     `decideNextVibeSprint` and the three boundary readers.
 - **Tests:** `vibe_sprint_budget_scale_test.go` — 10-task plan ⇒ 200, all
   10 sprints trigger, empty plan keeps the floor.
+
+## Follow-up — internal turns are hub-only (BUG-615 regression)
+
+- **Regression (user-reported, CP-02 was clean):** `isFlowEnginePrompt`
+  matches the `[FlowPilot sub-agent — …]` spawn envelope, so the classifier
+  at `startTurn` marked every CHILD leg's first turn internal → the child's
+  whole reply dropped from its own chat/transcript. Sub-agent responses
+  stopped rendering.
+- **Fix — scope classification to the flow hub:**
+  - `rsIsFlowHub(rs)` = root run + `flowEngineDriven`; `turnIsInternal` =
+    `rsIsFlowHub && (in.Internal || isFlowEnginePrompt)` at the emit site.
+  - `engineTurnOnFlowHub` (dispatch marking) already hub-scoped — unchanged.
+  - Replay: `userFacingTranscriptEvents(historical, hubRun)` gates BOTH the
+    persisted `e.Internal` flag and the prompt marker on `hubRun` — pre-fix
+    runs that mis-stamped child events heal on resume/reopen.
+  - Read-side `suppressInternalTurnRecords(recs, isHubLeg)` gates the window
+    on `s.legIsFlowHubFunc()` — memoized predicate over resident fields, or
+    the durable row (`ParentRunID==""` + `AutoOrchestrate`/`ActiveFlowNodes`,
+    the same fields `reconstructRun` re-engages `flowEngineDriven` from).
+    Unknown legs fail open (records kept). Both the `internal` flag and the
+    legacy empty-prompt marker require a hub leg, so pre-fix child-leg
+    records reappear.
+- **Tests (additive):** `TestTurnIsInternal_HubOnly`,
+  `TestUserFacingTranscriptEvents_ChildLegTurnsStayVisible`,
+  `TestSuppressInternalTurnRecords_ChildLegLegacyRecordsKept`. Existing
+  replay tests updated to pass the hub context they simulate.
+- **detect_changes:** risk HIGH — blast radius on timeline/read seams only;
+  changes are additive predicates, no state-shape or wire-schema change.

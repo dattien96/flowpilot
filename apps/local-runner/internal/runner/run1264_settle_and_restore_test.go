@@ -322,7 +322,7 @@ func TestRun1264RestoreKeepsAgentLifecycleNarrationOutOfTranscript(t *testing.T)
 		{Type: EventToolStarted, ToolName: "spawn_agent"},
 		{Type: EventMessageCompleted, Text: "Both reviewers approved with no conflicts."},
 	}
-	got := userFacingTranscriptEvents(historical)
+	got := userFacingTranscriptEvents(historical, true)
 	if len(got) != 2 || got[0].Type != EventToolStarted || got[1].Text != "Both reviewers approved with no conflicts." {
 		t.Fatalf("user-facing restore events = %+v, want the spawn anchor and synthesis message", got)
 	}

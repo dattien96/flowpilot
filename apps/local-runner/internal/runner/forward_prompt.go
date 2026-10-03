@@ -108,7 +108,7 @@ func (s *InteractiveService) forwardChatTranscriptTurns(ctx context.Context, cha
 	if err != nil || len(records) == 0 {
 		return nil
 	}
-	turns, _ := chatTurnsAndActions(suppressInternalTurnRecords(records))
+	turns, _ := chatTurnsAndActions(suppressInternalTurnRecords(records, s.legIsFlowHubFunc()))
 	out := make([]transcriptTurn, 0, len(turns))
 	for _, tr := range turns {
 		if isSystemPrompt(tr.User) {

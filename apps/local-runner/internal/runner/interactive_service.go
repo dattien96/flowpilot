@@ -4677,8 +4677,55 @@ func (s *InteractiveService) takeQueuedFeedbackPrompt(parentRunID, runID, prompt
 func (s *InteractiveService) engineTurnOnFlowHub(runID string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	rs := s.runs[runID]
+	return rsIsFlowHub(s.runs[runID])
+}
+
+// rsIsFlowHub reports whether rs is a FLOW HUB run — root run (no parent)
+// driven by the flow engine. Child legs (parentRunID != "") are never hubs:
+// their turns are that leg's own work and stay visible in the leg's chat.
+func rsIsFlowHub(rs *interactiveRun) bool {
 	return rs != nil && rs.parentRunID == "" && rs.flowEngineDriven
+}
+
+// turnIsInternal (BUG-615) classifies one startTurn input as engine-internal
+// for the TARGET run rs. Internal turns are hub-only: a flow-engine prompt
+// ([flow-engine] reinvoke, joined-result note, "[FlowPilot sub-agent — …]"
+// envelope) on the flow hub is orchestration narration, but the same
+// envelope landing on a child leg is that leg's real work — its reply is
+// user-facing output in the leg's own chat. in.Internal (set by engine
+// dispatch paths via engineTurnOnFlowHub) carries the markerless case. Gate
+// reprompts and handoff seeds are deliberately not internal.
+func turnIsInternal(in TurnInput, rs *interactiveRun) bool {
+	return rsIsFlowHub(rs) && (in.Internal || isFlowEnginePrompt(in.Prompt))
+}
+
+// legIsFlowHubFunc returns a memoized predicate for "is this leg the flow
+// hub" over LegRunID values — resident run fields when in RAM, the durable
+// session row otherwise (ParentRunID=="" plus persisted flow residue:
+// AutoOrchestrate or ActiveFlowNodes — reconstructRun re-engages
+// flowEngineDriven from exactly that row). Unknown legs resolve false
+// (fail open): the read-side suppressor then keeps their records rather
+// than risk hiding real work. Must not hold s.mu at call time.
+func (s *InteractiveService) legIsFlowHubFunc() func(string) bool {
+	cache := map[string]bool{}
+	return func(leg string) bool {
+		if v, ok := cache[leg]; ok {
+			return v
+		}
+		hub := false
+		s.mu.Lock()
+		rs := s.runs[leg]
+		s.mu.Unlock()
+		if rs != nil {
+			hub = rsIsFlowHub(rs)
+		} else if reader, ok := s.workflowStore.(SessionHistoryReader); ok {
+			if st, found, err := reader.GetProviderSession(context.Background(), leg); err == nil && found {
+				hub = st.ParentRunID == "" && (st.AutoOrchestrate || len(st.ActiveFlowNodes) > 0)
+			}
+		}
+		cache[leg] = hub
+		return hub
+	}
 }
 
 func (s *InteractiveService) scheduleChildTurn(runID, stepID, prompt string) {
@@ -11801,15 +11848,12 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 	if isSystemPrompt(in.Prompt) && !strings.Contains(in.Prompt, systemPromptTag) {
 		in.Prompt = systemPromptTag + "\n" + in.Prompt
 	}
-	// BUG-615: classify the turn BEFORE the display copy is redacted. A turn is
-	// engine-internal when its prompt is flow-engine orchestration (hub
-	// reinvoke, joined-result note, synthesis/debate instruction) or the
-	// dispatch path marked it Internal (markerless engine prompts on the
-	// flow hub). Gate reprompts and handoff seeds stay non-internal: their
-	// replies are user-visible output. currentTurnInternal is set here — not
-	// inferred inside emitLocked — so provider-emitted turn_started events
-	// mid-turn cannot corrupt the window.
-	rs.currentTurnInternal = in.Internal || isFlowEnginePrompt(in.Prompt)
+	// BUG-615: classify the turn BEFORE the display copy is redacted, and only
+	// for the flow hub — see turnIsInternal. Gate reprompts and handoff seeds
+	// stay non-internal: their replies are user-visible output.
+	// currentTurnInternal is set here — not inferred inside emitLocked — so
+	// provider-emitted turn_started events mid-turn cannot corrupt the window.
+	rs.currentTurnInternal = turnIsInternal(in, rs)
 	s.emitLocked(rs, ProviderEvent{Type: EventTurnStarted, ProviderTurnID: turnID, WorkflowStepRunID: in.StepID, Prompt: liveTurnStartedDisplayPrompt(in.Prompt), Internal: rs.currentTurnInternal})
 	// BUG-288 R20-1 / CP-51 DOD-G8: promote prep → bare launch-ack ONLY after
 	// TurnStarted is in RAM, and only launch the provider AFTER launch-ack is

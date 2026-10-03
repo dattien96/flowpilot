@@ -102,7 +102,7 @@ func TestFilterFlowHubUnassisted_SystemChildPromptDoesNotOpenKeepWindow(t *testi
 		{Type: EventMessageCompleted, Text: "CHILD ASSISTANT MUST DROP"},
 	}
 	got := filterFlowHubUnassistedProviderHistory(historical, []string{"fix bug 1+1 != 2"})
-	got = userFacingTranscriptEvents(got)
+	got = userFacingTranscriptEvents(got, true)
 	for _, e := range got {
 		if e.Type == EventMessageCompleted && strings.Contains(e.Text, "CHILD ASSISTANT") {
 			t.Fatalf("child assistant kept: %+v", got)

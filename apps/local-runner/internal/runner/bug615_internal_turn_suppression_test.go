@@ -20,6 +20,13 @@ func mkTS(leg, prompt string, internal bool) ChatTranscriptRecord {
 	return ChatTranscriptRecord{ChatID: "c", LegRunID: leg, Type: EventTypeChatTurnStarted, Payload: p}
 }
 
+// hubAll treats every leg as a flow hub — the shape these window tests target.
+var hubAll = func(string) bool { return true }
+
+// noHubs treats every leg as a child/plain leg — the empty-prompt legacy
+// heuristic must never fire there.
+var noHubs = func(string) bool { return false }
+
 func mkRec(leg, typ string, fields map[string]any) ChatTranscriptRecord {
 	p, _ := json.Marshal(fields)
 	return ChatTranscriptRecord{ChatID: "c", LegRunID: leg, Type: typ, Payload: p}
@@ -41,7 +48,7 @@ func TestSuppressInternalTurnRecords_InternalWindow(t *testing.T) {
 		mkTS("leg-1", "thanks", false), // user prompt closes the window
 		mkRec("leg-1", EventTypeChatMessageCompleted, map[string]any{"text": "welcome"}),
 	}
-	out := suppressInternalTurnRecords(recs)
+	out := suppressInternalTurnRecords(recs, hubAll)
 	var texts []string
 	var kinds []string
 	for _, r := range out {
@@ -85,7 +92,7 @@ func TestSuppressInternalTurnRecords_ExplicitFlag(t *testing.T) {
 		mkTS("leg-1", "Synthesize the owner debate now", true),
 		mkRec("leg-1", EventTypeChatMessageCompleted, map[string]any{"text": "narration"}),
 	}
-	out := suppressInternalTurnRecords(recs)
+	out := suppressInternalTurnRecords(recs, hubAll)
 	for _, r := range out {
 		if r.Type == EventTypeChatMessageCompleted {
 			t.Fatalf("internal:true turn prose leaked")
@@ -99,7 +106,7 @@ func TestSuppressInternalTurnRecords_FailsOpenBeforeBoundary(t *testing.T) {
 	recs := []ChatTranscriptRecord{
 		mkRec("leg-1", EventTypeChatMessageCompleted, map[string]any{"text": "page-start prose"}),
 	}
-	out := suppressInternalTurnRecords(recs)
+	out := suppressInternalTurnRecords(recs, hubAll)
 	if len(out) != 1 {
 		t.Fatalf("pre-boundary record dropped: got %d want 1", len(out))
 	}
@@ -115,7 +122,7 @@ func TestSuppressInternalTurnRecords_AbsentPromptFailsOpen(t *testing.T) {
 		{ChatID: "c", LegRunID: "leg-1", Type: EventTypeChatTurnStarted, Payload: p},
 		mkRec("leg-1", EventTypeChatMessageCompleted, map[string]any{"text": "continuation answer"}),
 	}
-	out := suppressInternalTurnRecords(recs)
+	out := suppressInternalTurnRecords(recs, hubAll)
 	found := false
 	for _, r := range out {
 		if r.Type == EventTypeChatMessageCompleted {
@@ -124,6 +131,26 @@ func TestSuppressInternalTurnRecords_AbsentPromptFailsOpen(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("seed-turn reply suppressed by absent-prompt boundary — must fail open")
+	}
+}
+
+// A legacy empty-prompt boundary on a NON-hub leg (child leg spawn envelope,
+// plain-chat handoff seed) must not open the window — the leg's replies are
+// real work. Hub gating is what keeps "subagent responses show in their own
+// chat" true for pre-fix records too.
+func TestSuppressInternalTurnRecords_ChildLegLegacyRecordsKept(t *testing.T) {
+	recs := []ChatTranscriptRecord{
+		mkTS("child-1", "", false), // legacy sub-agent envelope boundary
+		mkRec("child-1", EventTypeChatMessageCompleted, map[string]any{"text": "child work reply"}),
+	}
+	out := suppressInternalTurnRecords(recs, noHubs)
+	if len(out) != 2 {
+		t.Fatalf("child-leg legacy records suppressed — must keep, got %d", len(out))
+	}
+	// Same records on a hub leg still suppress (the flood being fixed).
+	out = suppressInternalTurnRecords(recs, func(string) bool { return true })
+	if len(out) != 1 {
+		t.Fatalf("hub-leg legacy internal prose kept — got %d want 1 (boundary only)", len(out))
 	}
 }
 
@@ -202,7 +229,7 @@ func TestUserFacingTranscriptEvents_StampsInternalWindow(t *testing.T) {
 		{Type: EventTurnStarted, Prompt: "next user question"},
 		{Type: EventMessageCompleted, Text: "answer two"},
 	}
-	out := userFacingTranscriptEvents(hist)
+	out := userFacingTranscriptEvents(hist, true)
 	var msgs []ProviderEvent
 	for _, e := range out {
 		if e.Type == EventMessageCompleted {
@@ -217,5 +244,53 @@ func TestUserFacingTranscriptEvents_StampsInternalWindow(t *testing.T) {
 	}
 	if !msgs[1].Internal {
 		t.Fatalf("engine narration not stamped internal: %+v", msgs[1])
+	}
+}
+
+// Regression guard: a flow-engine prompt landing on a CHILD leg is that leg's
+// real work — the "[FlowPilot sub-agent — …]" spawn envelope and
+// "[flow-engine] Review this result" reviewer instructions are instructions to
+// the child, and the child's reply is user-facing work output in its own chat.
+// Internal classification is hub-only (BUG-615 follow-up: CP-02 child legs
+// rendered nothing after the prompt-only classifier shipped).
+func TestUserFacingTranscriptEvents_ChildLegTurnsStayVisible(t *testing.T) {
+	hist := []ProviderEvent{
+		{Type: EventTurnStarted, Prompt: "[FlowPilot sub-agent — agent: coder | role: coder]\n\nimplement it"},
+		{Type: EventMessageCompleted, Text: "child work reply"},
+		{Type: EventTurnStarted, Prompt: "[flow-engine] Review this result from node \"coder\""},
+		{Type: EventMessageCompleted, Text: "review verdict reply"},
+	}
+	out := userFacingTranscriptEvents(hist, false)
+	for _, e := range out {
+		if e.Type == EventMessageCompleted && e.Internal {
+			t.Fatalf("child-leg reply stamped internal — child chats would go blank: %+v", e)
+		}
+	}
+}
+
+// turnIsInternal: hub-only classification — dispatch-marked or flow-engine
+// prompt on the flow hub is internal; the same prompt on a child leg is the
+// leg's own work.
+func TestTurnIsInternal_HubOnly(t *testing.T) {
+	hub := &interactiveRun{parentRunID: "", flowEngineDriven: true}
+	child := &interactiveRun{parentRunID: "hub", flowEngineDriven: false}
+	plain := &interactiveRun{}
+	if !turnIsInternal(TurnInput{Prompt: "[flow-engine] Agent results ready"}, hub) {
+		t.Fatal("flow-engine prompt on hub must be internal")
+	}
+	if turnIsInternal(TurnInput{Prompt: "[flow-engine] Agent results ready"}, child) {
+		t.Fatal("flow-engine prompt on a child leg must stay visible")
+	}
+	if turnIsInternal(TurnInput{Prompt: "[FlowPilot sub-agent — agent: coder]"}, child) {
+		t.Fatal("sub-agent envelope on the child leg must stay visible")
+	}
+	if !turnIsInternal(TurnInput{Internal: true}, hub) {
+		t.Fatal("dispatch-marked internal must win on hub")
+	}
+	if turnIsInternal(TurnInput{Internal: true}, plain) {
+		t.Fatal("internal flag on a plain chat is meaningless — dispatch guards it")
+	}
+	if turnIsInternal(TurnInput{Prompt: "user ask"}, hub) {
+		t.Fatal("user prompt on hub stays visible")
 	}
 }

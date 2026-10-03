@@ -102,7 +102,7 @@ func (s *InteractiveService) handleGetRunTimeline(w http.ResponseWriter, r *http
 			writeInteractiveError(w, newAPIErr(http.StatusInternalServerError, "run_timeline_unavailable", err.Error()))
 			return
 		}
-		records = collapseRepeatedFinals(suppressInternalTurnRecords(recs))
+		records = collapseRepeatedFinals(suppressInternalTurnRecords(recs, s.legIsFlowHubFunc()))
 		if len(records) > 0 {
 			nextSeq = records[len(records)-1].ChatSeq
 		} else {
