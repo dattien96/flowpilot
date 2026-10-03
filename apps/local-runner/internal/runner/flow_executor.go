@@ -121,8 +121,16 @@ func (s *InteractiveService) startResolvedFlowFromNode(ctx context.Context, pare
 	s.mu.Unlock()
 	negotiationCap := record.Definition.Policy.NegotiationCap
 	s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
-		st.Cap = cap
-		st.RoundCap = cap
+		// BUG-631 (live run-150388): an operator extend-cap grant is durable
+		// loop state — ExtendCount>0 with a granted Cap above the policy
+		// default means a human explicitly raised this run's headroom, and a
+		// remount (debate/sprint re-mount, post-restart start) must not shrink
+		// it back to the yaml default. Fresh mounts (ExtendCount==0) and a
+		// reconfigured LARGER policy cap still reseed as before.
+		if st.ExtendCount == 0 || st.Cap < cap {
+			st.Cap = cap
+			st.RoundCap = cap
+		}
 		st.ExtendBy = extendBy
 		// CP-67 P-5 (B-10): phase-scoped renegotiation budget; 0 = runner
 		// default 5 (effectiveNegotiationCap).

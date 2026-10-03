@@ -4,7 +4,9 @@
 - **Severity:** Medium-High — user/operator `extend-cap` decisions are
   silently discarded; cap-blocked escalations re-fire instead of
   resuming with the granted headroom
-- **Status:** open
+- **Status:** RESOLVED — CA-1162 (`flow_executor.go` mount mutation now
+  preserves a granted cap: reseed only when `ExtendCount == 0` or the
+  policy cap grew larger; regression test `bug631_extend_cap_reseed_test.go`)
 - **Found:** live run-150388, 2026-10-02/03 — loop state showed
   `extendCount:31` yet `cap:5` (policy default), i.e. ~31 granted
   extensions, zero effect
