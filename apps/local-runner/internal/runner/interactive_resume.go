@@ -1674,7 +1674,10 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 			if lines, loadErr := tlog.LoadStepTransitions(context.Background(), rs.id); loadErr != nil {
 				log.Printf("reconstructRun: LoadStepTransitions runID=%s: %v (falling back to evidence-walk)", rs.id, loadErr)
 			} else if len(lines) > 0 {
-				rows = applyStepTransitionReplay(rows, lines, keepWaiting)
+				// BUG-621: scope the merge to the run's current vibe sprint —
+				// remounted node ids must not inherit earlier sprints' terminal
+				// statuses (sprint<=1 / non-vibe runs replay everything as before).
+				rows = applyStepTransitionReplaySprint(rows, lines, keepWaiting, rs.vibeSprintIndex)
 				// Hub precedence when flow genuinely completed (mirrors evidence-walk):
 				// hub PENDING → DONE. I-3: never promote FAILED/CANCELED. BUG-320: use
 				// the SAME stopped-aware predicate as the evidence-walk default above

@@ -22,7 +22,12 @@ type stepTransitionLine struct {
 	Status   string `json:"status,omitempty"`
 	Provider string `json:"provider,omitempty"`
 	Model    string `json:"model,omitempty"`
-	TS       string `json:"ts"` // RFC3339Nano
+	// VibeSprintIndex stamps the vibe sprint that produced this transition
+	// (BUG-621): vibe-sprint remounts the same node ids per task, so replay on
+	// a later sprint must ignore lines stamped by an earlier one. 0/absent =
+	// legacy unstamped or non-vibe run.
+	VibeSprintIndex int    `json:"vibe_sprint_index,omitempty"`
+	TS              string `json:"ts"` // RFC3339Nano
 }
 
 // StepTransitionLogStore persists per-node step transitions for flow-engine
@@ -45,6 +50,16 @@ type StepTransitionLogStore interface {
 //     stays only when keepWaitingNodeIDs says a pending gate still exists.
 //   - FAILED/CANCELED are never promoted to DONE (I-3) — last log status is final.
 func applyStepTransitionReplay(rows []RuntimeWorkflowStep, lines []stepTransitionLine, keepWaitingNodeIDs map[string]bool) []RuntimeWorkflowStep {
+	return applyStepTransitionReplaySprint(rows, lines, keepWaitingNodeIDs, 0)
+}
+
+// applyStepTransitionReplaySprint is applyStepTransitionReplay plus BUG-621
+// sprint scoping: on a vibe run at sprint > 1 only lines stamped with the
+// current sprint index apply — sprint-1 terminal statuses must not replay onto
+// sprint-2's remounted node ids, and unattributable unstamped lines are
+// dropped too (the BUG-616 sprint-filtered session walk rebuilds the rows).
+// currentSprint <= 1 and non-vibe runs keep the byte-for-byte legacy merge.
+func applyStepTransitionReplaySprint(rows []RuntimeWorkflowStep, lines []stepTransitionLine, keepWaitingNodeIDs map[string]bool, currentSprint int) []RuntimeWorkflowStep {
 	if len(lines) == 0 || len(rows) == 0 {
 		return rows
 	}
@@ -61,6 +76,9 @@ func applyStepTransitionReplay(rows []RuntimeWorkflowStep, lines []stepTransitio
 	}
 	lastByNode := make(map[string]*last, len(rows))
 	for _, line := range lines {
+		if currentSprint > 1 && line.VibeSprintIndex != currentSprint {
+			continue
+		}
 		nodeID := strings.TrimSpace(line.NodeID)
 		if nodeID == "" {
 			continue

@@ -444,10 +444,19 @@ func (s *InteractiveService) appendStepTransitionLog(parentRunID, nodeID, status
 		return
 	}
 	var driven bool
+	var sprintIndex int
 	if muHeld {
 		driven = s.flowEngineDrivenUnlocked(parentRunID)
+		if rs := s.runs[parentRunID]; rs != nil {
+			sprintIndex = rs.vibeSprintIndex
+		}
 	} else {
 		driven = s.isFlowEngineDriven(parentRunID)
+		s.mu.Lock()
+		if rs := s.runs[parentRunID]; rs != nil {
+			sprintIndex = rs.vibeSprintIndex
+		}
+		s.mu.Unlock()
 	}
 	if !driven {
 		return
@@ -457,12 +466,13 @@ func (s *InteractiveService) appendStepTransitionLog(parentRunID, nodeID, status
 		return
 	}
 	line := stepTransitionLine{
-		RunID:    parentRunID,
-		NodeID:   nodeID,
-		Status:   status,
-		Provider: provider,
-		Model:    model,
-		TS:       time.Now().UTC().Format(time.RFC3339Nano),
+		RunID:           parentRunID,
+		NodeID:          nodeID,
+		Status:          status,
+		Provider:        provider,
+		Model:           model,
+		VibeSprintIndex: sprintIndex,
+		TS:              time.Now().UTC().Format(time.RFC3339Nano),
 	}
 	if err := tlog.AppendStepTransition(context.Background(), parentRunID, line); err != nil {
 		log.Printf("[flow-step] append transition log run=%q node=%q status=%q: %v", parentRunID, nodeID, status, err)
