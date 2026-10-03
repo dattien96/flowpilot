@@ -778,3 +778,46 @@ func IsReadOnlyLockedPathUnder(rec FrozenContractRecord, candidate, workspace st
 func ReadOnlyLockedPaths(rec FrozenContractRecord) []string {
 	return uniqueNormalizedPaths(rec.ReadOnlyPaths)
 }
+
+// IsOwnedScopePathUnder reports whether candidate falls inside the record's
+// OWNED scope — ReadOnlyPaths ∪ DeclaredPaths ∪ AllowedExtraPaths — using the
+// same normalization and absolute-stored-path relativization as
+// IsReadOnlyLockedPathUnder. "Owned" means the contract reserves the path for
+// its writer leg: a run that is not that leg (the orchestrating hub, BUG-627)
+// must not write it, regardless of which subset lists it.
+func IsOwnedScopePathUnder(rec FrozenContractRecord, candidate, workspace string) bool {
+	for _, set := range [][]string{rec.ReadOnlyPaths, rec.DeclaredPaths, rec.AllowedExtraPaths} {
+		if scopePathSetMatchesUnder(set, candidate, workspace) {
+			return true
+		}
+	}
+	return false
+}
+
+// scopePathSetMatchesUnder mirrors IsReadOnlyLockedPathUnder's two-pass match
+// — exact normalized equality first, then relativize-under-workspace for
+// legacy absolute entries — over an arbitrary path set.
+func scopePathSetMatchesUnder(paths []string, candidate, workspace string) bool {
+	np := normalizeScopePath(candidate)
+	if np == "" {
+		return false
+	}
+	ws := strings.TrimSpace(workspace)
+	for _, p := range paths {
+		sp := normalizeScopePath(p)
+		if sp == np {
+			return true
+		}
+		if ws == "" || !filepath.IsAbs(filepath.FromSlash(sp)) {
+			continue
+		}
+		rel, err := filepath.Rel(ws, filepath.FromSlash(sp))
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		if normalizeScopePath(rel) == np {
+			return true
+		}
+	}
+	return false
+}

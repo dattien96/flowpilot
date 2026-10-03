@@ -2,7 +2,11 @@
 
 - **ID:** BUG-626
 - **Severity:** High (parks the sprint on a human card every occurrence; burned ~30 min + 8 owner legs on run-174243)
-- **Status:** open
+- **Status:** RESOLVED — CA-1160. Remediation reprompts now carry the gated
+  step's read-only contract surface and forbid edits to it; the hub resume
+  prompt pins the orchestrator role and enumerates contract-owned paths.
+  Bridge-level enforcement lands with BUG-627's hub-scope guard.
+  Regression tests: `internal/runner/bug626_627_hub_contract_scope_test.go`.
 - **Found:** live run-174243 (Task-033 sprint, PrivateVault), 2026-10-03 ~23:08–23:45
 
 ## Symptom

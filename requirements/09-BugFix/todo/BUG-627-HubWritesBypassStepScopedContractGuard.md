@@ -3,7 +3,12 @@
 - **ID:** BUG-627
 - **Severity:** High (contract enforcement has a structural hole: the main
   session can silently do any step's work unbound)
-- **Status:** open
+- **Status:** RESOLVED — CA-1160. `decideHubContractScopeLock` silent-denies
+  hub writes/execs on any path owned by an active frozen contract for the
+  hub's own run id (ReadOnly ∪ Declared ∪ AllowedExtra), at the same
+  provider-neutral bridge choke point, before YOLO. Children unaffected —
+  the step-scoped guards still own them. Regression tests:
+  `internal/runner/bug626_627_hub_contract_scope_test.go`.
 - **Found:** live run-174243 (Task-033 sprint), 2026-10-03 ~23:19–23:22
 
 ## Symptom

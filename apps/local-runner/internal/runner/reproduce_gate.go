@@ -184,8 +184,15 @@ func normalizeReproduceLockCandidate(workspace, raw string) string {
 // names one of the locked test files. Matches the full relative path or the bare
 // basename, so a `rm -rf x_test.go`-style command is caught too.
 func reproduceLockCommandTargetsLockedPath(cmd string, rec changecontract.FrozenContractRecord) bool {
+	return commandNamesLockedPath(cmd, rec.ReadOnlyPaths)
+}
+
+// commandNamesLockedPath is the same match over an arbitrary locked-path set —
+// the hub-scope guard (BUG-627) checks the union of every active contract's
+// owned paths, not a single record's ReadOnlyPaths.
+func commandNamesLockedPath(cmd string, lockedPaths []string) bool {
 	slashed := filepath.ToSlash(cmd)
-	for _, locked := range rec.ReadOnlyPaths {
+	for _, locked := range lockedPaths {
 		locked = filepath.ToSlash(strings.TrimSpace(locked))
 		if locked == "" {
 			continue

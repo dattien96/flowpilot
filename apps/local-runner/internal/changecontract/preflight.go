@@ -589,6 +589,34 @@ func (s *FrozenStore) ListForRun(runID string) ([]FrozenContractRecord, error) {
 	return out, nil
 }
 
+// ListActiveForRun returns the currently-governing frozen record per step for
+// runID — the same active semantics as GetFrozenForStep, deduplicated by
+// step (highest active version wins). Callers that must reason about every
+// step's contract at once (the hub-scope write guard, BUG-627) use this
+// instead of per-step lookups.
+func (s *FrozenStore) ListActiveForRun(runID string) ([]FrozenContractRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	prefix := runID + "\x00"
+	var out []FrozenContractRecord
+	for key, versions := range s.versionsByStep {
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		sorted := append([]FrozenContractRecord(nil), versions...)
+		sort.Slice(sorted, func(i, j int) bool { return sorted[i].Version < sorted[j].Version })
+		for i := len(sorted) - 1; i >= 0; i-- {
+			if s.isActiveLocked(sorted[i].ContractID) {
+				out = append(out, sorted[i])
+				break
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CoderStepID < out[j].CoderStepID })
+	return out, nil
+}
+
 // AppendStatus records a lifecycle transition for an already-frozen
 // contractID. Returns an error if contractID was never frozen in this store.
 func (s *FrozenStore) AppendStatus(contractID, status, reason string, at time.Time) error {

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"flowpilot-runner/internal/agentpack"
+	"flowpilot-runner/internal/changecontract"
 	"flowpilot-runner/internal/workingmode"
 )
 
@@ -1084,6 +1085,7 @@ func (s *InteractiveService) restoreVibeFlowAfterDebate(parentRunID string) bool
 		rs.chatFlowRef = rs.vibeParkedFlowRef
 	}
 	nodes := append([]agentpack.FlowNode(nil), rs.activeFlowNodes...)
+	parentCwd := strings.TrimSpace(rs.workspaceCwd)
 	gatedIDs := append([]string(nil), rs.vibeParkedGatedRunIDs...)
 	// BUG-594: drain flow starts deferred while the claim held. Capture
 	// before clearing so a restart between restore and dispatch still has
@@ -1122,7 +1124,7 @@ func (s *InteractiveService) restoreVibeFlowAfterDebate(parentRunID string) bool
 		if stepID == "" {
 			stepID = strings.TrimSpace(ch.label)
 		}
-		prompt := vibeDebateResumeRepromptPrompt(verdicts)
+		prompt := s.vibeDebateResumeRepromptPrompt(parentRunID, stepID, ch.workspaceCwd, verdicts)
 		ch.pendingGateRepromptPrompt = prompt
 		ch.pendingGateRepromptStepID = stepID
 		ch.pendingGateRepromptGen++
@@ -1147,7 +1149,7 @@ func (s *InteractiveService) restoreVibeFlowAfterDebate(parentRunID string) bool
 		// No gated child recorded (drift-only debate on the hub, or the child
 		// row is gone) — fall back to the hub continuation so the restored
 		// loop still has work in flight instead of stalling (run-136/9597).
-		s.maybeAutoReinvokeHubWithPrompt(parentRunID, vibeDebateResumePrompt)
+		s.maybeAutoReinvokeHubWithPrompt(parentRunID, s.vibeDebateResumePrompt(parentRunID, parentCwd))
 	} else {
 		for _, rp := range reprompts {
 			go s.startTurnClearingIntent(rp.runID, rp.stepID, rp.prompt, "reprompt", rp.gen)
@@ -1182,33 +1184,117 @@ func (s *InteractiveService) restoreVibeFlowAfterDebate(parentRunID string) bool
 // reprompt. The owner debate ran on the parent hub, so the verdict rows are
 // carried inline; the child's re-completion then fires the interrupted
 // node's done-edge through the normal completion path.
-func vibeDebateResumeRepromptPrompt(verdicts []VerdictRow) string {
+//
+// BUG-626 (live run-174243): the verdict arrived verbatim — including a
+// demand to edit a path the child's own contract had frozen read-only — so
+// the reprompt ordered something the contract forbids. When the gated step
+// has a governing contract with a read-only surface, the reprompt names it
+// and forbids the edit: the demand routes back as "belongs to the owning
+// step's leg" instead of becoming an attempted write that the planner-purity
+// fingerprint then flags.
+func (s *InteractiveService) vibeDebateResumeRepromptPrompt(parentRunID, stepID, workspace string, verdicts []VerdictRow) string {
 	const base = "[flow-engine] The post-turn gate on your last turn was routed to the owner-debate remediation flow, which has now resolved. Re-examine your output for this node against the remediation verdict — apply the decided rework, or confirm the output already satisfies the node's contract — then complete normally so the sprint chain advances."
-	if len(verdicts) == 0 {
-		return base
-	}
 	var b strings.Builder
 	b.WriteString(base)
-	b.WriteString(" Debate verdict:")
-	for _, v := range verdicts {
-		b.WriteString(" [")
-		b.WriteString(strings.TrimSpace(v.ACID))
-		b.WriteString("] ")
-		b.WriteString(strings.TrimSpace(v.Verdict))
-		if note := strings.TrimSpace(v.Note); note != "" {
-			b.WriteString(" — ")
-			b.WriteString(note)
+	if len(verdicts) > 0 {
+		b.WriteString(" Debate verdict:")
+		for _, v := range verdicts {
+			b.WriteString(" [")
+			b.WriteString(strings.TrimSpace(v.ACID))
+			b.WriteString("] ")
+			b.WriteString(strings.TrimSpace(v.Verdict))
+			if note := strings.TrimSpace(v.Note); note != "" {
+				b.WriteString(" — ")
+				b.WriteString(note)
+			}
+			b.WriteString(";")
 		}
-		b.WriteString(";")
+	}
+	if ro := vibeFrozenReadOnlyPathsForStep(workspace, parentRunID, stepID); len(ro) > 0 {
+		b.WriteString(" Contract scope: your frozen contract marks these paths read-only — ")
+		b.WriteString(strings.Join(ro, ", "))
+		b.WriteString(". A verdict cannot order you to edit them: if a demanded change requires a read-only path, do NOT edit it yourself — that work belongs to the owning step's leg. State the routing in your completion and confirm.")
 	}
 	return b.String()
 }
 
-// vibeDebateResumePrompt is the hub prompt used when the parked sprint flow
-// is restored after an owner-debate completes but no gated child was
+// vibeFrozenReadOnlyPathsForStep returns the ReadOnlyPaths of the step's
+// governing frozen contract (sorted, normalized). Empty when no contract
+// governs the step or the store is unreadable — the reprompt clause is
+// contract-derived, never boilerplate.
+func vibeFrozenReadOnlyPathsForStep(workspace, parentRunID, stepID string) []string {
+	cwd := strings.TrimSpace(workspace)
+	if cwd == "" || strings.TrimSpace(parentRunID) == "" || strings.TrimSpace(stepID) == "" {
+		return nil
+	}
+	store, err := changecontract.NewFrozenStore(cwd)
+	if err != nil {
+		return nil
+	}
+	rec, ok, err := store.GetFrozenForStep(parentRunID, stepID)
+	if err != nil || !ok {
+		return nil
+	}
+	return changecontract.ReadOnlyLockedPaths(rec)
+}
+
+// vibeDebateResumePrompt builds the hub prompt used when the parked sprint
+// flow is restored after an owner-debate completes but no gated child was
 // recorded — the re-invoked hub re-evaluates the interrupted node with the
 // remediation verdict and drives the restored chain via flow_control.
-const vibeDebateResumePrompt = "[flow-engine] The owner-debate remediation resolved and the parked sprint flow is restored. Re-evaluate the interrupted node's outcome with the debate verdict applied, then call submit_review_outcome / flow_control to advance the sprint chain — re-run the gated work only if the verdict requires rework."
+//
+// BUG-626/BUG-627 (live run-174243): the bare prompt let the hub cast itself
+// as the "materializing node" and edit contract-frozen files. The prompt now
+// pins the orchestrator role and, when contracts exist, enumerates the
+// union of contract-owned paths the hub must never write — rework on them
+// routes to the owning step's leg (the bridge denies the write regardless;
+// this keeps the hub from trying).
+func (s *InteractiveService) vibeDebateResumePrompt(parentRunID, workspace string) string {
+	const base = "[flow-engine] The owner-debate remediation resolved and the parked sprint flow is restored. Re-evaluate the interrupted node's outcome with the debate verdict applied, then call submit_review_outcome / flow_control to advance the sprint chain — re-run the gated work only if the verdict requires rework."
+	var b strings.Builder
+	b.WriteString(base)
+	b.WriteString(" You are the orchestrator — never write or edit project artifact files yourself; rework routes to the owning step's leg.")
+	if owned := vibeHubContractOwnedPaths(workspace, parentRunID); len(owned) > 0 {
+		b.WriteString(" Contract-owned paths under active frozen contracts (do not touch): ")
+		b.WriteString(strings.Join(owned, ", "))
+		b.WriteString(".")
+	}
+	return b.String()
+}
+
+// vibeHubContractOwnedPaths returns the sorted union of every path owned by
+// an active frozen contract for the run — ReadOnlyPaths ∪ DeclaredPaths ∪
+// AllowedExtraPaths across steps. Empty when no contract is active.
+func vibeHubContractOwnedPaths(workspace, parentRunID string) []string {
+	cwd := strings.TrimSpace(workspace)
+	if cwd == "" || strings.TrimSpace(parentRunID) == "" {
+		return nil
+	}
+	store, err := changecontract.NewFrozenStore(cwd)
+	if err != nil {
+		return nil
+	}
+	recs, err := store.ListActiveForRun(parentRunID)
+	if err != nil || len(recs) == 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, rec := range recs {
+		for _, set := range [][]string{rec.ReadOnlyPaths, rec.DeclaredPaths, rec.AllowedExtraPaths} {
+			for _, p := range set {
+				p = strings.TrimSpace(filepath.ToSlash(p))
+				if p == "" || seen[p] {
+					continue
+				}
+				seen[p] = true
+				out = append(out, p)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
 
 func (s *InteractiveService) onVibeCpNodeDone(parentRunID, completedNodeID string) {
 	switch completedNodeID {

@@ -7802,6 +7802,27 @@ func (b *turnBridge) RequestApproval(details ApprovalDetails) (string, error) {
 		return decision, nil
 	}
 
+	// BUG-627 (live run-174243): the step-scoped guards above bind a child's
+	// label — the hub run has neither a parentRunID nor a step id, so its
+	// writes slipped through and it materialized a contract-frozen file
+	// itself. While any active contract exists for the hub's own run id, a
+	// hub write/exec aimed at a contract-owned path is silent-denied at the
+	// same choke point: the hub orchestrates, legs materialize.
+	if decision, reason, handled := s.decideHubContractScopeLock(b.rs, details); handled {
+		s.recordAutoApproval(b.rs, details, decision, reason)
+		b.Emit(ProviderEvent{
+			Type:     EventNodeIsolationWriteDenied,
+			ToolName: details.Reason,
+			Status:   "deny",
+			Input: map[string]string{
+				"posture": reason,
+				"command": details.Command,
+				"kind":    details.Kind,
+			},
+		})
+		return decision, nil
+	}
+
 	// BUG-397: durable frozen-contract state protection. While a frozen
 	// contract is active for the run, exec commands that rewind/delete/
 	// overwrite .flowpilot/** state (or the whole tree) are silent-denied at
