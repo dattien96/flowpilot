@@ -376,7 +376,7 @@ func produceFlowContextPackage(ctx context.Context, workspace string, hints Flow
 		WorkflowRunID: hints.WorkflowRunID,
 		StepRunID:     hints.PlanStepRunID,
 		Prompt:        hints.UserPrompt,
-		Payload:       map[string]any{"sourceDocId": hints.SourceDocID},
+		Payload:       map[string]any{"sourceDocId": hints.SourceDocID, "preferredContractDocId": hints.PreferredContractDocID},
 	})
 	if err != nil {
 		return FlowContextPackage{}, err
@@ -505,10 +505,11 @@ func (s *InteractiveService) injectFlowContextIfCoding(
 
 	// Slow path: build a fresh package.
 	hints := FlowContextHints{
-		WorkflowRunID: rs.id,
-		PlanStepRunID: planStepID,
-		UserPrompt:    rawPrompt,
-		SourceDocID:   rs.sourceDocID,
+		WorkflowRunID:          rs.id,
+		PlanStepRunID:          planStepID,
+		UserPrompt:             rawPrompt,
+		SourceDocID:            rs.sourceDocID,
+		PreferredContractDocID: s.vibeSprintCurrentTaskDocID(rs.id),
 	}
 	built, buildErr := produceFlowContextPackage(ctx, rs.workspaceCwd, hints)
 	if buildErr != nil {

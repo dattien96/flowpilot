@@ -122,6 +122,10 @@ func behaviorContextProduce(ctx context.Context, in BehaviorInput) (BehaviorOutp
 		if sourceDocID, ok := in.Payload["sourceDocId"].(string); ok {
 			hints.SourceDocID = sourceDocID
 		}
+		// BUG-620: scope frozen-contract selection to the sprint's task doc.
+		if docID, ok := in.Payload["preferredContractDocId"].(string); ok {
+			hints.PreferredContractDocID = docID
+		}
 	}
 	// Task-246 (CP-50 P-3): derive excerpt hints deterministically at Plan-time —
 	// paths named in the prompt + the workspace's uncommitted diff. Both degrade

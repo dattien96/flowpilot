@@ -604,6 +604,7 @@ func (s *InteractiveService) startInlineEntryChain(ctx context.Context, parentRu
 		WorkspaceCwd:     s.workspaceCwdFor(parentRunID),
 		Prompt:           userPrompt,
 		ContextSourceIDs: contextSourceIDs,
+		Payload:          map[string]any{"preferredContractDocId": s.vibeSprintCurrentTaskDocID(parentRunID)},
 	})
 	if err != nil {
 		log.Printf("[flow-executor] flow %q inline entry node %q failed: %v", flowRef, entry.ID, err)

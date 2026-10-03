@@ -16,6 +16,14 @@ import (
 //  3. miss → ok=false (empty Body, omitted heading — preserves
 //     TestDependenceSourceNoContractDegrades / InferredDirBucket semantics)
 func latestContractForRun(workspace, runID string) (changecontract.Contract, bool) {
+	return latestContractForRunScoped(workspace, runID, "")
+}
+
+// latestContractForRunScoped is latestContractForRun with an optional
+// preferred source-doc id (vibe sprints reuse node ids across tasks, so the
+// newest active record can belong to a different sprint's task — BUG-620).
+// wantDocID=="" keeps newest-active semantics byte-for-byte.
+func latestContractForRunScoped(workspace, runID, wantDocID string) (changecontract.Contract, bool) {
 	if workspace == "" || runID == "" {
 		return changecontract.Contract{}, false
 	}
@@ -41,6 +49,7 @@ func latestContractForRun(workspace, runID string) (changecontract.Contract, boo
 			// own active check via GetFrozenForStep per distinct CoderStepID.
 			seenStep := map[string]struct{}{}
 			var best *changecontract.FrozenContractRecord
+			var bestDoc *changecontract.FrozenContractRecord
 			for _, r := range recs {
 				if _, seen := seenStep[r.CoderStepID]; seen {
 					continue
@@ -50,10 +59,30 @@ func latestContractForRun(workspace, runID string) (changecontract.Contract, boo
 				if !ok {
 					continue
 				}
+				// BUG-620: the newest active record can belong to another
+				// sprint's task (node ids are reused across sprints). When the
+				// caller names its own doc, an older matching version beats a
+				// newer foreign one.
+				if wantDocID != "" && vibeTaskDocID(active.SourceDocID) != vibeTaskDocID(wantDocID) {
+					if vers, err := fs.ListActiveForStep(runID, r.CoderStepID); err == nil {
+						for _, v := range vers {
+							if vibeTaskDocID(v.SourceDocID) == vibeTaskDocID(wantDocID) {
+								if bestDoc == nil || v.DeclaredAt.After(bestDoc.DeclaredAt) || (v.DeclaredAt.Equal(bestDoc.DeclaredAt) && v.Version > bestDoc.Version) {
+									cp := v
+									bestDoc = &cp
+								}
+								break
+							}
+						}
+					}
+				}
 				if best == nil || active.DeclaredAt.After(best.DeclaredAt) || (active.DeclaredAt.Equal(best.DeclaredAt) && active.Version > best.Version) {
 					cp := active
 					best = &cp
 				}
+			}
+			if bestDoc != nil {
+				best = bestDoc
 			}
 			if best != nil {
 				c := frozenToContract(*best)

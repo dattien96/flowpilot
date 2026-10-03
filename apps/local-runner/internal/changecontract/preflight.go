@@ -77,16 +77,16 @@ type FrozenContractRecord struct {
 	// so the coder cannot weaken the reproduction test that proves the bug.
 	// Zero-value compatible: a record frozen without it stays byte-identical in
 	// JSON (omitempty) and every pre-CP-64 flow keeps its exact behavior.
-	ReadOnlyPaths []string  `json:"read_only_paths,omitempty"`
+	ReadOnlyPaths []string `json:"read_only_paths,omitempty"`
 	// SignatureHash is the CP-67 P-2 (Task-379) canonical SHA256 over the
 	// scaffold architect's signature-only declarations (B-8.1) snapshotted
 	// after a passing scaffold gate. LockedSignatures lists the
 	// human-readable signatures so a drift reprompt can name them.
 	// Zero-value compatible: pre-CP-67 records marshal byte-identical
 	// (omitempty) and the gate skips the lock check when empty.
-	SignatureHash   string    `json:"signature_hash,omitempty"`
-	LockedSignatures []string `json:"locked_signatures,omitempty"`
-	DeclaredAt      time.Time `json:"declared_at"`
+	SignatureHash    string    `json:"signature_hash,omitempty"`
+	LockedSignatures []string  `json:"locked_signatures,omitempty"`
+	DeclaredAt       time.Time `json:"declared_at"`
 }
 
 // ContractStatusEvent is one append-only lifecycle transition for a frozen
@@ -546,6 +546,25 @@ func (s *FrozenStore) ListVersionsForStep(runID, coderStepID string) ([]FrozenCo
 	versions := append([]FrozenContractRecord(nil), s.versionsByStep[stepKey(runID, coderStepID)]...)
 	sort.Slice(versions, func(i, j int) bool { return versions[i].Version < versions[j].Version })
 	return versions, nil
+}
+
+// ListActiveForStep returns active (non-superseded/abandoned) versions for
+// (runID, coderStepID), newest version first (BUG-620: sprint-scoped callers
+// need to reach past the newest active record to an older version whose
+// source_doc_id matches their own task doc).
+func (s *FrozenStore) ListActiveForStep(runID, coderStepID string) ([]FrozenContractRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	versions := append([]FrozenContractRecord(nil), s.versionsByStep[stepKey(runID, coderStepID)]...)
+	sort.Slice(versions, func(i, j int) bool { return versions[i].Version > versions[j].Version })
+	out := versions[:0]
+	for _, rec := range versions {
+		if s.isActiveLocked(rec.ContractID) {
+			out = append(out, rec)
+		}
+	}
+	return out, nil
 }
 
 // ListForRun returns every frozen contract record bound to runID, including

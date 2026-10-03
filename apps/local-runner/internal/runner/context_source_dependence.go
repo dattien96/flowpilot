@@ -39,7 +39,7 @@ func (s *dependenceSource) Fetch(ctx context.Context, hints FlowContextHints) (F
 		return section, nil
 	}
 
-	c, ok := latestContractForRun(hints.Workspace, hints.WorkflowRunID)
+	c, ok := latestContractForRunScoped(hints.Workspace, hints.WorkflowRunID, hints.PreferredContractDocID)
 	if !ok {
 		return section, nil
 	}

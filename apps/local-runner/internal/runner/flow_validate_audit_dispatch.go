@@ -203,9 +203,10 @@ func (s *InteractiveService) runContextProduceNode(ctx context.Context, parentRu
 
 	workspace := s.workspaceCwdFor(parentRunID)
 	hints := FlowContextHints{
-		WorkflowRunID: parentRunID,
-		PlanStepRunID: node.ID,
-		UserPrompt:    resultMessage,
+		WorkflowRunID:          parentRunID,
+		PlanStepRunID:          node.ID,
+		UserPrompt:             resultMessage,
+		PreferredContractDocID: s.vibeSprintCurrentTaskDocID(parentRunID),
 	}
 	if workspace != "" {
 		hints.ExplicitSourcePaths = extractPromptSourcePaths(resultMessage)
@@ -2370,11 +2371,12 @@ func (s *InteractiveService) advanceFlowThroughFreezeChain(ctx context.Context, 
 	flowDef := agentpack.FlowDefinition{ContextProfiles: s.flowContextProfilesFor(ctx, parentRunID)}
 	buildAndStorePackage := func(nodeID string, sourceIDs []string) error {
 		hints := FlowContextHints{
-			WorkflowRunID:      parentRunID,
-			PlanStepRunID:      nodeID,
-			UserPrompt:         rec.Intent,
-			SourceDocID:        rec.SourceDocID,
-			ResolvedFeatureKey: rec.FeatureKey,
+			WorkflowRunID:          parentRunID,
+			PlanStepRunID:          nodeID,
+			UserPrompt:             rec.Intent,
+			SourceDocID:            rec.SourceDocID,
+			ResolvedFeatureKey:     rec.FeatureKey,
+			PreferredContractDocID: s.vibeSprintCurrentTaskDocID(parentRunID),
 		}
 		if workspace != "" {
 			hints.ExplicitSourcePaths = rec.DeclaredPaths
@@ -2546,6 +2548,28 @@ func (s *InteractiveService) frozenContractForRun(workspace, parentRunID string)
 		return changecontract.FrozenContractRecord{}, false
 	}
 	nodes := s.activeFlowNodesFor(parentRunID)
+	// BUG-620: sprint N+1 reuses the same node ids, so its freeze lands as a
+	// newer version on the SAME step key — the newest record can belong to a
+	// foreign task (live run-150388: fabricated sprint-3 froze Task-033 and
+	// sprint-2's legs followed it). When the run is in sprint topology,
+	// prefer active versions whose source_doc_id matches the sprint's own
+	// task doc over newer foreign records.
+	wantDoc := s.vibeSprintCurrentTaskDocID(parentRunID)
+	pickDocMatch := func(stepID string) (changecontract.FrozenContractRecord, bool) {
+		if wantDoc == "" {
+			return changecontract.FrozenContractRecord{}, false
+		}
+		vers, err := frozenStore.ListActiveForStep(parentRunID, stepID)
+		if err != nil {
+			return changecontract.FrozenContractRecord{}, false
+		}
+		for _, v := range vers {
+			if vibeTaskDocID(v.SourceDocID) == wantDoc {
+				return v, true
+			}
+		}
+		return changecontract.FrozenContractRecord{}, false
+	}
 	// BUG-386 (run-19151): in a scaffold->coder topology both writers hold a
 	// frozen record and only the coder's carries SignatureHash. Returning the
 	// first record in topology order (the scaffold's) left r-signature-lock and
@@ -2555,11 +2579,25 @@ func (s *InteractiveService) frozenContractForRun(workspace, parentRunID string)
 	hasFallback := false
 	for _, w := range flowAgentCodeWriterNodes(nodes) {
 		if rec, ok, _ := frozenStore.GetFrozenForStep(parentRunID, w.ID); ok {
+			// BUG-620: reach past a foreign newest version for this sprint's
+			// own doc-matched record when one exists.
+			if wantDoc != "" && vibeTaskDocID(rec.SourceDocID) != wantDoc {
+				if dm, ok := pickDocMatch(w.ID); ok {
+					rec = dm
+				}
+			}
 			if strings.TrimSpace(rec.SignatureHash) != "" {
 				return rec, true
 			}
 			if !hasFallback {
 				fallback, hasFallback = rec, true
+			}
+		} else if dm, ok := pickDocMatch(w.ID); ok {
+			if strings.TrimSpace(dm.SignatureHash) != "" {
+				return dm, true
+			}
+			if !hasFallback {
+				fallback, hasFallback = dm, true
 			}
 		}
 	}
@@ -2574,6 +2612,13 @@ func (s *InteractiveService) frozenContractForRun(workspace, parentRunID string)
 		for _, rec := range recs {
 			if rec.CoderStepID != "" {
 				if _, ok, _ := frozenStore.GetFrozenForStep(parentRunID, rec.CoderStepID); ok {
+					// BUG-620: skip records for a foreign sprint doc when this
+					// sprint's own doc-matched record exists for the step.
+					if wantDoc != "" && vibeTaskDocID(rec.SourceDocID) != wantDoc {
+						if dm, ok := pickDocMatch(rec.CoderStepID); ok {
+							rec = dm
+						}
+					}
 					if strings.TrimSpace(rec.SignatureHash) != "" {
 						return rec, true
 					}
@@ -2588,6 +2633,23 @@ func (s *InteractiveService) frozenContractForRun(workspace, parentRunID string)
 		return fb2, true
 	}
 	return changecontract.FrozenContractRecord{}, false
+}
+
+// vibeSprintCurrentTaskDocID returns the "Task-NNN" id of the run's current
+// sprint task ("" outside vibe-sprint topology or when the plan is not
+// loaded) — the doc the sprint's frozen contract must match (BUG-620).
+func (s *InteractiveService) vibeSprintCurrentTaskDocID(parentRunID string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rs := s.runs[parentRunID]
+	if rs == nil || !inVibeSprintTopology(rs) || len(rs.vibeTaskPlan) == 0 {
+		return ""
+	}
+	i := vibeSprintCurrentPlanIndex(rs.vibeSprintIndex, len(rs.vibeTaskPlan))
+	if i < 0 || i >= len(rs.vibeTaskPlan) {
+		return ""
+	}
+	return vibeTaskDocID(rs.vibeTaskPlan[i])
 }
 
 // frozenContractDeclaredForRun reports whether any active frozen contract

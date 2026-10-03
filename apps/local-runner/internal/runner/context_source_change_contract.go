@@ -22,7 +22,7 @@ func (s *changeContractSource) Fetch(_ context.Context, hints FlowContextHints) 
 	if strings.TrimSpace(hints.WorkflowRunID) == "" || hints.Workspace == "" {
 		return section, nil
 	}
-	c, ok := latestContractForRun(hints.Workspace, hints.WorkflowRunID)
+	c, ok := latestContractForRunScoped(hints.Workspace, hints.WorkflowRunID, hints.PreferredContractDocID)
 	if !ok {
 		return section, nil
 	}

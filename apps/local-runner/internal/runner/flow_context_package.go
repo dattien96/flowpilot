@@ -93,6 +93,13 @@ type FlowContextHints struct {
 	// FirebaseCrashRef mirrors JiraIssueRef for firebase.crashlytics
 	// (Task-231): a runtime-resolved Crashlytics crash issue id.
 	FirebaseCrashRef string
+
+	// PreferredContractDocID scopes frozen-contract resolution for vibe
+	// sprints (BUG-620): node ids are reused across sprints, so the newest
+	// active contract record may belong to a different task's freeze. When
+	// set, contract-derived sections prefer the record whose source_doc_id
+	// matches this doc over newer foreign records.
+	PreferredContractDocID string
 }
 
 // FlowContextPackage is the deterministic context package assembled by the Plan
