@@ -293,6 +293,14 @@ type ProviderEvent struct {
 	// agent_spawned_by_user / agent_result_injected (BUG-121)
 	AgentName  string `json:"agentName,omitempty"`
 	ChildRunID string `json:"childRunId,omitempty"`
+	// Internal (BUG-615) marks an event emitted inside an engine-internal turn
+	// (a turn whose EventTurnStarted prompt was display-redacted to "" because
+	// isSystemPrompt matched — hub reinvokes, gate reprompts, debate/
+	// synthesis turns). It is NOT a transcript gate by itself: consumers that
+	// render human chat rows (chat_ssot record mapper, desktop timeline
+	// reducer) skip Internal prose events; the event still flows on the run's
+	// own SSE stream and durable event log — nothing is silently dropped.
+	Internal bool `json:"internal,omitempty"`
 	// ResumeDurable / ResumeCohort / ResumeLogOrd are resume-only metadata
 	// (json:"-" — never serialized to clients). When ResumeDurable is true,
 	// flow restore places agent cards by durable step-transition append order
@@ -650,6 +658,12 @@ type TurnInput struct {
 	// uses. ForwardFlow on immediate/started → flow_already_started; with no
 	// pin → forward_requires_flow_pin; both 422.
 	ForwardFlow bool `json:"forwardFlow,omitempty"`
+	// Internal (BUG-615) marks an engine-scheduled turn as internal
+	// orchestration — hub reinvokes, debate/synthesis turns, reprompts —
+	// whose prompt and narration must not render as human chat rows. Set only
+	// by engine dispatch paths (never serialized: a client must not be able
+	// to mark its own turn invisible to the transcript).
+	Internal bool `json:"-"`
 }
 
 // ---- Catalog DTOs (navigator; fake catalog in P2) --------------------------

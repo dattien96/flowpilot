@@ -2297,7 +2297,12 @@ func (s *InteractiveService) startTurnClearingIntent(runID, stepID, prompt, kind
 		// counter — the cap bounds the reprompt LOOP across turns.
 		scenario = scenarioGateReprompt
 	}
-	turnID, apiErr := s.startTurn(runID, TurnInput{StepID: stepID, Prompt: prompt}, scenario, idem)
+	// BUG-615: a reprompt on the flow hub is engine orchestration — hide its
+	// narration from the human chat even without a [flow-engine] marker. A
+	// "resume" intent replays the user's own prompt and stays visible; a
+	// reprompt on a child leg is the leg's real work and stays visible too.
+	internal := kind == "reprompt" && s.engineTurnOnFlowHub(runID)
+	turnID, apiErr := s.startTurn(runID, TurnInput{StepID: stepID, Prompt: prompt, Internal: internal}, scenario, idem)
 	if apiErr != nil {
 		log.Printf("[resume-intent] startTurn failed run=%s kind=%s gen=%d code=%s: %s",
 			runID, kind, gen, apiErr.code, apiErr.msg)
@@ -4038,9 +4043,25 @@ func userFacingTranscriptEvents(historical []ProviderEvent) []ProviderEvent {
 		return nil
 	}
 	out := historical[:0]
+	// BUG-615: a turn_started classified internal also makes the REST of that
+	// turn internal — the model's reply to an engine prompt is engine
+	// narration, not a user-facing reply. Stamp Internal on the following
+	// prose events (bounded by the next turn_started) so the chat transcript
+	// mapper and desktop reducer drop them exactly like the live emitLocked
+	// path does. Two markers: the persisted e.Internal flag (new events) and
+	// isFlowEnginePrompt on the original prompt (reconstructed history). Gate
+	// reprompts and handoff seeds are deliberately NOT internal — their
+	// replies are user-visible output, same as the live path.
+	internal := false
 	for _, e := range historical {
+		if e.Type == EventTurnStarted {
+			internal = e.Internal || isFlowEnginePrompt(e.Prompt)
+		}
 		if isInternalTranscriptEvent(e) {
 			continue
+		}
+		if internal && internalTurnProseEvent(e.Type) {
+			e.Internal = true
 		}
 		out = append(out, e)
 	}
@@ -4067,6 +4088,27 @@ func liveTurnStartedDisplayPrompt(prompt string) string {
 		return ""
 	}
 	return prompt
+}
+
+// internalTurnProseEvent (BUG-615) names the event types that render as human
+// chat rows (prompt, assistant prose, streaming deltas, tool cards, turn
+// failures) and therefore must be stamped Internal when they belong to an
+// engine-internal turn. Approvals, questions, decision cards, file changes,
+// token usage, and orchestration events are intentionally absent — they are
+// actionable or ambient, never "the engine talking to itself" prose.
+func internalTurnProseEvent(t ProviderEventType) bool {
+	switch t {
+	case EventTurnStarted,
+		EventMessageDelta,
+		EventMessageCompleted,
+		EventTurnCompleted,
+		EventTurnFailed,
+		EventToolStarted,
+		EventToolCompleted:
+		return true
+	default:
+		return false
+	}
 }
 
 func isInternalTranscriptEvent(event ProviderEvent) bool {

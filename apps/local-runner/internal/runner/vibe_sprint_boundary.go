@@ -130,7 +130,7 @@ func (s *InteractiveService) maybeAutoAdvanceVibeSprintBoundary(ctx context.Cont
 	}
 	budget := rs.vibeSprintBudget
 	if budget <= 0 {
-		budget = defaultVibeSprintBudget
+		budget = vibeSprintBudgetForPlan(len(rs.vibeTaskPlan))
 	}
 	cwd := rs.workspaceCwd
 	plan := append([]string(nil), rs.vibeTaskPlan...)
@@ -216,7 +216,7 @@ func (s *InteractiveService) maybeParkVibeSprintBoundary(ctx context.Context, pa
 	}
 	budget := rs.vibeSprintBudget
 	if budget <= 0 {
-		budget = defaultVibeSprintBudget
+		budget = vibeSprintBudgetForPlan(len(rs.vibeTaskPlan))
 	}
 	cwd := rs.workspaceCwd
 	planPeek := append([]string(nil), rs.vibeTaskPlan...)
@@ -370,7 +370,7 @@ func (s *InteractiveService) maybeReparkVibeSprintBoundary(parentRunID string) {
 	index := rs.vibeSprintIndex
 	budget := rs.vibeSprintBudget
 	if budget <= 0 {
-		budget = defaultVibeSprintBudget
+		budget = vibeSprintBudgetForPlan(len(plan))
 	}
 	awaitingLock := rs.vibeAwaitingLock
 	s.mu.Unlock()

@@ -10,7 +10,10 @@ builtin:
     required: true
     source: builtin
 policy:
-  cap: 3
+  # Default max round cap per Task (vibe contract): 20 — a CP's total cap is
+  # len(taskPlan) × 20 (CP-03's 10 tasks → 200); the runner scales the
+  # sprint-count budget to match so every detected task triggers.
+  cap: 20
   onCap: escalate
   extendBy: 2
   extendMax: 2

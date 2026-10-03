@@ -294,7 +294,7 @@ export function parseMentionRouting(
   if (!match) return null;
   const agentName = match[1];
   const prompt = match[2].trim();
-  const target = agentRuns.find((run) => run.agentName.toLowerCase() === agentName.toLowerCase());
+  const target = agentRuns.find((run) => (run.agentName ?? "").toLowerCase() === agentName.toLowerCase());
   if (!target) return { kind: "missing", agentName };
   if (target.status === "running" || target.status === "waiting_approval" || target.status === "waiting_question") {
     return { kind: "busy", agentName, runId: target.runId, prompt };

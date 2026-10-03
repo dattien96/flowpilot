@@ -643,7 +643,7 @@ function AgentTimelineCard({ it }: { it: Extract<TimelineItem, { kind: "agent" }
   const status = it.finalMessage
     ? "completed"
     : (run?.status ?? "running");
-  const lowerName = it.agentName.toLowerCase();
+  const lowerName = (it.agentName ?? "").toLowerCase();
   const roleClass = lowerName.includes("coder") ? "coder" : lowerName.includes("review") ? "reviewer" : lowerName.includes("test") ? "tester" : "";
   const provider = providerLabel(run?.providerKey ?? "");
 
@@ -897,7 +897,7 @@ export function Timeline(): React.ReactElement {
       {(!activeAgentRunId || activeAgentRunId === mainRunId) &&
         liveAgentRuns
           .map((run) => {
-            const lowerName = run.agentName.toLowerCase();
+            const lowerName = (run.agentName ?? "").toLowerCase();
             const roleClass = lowerName.includes("coder") ? "coder" : lowerName.includes("review") ? "reviewer" : lowerName.includes("test") ? "tester" : "";
             const roleColor = roleClass === "coder" ? "var(--role-coder)" : roleClass === "reviewer" ? "var(--role-reviewer)" : roleClass === "tester" ? "var(--role-tester)" : "var(--text)";
             const isWaiting = run.status === "waiting_approval" || run.status === "waiting_question";
@@ -906,7 +906,7 @@ export function Timeline(): React.ReactElement {
               <div key={run.runId} className={`abanner ${roleClass}`}>
                 <span className={`pulse ${isWaiting ? "amber" : ""}`} />
                 <span>
-                  <b style={{ color: roleColor }}>{run.agentName}</b> · {providerName} · {run.status}
+                  <b style={{ color: roleColor }}>{run.agentName || run.label || run.runId}</b> · {providerName} · {run.status}
                   {run.agentStatus && <span style={{ color: "var(--text-dim)" }}> — {run.agentStatus}</span>}
                 </span>
                 <button type="button" className="abanner-open-btn" onClick={() => void focusAgentRun(run.runId)}>

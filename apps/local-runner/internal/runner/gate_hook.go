@@ -2470,7 +2470,7 @@ func (s *InteractiveService) SubmitGateDecision(runID, option, customText string
 	// reprompt still read {"status":"accepted"} while the pending block was
 	// already consumed. On failure restore the block so the decision is not
 	// lost.
-	if _, terr := s.startTurn(runID, TurnInput{StepID: stepID, Prompt: prompt}, "", ""); terr != nil {
+	if _, terr := s.startTurn(runID, TurnInput{StepID: stepID, Prompt: prompt, Internal: s.engineTurnOnFlowHub(runID)}, "", ""); terr != nil {
 		s.mu.Lock()
 		if rs3 := s.runs[runID]; rs3 != nil && rs3.pendingGateBlock == nil {
 			rs3.pendingGateBlock = info
@@ -2570,7 +2570,7 @@ func (s *InteractiveService) RecordGateAgreement(runID string, testNames []strin
 		tests)
 
 	go func() {
-		_, _ = s.startTurn(runID, TurnInput{StepID: stepID, Prompt: prompt}, "", "")
+		_, _ = s.startTurn(runID, TurnInput{StepID: stepID, Prompt: prompt, Internal: s.engineTurnOnFlowHub(runID)}, "", "")
 	}()
 	return nil
 }

@@ -77,6 +77,66 @@ test("openHistoryRun restores Flow Mode from handle.flowArm when no history row"
   assert.equal(useStore.getState().chatMode, "workflow_step_auto");
 });
 
+// BUG-614 (live run-150388 / leg run-163587): vibe-CP-ingest parent runs and
+// spawned flow legs persist flowArm "immediate" — not "started" — because the
+// flow launched at run-create rather than via a pending→started forward turn.
+// Reopening such a run still means Flow Mode; runKind "chat" + flowArm
+// "immediate" must not fall through to normal_chat and hide the flow sidebar.
+test("openHistoryRun restores Flow Mode for a runKind=chat row with flowArm=immediate", async () => {
+  ensureLocalStorage();
+  localStorage.clear();
+  const client = new MockRunnerClient();
+  client.resumeRun = async () => ({
+    runId: "run-vibe-614",
+    providerKey: "codex",
+    status: "running",
+    stepId: "chat-run-vibe-614",
+    chatId: "cht_614",
+    flowArm: "immediate",
+    flowRef: "vibe-tasks",
+  }) as never;
+  client.chatTimeline = async () => ({ chatId: "cht_614", legs: [], records: [] }) as never;
+  client.streamRun = () => ({ [Symbol.asyncIterator]: async function* () {} }) as never;
+  useStore.setState({
+    client: client as unknown as ReturnType<typeof useStore.getState>["client"],
+    chatMode: "normal_chat",
+    runId: undefined,
+  });
+  await useStore.getState().openHistoryRun("run-vibe-614", {
+    runId: "run-vibe-614",
+    runKind: "chat",
+  } as never);
+  assert.equal(useStore.getState().chatMode, "workflow_step_auto");
+  assert.equal(useStore.getState().flowStarted, true);
+});
+
+// Same fix on the missing-history-row path: the handle alone must carry the
+// immediate arm across — a spawned leg resumed with no row still shows Flow.
+test("openHistoryRun restores Flow Mode from handle.flowArm=immediate when no history row", async () => {
+  ensureLocalStorage();
+  localStorage.clear();
+  const client = new MockRunnerClient();
+  client.resumeRun = async () => ({
+    runId: "run-vibe-614b",
+    providerKey: "codex",
+    status: "running",
+    stepId: "chat-run-vibe-614b",
+    chatId: "cht_614b",
+    flowArm: "immediate",
+    flowRef: "vibe-sprint",
+  }) as never;
+  client.chatTimeline = async () => ({ chatId: "cht_614b", legs: [], records: [] }) as never;
+  client.streamRun = () => ({ [Symbol.asyncIterator]: async function* () {} }) as never;
+  useStore.setState({
+    client: client as unknown as ReturnType<typeof useStore.getState>["client"],
+    chatMode: "normal_chat",
+    runId: undefined,
+  });
+  await useStore.getState().openHistoryRun("run-vibe-614b");
+  assert.equal(useStore.getState().chatMode, "workflow_step_auto");
+  assert.equal(useStore.getState().flowStarted, true);
+});
+
 // Regression guard: a genuine plain chat (no flowArm at all) still opens
 // as normal_chat.
 test("openHistoryRun keeps Chat Mode for a row with no flowArm", async () => {

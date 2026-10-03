@@ -265,7 +265,7 @@ export function AgentsPanel(): React.ReactElement | null {
 
         {visibleActiveRuns.map((run) => {
           const isSelected = run.runId === activeAgentRunId && workspaceMainView !== "board";
-          const lowerName = run.agentName.toLowerCase();
+          const lowerName = (run.agentName ?? "").toLowerCase();
           const roleClass = lowerName.includes("coder") ? "coder" : lowerName.includes("review") ? "reviewer" : lowerName.includes("test") ? "tester" : "";
           const statusClass = run.status === "running" ? "run" : (run.status === "waiting_approval" || run.status === "waiting_question") ? "wait" : "done";
           const provClass = run.providerKey ?? "codex";

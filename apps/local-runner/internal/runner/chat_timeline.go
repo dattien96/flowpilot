@@ -183,7 +183,7 @@ func (s *InteractiveService) handleChatTimeline(w http.ResponseWriter, r *http.R
 			writeInteractiveError(w, newAPIErr(http.StatusInternalServerError, "chat_timeline_unavailable", err.Error()))
 			return
 		}
-		records = collapseRepeatedFinals(recs)
+		records = collapseRepeatedFinals(suppressInternalTurnRecords(recs))
 		if len(records) > 0 {
 			nextSeq = records[len(records)-1].ChatSeq
 		} else {
@@ -262,6 +262,61 @@ func (s *InteractiveService) backfillLegacyChatTranscript(ctx context.Context, c
 	markerPayload, _ := json.Marshal(map[string]any{"turns": len(turns)})
 	recs = append(recs, ChatTranscriptRecord{ChatID: chatID, LegRunID: rs.id, Type: EventTypeChatBackfillMarker, Payload: markerPayload})
 	_ = writer.append(ctx, recs...)
+}
+
+// suppressInternalTurnRecords drops prose/tool records that belong to an
+// engine-internal turn (BUG-615): a turn whose turn_started record carried an
+// explicit payload internal flag, or — for pre-fix records — an
+// already-redacted empty prompt (the only marker legacy internal turns left).
+// Records stay on disk — this is a read-model collapse, same contract as
+// collapseRepeatedFinals.
+//
+// Non-internal redacted turns (handoff seeds, gate reprompts) write records
+// without the prompt key, so p.Prompt == nil fails open and their user-visible
+// replies are kept. Pre-fix records cannot be reclassified, so a legacy empty
+// prompt still opens the window — the internal-flag residue shrinks as chats
+// advance.
+//
+// The window is per-leg (records interleave legs) and bounded by the next
+// turn_started: message_completed/tool_started/tool_completed inside an open
+// window are engine narration (hub reinvokes, debate/synthesis turns) and are
+// dropped. approval/question/file/token records pass through untouched —
+// they surface actionable cards and artifacts, not prose.
+//
+// Records before the leg's first turn_started in this page have an unknown
+// window state and fail open (kept): hiding a real user message is worse than
+// leaking one engine paragraph. New records stop being written at capture
+// time (chatRecordsFromProviderEvent honors event.Internal), so the residue
+// shrinks as chats advance.
+func suppressInternalTurnRecords(recs []ChatTranscriptRecord) []ChatTranscriptRecord {
+	internal := map[string]bool{} // legRunID → inside an internal turn window
+	out := make([]ChatTranscriptRecord, 0, len(recs))
+	for _, rec := range recs {
+		leg := rec.LegRunID
+		if rec.Type == EventTypeChatTurnStarted {
+			var p struct {
+				Prompt   *string `json:"prompt"`
+				Internal bool    `json:"internal"`
+			}
+			if json.Unmarshal(rec.Payload, &p) == nil {
+				internal[leg] = p.Internal || (p.Prompt != nil && strings.TrimSpace(*p.Prompt) == "")
+			} else {
+				internal[leg] = false
+			}
+			out = append(out, rec)
+			continue
+		}
+		if internal[leg] {
+			switch rec.Type {
+			case EventTypeChatMessageCompleted,
+				EventTypeChatToolStarted,
+				EventTypeChatToolCompleted:
+				continue
+			}
+		}
+		out = append(out, rec)
+	}
+	return out
 }
 
 // collapseRepeatedFinals drops a message_completed record whose text equals the

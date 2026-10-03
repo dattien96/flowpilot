@@ -274,17 +274,39 @@ func chatRecordsFromProviderEvent(chatID string, event ProviderEvent) []ChatTran
 	case EventTurnStarted:
 		// eseq joins records back to the event stream (BUG-355 F2): the TUI
 		// skips run-timeline records the open replay already rendered.
-		return []ChatTranscriptRecord{mk(EventTypeChatTurnStarted, map[string]any{"prompt": event.Prompt, "eseq": event.Seq})}
+		// BUG-615: the record is kept even for Internal turns — it is the
+		// read-side boundary inside suppressInternalTurnRecords. The prompt key
+		// is written only for real prompts and internal turns: a non-internal
+		// redacted turn (handoff seed, gate reprompt) leaves the key absent so
+		// the read-side window fails open and keeps the turn's user-visible
+		// reply instead of collapsing it as engine narration.
+		payload := map[string]any{"eseq": event.Seq, "internal": event.Internal}
+		if event.Prompt != "" || event.Internal {
+			payload["prompt"] = event.Prompt
+		}
+		return []ChatTranscriptRecord{mk(EventTypeChatTurnStarted, payload)}
 	case EventMessageCompleted:
+		if event.Internal {
+			return nil
+		}
 		return []ChatTranscriptRecord{mk(EventTypeChatMessageCompleted, map[string]any{"text": event.Text, "eseq": event.Seq})}
 	case EventTurnCompleted:
 		if strings.TrimSpace(event.FinalMessage) == "" {
 			return nil
 		}
+		if event.Internal {
+			return nil
+		}
 		return []ChatTranscriptRecord{mk(EventTypeChatMessageCompleted, map[string]any{"text": event.FinalMessage, "eseq": event.Seq})}
 	case EventToolStarted:
+		if event.Internal {
+			return nil
+		}
 		return []ChatTranscriptRecord{mk(EventTypeChatToolStarted, map[string]any{"tool": event.ToolName})}
 	case EventToolCompleted:
+		if event.Internal {
+			return nil
+		}
 		return []ChatTranscriptRecord{mk(EventTypeChatToolCompleted, map[string]any{"tool": event.ToolName, "status": event.Status})}
 	case EventFileChanged:
 		return []ChatTranscriptRecord{mk(EventTypeChatFileChanged, map[string]any{"path": event.Path, "changeType": event.ChangeType})}

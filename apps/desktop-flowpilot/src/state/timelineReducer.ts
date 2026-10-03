@@ -285,6 +285,30 @@ export function applyTimelineEvent(s: TimelineState, e: ProviderEventDTO): Parti
     };
   };
 
+  // BUG-615: events stamped `internal` belong to an engine-internal turn (hub
+  // reinvokes, gate reprompts, debate/synthesis turns — prompts the runner
+  // redacted as system). Their prose must not land in the main chat as
+  // prompt/assistant/tool bubbles. Lifecycle transitions still run so an open
+  // streaming bubble settles; only the row pushes are skipped. Approvals,
+  // questions, decision cards and file rows are never stamped internal — they
+  // fall through to normal handling.
+  if (e.internal) {
+    switch (e.type) {
+      case "message_delta":
+        return finalize(timeline, {});
+      case "turn_started":
+      case "message_completed":
+      case "tool_started":
+      case "tool_completed":
+      case "turn_completed":
+      case "turn_failed":
+        closeAssistant();
+        return finalize(timeline, e.type === "turn_failed" ? { recoverable: e.recoverable } : {});
+      default:
+        break;
+    }
+  }
+
   switch (e.type) {
     case "turn_started":
       closeAssistant();
@@ -498,7 +522,7 @@ export function applyTimelineEvent(s: TimelineState, e: ProviderEventDTO): Parti
       // agent_result_injected until settle (run-9034) — so the round-2 coder card
       // never appeared on the main chat timeline.
       if (!timeline.some((it) => it.kind === "agent" && it.id === e.id) && !wasEvicted(e.id)) {
-        timeline.push({ kind: "agent", id: e.id, agentName: e.agentName, childRunId: e.childRunId });
+        timeline.push({ kind: "agent", id: e.id, agentName: e.agentName || "agent", childRunId: e.childRunId });
       }
       // Only keep an existing thinking row — never create a new one for annotation events.
       shouldKeepThinking = thinkingItem !== undefined;
@@ -529,7 +553,7 @@ export function applyTimelineEvent(s: TimelineState, e: ProviderEventDTO): Parti
           const agent = timeline[index] as Extract<TimelineItem, { kind: "agent" }>;
           timeline[index] = { ...agent, finalMessage: e.finalMessage };
         } else if (!wasEvicted(e.id)) {
-          timeline.push({ kind: "agent", id: e.id, agentName: e.agentName, childRunId: e.childRunId, finalMessage: e.finalMessage });
+          timeline.push({ kind: "agent", id: e.id, agentName: e.agentName || "agent", childRunId: e.childRunId, finalMessage: e.finalMessage });
         }
       }
       shouldKeepThinking = thinkingItem !== undefined;

@@ -781,6 +781,11 @@ export interface ProviderEventBaseDTO {
   /** Monotonic per-run sequence — the reconnect/replay cursor (04-02). */
   seq: number;
   occurredAt: string;
+  /** BUG-615: stamped on prose events inside an engine-internal turn (a turn
+   *  whose prompt was redacted as a system prompt — hub reinvokes, debate/
+   *  synthesis turns). The timeline skips these for prompt/assistant/tool
+   *  rows so engine narration never lands in the main chat. */
+  internal?: boolean;
 }
 
 export interface TokenUsageBreakdown {

@@ -1756,7 +1756,7 @@ export const useStore = create<AppState>((set, get) => ({
                 }
               : undefined,
           flowStarted:
-            (resp.handle.flowArm ?? "") === "started"
+            flowArmRanFlow(resp.handle.flowArm ?? "")
               ? true
               : (resp.handle.flowArm ?? "") === ""
                 ? state.flowStarted
@@ -3811,11 +3811,13 @@ export const useStore = create<AppState>((set, get) => ({
     // even though flowArm was "started". flowArm:"started" is the durable
     // authority that a flow actually ran — treat it as workflow-driven
     // regardless of the row's runKind.
-    const flowArmStarted =
-      (handle.flowArm ?? historyItem?.flowArm) === "started";
+    // BUG-614: "immediate" is the same authority for launch-time armed runs
+    // (vibe-CP ingest parents, spawned flow legs) — they never pass through
+    // "started" but are flow-driven all the same.
+    const flowRanFlow = flowArmRanFlow(handle.flowArm ?? historyItem?.flowArm);
     const isWorkflowHistoryItem = historyItem === undefined
-      ? handleRunKind === "workflow" || flowArmStarted
-      : historyItem.runKind !== "chat" || flowArmStarted;
+      ? handleRunKind === "workflow" || flowRanFlow
+      : historyItem.runKind !== "chat" || flowRanFlow;
     // BUG-263: same "restore the mode this run actually was" gap as BUG-170
     // above, but for the Chat-Mode orchestration picker (Bug tab / Built-in
     // orchestration select) instead of chatMode/launchMode. Without this,
@@ -3861,7 +3863,7 @@ export const useStore = create<AppState>((set, get) => ({
               sourceDocId: handle.sourceDocId || historyItem?.sourceDocId,
             }
           : undefined,
-      flowStarted: (handle.flowArm ?? historyItem?.flowArm) === "started",
+      flowStarted: flowArmRanFlow(handle.flowArm ?? historyItem?.flowArm),
       // Task-433: a cached snapshot of THIS run paints instantly (transient
       // optimistic rows dropped — replay re-appends them with durable ids);
       // the replay stream below remains the authority and revalidates it.
@@ -4295,6 +4297,15 @@ export function providerLabel(providerKey: string): string {
 }
 
 // ── Workflow-step runtime helpers (BUG-153) ────────────────────────────────
+/** flowArm values that prove a flow actually ran on this run/leg.
+ *  "pending" = armed but not yet launched (chat stays normal); "started" =
+ *  pending→forward flip; "immediate" = launch-time arm (vibe-CP ingest,
+ *  spawned flow legs — BUG-614). Both "started" and "immediate" mean the
+ *  run is flow-driven and must reopen on the Flow Mode surface. */
+function flowArmRanFlow(arm: string | undefined): boolean {
+  return arm === "started" || arm === "immediate";
+}
+
 // Derived from workflowStepRuntime + chatMode rather than stored separately,
 // so there is exactly one source of truth to keep in sync.
 
@@ -5223,7 +5234,14 @@ function settleTerminalReplayVisuals(
 export function mergeAgentRunsById(existing: AgentRunSummary[], incoming: AgentRunSummary[]): AgentRunSummary[] {
   const byId = new Map<string, AgentRunSummary>();
   for (const run of existing) byId.set(run.runId, run);
-  for (const run of incoming) {
+  for (const raw of incoming) {
+    // Live run-150388: spawn-agent children can arrive with agentName:null on
+    // the wire (label-only legs). Renderers call .toLowerCase() on agentName —
+    // normalize at the merge boundary so every consumer sees a real string.
+    const run: AgentRunSummary =
+      typeof raw.agentName === "string" && raw.agentName
+        ? raw
+        : { ...raw, agentName: raw.label || raw.role || "agent" };
     const prev = byId.get(run.runId);
     if (prev && isTerminalRunStatus(prev.status) && !isTerminalRunStatus(run.status)) {
       // BUG-235: never let a stale HTTP snapshot revert an already-terminal status.

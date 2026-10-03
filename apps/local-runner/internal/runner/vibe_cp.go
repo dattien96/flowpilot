@@ -18,7 +18,12 @@ import (
 )
 
 const (
-	defaultVibeSprintBudget   = 8
+	defaultVibeSprintBudget = 8
+	// defaultVibeTaskRoundCap is the default max round cap per Task (vibe
+	// user contract): a CP's total cap is len(taskPlan) × 20 — CP-03 with 10
+	// tasks has a 200-round total. It mirrors the vibe-sprint pack policy.cap
+	// and also scales the sprint-count budget so every detected task fires.
+	defaultVibeTaskRoundCap   = 20
 	vibeIngestFlowID          = "vibe-ingest"
 	vibeCpIngestFlowID        = "vibe-cp-ingest"
 	vibeTasksFlowID           = "vibe-tasks"
@@ -136,12 +141,26 @@ type vibeSprintDecision struct {
 	Sprint int
 }
 
+// vibeSprintBudgetForPlan scales the sprint-count budget to the detected task
+// plan: len(plan) × defaultVibeTaskRoundCap (20 rounds per Task), so a 10-task
+// CP gets a 200 total cap and every detected task triggers. The fixed default
+// remains the floor for empty/pre-plan states.
+func vibeSprintBudgetForPlan(taskCount int) int {
+	if taskCount <= 0 {
+		return defaultVibeSprintBudget
+	}
+	if budget := taskCount * defaultVibeTaskRoundCap; budget > defaultVibeSprintBudget {
+		return budget
+	}
+	return defaultVibeSprintBudget
+}
+
 func decideNextVibeSprint(awaitingLock bool, tasks []string, index, budget int) vibeSprintDecision {
 	if awaitingLock {
 		return vibeSprintDecision{Locked: true}
 	}
 	if budget <= 0 {
-		budget = defaultVibeSprintBudget
+		budget = vibeSprintBudgetForPlan(len(tasks))
 	}
 	if index >= budget {
 		return vibeSprintDecision{Budget: true}
@@ -1263,6 +1282,14 @@ func (s *InteractiveService) onVibeCpNodeDone(parentRunID, completedNodeID strin
 			// never enter the sprint plan (live run-91517/91606).
 			if collected := collectVibeSprintPlanForCP(rs.workspaceCwd, rs.vibeCpDocID); len(collected) > 0 {
 				rs.vibeTaskPlan = collected
+				// Cap contract: default max is 20 rounds per Task — total CP
+				// cap = len(plan) × 20 (CP-03's 10 tasks → 200). The budget
+				// must scale with the detected plan or a fixed 8 would stop
+				// a 10-task CP after sprint 8. Only ever raised here — a
+				// reload must not shrink an operator-extended budget.
+				if scaled := vibeSprintBudgetForPlan(len(collected)); scaled > rs.vibeSprintBudget {
+					rs.vibeSprintBudget = scaled
+				}
 				rs.vibeSprintIndex = 0
 				rs.vibeSprintBoundaryPending = false
 				rs.vibeSprintBoundaryTask = ""

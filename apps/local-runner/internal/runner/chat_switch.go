@@ -499,7 +499,7 @@ func (s *InteractiveService) buildChatHandoffContext(ctx context.Context, chatID
 	if err != nil {
 		return chatEnvelope{Stats: chatSwitchHandoffStats{Mode: "fresh_start"}}
 	}
-	turns, actionRecords := chatTurnsAndActions(records)
+	turns, actionRecords := chatTurnsAndActions(suppressInternalTurnRecords(records))
 	if len(turns) == 0 {
 		return chatEnvelope{Stats: chatSwitchHandoffStats{Mode: "fresh_start"}}
 	}

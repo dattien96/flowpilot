@@ -641,6 +641,13 @@ type interactiveRun struct {
 	turnInFlight     bool
 	repromptAttempts int    // CP-35 P-5: number of flow-gate reprompts issued this turn
 	turnStartGitHead string // CP-35: git HEAD captured at turn start for committed-diff detection
+	// currentTurnInternal (BUG-615) marks the in-flight turn as engine-internal
+	// when the turn was classified internal at dispatch — a flow-engine prompt
+	// (isFlowEnginePrompt) or TurnInput.Internal set by an engine dispatch
+	// path. emitLocked stamps ev.Internal on prose events while it holds, so
+	// hub/debate/reinvoke narration never reaches the chat transcript or chat
+	// bubbles. Cleared on turn_completed/turn_failed.
+	currentTurnInternal bool
 	// turnStartWorktree maps dirty path → content fingerprint at turn start
 	// (Task-242). Child gate diffs against this so pre-existing coder dirt does
 	// not look like this turn's edits.
@@ -4660,6 +4667,20 @@ func (s *InteractiveService) takeQueuedFeedbackPrompt(parentRunID, runID, prompt
 	return strings.TrimSpace(prompt + "\n\n" + queued.Message), queued
 }
 
+// engineTurnOnFlowHub (BUG-615) reports whether an engine-scheduled turn on
+// runID is internal orchestration: true only for the flow hub itself
+// (flow-driven, no parent). An engine turn aimed at a child leg is that leg's
+// real work and stays visible inside the leg's own chat; a turn on the hub is
+// narration that must not land in the human chat even when the composed
+// prompt lacks a [flow-engine] marker (e.g. a debate-synthesis instruction
+// built inline).
+func (s *InteractiveService) engineTurnOnFlowHub(runID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rs := s.runs[runID]
+	return rs != nil && rs.parentRunID == "" && rs.flowEngineDriven
+}
+
 func (s *InteractiveService) scheduleChildTurn(runID, stepID, prompt string) {
 	if runID == "" || stepID == "" || prompt == "" {
 		return
@@ -4673,7 +4694,7 @@ func (s *InteractiveService) scheduleChildTurn(runID, stepID, prompt string) {
 		// Claude review: only re-arming pendingHubReinvoke without notifyTurnIdle
 		// renames the stuck flag — hub_stalled treats pending as "busy" so F-0
 		// never escalates and nothing ever drains/retries. Active-drain like H4.
-		_, err := s.startTurn(runID, TurnInput{StepID: stepID, Prompt: prompt}, "", "")
+		_, err := s.startTurn(runID, TurnInput{StepID: stepID, Prompt: prompt, Internal: s.engineTurnOnFlowHub(runID)}, "", "")
 		if err != nil {
 			shouldDrain := false
 			transientBusy := false
@@ -6992,6 +7013,20 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 		ev.ProviderTurnID = rs.currentTurnID
 	}
 	ev.OccurredAt = time.Now().UTC().Format(time.RFC3339Nano)
+
+	// BUG-615: while currentTurnInternal is set (classified at the turn_started
+	// emit site), every prose event is stamped Internal so the chat transcript
+	// mapper and chat bubble renderers skip engine narration while the events
+	// still flow on the run's own stream/log (no silent loss). Gate/card/file
+	// event types stay unmarked — they must still surface. The window closes
+	// at the turn's terminal event; provider-emitted turn_started events do
+	// not reopen or reset it.
+	if rs.currentTurnInternal && internalTurnProseEvent(ev.Type) {
+		ev.Internal = true
+	}
+	if ev.Type == EventTurnCompleted || ev.Type == EventTurnFailed {
+		rs.currentTurnInternal = false
+	}
 
 	// V10 P1 / residual P0: defer raw EventTurnCompleted persist/broadcast for
 	// flow-engine children AND root until gate pass — subscribers must not treat
@@ -11766,7 +11801,16 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 	if isSystemPrompt(in.Prompt) && !strings.Contains(in.Prompt, systemPromptTag) {
 		in.Prompt = systemPromptTag + "\n" + in.Prompt
 	}
-	s.emitLocked(rs, ProviderEvent{Type: EventTurnStarted, ProviderTurnID: turnID, WorkflowStepRunID: in.StepID, Prompt: liveTurnStartedDisplayPrompt(in.Prompt)})
+	// BUG-615: classify the turn BEFORE the display copy is redacted. A turn is
+	// engine-internal when its prompt is flow-engine orchestration (hub
+	// reinvoke, joined-result note, synthesis/debate instruction) or the
+	// dispatch path marked it Internal (markerless engine prompts on the
+	// flow hub). Gate reprompts and handoff seeds stay non-internal: their
+	// replies are user-visible output. currentTurnInternal is set here — not
+	// inferred inside emitLocked — so provider-emitted turn_started events
+	// mid-turn cannot corrupt the window.
+	rs.currentTurnInternal = in.Internal || isFlowEnginePrompt(in.Prompt)
+	s.emitLocked(rs, ProviderEvent{Type: EventTurnStarted, ProviderTurnID: turnID, WorkflowStepRunID: in.StepID, Prompt: liveTurnStartedDisplayPrompt(in.Prompt), Internal: rs.currentTurnInternal})
 	// BUG-288 R20-1 / CP-51 DOD-G8: promote prep → bare launch-ack ONLY after
 	// TurnStarted is in RAM, and only launch the provider AFTER launch-ack is
 	// durable. Fail-closed on persist: keep prep on disk, abort without go
