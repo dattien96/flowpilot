@@ -67,6 +67,100 @@ func hasVibeTddSignatures(cwd string) bool {
 	return vibeWorkspaceFileExists(cwd, vibeTddSignaturesRel)
 }
 
+// vibeTddSignatureSection is one task-labelled block of the ledger: a
+// `# TDD signatures`/`# TDD Signature Lock` header plus its body through
+// the next such header (BUG-630). taskID is "" when the header carries no
+// `(Task-NNN)` tag — unlabelled files stay legacy whole-file.
+type vibeTddSignatureSection struct {
+	taskID string
+	body   string
+}
+
+// vibeTddSignatureSections splits the ledger on its top-level signature
+// headers. Lines inside fenced code blocks (e.g. `#include`) are not
+// headers — the split requires `# ` followed by a TDD-sign* prefix.
+func vibeTddSignatureSections(raw string) []vibeTddSignatureSection {
+	var out []vibeTddSignatureSection
+	var cur *vibeTddSignatureSection
+	var b strings.Builder
+	flush := func() {
+		if cur != nil {
+			cur.body = b.String()
+			out = append(out, *cur)
+			cur = nil
+		}
+	}
+	for _, line := range strings.Split(raw, "\n") {
+		if isVibeTddSectionHeader(line) {
+			flush()
+			cur = &vibeTddSignatureSection{taskID: vibeTddSectionTaskID(line)}
+			b.Reset()
+			b.WriteString(line)
+			b.WriteByte('\n')
+			continue
+		}
+		if cur != nil {
+			b.WriteString(line)
+			b.WriteByte('\n')
+		}
+	}
+	flush()
+	return out
+}
+
+func isVibeTddSectionHeader(line string) bool {
+	if !strings.HasPrefix(line, "# ") {
+		return false
+	}
+	rest := strings.ToLower(strings.TrimPrefix(line, "# "))
+	return strings.HasPrefix(rest, "tdd sign")
+}
+
+// vibeTddSectionTaskID extracts the `(Task-NNN)` tag from a section header
+// line, or "" when the header is unlabelled.
+func vibeTddSectionTaskID(header string) string {
+	i := strings.Index(header, "(Task-")
+	if i < 0 {
+		return ""
+	}
+	j := strings.Index(header[i:], ")")
+	if j < 0 {
+		return ""
+	}
+	return vibeTaskDocID(strings.TrimSpace(header[i+1 : i+j]))
+}
+
+// vibeTddSignaturesTaskSection returns the ledger section labelled with
+// taskID ("Task-NNN"), or ("", false) when no section carries that tag.
+func vibeTddSignaturesTaskSection(cwd, taskID string) (string, bool) {
+	taskID = strings.TrimSpace(taskID)
+	if taskID == "" {
+		return "", false
+	}
+	raw, err := os.ReadFile(filepath.Join(cwd, filepath.FromSlash(vibeTddSignaturesRel)))
+	if err != nil {
+		return "", false
+	}
+	for _, sec := range vibeTddSignatureSections(string(raw)) {
+		if sec.taskID == taskID {
+			return sec.body, true
+		}
+	}
+	return "", false
+}
+
+// hasVibeTddSignaturesForTask scopes the artifact check to the current
+// task's own ledger section: blocks written for OTHER tasks — or left
+// behind by abandoned runs for a DIFFERENT task id — do not count
+// (BUG-630). Empty taskID keeps the legacy whole-file existence check.
+func hasVibeTddSignaturesForTask(cwd, taskID string) bool {
+	if strings.TrimSpace(taskID) == "" {
+		return hasVibeTddSignatures(cwd)
+	}
+	_, ok := vibeTddSignaturesTaskSection(cwd, taskID)
+	return ok
+}
+
 // vibeScaffoldRedWaived reports whether the sprint's declared TDD contract
 // waives the RED requirement: the tdd-signatures.md "RED gate expectation"
 // section records an empty red_tests list AND failure_type "none". That is
@@ -79,8 +173,14 @@ func vibeScaffoldRedWaived(cwd string) bool {
 	if err != nil {
 		return false
 	}
+	return vibeScaffoldRedWaivedIn(string(raw))
+}
+
+// vibeScaffoldRedWaivedIn is the "last declared value wins" scan over one
+// text block — a whole file (legacy/unlabelled) or a single task section.
+func vibeScaffoldRedWaivedIn(text string) bool {
 	emptyRed, noneType := false, false
-	for _, line := range strings.Split(string(raw), "\n") {
+	for _, line := range strings.Split(text, "\n") {
 		f := strings.FieldsFunc(line, func(r rune) bool {
 			return r == ' ' || r == '\t' || r == '`' || r == '-'
 		})
@@ -96,6 +196,35 @@ func vibeScaffoldRedWaived(cwd string) bool {
 	return emptyRed && noneType
 }
 
+// vibeScaffoldRedWaivedForTask scopes the waiver to the current task's own
+// ledger section (BUG-630): a file with ANY task-labelled section only
+// waives when the section for taskID itself declares zero-red — another
+// task's waiver must not leak across. Unlabelled files and empty taskID
+// keep the legacy whole-file semantics.
+func vibeScaffoldRedWaivedForTask(cwd, taskID string) bool {
+	raw, err := os.ReadFile(filepath.Join(cwd, filepath.FromSlash(vibeTddSignaturesRel)))
+	if err != nil {
+		return false
+	}
+	sections := vibeTddSignatureSections(string(raw))
+	labelled := false
+	for _, sec := range sections {
+		if sec.taskID != "" {
+			labelled = true
+			break
+		}
+	}
+	if taskID = strings.TrimSpace(taskID); taskID == "" || !labelled {
+		return vibeScaffoldRedWaivedIn(string(raw))
+	}
+	for _, sec := range sections {
+		if sec.taskID == taskID {
+			return vibeScaffoldRedWaivedIn(sec.body)
+		}
+	}
+	return false
+}
+
 // hasVibeTddOutput is the coder spawn gate. The pack writes
 // tdd-signatures.md; harness-style empty TestX frames in *_test.go also
 // count when git-new (untracked/added). Full-body tests (t.Fatal/assert)
@@ -107,6 +236,43 @@ func hasVibeTddOutput(cwd string) bool {
 	return len(collectVibeSignatureTestRels(cwd)) > 0
 }
 
+// hasVibeTddOutputForTask is the task-scoped variant: the ledger must
+// carry a section labelled with taskID (git-new signature test files still
+// count as before). Empty taskID keeps the legacy whole-file check.
+func hasVibeTddOutputForTask(cwd, taskID string) bool {
+	if hasVibeTddSignaturesForTask(cwd, taskID) {
+		return true
+	}
+	return len(collectVibeSignatureTestRels(cwd)) > 0
+}
+
+// vibeTddFileEvidencePresent is the BUG-630 evidence gate for the
+// file-based leg: a tdd-signatures.md section only counts when THIS run's
+// scaffold leg attested it — the runner observed the leg write the ledger
+// under its gate turn (rs.vibeTddSigAttestedTask, durable). File content
+// alone cannot prove provenance: an abandoned leg's block for the same
+// task id is indistinguishable from a fresh one. When the run carries no
+// task id (legacy/non-task flows) the whole-file check applies.
+func vibeTddFileEvidencePresent(rs *interactiveRun, cwd, taskID string) bool {
+	if strings.TrimSpace(taskID) == "" {
+		return hasVibeTddOutput(cwd)
+	}
+	if rs == nil || rs.vibeTddSigAttestedTask != taskID {
+		return false
+	}
+	return hasVibeTddOutputForTask(cwd, taskID)
+}
+
+// vibeCurrentTaskDocIDLocked resolves the Task-NNN id of the run's current
+// sprint task (same source as findPlannerResultForFreeze). Caller must hold
+// s.mu or otherwise own rs.
+func vibeCurrentTaskDocIDLocked(rs *interactiveRun) string {
+	if rs == nil || len(rs.vibeTaskPlan) == 0 {
+		return ""
+	}
+	return vibeTaskDocID(rs.vibeTaskPlan[vibeSprintCurrentPlanIndex(rs.vibeSprintIndex, len(rs.vibeTaskPlan))])
+}
+
 // vibeTddEvidencePresent is the fail-closed TDD-evidence check (BUG-462): the
 // filesystem artifact OR a frozen contract that already carries scaffold-
 // pinned LockedSignatures for the coder step. The signature lock only lands
@@ -115,7 +281,15 @@ func hasVibeTddOutput(cwd string) bool {
 // full-body test files (CA-769 stays intact). A pre-tdd freeze (v1, no
 // signatures) still fails the check.
 func (s *InteractiveService) vibeTddEvidencePresent(parentRunID, coderStepID, cwd string) bool {
-	if hasVibeTddOutput(cwd) {
+	s.mu.Lock()
+	rs := s.runs[parentRunID]
+	taskID := vibeCurrentTaskDocIDLocked(rs)
+	attestedTask := ""
+	if rs != nil {
+		attestedTask = rs.vibeTddSigAttestedTask
+	}
+	s.mu.Unlock()
+	if vibeTddFileEvidencePresent(&interactiveRun{vibeTddSigAttestedTask: attestedTask}, cwd, taskID) {
 		return true
 	}
 	if strings.TrimSpace(parentRunID) == "" || strings.TrimSpace(cwd) == "" {

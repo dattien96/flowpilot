@@ -1521,9 +1521,11 @@ func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID
 		// its bound contract and writer prompt, never the review handoff.
 		if canonical, ok := agentpack.NormalizeBehaviorID(node.Behavior); ok && canonical == "agent.code" {
 			s.mu.Lock()
-			mode := ""
+			mode, sigTaskID, sigAttestedTask := "", "", ""
 			if p := s.runs[parentRunID]; p != nil {
 				mode = p.workingMode
+				sigTaskID = vibeCurrentTaskDocIDLocked(p)
+				sigAttestedTask = p.vibeTddSigAttestedTask
 			}
 			s.mu.Unlock()
 			store, storeErr := changecontract.NewFrozenStore(cwd)
@@ -1539,7 +1541,11 @@ func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID
 			// (LockedSignatures or ReadOnlyPaths) is durable TDD evidence — the
 			// filesystem glob alone cannot see full-body test files the scaffold
 			// adopted/locked, and BUG-463 can leave sigs empty while paths lock.
-			hasTddEvidence := hasVibeTddOutput(cwd) ||
+			// BUG-630: file evidence counts only for the task section this
+			// run's scaffold attested — a stale block left by an abandoned
+			// leg/run cannot satisfy the spawn gate. The contract lock path
+			// stays the strictly-stronger durable evidence.
+			hasTddEvidence := vibeTddFileEvidencePresent(&interactiveRun{vibeTddSigAttestedTask: sigAttestedTask}, cwd, sigTaskID) ||
 				(frozenOK && (len(rec.LockedSignatures) > 0 || len(rec.ReadOnlyPaths) > 0))
 			if vibeCoderSpawnBlocked(mode, node.ID, hasTddEvidence) {
 				s.flowDiagLog(parentRunID, "vibe_tdd_missing", "coder refused; tdd artifact missing",

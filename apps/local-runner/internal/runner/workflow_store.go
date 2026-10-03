@@ -203,6 +203,11 @@ type ProviderSessionState struct {
 	// escalates to a human park instead of an unbounded debate loop
 	// (live run-100368).
 	VibeDebateMounts int `json:"vibeDebateMounts,omitempty"`
+	// VibeTddSigAttestedTask mirrors ndjsonSessionRecord's
+	// vibe_tdd_sig_attested_task (BUG-630): the Task-NNN whose
+	// tdd-signatures.md section this run's scaffold leg wrote — file-based
+	// TDD evidence only counts for the attested task.
+	VibeTddSigAttestedTask string `json:"vibeTddSigAttestedTask,omitempty"`
 	// PendingBatchSignatureByStep buffers coder submit_coder_outcome batches
 	// until the negotiation hub consumes them — RAM-only before BUG-404.
 	PendingBatchSignatureByStep map[string][]CoderBatchSignatureRequest

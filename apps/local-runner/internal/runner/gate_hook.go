@@ -1478,7 +1478,37 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 		// adjudicate a pre-existing implementation as the accepted artifact —
 		// tdd-signatures.md then records red_tests:[] + failure_type:none, and
 		// the gate must verify green instead of demanding stub bodies.
-		tr.ScaffoldRedWaived = vibeScaffoldRedWaived(cwd)
+		sigTaskID := ""
+		if parentID != "" {
+			s.mu.Lock()
+			if parent := s.runs[parentID]; parent != nil {
+				sigTaskID = vibeCurrentTaskDocIDLocked(parent)
+			}
+			s.mu.Unlock()
+		}
+		// BUG-630: the waiver reads only the current task's ledger section —
+		// another task's declared zero-red must not leak across the file.
+		tr.ScaffoldRedWaived = vibeScaffoldRedWaivedForTask(cwd, sigTaskID)
+		// BUG-630: attest the signatures section for this run's current task
+		// only when the scaffold leg actually WROTE the ledger this turn —
+		// a pre-existing (stale/abandoned-leg) block is not evidence.
+		if sigTaskID != "" && parentID != "" && hasVibeTddSignaturesForTask(cwd, sigTaskID) {
+			wrote := false
+			for _, p := range workspaceRelPaths(cwd, tr.WrittenPaths) {
+				if filepath.ToSlash(p) == vibeTddSignaturesRel {
+					wrote = true
+					break
+				}
+			}
+			if wrote {
+				s.mu.Lock()
+				if parent := s.runs[parentID]; parent != nil && parent.vibeTddSigAttestedTask != sigTaskID {
+					parent.vibeTddSigAttestedTask = sigTaskID
+					go s.persistParentSession(parentID)
+				}
+				s.mu.Unlock()
+			}
+		}
 	}
 	if coderSignaturesLocked {
 		tr.SignatureHashBefore = coderFrozenRec.SignatureHash

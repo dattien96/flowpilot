@@ -38,7 +38,10 @@ func isRunnerManagedWorktreePath(dir string) bool {
 
 func (s *InteractiveService) ensureGitNexusIndexAsync(workspace string) {
 	workspace = strings.TrimSpace(workspace)
-	if workspace == "" || isRunnerManagedWorktreePath(workspace) {
+	// BUG-629: auto-index must never arm under `go test` — its .gitnexus/
+	// writes race t.TempDir() cleanup and fail the suite on "directory
+	// not empty". runningUnderGoTest is shared with opencode_models_cache.
+	if workspace == "" || isRunnerManagedWorktreePath(workspace) || runningUnderGoTest() {
 		return
 	}
 	if _, err := os.Stat(filepath.Join(workspace, ".gitnexus")); err == nil {

@@ -295,6 +295,12 @@ type interactiveRun struct {
 	vibeDebateMountInFlight bool
 	vibeOwnerFailRetries    int
 	vibeOwnerSettleInFlight bool
+	// vibeTddSigAttestedTask records the Task-NNN whose tdd-signatures.md
+	// section THIS run's scaffold leg was observed writing (BUG-630): the
+	// file check counts only for the attested task, so a stale block left
+	// by an abandoned leg/run cannot satisfy a fresh task's TDD evidence.
+	// Durable via ProviderSessionState.VibeTddSigAttestedTask.
+	vibeTddSigAttestedTask string
 	vibeCoderResumeInFlight bool
 	vibeResumeConfirm       bool
 	vibeResumeFromNode      string
@@ -5614,6 +5620,7 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 		// silently re-clobbers the overlay or resets the cap on resume.
 		VibeDeferredFlowStarts:          append([]VibeDeferredFlowStart(nil), rs.vibeDeferredFlowStarts...),
 		VibeDebateMounts:                rs.vibeDebateMounts,
+		VibeTddSigAttestedTask:            rs.vibeTddSigAttestedTask,
 		PendingBatchSignatureByStep:     copyBatchSignatureMap(rs.pendingBatchSignatureByStep),
 		FlowStartGitHead:                rs.flowStartGitHead,
 		PendingFlowGateSettle:           rs.pendingFlowGateSettle,

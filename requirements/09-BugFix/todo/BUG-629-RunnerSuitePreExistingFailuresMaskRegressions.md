@@ -39,12 +39,15 @@
 
 ## Defects worth fixing
 
-1. **Knowledge-bootstrap ↔ test tempdirs**: the bootstrap auto-indexes
-   each test workspace into the **global** GitNexus registry under the
-   basename `001`; stale entries accumulate across runs → ambiguity →
-   leftover `.gitnexus` dirs break `t.TempDir()` cleanup. Registry
-   writes should be tempdir-scoped/disabled under `go test`, or the
-   bootstrap should pass the absolute path instead of the `001` label.
+1. **Knowledge-bootstrap ↔ test tempdirs** — **FIXED (CA-1159)**:
+   `ensureGitNexusIndexAsync` no longer arms under `go test`
+   (`runningUnderGoTest`, shared with `opencode_models_cache`), so the
+   auto-index never writes `.gitnexus/` into test tempdirs and the
+   `TempDir RemoveAll` cleanup race is gone. Verified: the 8 previously
+   flaky contract/freeze/advance tests pass. Remaining cleanup debt:
+   stale `001` registry entries from past runs were manually removed
+   2026-10-04; the bootstrap could still pass the absolute path instead
+   of the `001` label to harden future ambiguity.
 2. **Suite health**: the `r-ca`/`r-task`/gate-blind/`Bug377` cluster
    fails deterministically on main — either the rules moved without the
    tests (oracle drift) or the code regressed without a suite run

@@ -4,7 +4,9 @@
 - **Severity:** High — this was the root trigger of the entire
   run-174243 cascade (premature freeze approval → gate challenge →
   owner debate → BUG-626 unwinnable loop → escalate → run stopped)
-- **Status:** open
+- **Status:** RESOLVED — CA-1159. Task-section scoping + runner
+  attestation landed; regression tests in
+  `internal/runner/bug630_stale_tdd_signatures_test.go` (RED→GREEN).
 - **Found:** run-150388 sprint-3 leg abandoned mid-tdd (2026-10-02),
   surfaced in run-174243 2026-10-03 ~23:05–23:08
 
@@ -49,6 +51,26 @@ violated by trusting prose artifacts over the tree.
 - Leg abandonment should mark its ledger contributions `abandoned`
   (same posture as contract `abandoned` status already used by
   `9c85fd6f`/`94ea63b6`).
+
+## Fix implemented (CA-1159)
+
+- `vibeTddSignatureSections` splits the ledger on `# TDD sign*` headers;
+  `vibeTddSignaturesTaskSection` resolves a `(Task-NNN)`-labelled block.
+- `hasVibeTddSignaturesForTask` / `hasVibeTddOutputForTask` scope the
+  artifact check to the current task's own section.
+- `vibeScaffoldRedWaivedForTask` reads the waiver keys inside the current
+  task's section only — another task's zero-red declaration no longer
+  leaks across the file (whole-file last-wins stays for unlabelled files).
+- **Provenance gate**: `vibeTddFileEvidencePresent` requires the run's
+  durable `vibeTddSigAttestedTask` to match — set in the scaffold-turn
+  gate block only when the leg actually WROTE `tdd-signatures.md` that
+  turn (a stale block's mere presence cannot attest). Persisted via
+  `ProviderSessionState.VibeTddSigAttestedTask` (ndjson + restore wired).
+- Consumers rewired: `vibeTddEvidencePresent` (resume paths) and the
+  flow-executor coder spawn gate; contract-lock evidence
+  (LockedSignatures/ReadOnlyPaths) unchanged — still strictly stronger.
+- Prompt hardening: `scaffold-contract-tdd.md` tells the leg stale
+  sections are history and to declare its own `(Task-NNN)` section.
 
 ## Hygiene follow-up
 

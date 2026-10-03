@@ -13,6 +13,13 @@ turn: the coder cannot change them without a batch renegotiation round.
 
 ## Step 2 — Create production stubs (signature only, NEW files only)
 
+`tdd-signatures.md` may contain sections left behind by earlier runs or
+tasks — they are history, not evidence for your task. Write (or rewrite)
+**your own section headed `# TDD signatures — <feature> (Task-NNN)`** for
+THIS task and declare only what you verify against the current tree; never
+cite another task's block, and never treat a pre-existing block as proof
+that scaffold work already happened.
+
 Create the declared production files that DO NOT ALREADY EXIST with every
 struct, interface, and function the plan needs. Signature must be complete
 (name, receiver, parameter types, return types). The BODY must be an empty

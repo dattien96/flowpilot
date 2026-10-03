@@ -284,6 +284,11 @@ type ndjsonSessionRecord struct {
 	// BUG-595: per-sprint owner-debate mount counter (cap must survive
 	// restart or the run-100368 unbounded loop resumes with a fresh budget).
 	VibeDebateMounts int `json:"vibe_debate_mounts,omitempty"`
+	// VibeTddSigAttestedTask is the BUG-630 provenance flag: the Task-NNN
+	// whose tdd-signatures.md section this run's scaffold leg was observed
+	// writing. Restart must not drop it or a mid-sprint restart re-blocks
+	// the coder spawn on "missing" evidence.
+	VibeTddSigAttestedTask string `json:"vibe_tdd_sig_attested_task,omitempty"`
 	// PendingBatchSignatureByStep buffers coder submit_coder_outcome batches
 	// until the negotiation hub consumes them (BUG-404).
 	PendingBatchSignatureByStep map[string][]CoderBatchSignatureRequest `json:"pending_batch_signature_by_step,omitempty"`
@@ -940,6 +945,7 @@ func sessionStateFromRecord(r ndjsonSessionRecord) ProviderSessionState {
 		VibeParkedGatedRunIDs:              append([]string(nil), r.VibeParkedGatedRunIDs...),
 		VibeDeferredFlowStarts:             append([]VibeDeferredFlowStart(nil), r.VibeDeferredFlowStarts...),
 		VibeDebateMounts:                   r.VibeDebateMounts,
+		VibeTddSigAttestedTask:             r.VibeTddSigAttestedTask,
 		PendingBatchSignatureByStep:        copyBatchSignatureMap(r.PendingBatchSignatureByStep),
 		FlowStartGitHead:                   r.FlowStartGitHead,
 		PendingFlowGateSettle:              r.PendingFlowGateSettle,
@@ -1481,6 +1487,7 @@ func sessionRecordFrom(s ProviderSessionState) ndjsonSessionRecord {
 		VibeParkedGatedRunIDs:              append([]string(nil), s.VibeParkedGatedRunIDs...),
 		VibeDeferredFlowStarts:             append([]VibeDeferredFlowStart(nil), s.VibeDeferredFlowStarts...),
 		VibeDebateMounts:                   s.VibeDebateMounts,
+		VibeTddSigAttestedTask:             s.VibeTddSigAttestedTask,
 		PendingBatchSignatureByStep:        copyBatchSignatureMap(s.PendingBatchSignatureByStep),
 		FlowStartGitHead:                   s.FlowStartGitHead,
 		PendingFlowGateSettle:              s.PendingFlowGateSettle,
