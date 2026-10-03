@@ -205,7 +205,15 @@ func featureKeyRegistered(workspace, key string) bool {
 	}
 	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "- "+key+" ") || strings.HasPrefix(line, "- "+key+"\t") || line == "- "+key {
+		rest, ok := strings.CutPrefix(line, "- ")
+		if !ok {
+			continue
+		}
+		// Registries write keys either bare or markdown-quoted —
+		// "- key — desc" or "- `key` — desc" (BUG-617: the quoted form read
+		// as unregistered and every audit drafted blocked_missing_feature_key).
+		fields := strings.Fields(rest)
+		if len(fields) > 0 && strings.Trim(fields[0], "`") == key {
 			return true
 		}
 	}
