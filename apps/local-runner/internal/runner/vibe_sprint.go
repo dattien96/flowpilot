@@ -370,6 +370,15 @@ func (s *InteractiveService) persistedLiveCoderExists(parentRunID string) (bool,
 // given label. After a restart step rows reseed as PENDING (per-step progress
 // is not persisted), so a DONE row alone cannot prove the node finished —
 // the persisted child session is the fallback evidence (turn-2 RestartLost).
+//
+// BUG-622: vibe sprints reuse node ids (coder/reviewer) across sprints and
+// legs close only at run end, so a PRIOR sprint's completed child still sits
+// in the index under this parent+label. Unscoped, it fabricates "done"
+// evidence for the current sprint — pendingVibeResumeFromNode then derives a
+// wrong resume node ("Resume from reviewer?" past an un-run tdd/coder), and
+// maybeAdvancePendingValidateAfterCoder can advance past a leg that never
+// ran (live run-150388). Only sessions belonging to the current sprint count
+// (sessionBelongsToVibeSprint); index-0 legs keep fail-open legacy behavior.
 func (s *InteractiveService) persistedCompletedChildExists(parentRunID, label string) bool {
 	if s == nil || s.workflowStore == nil || strings.TrimSpace(parentRunID) == "" || strings.TrimSpace(label) == "" {
 		return false
@@ -378,6 +387,12 @@ func (s *InteractiveService) persistedCompletedChildExists(parentRunID, label st
 	if !ok {
 		return false
 	}
+	s.mu.Lock()
+	sprintIndex := 0
+	if rs := s.runs[parentRunID]; rs != nil {
+		sprintIndex = rs.vibeSprintIndex
+	}
+	s.mu.Unlock()
 	sessions, err := indexReader.ListAllProviderSessions(context.Background())
 	if err != nil {
 		// "Not completed" is the safe direction (blocks advancement/parks),
@@ -387,6 +402,9 @@ func (s *InteractiveService) persistedCompletedChildExists(parentRunID, label st
 	}
 	for _, session := range sessions {
 		if session.ParentRunID != parentRunID || strings.TrimSpace(session.Label) != strings.TrimSpace(label) {
+			continue
+		}
+		if !sessionBelongsToVibeSprint(session, sprintIndex) {
 			continue
 		}
 		if session.Status == RunStatusCompleted {
