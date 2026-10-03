@@ -1452,7 +1452,11 @@ func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID
 			return false
 		}
 		canonical, ok := agentpack.NormalizeBehaviorID(node.Behavior)
-		if !ok || (canonical != "agent.delegate" && canonical != "agent.code" && canonical != "agent.reproduce") {
+		// BUG-618: scaffold legs are provider-backed delegate-scope too — the
+		// hand-rolled allowlist missed agent.scaffold, so resume-from-node and
+		// mid-flow advance silently dropped tdd targets. ProviderBackedBehavior
+		// is the canonical family table kept in sync with the scope registry.
+		if !ok || !agentpack.ProviderBackedBehavior(canonical) {
 			s.flowDiagLog(parentRunID, "flow_advance_target_not_spawnable", "target node is not a spawnable delegate, frozen writer, or reproduce node",
 				"completed_node_id", completedNodeID,
 				"target_node_id", node.ID,
