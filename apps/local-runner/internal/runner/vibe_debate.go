@@ -175,6 +175,18 @@ func (s *InteractiveService) maybeSettleVibeOwnerDebate(parentRunID string) bool
 		s.mu.Unlock()
 		return false
 	}
+	// BUG-624 (live run-174243): the mount goroutine's dispatch window —
+	// debate graph swapped in, debate_trigger stamped RUNNING, owner spawn
+	// requests in flight but zero children registered yet — reads as
+	// "ownersStarved" to the ladder below, so a settle check here re-mounted
+	// the debate on top of itself and spawned a duplicate owner_1+owner_2
+	// pair into one cohort. The mount goroutine owns the window; its
+	// post-check (maybeReleaseVibeDebateClaimIfMountDied) is the only
+	// legitimate verdict for a mount that dies inside it.
+	if rs.vibeDebateMountInFlight {
+		s.mu.Unlock()
+		return false
+	}
 	if rs.vibeOwnerSettleInFlight {
 		s.mu.Unlock()
 		return false
