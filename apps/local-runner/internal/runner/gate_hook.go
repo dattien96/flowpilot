@@ -280,7 +280,7 @@ func (s *InteractiveService) runFlowGateAtEpoch(
 	}
 
 	// CP-53 P-1: gate_blind when baseline missing / env error / red-at-capture.
-	if s.gateBlindBlocksTurn(runID, turnID, epoch, rs, dotFP, baseline, oracle, diff) {
+	if s.gateBlindBlocksTurn(ctx, runID, turnID, epoch, rs, cwd, dotFP, baseline, oracle, diff) {
 		return true
 	}
 
@@ -1391,7 +1391,7 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 		}
 		overrides, _ := flowgate.LoadOverrides(dotFP)
 		oracle := flowgate.RunOracleContext(ctx, cwd, baseline, diff, overrides)
-		if s.gateBlindBlocksTurn(runID, turnID, epoch, rs, dotFP, baseline, oracle, diff) {
+		if s.gateBlindBlocksTurn(ctx, runID, turnID, epoch, rs, cwd, dotFP, baseline, oracle, diff) {
 			if parentID != "" && s.gateEpochStillValid(runID, epoch) {
 				s.mu.Lock()
 				s.stampEscalatedChildNodeLocked(parentID, childEscalatedNodeID(rs))

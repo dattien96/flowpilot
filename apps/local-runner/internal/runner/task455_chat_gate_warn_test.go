@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -83,7 +84,7 @@ func TestTask455_GateBlindChatRunWarnsNotBlocks(t *testing.T) {
 	svc.runs = map[string]*interactiveRun{"run-chat-blind": rs}
 	bl := &flowgate.Baseline{SuitePassed: true}
 	diff := []flowgate.ChangedFile{{Path: "pkg/foo.go", Status: "M"}}
-	blocked := svc.gateBlindBlocksTurn("run-chat-blind", "turn-1", 1, rs, dot, bl, flowgate.OracleResult{EnvError: "cannot start tests"}, diff)
+	blocked := svc.gateBlindBlocksTurn(context.Background(), "run-chat-blind", "turn-1", 1, rs, filepath.Dir(dot), dot, bl, flowgate.OracleResult{EnvError: "cannot start tests"}, diff)
 	if blocked {
 		t.Fatal("chat-mode run must not block on gate_blind under enforce config")
 	}

@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -22,7 +23,7 @@ func TestGateBlindBlocksTurnEnforceMissingBaseline(t *testing.T) {
 	rs := &interactiveRun{id: "run-blind", lastTurnStepID: "step-1", gateEpoch: 1, flowEngineDriven: true}
 	svc.runs = map[string]*interactiveRun{"run-blind": rs}
 	diff := []flowgate.ChangedFile{{Path: "src/main.go", Status: "M"}}
-	blocked := svc.gateBlindBlocksTurn("run-blind", "turn-1", 1, rs, dot, nil, flowgate.OracleResult{}, diff)
+	blocked := svc.gateBlindBlocksTurn(context.Background(), "run-blind", "turn-1", 1, rs, dir, dot, nil, flowgate.OracleResult{}, diff)
 	if !blocked {
 		t.Fatal("expected enforce blind block for missing baseline + code diff")
 	}
@@ -37,7 +38,7 @@ func TestGateBlindDocsOnlyDoesNotBlock(t *testing.T) {
 	rs := &interactiveRun{id: "run-docs", gateEpoch: 1, flowEngineDriven: true}
 	svc.runs = map[string]*interactiveRun{"run-docs": rs}
 	diff := []flowgate.ChangedFile{{Path: "change-audit/CA-999.md", Status: "A"}}
-	blocked := svc.gateBlindBlocksTurn("run-docs", "turn-1", 1, rs, dot, nil, flowgate.OracleResult{}, diff)
+	blocked := svc.gateBlindBlocksTurn(context.Background(), "run-docs", "turn-1", 1, rs, dir, dot, nil, flowgate.OracleResult{}, diff)
 	if blocked {
 		t.Fatal("docs-only must not trigger gate_blind block")
 	}
@@ -53,7 +54,7 @@ func TestGateBlindEnvErrorBlocksEnforce(t *testing.T) {
 	svc.runs = map[string]*interactiveRun{"run-env": rs}
 	bl := &flowgate.Baseline{SuitePassed: true}
 	diff := []flowgate.ChangedFile{{Path: "pkg/foo.go", Status: "M"}}
-	blocked := svc.gateBlindBlocksTurn("run-env", "turn-1", 1, rs, dot, bl, flowgate.OracleResult{EnvError: "cannot start tests"}, diff)
+	blocked := svc.gateBlindBlocksTurn(context.Background(), "run-env", "turn-1", 1, rs, dir, dot, bl, flowgate.OracleResult{EnvError: "cannot start tests"}, diff)
 	if !blocked {
 		t.Fatal("expected env_error blind block")
 	}

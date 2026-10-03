@@ -1,21 +1,51 @@
 package runner
 
 import (
+	"context"
+	"log"
+
 	"flowpilot-runner/internal/flowgate"
 )
+
+// supersedeRedBaselineOnOracleGreen replaces a red-at-capture baseline with a
+// verified-green one when the oracle's own suite run this turn passed
+// (BUG-632, live run-174243). A sprint's working tree is dirty by
+// construction from scaffold until the audit commit, so
+// RefreshBaselineIfStale's "dirty ⇒ keep prior truth" rule lets a TDD-stub
+// red baseline survive the whole sprint and warn on every code turn.
+//
+// Recapture via CaptureBaselineContext (the FULL unscoped command): the
+// oracle run may have been package-scoped by scopeTestCommand, so its Passed
+// list can be a subset and is not safe to write back. Fail-closed: env
+// errors, suite failures, ctx cancellation, or a still-red recapture leave
+// the prior baseline untouched — red_at_capture stays honest.
+func (s *InteractiveService) supersedeRedBaselineOnOracleGreen(ctx context.Context, repoDir, dotFP string, baseline *flowgate.Baseline, oracle flowgate.OracleResult) *flowgate.Baseline {
+	if baseline == nil || baseline.SuitePassed || oracle.EnvError != "" || !oracle.SuitePassed {
+		return baseline
+	}
+	fresh, err := flowgate.CaptureBaselineContext(ctx, repoDir, dotFP)
+	if err != nil || fresh == nil || !fresh.SuitePassed {
+		return baseline
+	}
+	log.Printf("[gate] baseline superseded: red-at-capture replaced by verified green suite (head=%s)", fresh.HeadSHA)
+	return fresh
+}
 
 // gateBlindBlocksTurn implements CP-53 P-1: when the oracle is blind and the turn
 // touched production code, fail closed in enforce (block) or surface warn otherwise.
 // Returns true when the turn must not proceed (block path).
 func (s *InteractiveService) gateBlindBlocksTurn(
+	ctx context.Context,
 	runID, turnID string,
 	epoch int64,
 	rs *interactiveRun,
+	repoDir string,
 	dotFP string,
 	baseline *flowgate.Baseline,
 	oracle flowgate.OracleResult,
 	diff []flowgate.ChangedFile,
 ) bool {
+	baseline = s.supersedeRedBaselineOnOracleGreen(ctx, repoDir, dotFP, baseline, oracle)
 	reason := flowgate.ClassifyGateBlind(baseline, oracle, dotFP)
 	if reason == "" {
 		return false

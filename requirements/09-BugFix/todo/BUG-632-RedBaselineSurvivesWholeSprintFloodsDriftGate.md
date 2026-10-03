@@ -4,7 +4,11 @@
 - **Severity:** Medium — non-blocking (downgraded to warn under
   contract-first, CP-67) but it floods every code-touching turn of the
   sprint and feeds the drift scorer that mounts owner debates
-- **Status:** open
+- **Status:** RESOLVED — CA-1163 (`gateBlindBlocksTurn` now supersedes a
+  red-at-capture baseline when the oracle's own suite run passed:
+  `supersedeRedBaselineOnOracleGreen` recaptures via the full unscoped
+  `CaptureBaselineContext`; fail-closed on env error / still-red /
+  cancelled ctx; regression test `bug632_red_baseline_supersede_test.go`)
 - **Found:** run-174243, 2026-10-03 — `.flowpilot/guard/test_baseline.json`
   held `suite_passed:false, green_tests:[]` captured 20:34 (Task-032's
   red-stub phase); every later turn emitted `gate_blind red_at_capture`
