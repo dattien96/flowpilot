@@ -3,11 +3,11 @@
 - Document ID: `Task-458`
 - Title: `Per-project response_language setting injected as a prompt directive so all AI chat text renders in Vietnamese`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `dat.nguyen`
 - Reviewers: ``
 - Created: `2026-10-04`
-- Last Updated: `2026-10-04`
+- Last Updated: `2026-10-05`
 - Parent Documents: ``
 - Child Documents: ``
 - Related Documents: `CA-1160` (reprompt seams), `gate_blind_hook.go`, `composeAgentSpawnPrompt`
@@ -210,6 +210,18 @@ func composeAgentSpawnPrompt(agentDef *AgentDefinition, userPrompt string) strin
 
 ## 11. Completion Notes
 
-- result:
-- follow-ups:
-- upstream docs updated:
+- result: Implemented. `internal/runner/chat_language.go` adds
+  `LoadChatLanguage` + `resolvedChatLanguage` (project file →
+  `FLOWPILOT_CHAT_LANGUAGE` env → `en`) + `responseLanguageClause` +
+  `promptWithChatLanguage`. Deviation from §6/T-3+T-4: instead of the
+  composer seam AND a root envelope seam, injection lands once at the
+  `startTurn` wire boundary (after the `systemPromptTag` stamp) — the
+  boundary sits downstream of every prompt composer, so spawn prompts,
+  user turns, gate reprompts, and debate/reinvoke notes all carry the
+  clause via one seam. 6 additive tests green; English resolution
+  byte-identical.
+- follow-ups: run a live turn against a project with
+  `.flowpilot/settings/chat-language.json` `{"language":"vi"}` to verify
+  §8 acceptance end-to-end; runner i18n (gate messages, option cards) is
+  a separate task.
+- upstream docs updated: CA-1164

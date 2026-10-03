@@ -11907,6 +11907,12 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 	if isSystemPrompt(in.Prompt) && !strings.Contains(in.Prompt, systemPromptTag) {
 		in.Prompt = systemPromptTag + "\n" + in.Prompt
 	}
+	// Task-458: response-language directive at the wire boundary — every
+	// prompt shape reaching the provider (user turns, spawn prompts, gate
+	// reprompts, debate/reinvoke notes) carries the resolved chat language
+	// for natural-language output. Machine-format contract text is
+	// untouched; the clause itself instructs keeping it exact.
+	in.Prompt = s.promptWithChatLanguage(rs.workspaceCwd, in.Prompt)
 	// BUG-615: classify the turn BEFORE the display copy is redacted, and only
 	// for the flow hub — see turnIsInternal. Gate reprompts and handoff seeds
 	// stay non-internal: their replies are user-visible output.
