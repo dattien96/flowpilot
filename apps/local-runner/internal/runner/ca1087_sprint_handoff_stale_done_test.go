@@ -142,7 +142,10 @@ func TestCA1087_LegitDispatchedSynthesisDoneStillAdvances(t *testing.T) {
 	// CA-1092: vibe-sprint now declares a cohort:review reviewer inbound of
 	// synthesis, so its done is gated on a recorded approved verdict — record
 	// the verdict the reviewer child would have submitted at join.
+	// CA-1151: spec_align joined the same cohort (green is not proof — the
+	// test-vs-spec check gates done too), so record its verdict as well.
 	svc.recordReviewCohortMemberVerdict(parent.RunID, "reviewer", "approved", "")
+	svc.recordReviewCohortMemberVerdict(parent.RunID, "spec_align", "approved", "")
 
 	// Simulate the real dispatch: dispatchHubNotifyNode stamps
 	// activeHubNodeID + RUNNING before the hub turn runs.

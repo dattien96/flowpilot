@@ -9,6 +9,7 @@ agents:
   - agents/tester.md
   - agents/reproducer.md
   - agents/scaffold-architect.md
+  - agents/spec-aligner.md
   - agents/synthesizer.md
   - agents/contract-planner.md
   - agents/owner.md
@@ -131,6 +132,8 @@ prompts:
   # CP-67 (Task-380/Task-381): Contract-First Scaffold TDD prompt pair.
   - prompts/scaffold-contract-tdd.md
   - prompts/implement-scaffold-body.md
+  # CA-1151: spec-alignment verifier turn (green tests are not proof).
+  - prompts/spec-align-check.md
 compatibility:
   minRunnerVersion: TBD
   fallbackToGoBuiltins: true

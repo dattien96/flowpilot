@@ -6,8 +6,9 @@ import (
 
 // Scenario: builtin pack count after Task-321, CP-64, CP-65 P-3 and CP-67.
 // Input: LoadBuiltinPack()
-// Expect: len(Flows)==13; len(Agents)==10 (CP-67 P-3 added
-// agents/scaffold-architect.md — authorized inventory change).
+// Expect: len(Flows)==14; len(Agents)==11 (CP-67 P-3 added
+// agents/scaffold-architect.md; CA-1151 added agents/spec-aligner.md —
+// both authorized inventory changes).
 func TestPack_InventoryUnchanged(t *testing.T) {
 	pack, err := LoadBuiltinPack()
 	if err != nil {
@@ -17,8 +18,8 @@ func TestPack_InventoryUnchanged(t *testing.T) {
 	if len(pack.Flows) != 14 {
 		t.Fatalf("flows=%d, want 14", len(pack.Flows))
 	}
-	if len(pack.Agents) != 10 {
-		t.Fatalf("agents=%d, want 10 (%v)", len(pack.Agents), SortedAgentNames(pack.Agents))
+	if len(pack.Agents) != 11 {
+		t.Fatalf("agents=%d, want 11 (%v)", len(pack.Agents), SortedAgentNames(pack.Agents))
 	}
 }
 

@@ -30,9 +30,11 @@ func TestPack_VibeSprintV2Topology(t *testing.T) {
 	// CP-67 P-5: synthesis_negotiation joins the topology (B-6).
 	// CA-1092: reviewer joins between validate and synthesis (task-harness
 	// review parity — a real review step, not hub self-review).
+	// CA-1151: spec_align joins the review cohort off validate done — green
+	// tests are not proof; the test-vs-spec verdict gates synthesis too.
 	want := []string{
 		"preflight_contract_plan", "preflight_contract_freeze", "context",
-		"tdd", "coder", "validate", "reviewer", "synthesis", "synthesis_negotiation", "audit",
+		"tdd", "coder", "validate", "spec_align", "reviewer", "synthesis", "synthesis_negotiation", "audit",
 	}
 	if len(order) != len(want) {
 		t.Fatalf("nodes=%v, want %v", order, want)

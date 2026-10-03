@@ -74,10 +74,20 @@ func TestCA1092_VibeSprintValidateDoneSpawnsReviewer(t *testing.T) {
 	svc := newInteractiveService(reg, newInteractiveCatalog(), newFakeWorkflowStore())
 	runID := armVibeSprintRun(t, svc)
 
-	// The exact advance runValidateNode performs once the suite passes:
-	// the forward done edge off validate must spawn the reviewer cohort.
+	// The exact advance runValidateNode performs once the suite passes.
+	// CA-1151: validate --done--> now fans out to BOTH review-cohort members
+	// in parallel — spec_align (re-derives requirements from the SS/SD/CP/
+	// Task chain and checks tests+code against them; green is not proof)
+	// and reviewer — because a cohort member settles into the cohort join,
+	// not into a per-node done edge.
 	if !svc.tryAdvanceFlowFromNode(runID, "validate", "suite green") {
-		t.Fatal("tryAdvanceFlowFromNode(validate) returned false — reviewer never dispatched")
+		t.Fatal("tryAdvanceFlowFromNode(validate) returned false — review cohort never dispatched")
+	}
+	waitLoop(t, "spec_align child spawned", 5*time.Second, func() bool {
+		return countChildrenWithLabel(svc, runID, "spec_align") >= 1
+	})
+	if got := flowStepStatus(t, svc, runID, "spec_align"); got != StepStatusRunning && got != StepStatusDone {
+		t.Fatalf("spec_align step=%v want RUNNING (spawned) — DONE only if the turn already settled", got)
 	}
 	waitLoop(t, "reviewer child spawned", 5*time.Second, func() bool {
 		return countChildrenWithLabel(svc, runID, "reviewer") >= 1
@@ -107,7 +117,10 @@ func TestCA1092_VibeSprintSynthesisDoneGatedOnReviewerVerdict(t *testing.T) {
 
 	// A changes_requested verdict must satisfy the cohort join and mark the
 	// continue branch — synthesis routes the round back to the coder.
+	// CA-1151: the review cohort now also carries spec_align; its verdict must
+	// be present alongside reviewer's.
 	svc.snapshotReviewCohortVerdicts(runID, []cohortEntry{
+		{Label: "spec_align", Status: "completed", MachineVerdict: "approved"},
 		{Label: "reviewer", Status: "completed", MachineVerdict: "changes_requested"},
 	})
 	if !svc.hubDoneCohortHasChangesRequested(runID, "synthesis") {
@@ -117,8 +130,9 @@ func TestCA1092_VibeSprintSynthesisDoneGatedOnReviewerVerdict(t *testing.T) {
 		t.Fatal("synthesis done must stay blocked on a changes_requested verdict")
 	}
 
-	// An approved verdict unblocks done.
+	// An approved verdict unblocks done — both cohort members approved.
 	svc.snapshotReviewCohortVerdicts(runID, []cohortEntry{
+		{Label: "spec_align", Status: "completed", MachineVerdict: "approved"},
 		{Label: "reviewer", Status: "completed", MachineVerdict: "approved"},
 	})
 	if err := svc.synthesisDoneVerdictError(runID); err != nil {

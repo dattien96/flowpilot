@@ -45,6 +45,12 @@ contextProfiles:
   reviewer:
     candidateSources: [conventions, change.contract, source.excerpt]
     maxEstPromptTokens: 12000
+  # spec_align re-reads the requirement chain (Task -> CP -> SD -> SS) itself
+  # via tools; the contract names the governing Task doc, canonical.head gives
+  # it the doc tree shape to walk parents.
+  specalign:
+    candidateSources: [conventions, canonical.head, change.contract, source.excerpt]
+    maxEstPromptTokens: 12000
 acceptance_nodes:
   - validate
   - synthesis
@@ -103,6 +109,26 @@ nodes:
     run: inline
     lifecycle: once
     behavior: command.validate
+  # CA-1151 (spec-alignment gate): a green suite is not proof — the TDD leg
+  # may have encoded wrong assertions. spec_align re-derives the requirements
+  # from the SS/SD/CP/Task chain and verifies tests+code against them. Its
+  # verdict joins the same review cohort, so synthesis done stays gated on
+  # BOTH machine verdicts; misalignment rides the existing
+  # continue -> coder -> renegotiate_signatures -> synthesis_negotiation ->
+  # tdd machinery (contract-first: only the scaffold leg rewrites tests).
+  - id: spec_align
+    run: delegate
+    lifecycle: spawn
+    behavior: agent.delegate
+    workloadClass: high_reasoning
+    agent: agents/spec-aligner.md
+    promptTemplate: prompts/spec-align-check.md
+    posture: read_only
+    contextProfile: specalign
+    dependsOn:
+      - validate
+    cohort: review
+    join: all
   # CA-1092 (live run-3362 review): dedicated read-only reviewer between
   # validate and synthesis — task-harness parity. Its machine verdict gates
   # synthesis done; changes_requested loops back through synthesis -> coder.
@@ -164,7 +190,14 @@ edges:
     to: coder
     when: continue
     kind: back
-  # CA-1092: validate done feeds the reviewer; the reviewer feeds synthesis.
+  # CA-1151 + CA-1092: validate done fans out to BOTH review-cohort members —
+  # spec_align re-verifies tests+code against the SS/SD/CP/Task requirement
+  # chain (green is not proof of intent), reviewer checks the change itself.
+  # Their machine verdicts both gate synthesis done.
+  - from: validate
+    to: spec_align
+    when: done
+    kind: forward
   - from: validate
     to: reviewer
     when: done
