@@ -112,12 +112,23 @@ function mapProviderAccountSummary(raw: RawProviderAccountSummary): ProviderAcco
 // runs in the Electron renderer and in Node smoke tests.
 export class HttpWsRunnerClient implements RunnerClient {
   private readonly base: string;
+  private readonly streamBase: string;
   private scenario?: string;
   /** Highest seq seen per run, so a follow-up turn/stream resumes after it. */
   private readonly lastSeq = new Map<string, number>();
 
   constructor(baseUrl: string) {
     this.base = baseUrl.replace(/\/+$/, "");
+    // BUG-601: Chromium caps ~6 HTTP/1.1 connections per origin and SSE lanes
+    // never complete — once enough are live they starve every plain JSON call
+    // (observed live: boot froze on /client/projects behind 6 held streams).
+    // Origin-keyed pooling means the loopback alias gets its own pool while
+    // still hitting the same listener.
+    this.streamBase = this.base.includes("://127.0.0.1")
+      ? this.base.replace("://127.0.0.1", "://localhost")
+      : this.base.includes("://localhost")
+        ? this.base.replace("://localhost", "://127.0.0.1")
+        : this.base;
   }
 
   setScenario(scenario: string): void {
@@ -127,7 +138,12 @@ export class HttpWsRunnerClient implements RunnerClient {
   // ---- plain JSON helpers --------------------------------------------------
 
   private async getJSON<T>(path: string): Promise<T> {
-    const resp = await fetch(this.base + path, { headers: { Accept: "application/json" } });
+    const resp = await fetch(this.base + path, {
+      headers: { Accept: "application/json" },
+      // A stalled connection used to pin the boot overlay forever — bound the
+      // wait so callers surface a retryable failure instead.
+      signal: AbortSignal.timeout(30_000),
+    });
     return this.parse<T>(resp);
   }
 
@@ -534,7 +550,7 @@ export class HttpWsRunnerClient implements RunnerClient {
     signal?.addEventListener("abort", abort, { once: true });
     let resp: Response;
     try {
-      resp = await fetch(`${this.base}/client/events/stream`, {
+      resp = await fetch(`${this.streamBase}/client/events/stream`, {
         headers: { Accept: "text/event-stream" },
         signal: ctrl.signal,
       });
@@ -607,7 +623,7 @@ export class HttpWsRunnerClient implements RunnerClient {
     let resp: Response;
     try {
       resp = await fetch(
-        `${this.base}/client/workflow-runs/${encodeURIComponent(runId)}/events/stream?afterSeq=${afterSeq}`,
+        `${this.streamBase}/client/workflow-runs/${encodeURIComponent(runId)}/events/stream?afterSeq=${afterSeq}`,
         { headers: { Accept: "text/event-stream" }, signal: ctrl.signal },
       );
     } catch (err) {

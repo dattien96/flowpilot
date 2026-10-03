@@ -250,6 +250,11 @@ export interface RunSnapshot {
   _streamingAssistantId?: string;
   activeStepId?: string;
   lastEventSeq?: number;
+  /** BUG-598: the run's own transcript key — a focused child leg writes its
+   *  records under its own chatId, not the parent's. Without it in the
+   *  snapshot, backToMainRun can't restore the parent's chatId after a focus
+   *  cleared it, and loadEarlierTimeline pages the wrong transcript. */
+  chatId?: string;
   /** Task-421: window bookkeeping follows the run's snapshot so focusing a
    *  child agent and coming back preserves paging state. */
   timelineHasOlder?: boolean;
@@ -1402,6 +1407,12 @@ export const useStore = create<AppState>((set, get) => ({
       }
       return;
     }
+    // BUG-598: the focused leg owns its own transcript chat — persist the
+    // handle's chatId so loadEarlierTimeline pages the leg's records instead of
+    // the parent's chat (or an empty runTimeline for chat-backed legs). A
+    // chat-less leg clears the inherited chatId so it falls back to run-keyed
+    // paging as intended.
+    set({ chatId: handle.chatId || undefined });
     if (!restore) {
       set({ status: handle.status, activeStepId: handle.stepId });
     }
@@ -5491,6 +5502,7 @@ function snapshotRunState(state: AppState): RunSnapshot {
     _streamingAssistantId: state._streamingAssistantId,
     activeStepId: state.activeStepId,
     lastEventSeq: state._runReplaySeq[state.runId ?? ""] ?? state._runReplaySeq[state.mainRunId ?? ""] ?? undefined,
+    chatId: state.chatId,
     timelineHasOlder: state.timelineHasOlder,
     _timelineAnchorSeq: state._timelineAnchorSeq,
     _timelineEvictedIds: new Set(state._timelineEvictedIds ?? []),
@@ -5528,6 +5540,7 @@ function restoreRunSnapshot(snapshot: RunSnapshot): Partial<AppState> {
     // already-complete bubble instead of rebuilding it.
     _streamingAssistantId: undefined,
     activeStepId: snapshot.activeStepId,
+    chatId: snapshot.chatId,
     timelineHasOlder: snapshot.timelineHasOlder ?? false,
     _timelineAnchorSeq: snapshot._timelineAnchorSeq,
     _timelineEvictedIds: new Set(snapshot._timelineEvictedIds ?? []),
