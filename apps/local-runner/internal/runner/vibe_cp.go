@@ -156,7 +156,12 @@ func (s *InteractiveService) vibeSprintStartBlocked(parentRunID string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rs := s.runs[parentRunID]
-	return rs != nil && rs.vibeAwaitingLock
+	// BUG-594 (live run-139670): the debate claim also blocks a sprint
+	// mount — a sprint start under it clobbered the mounted debate graph.
+	// Refusing here (not deferring) is correct: every sprint-start caller
+	// owns a rollback/re-fire path — takeNext's index is returned, the
+	// boundary take rolls back, the chain re-fires post-restore.
+	return rs != nil && (rs.vibeAwaitingLock || len(rs.vibeParkedNodes) > 0)
 }
 
 func (s *InteractiveService) takeNextVibeSprintLocked(rs *interactiveRun) vibeSprintDecision {
@@ -176,6 +181,10 @@ func (s *InteractiveService) takeNextVibeSprintLocked(rs *interactiveRun) vibeSp
 		rs.decisionCardChosen = ""
 		rs.expectedACsCache = nil
 		rs.expectedACsResolved = false
+		// BUG-595: a new sprint takes a fresh owner-debate remediation
+		// budget — the mount counter must not carry over (live run-100368
+		// looped seven debates on one child).
+		rs.vibeDebateMounts = 0
 	}
 	return d
 }
@@ -272,7 +281,11 @@ func (s *InteractiveService) maybeStartNextVibeSprint(parentRunID string) {
 	// A boundary Continue that is mid-start already owns the next sprint, and
 	// a pending boundary gate owns the next decision — a stray slicer/chain
 	// completion in either window must not take a second index.
-	if rs == nil || rs.vibeSprintStartInFlight || rs.vibeSprintBoundaryPending {
+	// BUG-594: the debate claim also fences the take — the index must NOT be
+	// consumed under it (the take rolls forward with no mount possible and
+	// the re-fire post-restore takes a SECOND index, skipping a task).
+	if rs == nil || rs.vibeSprintStartInFlight || rs.vibeSprintBoundaryPending ||
+		len(rs.vibeParkedNodes) > 0 {
 		s.mu.Unlock()
 		return
 	}
@@ -973,10 +986,30 @@ func collectVibeSprintPlan(cwd string) []string {
 // gated child for its post-debate reprompt.
 func (s *InteractiveService) stashVibeFlowForDebate(parentRunID, gatedRunID string) (parkedNow bool) {
 	s.mu.Lock()
+	// The stale-drop diag does file I/O — registered before the unlock
+	// defer so it runs after s.mu is released (defers run LIFO).
+	staleDropped := false
+	defer func() {
+		if staleDropped {
+			s.flowDiagLog(parentRunID, "vibe_debate_claim_stale_dropped",
+				"stale parked claim dropped before re-park",
+				"gated_run_id", gatedRunID)
+		}
+	}()
 	defer s.mu.Unlock()
 	rs := s.runs[parentRunID]
 	if rs == nil {
 		return false
+	}
+	// BUG-594 (live run-139670): a parked snapshot recording a DIFFERENT
+	// flow than the live graph is a detached stale claim — the debate
+	// overlay was clobbered and can never come back. Suppressing on it
+	// strands every gated outcome forever (the durable record persisted
+	// exactly this shape). Drop it; the divert then re-parks the LIVE
+	// topology and mounts a real debate.
+	if vibeDebateClaimForeignLocked(rs) {
+		dropVibeDebateStaleClaimLocked(rs)
+		staleDropped = true
 	}
 	// Record the interrupted child even when the topology is already parked
 	// (a second gate fire mid-debate): every diverted node completion owes a
@@ -1013,6 +1046,8 @@ func (s *InteractiveService) stashVibeFlowForDebate(parentRunID, gatedRunID stri
 		st.pendingNarrow = false
 		st.mu.Unlock()
 	}
+	// BUG-595: every fresh park counts toward the per-sprint mount cap.
+	rs.vibeDebateMounts++
 	return true
 }
 
@@ -1031,11 +1066,16 @@ func (s *InteractiveService) restoreVibeFlowAfterDebate(parentRunID string) bool
 	}
 	nodes := append([]agentpack.FlowNode(nil), rs.activeFlowNodes...)
 	gatedIDs := append([]string(nil), rs.vibeParkedGatedRunIDs...)
+	// BUG-594: drain flow starts deferred while the claim held. Capture
+	// before clearing so a restart between restore and dispatch still has
+	// the queue durably (persisted with parentSnap below).
+	deferred := append([]VibeDeferredFlowStart(nil), rs.vibeDeferredFlowStarts...)
 	rs.vibeParkedNodes = nil
 	rs.vibeParkedEdges = nil
 	rs.vibeParkedAcceptance = nil
 	rs.vibeParkedFlowRef = ""
 	rs.vibeParkedGatedRunIDs = nil
+	rs.vibeDeferredFlowStarts = nil
 	verdicts := append([]VerdictRow(nil), rs.lastFlowVerdicts...)
 	// The gate diverted each gated child's node completion into the debate
 	// before tryAdvanceFlowFromNode could fire its done-edge — the debate then
@@ -1089,10 +1129,32 @@ func (s *InteractiveService) restoreVibeFlowAfterDebate(parentRunID string) bool
 		// row is gone) — fall back to the hub continuation so the restored
 		// loop still has work in flight instead of stalling (run-136/9597).
 		s.maybeAutoReinvokeHubWithPrompt(parentRunID, vibeDebateResumePrompt)
-		return true
+	} else {
+		for _, rp := range reprompts {
+			go s.startTurnClearingIntent(rp.runID, rp.stepID, rp.prompt, "reprompt", rp.gen)
+		}
 	}
-	for _, rp := range reprompts {
-		go s.startTurnClearingIntent(rp.runID, rp.stepID, rp.prompt, "reprompt", rp.gen)
+	// BUG-594: drain flow starts deferred while the debate claim held — the
+	// parked topology is restored, so non-debate mounts are legal again. A
+	// vibe-sprint entry re-derives through maybeStartNextVibeSprint so the
+	// index/task/handoff are taken fresh under the restored state (and its
+	// producers' refusals never queue, so this is belt-and-braces).
+	// Non-sprint drains run in one goroutine: request order is preserved
+	// (last-writer-wins, matching undeferred mounts), each mount re-checks
+	// the claim fence, and entries can never race one another's swap.
+	if len(deferred) > 0 {
+		go func(starts []VibeDeferredFlowStart) {
+			for _, d := range starts {
+				if workingmode.BareFlowID(d.FlowRef) == vibeSprintFlowID {
+					s.maybeStartNextVibeSprint(parentRunID)
+					continue
+				}
+				s.flowDiagLog(parentRunID, "vibe_flow_start_deferred_drained",
+					"draining deferred flow start after debate restore",
+					"flow_ref", d.FlowRef, "start_node_id", d.StartNodeID)
+				s.startResolvedFlowFromNode(context.Background(), parentRunID, d.FlowRef, d.UserPrompt, d.StartNodeID)
+			}
+		}(deferred)
 	}
 	return true
 }

@@ -271,16 +271,28 @@ type interactiveRun struct {
 	vibeCheckpointNode      string
 	vibeCheckpointArtifacts []string
 	// Stamped onto children at spawn (BUG-369); not the live parent plan index.
-	vibeTaskIndex           int
-	vibeTaskTotal           int
-	vibeTaskName            string
-	vibeSSSealed            bool
-	vibeCPSealed            bool
-	vibeParkedNodes         []agentpack.FlowNode
-	vibeParkedEdges         []agentpack.FlowEdge
-	vibeParkedAcceptance    []string
-	vibeParkedFlowRef       string
-	vibeParkedGatedRunIDs   []string
+	vibeTaskIndex         int
+	vibeTaskTotal         int
+	vibeTaskName          string
+	vibeSSSealed          bool
+	vibeCPSealed          bool
+	vibeParkedNodes       []agentpack.FlowNode
+	vibeParkedEdges       []agentpack.FlowEdge
+	vibeParkedAcceptance  []string
+	vibeParkedFlowRef     string
+	vibeParkedGatedRunIDs []string
+	// BUG-594: non-debate flow starts requested while the owner-debate claim
+	// holds vibeParkedNodes must not clobber the mounted overlay — queue them
+	// and drain after restoreVibeFlowAfterDebate. Durable via ProviderSessionState.
+	vibeDeferredFlowStarts []VibeDeferredFlowStart
+	// vibeDebateMounts counts owner-debate mounts taken this sprint (BUG-595):
+	// a fresh park increments; takeNextVibeSprintLocked resets. The cap
+	// escalates instead of looping debates (live run-100368).
+	vibeDebateMounts int
+	// vibeDebateMountInFlight is true between stashVibeFlowForDebate's park
+	// and the mount goroutine's post-check (BUG-594): an unmounted claim
+	// observed in that window is still resolving — never release it.
+	vibeDebateMountInFlight bool
 	vibeOwnerFailRetries    int
 	vibeOwnerSettleInFlight bool
 	vibeCoderResumeInFlight bool
@@ -5524,11 +5536,16 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 		// BUG-404: persist the debate-parked sprint topology + buffered coder
 		// batches so a restart mid-negotiation can restore instead of
 		// false-settling the whole flow.
-		VibeParkedNodes:                 append([]agentpack.FlowNode(nil), rs.vibeParkedNodes...),
-		VibeParkedEdges:                 append([]agentpack.FlowEdge(nil), rs.vibeParkedEdges...),
-		VibeParkedAcceptance:            append([]string(nil), rs.vibeParkedAcceptance...),
-		VibeParkedFlowRef:               rs.vibeParkedFlowRef,
-		VibeParkedGatedRunIDs:           append([]string(nil), rs.vibeParkedGatedRunIDs...),
+		VibeParkedNodes:       append([]agentpack.FlowNode(nil), rs.vibeParkedNodes...),
+		VibeParkedEdges:       append([]agentpack.FlowEdge(nil), rs.vibeParkedEdges...),
+		VibeParkedAcceptance:  append([]string(nil), rs.vibeParkedAcceptance...),
+		VibeParkedFlowRef:     rs.vibeParkedFlowRef,
+		VibeParkedGatedRunIDs: append([]string(nil), rs.vibeParkedGatedRunIDs...),
+		// BUG-594/595: the deferred-start queue and the per-sprint mount
+		// counter must survive restart mid-debate — RAM-only state here
+		// silently re-clobbers the overlay or resets the cap on resume.
+		VibeDeferredFlowStarts:          append([]VibeDeferredFlowStart(nil), rs.vibeDeferredFlowStarts...),
+		VibeDebateMounts:                rs.vibeDebateMounts,
 		PendingBatchSignatureByStep:     copyBatchSignatureMap(rs.pendingBatchSignatureByStep),
 		FlowStartGitHead:                rs.flowStartGitHead,
 		PendingFlowGateSettle:           rs.pendingFlowGateSettle,
@@ -8034,7 +8051,14 @@ func (b *turnBridge) SubmitFlowControl(in FlowControlInput) (FlowControlResult, 
 			flowRequiresHubMachineVerdict(parent, "synthesis") ||
 			flowRequiresHubMachineVerdict(parent, "cp_synthesis"))
 		b.svc.mu.Unlock()
-		if requireVerdict {
+		// BUG-597 (live run-100368): a cohort member that DOES call
+		// submit_review_outcome gets its verdict recorded even when the hub
+		// does not gate on machine verdicts — the buffer is inert unless
+		// hubInboundCohortName maps the hub. The owner_debate cohort (owners
+		// are posture=verdict_only) hit the generic rejection below on every
+		// healthy mount, so verdicts never landed and legs were re-driven
+		// with "verdict never recorded" reprompts.
+		if requireVerdict || in.viaReviewOutcome {
 			if !in.viaReviewOutcome {
 				return FlowControlResult{}, fmt.Errorf(
 					"reviewer cohort member: call submit_review_outcome with status=approved|changes_requested|blocked to record a machine verdict")

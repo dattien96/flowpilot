@@ -1329,6 +1329,11 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 		vibeParkedAcceptance:  append([]string(nil), st.VibeParkedAcceptance...),
 		vibeParkedFlowRef:     st.VibeParkedFlowRef,
 		vibeParkedGatedRunIDs: append([]string(nil), st.VibeParkedGatedRunIDs...),
+		// BUG-594/595: deferred flow starts and the mount counter are part
+		// of the claim lifecycle — restore both or a restart mid-debate
+		// silently re-clobbers the overlay / resets the cap.
+		vibeDeferredFlowStarts: append([]VibeDeferredFlowStart(nil), st.VibeDeferredFlowStarts...),
+		vibeDebateMounts:       st.VibeDebateMounts,
 		// BUG-478: parked merge card + patch snapshots were RAM-only — a
 		// restart dropped every actionable alternate.
 		tournamentWinner:            st.TournamentWinner,
@@ -1388,6 +1393,9 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 		rs.vibeParkedAcceptance = nil
 		rs.vibeParkedFlowRef = ""
 		rs.vibeParkedGatedRunIDs = nil
+		rs.vibeDeferredFlowStarts = nil
+		rs.vibeDebateMounts = 0
+		rs.vibeDebateMountInFlight = false
 		rs.vibeSprintBoundaryPending = false
 		rs.vibeResumeConfirm = false
 		rs.vibeResumeFromNode = ""

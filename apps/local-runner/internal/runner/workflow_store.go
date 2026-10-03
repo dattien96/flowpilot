@@ -88,6 +88,16 @@ type SessionIndexReader interface {
 	ListAllProviderSessions(ctx context.Context) ([]ProviderSessionState, error)
 }
 
+// VibeDeferredFlowStart is a queued flow-start request captured while the
+// owner-debate topology claim was active (BUG-594). Non-debate mounts defer
+// rather than clobber the overlay; restoreVibeFlowAfterDebate drains them.
+type VibeDeferredFlowStart struct {
+	FlowRef     string `json:"flowRef"`
+	UserPrompt  string `json:"userPrompt,omitempty"`
+	StartNodeID string `json:"startNodeId,omitempty"`
+	QueuedAt    string `json:"queuedAt,omitempty"`
+}
+
 type ProviderSessionState struct {
 	RunID             string
 	ProjectID         string
@@ -184,6 +194,15 @@ type ProviderSessionState struct {
 	// VibeParkedGatedRunIDs: the child run(s) the diverted post-turn gate
 	// interrupted — restored runs reprompt them with the debate verdict.
 	VibeParkedGatedRunIDs []string
+	// BUG-594: non-debate flow starts requested while the owner-debate claim
+	// held the parked topology are queued here instead of clobbering the
+	// mounted overlay; restoreVibeFlowAfterDebate drains them (local-only —
+	// sessions.ndjson).
+	VibeDeferredFlowStarts []VibeDeferredFlowStart `json:"vibeDeferredFlowStarts,omitempty"`
+	// BUG-595: owner-debate mount count for the current sprint — the cap
+	// escalates to a human park instead of an unbounded debate loop
+	// (live run-100368).
+	VibeDebateMounts int `json:"vibeDebateMounts,omitempty"`
 	// PendingBatchSignatureByStep buffers coder submit_coder_outcome batches
 	// until the negotiation hub consumes them — RAM-only before BUG-404.
 	PendingBatchSignatureByStep map[string][]CoderBatchSignatureRequest

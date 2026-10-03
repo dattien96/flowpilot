@@ -3,12 +3,141 @@ package runner
 import (
 	"context"
 	"strings"
+	"time"
 
 	"flowpilot-runner/internal/agentpack"
 	"flowpilot-runner/internal/workingmode"
 )
 
 const maxVibeOwnerFailRetries = 2
+
+// maxVibeDebateMountsPerSprint bounds gate-triggered owner-debate mounts per
+// sprint (BUG-595, live run-100368): seven mounts on the same gated child
+// burned ~8h. Hitting it escalates like any other capped loop.
+const maxVibeDebateMountsPerSprint = 3
+
+// maxVibeDeferredFlowStarts bounds the deferred-start queue (BUG-594): a
+// claim normally holds a handful of legitimately-deferred mounts; anything
+// beyond that is churn and is dropped with a diagnostic rather than queued.
+const maxVibeDeferredFlowStarts = 8
+
+// vibeDebateClaimUnmountedLocked reports a claim with no live overlay:
+// parked nodes exist but neither the active graph nor chatFlowRef is the
+// debate. Covers both a mount that died in flight and the persisted
+// run-139670 clobber. Caller must hold s.mu.
+func vibeDebateClaimUnmountedLocked(rs *interactiveRun) bool {
+	return rs != nil && len(rs.vibeParkedNodes) > 0 &&
+		!vibeOwnerDebateGraph(rs.activeFlowNodes) &&
+		workingmode.BareFlowID(rs.chatFlowRef) != vibeOwnerDebateFlowID
+}
+
+// vibeDebateClaimForeignLocked reports the corrupted claim shape (BUG-594):
+// the parked snapshot records a DIFFERENT flow than the one currently live
+// (parked=vibe-tasks ingest while active=vibe-sprint in run-139670). The
+// live topology is authoritative — the snapshot is stale, never a restore
+// source. Caller must hold s.mu.
+func vibeDebateClaimForeignLocked(rs *interactiveRun) bool {
+	if !vibeDebateClaimUnmountedLocked(rs) {
+		return false
+	}
+	return rs.vibeParkedFlowRef != "" &&
+		workingmode.BareFlowID(rs.vibeParkedFlowRef) != workingmode.BareFlowID(rs.chatFlowRef)
+}
+
+// dropVibeDebateStaleClaimLocked discards a detached parked claim (nodes,
+// edges, acceptance, ref, gated-child list). vibeDeferredFlowStarts stays —
+// queued requests are still valid to drain under the next claim. Caller
+// must hold s.mu.
+func dropVibeDebateStaleClaimLocked(rs *interactiveRun) {
+	rs.vibeParkedNodes = nil
+	rs.vibeParkedEdges = nil
+	rs.vibeParkedAcceptance = nil
+	rs.vibeParkedFlowRef = ""
+	rs.vibeParkedGatedRunIDs = nil
+}
+
+// deferVibeFlowStartForDebate queues a flow start while the debate claim
+// holds. Returns false (caller proceeds to mount) when no claim is active
+// or the ref is exempt: the debate overlay itself and vibe-sprint — sprint
+// starts have their own refusal path (vibeSprintStartBlocked) so their
+// producers roll back consumed takes instead of landing a duplicate in the
+// drain queue.
+func (s *InteractiveService) deferVibeFlowStartForDebate(parentRunID, flowRef, userPrompt, startNodeID string) bool {
+	bare := workingmode.BareFlowID(flowRef)
+	if bare == vibeOwnerDebateFlowID || bare == vibeSprintFlowID {
+		return false
+	}
+	s.mu.Lock()
+	rs := s.runs[parentRunID]
+	if rs == nil || len(rs.vibeParkedNodes) == 0 {
+		s.mu.Unlock()
+		return false
+	}
+	for _, d := range rs.vibeDeferredFlowStarts {
+		if d.FlowRef == flowRef && d.StartNodeID == startNodeID {
+			s.mu.Unlock()
+			s.flowDiagLog(parentRunID, "vibe_flow_start_defer_dup",
+				"duplicate flow start suppressed under debate claim",
+				"flow_ref", flowRef, "start_node_id", startNodeID)
+			return true
+		}
+	}
+	if len(rs.vibeDeferredFlowStarts) >= maxVibeDeferredFlowStarts {
+		s.mu.Unlock()
+		s.flowDiagLog(parentRunID, "vibe_flow_start_defer_cap",
+			"deferred flow-start queue full; dropping request",
+			"flow_ref", flowRef, "start_node_id", startNodeID)
+		return true
+	}
+	rs.vibeDeferredFlowStarts = append(rs.vibeDeferredFlowStarts, VibeDeferredFlowStart{
+		FlowRef:     flowRef,
+		UserPrompt:  userPrompt,
+		StartNodeID: startNodeID,
+		QueuedAt:    time.Now().UTC().Format(time.RFC3339),
+	})
+	queued := len(rs.vibeDeferredFlowStarts)
+	snap := sessionStateOf(rs)
+	s.mu.Unlock()
+	s.flowDiagLog(parentRunID, "vibe_flow_start_deferred",
+		"flow start deferred until owner debate restores",
+		"flow_ref", flowRef, "start_node_id", startNodeID, "queued", queued)
+	_ = s.persistProviderSession(snap)
+	return true
+}
+
+// maybeReleaseVibeDebateClaimIfMountDied releases a parked claim whose
+// debate overlay never materialized: stashVibeFlowForDebate succeeded and
+// startResolvedFlow was launched, but resolve/dispatch died before the
+// topology swap — the claim alone cannot suppress every later divert.
+// A foreign snapshot (a different flow than the live graph) is dropped —
+// the live topology stays authoritative. A snapshot OF the live flow
+// replays the idempotent restore so gated children still owe reprompts.
+// Skips while a mount is still in flight.
+func (s *InteractiveService) maybeReleaseVibeDebateClaimIfMountDied(parentRunID string) {
+	if s == nil || strings.TrimSpace(parentRunID) == "" {
+		return
+	}
+	s.mu.Lock()
+	rs := s.runs[parentRunID]
+	if !vibeDebateClaimUnmountedLocked(rs) || rs.vibeDebateMountInFlight {
+		s.mu.Unlock()
+		return
+	}
+	foreign := vibeDebateClaimForeignLocked(rs)
+	if foreign {
+		dropVibeDebateStaleClaimLocked(rs)
+		snap := sessionStateOf(rs)
+		s.mu.Unlock()
+		s.flowDiagLog(parentRunID, "vibe_debate_claim_stale_dropped",
+			"unmounted claim's parked snapshot is foreign to the live topology; dropped")
+		_ = s.persistProviderSession(snap)
+		return
+	}
+	s.mu.Unlock()
+	s.flowDiagLog(parentRunID, "vibe_debate_mount_died",
+		"debate claim held but the overlay never mounted; releasing claim via restore")
+	s.restoreVibeFlowAfterDebate(parentRunID)
+}
 
 func vibeOwnerDebateGraph(nodes []agentpack.FlowNode) bool {
 	var o1, o2, syn bool
@@ -235,12 +364,28 @@ func (s *InteractiveService) maybeResolveZombieVibeDebate(parentRunID string) {
 	}
 	s.mu.Lock()
 	rs := s.runs[parentRunID]
+	// BUG-594: a parked snapshot foreign to the live topology (the clobbered
+	// run-139670 durable shape) is stale corruption — drop it so the claim
+	// stops suppressing diverts; the live graph stays authoritative.
+	if vibeDebateClaimForeignLocked(rs) {
+		dropVibeDebateStaleClaimLocked(rs)
+		snap := sessionStateOf(rs)
+		s.mu.Unlock()
+		s.flowDiagLog(parentRunID, "vibe_debate_claim_stale_dropped",
+			"parked claim detached from live topology; dropped stale snapshot")
+		_ = s.persistProviderSession(snap)
+		return
+	}
 	ok := rs != nil && rs.parentRunID == "" && rs.workingMode == workingmode.Vibe &&
 		len(rs.vibeParkedNodes) > 0 &&
 		(vibeOwnerDebateGraph(rs.activeFlowNodes) ||
 			workingmode.BareFlowID(rs.chatFlowRef) == vibeOwnerDebateFlowID)
 	s.mu.Unlock()
 	if !ok {
+		// Same-flow unmounted claim (mount died or a resume left the claim
+		// detached): release it through the restore replay — gated children
+		// still owe their reprompts.
+		s.maybeReleaseVibeDebateClaimIfMountDied(parentRunID)
 		return
 	}
 	_, st1, st2, stSyn := s.vibeOwnerDebateStepStatuses(parentRunID)

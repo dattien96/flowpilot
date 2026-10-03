@@ -277,6 +277,13 @@ type ndjsonSessionRecord struct {
 	// fired its done-edge, so restore must reprompt them with the verdict
 	// instead of relying on the generic hub continuation (live run-136/9597).
 	VibeParkedGatedRunIDs []string `json:"vibe_parked_gated_run_ids,omitempty"`
+	// BUG-594: flow starts deferred under the debate claim must survive
+	// restart mid-debate — a RAM-only queue silently re-clobbers the overlay
+	// on resume (live run-139670 shape).
+	VibeDeferredFlowStarts []VibeDeferredFlowStart `json:"vibe_deferred_flow_starts,omitempty"`
+	// BUG-595: per-sprint owner-debate mount counter (cap must survive
+	// restart or the run-100368 unbounded loop resumes with a fresh budget).
+	VibeDebateMounts int `json:"vibe_debate_mounts,omitempty"`
 	// PendingBatchSignatureByStep buffers coder submit_coder_outcome batches
 	// until the negotiation hub consumes them (BUG-404).
 	PendingBatchSignatureByStep map[string][]CoderBatchSignatureRequest `json:"pending_batch_signature_by_step,omitempty"`
@@ -931,6 +938,8 @@ func sessionStateFromRecord(r ndjsonSessionRecord) ProviderSessionState {
 		VibeParkedAcceptance:               append([]string(nil), r.VibeParkedAcceptance...),
 		VibeParkedFlowRef:                  r.VibeParkedFlowRef,
 		VibeParkedGatedRunIDs:              append([]string(nil), r.VibeParkedGatedRunIDs...),
+		VibeDeferredFlowStarts:             append([]VibeDeferredFlowStart(nil), r.VibeDeferredFlowStarts...),
+		VibeDebateMounts:                   r.VibeDebateMounts,
 		PendingBatchSignatureByStep:        copyBatchSignatureMap(r.PendingBatchSignatureByStep),
 		FlowStartGitHead:                   r.FlowStartGitHead,
 		PendingFlowGateSettle:              r.PendingFlowGateSettle,
@@ -1470,6 +1479,8 @@ func sessionRecordFrom(s ProviderSessionState) ndjsonSessionRecord {
 		VibeParkedAcceptance:               append([]string(nil), s.VibeParkedAcceptance...),
 		VibeParkedFlowRef:                  s.VibeParkedFlowRef,
 		VibeParkedGatedRunIDs:              append([]string(nil), s.VibeParkedGatedRunIDs...),
+		VibeDeferredFlowStarts:             append([]VibeDeferredFlowStart(nil), s.VibeDeferredFlowStarts...),
+		VibeDebateMounts:                   s.VibeDebateMounts,
 		PendingBatchSignatureByStep:        copyBatchSignatureMap(s.PendingBatchSignatureByStep),
 		FlowStartGitHead:                   s.FlowStartGitHead,
 		PendingFlowGateSettle:              s.PendingFlowGateSettle,

@@ -189,6 +189,28 @@ func (s *InteractiveService) hubProseVerdictDerivesFlowStatus(parentRunID string
 	var verdicts map[string]string
 	if parent != nil {
 		verdicts = mergePendingReviewVerdictsLocked(parent, parent.lastReviewCohortVerdicts)
+		// BUG-597 follow-up: the merged map may now also carry verdicts from
+		// cohorts whose hub is not machine-verdict gated (owner_debate
+		// members record even when requireVerdict is false). Every gate
+		// reader filters to the active hub's expected labels — the prose
+		// derive must do the same or a stray owner verdict could drive a
+		// sprint continue/done. Unmapped hubs and graphs without cohort
+		// nodes keep the legacy whole-map behavior.
+		hubID := strings.TrimSpace(parent.activeHubNodeID)
+		if hubID == "" {
+			hubID = hubInlineNodeID(parent.activeFlowNodes)
+		}
+		if cohort := hubInboundCohortName(hubID); cohort != "" {
+			if expected := cohortNodeLabels(parent.activeFlowNodes, cohort); len(expected) > 0 {
+				filtered := make(map[string]string, len(expected))
+				for _, label := range expected {
+					if v, ok := verdicts[label]; ok {
+						filtered[label] = v
+					}
+				}
+				verdicts = filtered
+			}
+		}
 	}
 	s.mu.Unlock()
 	if len(verdicts) == 0 {

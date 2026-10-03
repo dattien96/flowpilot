@@ -174,6 +174,23 @@ func (s *InteractiveService) applyVibeGateResolver(runID, parentID, turnID strin
 // gatedRunID is the run whose post-turn gate was diverted into the debate
 // (empty when the resolver had no gated child — e.g. drift-only on the hub).
 func (s *InteractiveService) startVibeOwnerDebate(hub, gatedRunID, message string) {
+	// BUG-595 (live run-100368): gate-triggered mounts are bounded — seven
+	// sequential debates on the same gated child burned ~8h. At the cap the
+	// divert escalates like any other capped loop instead of parking the
+	// sprint for yet another debate.
+	s.mu.Lock()
+	rs := s.runs[hub]
+	atCap := rs != nil && rs.vibeDebateMounts >= maxVibeDebateMountsPerSprint &&
+		len(rs.vibeParkedNodes) == 0 &&
+		workingmode.BareFlowID(rs.chatFlowRef) != vibeOwnerDebateFlowID &&
+		!vibeDebateClaimForeignLocked(rs)
+	s.mu.Unlock()
+	if atCap {
+		log.Printf("[vibe-gate] owner debate mount cap reached hub=%s gated=%s mounts=%d",
+			hub, gatedRunID, maxVibeDebateMountsPerSprint)
+		s.escalateVibeDebateMountCap(hub, message)
+		return
+	}
 	// CA-1095: stash is the atomic mount decision — it reports false when a
 	// debate already owns this hub (violation-routed escalation mid-debate,
 	// or a concurrent drift mount). The gated child was still recorded for
@@ -188,7 +205,48 @@ func (s *InteractiveService) startVibeOwnerDebate(hub, gatedRunID, message strin
 		s.maybeResolveZombieVibeDebate(hub)
 		return
 	}
-	go s.startResolvedFlow(context.Background(), hub, workingmode.PackPrefix+vibeOwnerDebateFlowID, message)
+	// BUG-594: the in-flight marker holds while the mount goroutine resolves
+	// — an unmounted claim seen mid-resolve is still legitimate. The
+	// post-check releases a claim whose overlay never materialized.
+	s.mu.Lock()
+	if rs := s.runs[hub]; rs != nil {
+		rs.vibeDebateMountInFlight = true
+	}
+	s.mu.Unlock()
+	go func() {
+		defer func() {
+			s.mu.Lock()
+			if rs := s.runs[hub]; rs != nil {
+				rs.vibeDebateMountInFlight = false
+			}
+			s.mu.Unlock()
+		}()
+		s.startResolvedFlow(context.Background(), hub, workingmode.PackPrefix+vibeOwnerDebateFlowID, message)
+		s.maybeReleaseVibeDebateClaimIfMountDied(hub)
+	}()
+}
+
+// escalateVibeDebateMountCap parks the run when gate-triggered debate mounts
+// exhaust their per-sprint budget — the same blocked/cap surface the
+// owner-fail cap produces (BUG-595). The tournament rescue seam stays wired:
+// flag-on escalates to the tournament child like the owner-fail cap does.
+func (s *InteractiveService) escalateVibeDebateMountCap(parentRunID, message string) {
+	s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
+		if st.Status == "stopped" || st.Status == "done" {
+			return st
+		}
+		st.Status = "blocked"
+		st.BlockReason = "cap"
+		st.GateReason = "vibe owner-debate mount cap reached: " + strings.TrimSpace(message)
+		return st
+	})
+	if s.maybeEscalateCapToTournament(parentRunID, "vibe owner-debate mount cap reached") {
+		return
+	}
+	s.parkFlowForAwaitingUser(parentRunID)
+	s.flowDiagLog(parentRunID, "vibe_debate_mount_cap",
+		"owner-debate mount cap reached; parked cap not hub_stalled",
+		"cap", maxVibeDebateMountsPerSprint)
 }
 
 // latestVibeDriftScore reads the drift score of the most recent evaluated

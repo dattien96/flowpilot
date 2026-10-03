@@ -33,9 +33,21 @@ func (s *InteractiveService) startResolvedFlow(ctx context.Context, parentRunID,
 }
 
 func (s *InteractiveService) startResolvedFlowFromNode(ctx context.Context, parentRunID, flowRef, userPrompt, startNodeID string) {
+	// BUG-594 (live run-139670): while the owner-debate claim holds
+	// vibeParkedNodes, a non-debate mount must never swap activeFlowNodes —
+	// a parked-chain leg completing under the overlay advanced into the
+	// sprint start here and clobbered the mounted debate graph, stranding
+	// the claim forever. deferVibeFlowStartForDebate owns the exclusions:
+	// the debate ref itself mounts normally, and vibe-sprint refs return
+	// false so the refusal below owns them (its callers roll back a consumed
+	// take). Every other non-debate ref defers durably and drains at
+	// restoreVibeFlowAfterDebate.
+	if s.deferVibeFlowStartForDebate(parentRunID, flowRef, userPrompt, startNodeID) {
+		return
+	}
 	if workingmode.BareFlowID(flowRef) == vibeSprintFlowID && s.vibeSprintStartBlocked(parentRunID) {
-		log.Printf("[vibe-cp] refuse vibe-sprint while cp_lock waiting run=%s", parentRunID)
-		s.flowDiagLog(parentRunID, "vibe_sprint_blocked_lock", "vibe-sprint refused; cp_lock waiting",
+		log.Printf("[vibe-cp] refuse vibe-sprint while cp_lock waiting or debate claimed run=%s", parentRunID)
+		s.flowDiagLog(parentRunID, "vibe_sprint_blocked_lock", "vibe-sprint refused; cp_lock waiting or owner-debate claim active",
 			"flow_ref", flowRef,
 		)
 		return
