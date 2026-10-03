@@ -46,7 +46,9 @@ func TestRun200816FlowHubGateRulesExcludeDocScope(t *testing.T) {
 // TestRun200816FlowHubGateSkipsTaskDocReprompt locks the reported repro
 // end-to-end through runFlowGateAtEpoch: a flow-engine hub whose prose names
 // Task-NNN (with no task doc yet — the plan is in todo/, not done/) must NOT be
-// r-task reprompted. The control (same turn, not flow-engine-driven) MUST be.
+// r-task reprompted. The control MUST still be gated: post-Task-455 the
+// enforce-capable non-hub shape is a spawned coding leg (a bare chat root
+// auto-warns — its r-task can only surface inline).
 func TestRun200816FlowHubGateSkipsTaskDocReprompt(t *testing.T) {
 	dir, head := newContractFreezeTestRepo(t)
 	svc := newFreezeTestService(t)
@@ -56,27 +58,28 @@ func TestRun200816FlowHubGateSkipsTaskDocReprompt(t *testing.T) {
 	}
 	svc.agentOrchestrator.setLoop(parent.RunID, AgentLoopState{Status: "running", Cap: 3, RoundCap: 3})
 
-	mk := func(flowHub bool) *interactiveRun {
+	hub := func() *interactiveRun {
 		rs := newP4ChildRun(svc, "hub-turn", "", dir, head)
 		rs.id = parent.RunID
 		svc.mu.Lock()
 		svc.runs[parent.RunID] = rs
 		rs.workspaceCwd = dir
-		rs.flowEngineDriven = flowHub
+		rs.flowEngineDriven = true
 		svc.mu.Unlock()
 		return rs
-	}
+	}()
 
 	msg := "Plan review APPROVED for Task-904. Advancing to scope freeze."
 
-	hub := mk(true)
 	if svc.runFlowGateAtEpoch(context.Background(), hub, "turn-1", finalizeInput{FinalMessage: msg}, 0) {
 		t.Fatal("flow hub gate must not r-task reprompt on a Task-NNN prose mention")
 	}
 
-	control := mk(false)
+	// Control: a spawned coding leg — non-hub, enforce-capable, full rule
+	// set — the same prose turn MUST still r-task block.
+	control := newP4ChildRun(svc, "leg-turn", parent.RunID, dir, head)
 	if !svc.runFlowGateAtEpoch(context.Background(), control, "turn-1", finalizeInput{FinalMessage: msg}, 0) {
-		t.Fatal("control (normal chat / non-flow root) must still block on r-task")
+		t.Fatal("control (spawned coding leg, non-hub) must still block on r-task")
 	}
 }
 

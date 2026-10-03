@@ -16,7 +16,10 @@ func TestGateBlindBlocksTurnEnforceMissingBaseline(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc := newInteractiveService(DefaultProviderRegistry(), newInteractiveCatalog(), newFakeWorkflowStore())
-	rs := &interactiveRun{id: "run-blind", lastTurnStepID: "step-1", gateEpoch: 1}
+	// flowEngineDriven: post-Task-455 a bare root gates as warn regardless of
+	// the persisted mode — the enforce blind block only exists on
+	// flow-context runs.
+	rs := &interactiveRun{id: "run-blind", lastTurnStepID: "step-1", gateEpoch: 1, flowEngineDriven: true}
 	svc.runs = map[string]*interactiveRun{"run-blind": rs}
 	diff := []flowgate.ChangedFile{{Path: "src/main.go", Status: "M"}}
 	blocked := svc.gateBlindBlocksTurn("run-blind", "turn-1", 1, rs, dot, nil, flowgate.OracleResult{}, diff)
@@ -31,7 +34,7 @@ func TestGateBlindDocsOnlyDoesNotBlock(t *testing.T) {
 	_ = os.MkdirAll(filepath.Join(dot, "settings"), 0o755)
 	_ = os.WriteFile(filepath.Join(dot, "settings", "gate-config.json"), []byte(`{"gate_mode":"enforce"}`), 0o644)
 	svc := newInteractiveService(DefaultProviderRegistry(), newInteractiveCatalog(), newFakeWorkflowStore())
-	rs := &interactiveRun{id: "run-docs", gateEpoch: 1}
+	rs := &interactiveRun{id: "run-docs", gateEpoch: 1, flowEngineDriven: true}
 	svc.runs = map[string]*interactiveRun{"run-docs": rs}
 	diff := []flowgate.ChangedFile{{Path: "change-audit/CA-999.md", Status: "A"}}
 	blocked := svc.gateBlindBlocksTurn("run-docs", "turn-1", 1, rs, dot, nil, flowgate.OracleResult{}, diff)
@@ -46,7 +49,7 @@ func TestGateBlindEnvErrorBlocksEnforce(t *testing.T) {
 	_ = os.MkdirAll(filepath.Join(dot, "settings"), 0o755)
 	_ = os.WriteFile(filepath.Join(dot, "settings", "gate-config.json"), []byte(`{"gate_mode":"enforce"}`), 0o644)
 	svc := newInteractiveService(DefaultProviderRegistry(), newInteractiveCatalog(), newFakeWorkflowStore())
-	rs := &interactiveRun{id: "run-env", gateEpoch: 1}
+	rs := &interactiveRun{id: "run-env", gateEpoch: 1, flowEngineDriven: true}
 	svc.runs = map[string]*interactiveRun{"run-env": rs}
 	bl := &flowgate.Baseline{SuitePassed: true}
 	diff := []flowgate.ChangedFile{{Path: "pkg/foo.go", Status: "M"}}

@@ -37,12 +37,10 @@ func TestBug440RepromptCarryUnionsPartialWriteEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc.agentOrchestrator.setLoop(parent.RunID, AgentLoopState{Status: "running", Cap: 3, RoundCap: 3})
-	rs := newP4ChildRun(svc, "root-turn", "", dir, head)
-	rs.id = parent.RunID
-	svc.mu.Lock()
-	svc.runs[parent.RunID] = rs
-	rs.workspaceCwd = dir
-	svc.mu.Unlock()
+	// Spawned coding-leg child — post-Task-455 the enforce-capable shape
+	// that keeps the dev-doc/reprompt rules (bare root auto-warns; a
+	// flow-driven root is the hub and drops the family).
+	rs := newP4ChildRun(svc, "coder-turn", parent.RunID, dir, head)
 
 	// The real code change is on disk (in the observed diff) but the provider
 	// only emitted a file event for a doc — the partial-events shape.

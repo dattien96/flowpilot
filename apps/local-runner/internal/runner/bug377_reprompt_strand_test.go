@@ -137,6 +137,12 @@ func TestBug377_UnarmedSettleRepromptStillDispatches(t *testing.T) {
 	writeFile("calc.go", "package calcapp\n\nfunc Add(a, b int) int { return a + b }\n")
 	writeFile("sanity_test.go", "package calcapp\n\nimport \"testing\"\n\nfunc TestSanity(t *testing.T) {\n\tif Add(1, 1) != 2 {\n\t\tt.Fatal(\"bad\")\n\t}\n}\n")
 	writeFile("change-audit/FEATURE-KEYS.md", "# Feature Keys\n\n- calc-core — arithmetic in calc.go\n")
+	// Deterministic reprompt source on a flow-hub run: r-newtest only — the
+	// doc-scope family is hub-filtered anyway; pinning the ruleset keeps the
+	// arm independent of DefaultRules' other triggers.
+	writeFile(".flowpilot/settings/flow-rules.json", `[
+		{"id":"r-newtest","scope":"step","trigger":"production_change_no_new_test","required_output":"new_additive_test_file","action":"reprompt","enabled":true}
+	]`)
 	gitRun("add", "-A")
 	gitRun("commit", "-m", "seed")
 	seedHead, err := captureGitHead(dir)
@@ -180,6 +186,12 @@ func TestBug377_UnarmedSettleRepromptStillDispatches(t *testing.T) {
 
 	svc.mu.Lock()
 	rs := svc.runs[run.RunID]
+	// Post-Task-455 an enforce-capable gated turn only exists on flow-context
+	// runs — model the run as the flow hub (a bare chat root auto-warns).
+	// The r-newtest reprompt survives flowHubGateRules' doc-scope filter, so
+	// the seeded calc.go-without-new-test change still queues the reprompt
+	// whose delivery this test exercises.
+	rs.flowEngineDriven = true
 	rs.workspaceCwd = dir
 	rs.stepID = "chat-" + run.RunID
 	rs.lastTurnStepID = "chat-" + run.RunID

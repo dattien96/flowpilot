@@ -14,23 +14,19 @@ import (
 // newFreezeTestService / newP4ChildRun re-keyed onto a createRun id, as in
 // run200816_hub_plan_gate_and_verdict_advance_test.go).
 
-// newTask331RootRun builds a Normal-chat root run (parentRunID empty,
-// flowEngineDriven false) over dir so svc.runFlowGate evaluates the full
-// default rule set, including r-dod-complete.
-func newTask331RootRun(t *testing.T, svc *InteractiveService, dir, head string) *interactiveRun {
+// newTask331GatedLegRun builds a spawned coding-leg child run over dir —
+// post-Task-455 the only shape that still gates the full default rule set
+// under enforce mode: a bare root auto-warns (chat surface), a flow-driven
+// root is the hub (flowHubGateRules drops the dev-doc family), while a
+// child keeps enforce + every rule including r-dod-complete.
+func newTask331GatedLegRun(t *testing.T, svc *InteractiveService, dir, head string) *interactiveRun {
 	t.Helper()
 	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
 	if err != nil {
 		t.Fatalf("createRun: %v", err)
 	}
 	svc.agentOrchestrator.setLoop(parent.RunID, AgentLoopState{Status: "running", Cap: 3, RoundCap: 3})
-	rs := newP4ChildRun(svc, "dod-root", "", dir, head)
-	svc.mu.Lock()
-	svc.runs[parent.RunID] = rs
-	rs.id = parent.RunID
-	rs.workspaceCwd = dir
-	svc.mu.Unlock()
-	return rs
+	return newP4ChildRun(svc, "dod-leg", parent.RunID, dir, head)
 }
 
 // writeTask331Doc writes a workspace doc at rel (slash-separated).
@@ -66,7 +62,7 @@ func lastTask331GateViolation(svc *InteractiveService, rs *interactiveRun) *Prov
 func TestGateHook_DodComplete_BlocksUnfinishedTask(t *testing.T) {
 	dir, head := newContractFreezeTestRepo(t)
 	svc := newFreezeTestService(t)
-	rs := newTask331RootRun(t, svc, dir, head)
+	rs := newTask331GatedLegRun(t, svc, dir, head)
 
 	const docRel = "requirements/08-Task/done/Task-001.md"
 	writeTask331Doc(t, dir, docRel, `# Task-001: Retry path
@@ -106,7 +102,7 @@ func TestGateHook_DodComplete_BlocksUnfinishedTask(t *testing.T) {
 func TestGateHook_DodComplete_BypassesWhenNoDocTouched(t *testing.T) {
 	dir, head := newContractFreezeTestRepo(t)
 	svc := newFreezeTestService(t)
-	rs := newTask331RootRun(t, svc, dir, head)
+	rs := newTask331GatedLegRun(t, svc, dir, head)
 
 	// A code-changing turn that satisfies the other gates: declared Change
 	// Contract in the final message, change-audit note among the written
@@ -131,7 +127,7 @@ func TestGateHook_DodComplete_BypassesWhenNoDocTouched(t *testing.T) {
 func TestGateHook_DodComplete_NewFileInDoneDir(t *testing.T) {
 	dir, head := newContractFreezeTestRepo(t)
 	svc := newFreezeTestService(t)
-	rs := newTask331RootRun(t, svc, dir, head)
+	rs := newTask331GatedLegRun(t, svc, dir, head)
 
 	// Brand-new file (never committed, no metadata): the done/ path segment
 	// alone is the sufficient done signal (CP-47 D-2 backup signal).

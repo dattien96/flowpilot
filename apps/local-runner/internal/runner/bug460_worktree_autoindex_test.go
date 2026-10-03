@@ -27,6 +27,9 @@ func TestBug460AutoIndexSkipsManagedWorktree(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(wt, ".git"), []byte("gitdir: /tmp/x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// Opt in past the BUG-629 test-env guard so the managed-worktree check
+	// itself is exercised — otherwise this asserts a trivial early return.
+	t.Setenv("FLOWPILOT_GITNEXUS_AUTOINDEX", "1")
 	svc, _ := newTestServerWith(t, DefaultProviderRegistry(), newInteractiveCatalog(), newFakeWorkflowStore())
 	svc.ensureGitNexusIndexAsync(wt)
 	svc.mu.Lock()

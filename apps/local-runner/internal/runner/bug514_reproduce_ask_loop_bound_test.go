@@ -168,11 +168,11 @@ func TestBug514_GateRepromptBudgetExhaustedEscalates(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc.agentOrchestrator.setLoop(parent.RunID, AgentLoopState{Status: "running", Cap: 3, RoundCap: 3})
-	rs := newP4ChildRun(svc, "root-turn", "", dir, head)
-	rs.id = parent.RunID
+	// Spawned coding-leg child — post-Task-455 the enforce-capable shape
+	// that keeps the dev-doc/reprompt rules (bare root auto-warns; a
+	// flow-driven root is the hub and drops the family).
+	rs := newP4ChildRun(svc, "coder-turn", parent.RunID, dir, head)
 	svc.mu.Lock()
-	svc.runs[parent.RunID] = rs
-	rs.workspaceCwd = dir
 	// The reproduce child's parked-question episodes are over; the gate's own
 	// reprompt budget is spent — this evaluation must escalate, not reprompt.
 	rs.repromptAttempts = maxFlowGateReprompts
@@ -192,7 +192,7 @@ func TestBug514_GateRepromptBudgetExhaustedEscalates(t *testing.T) {
 	if pendingReprompt != "" {
 		t.Fatal("budget exhausted must NOT arm another reprompt")
 	}
-	st := svc.agentOrchestrator.loopStateFor(parent.RunID)
+	st := svc.agentOrchestrator.loopStateFor(rs.id)
 	if st.Status != "blocked" {
 		t.Fatalf("exhausted reprompt budget must escalate the loop (awaiting user), loop=%q", st.Status)
 	}

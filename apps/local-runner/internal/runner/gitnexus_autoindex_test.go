@@ -38,8 +38,11 @@ func ca638GitRepo(t *testing.T) string {
 
 // ca638StubGitNexus installs a fake `gitnexus` on PATH: --version prints a
 // version (so tooling.CheckTool passes) and analyze writes the marker file.
+// Installing the stub is the explicit opt-in for the BUG-629 test-env guard —
+// these tests exist to exercise the analyze path itself.
 func ca638StubGitNexus(t *testing.T, marker string) {
 	t.Helper()
+	t.Setenv("FLOWPILOT_GITNEXUS_AUTOINDEX", "1")
 	bin := t.TempDir()
 	script := "#!/bin/sh\ncase \"$1\" in\n  --version) echo 1.4.8 ;;\n  analyze) echo ran >> \"$MARKER\" ;;\n  *) exit 1 ;;\nesac\n"
 	if err := os.WriteFile(filepath.Join(bin, "gitnexus"), []byte(script), 0o755); err != nil {

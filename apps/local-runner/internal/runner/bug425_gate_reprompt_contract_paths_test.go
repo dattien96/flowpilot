@@ -62,12 +62,10 @@ func TestBug425GateRepromptCarriesFailingTurnCodePaths(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc.agentOrchestrator.setLoop(parent.RunID, AgentLoopState{Status: "running", Cap: 3, RoundCap: 3})
-	rs := newP4ChildRun(svc, "root-turn", "", dir, head)
-	rs.id = parent.RunID
-	svc.mu.Lock()
-	svc.runs[parent.RunID] = rs
-	rs.workspaceCwd = dir
-	svc.mu.Unlock()
+	// A spawned coding-leg child: post-Task-455 the only enforce-capable
+	// shape that keeps the dev-doc rules (a bare root auto-warns; a
+	// flow-driven root is the hub and flowHubGateRules drops r-ca).
+	rs := newP4ChildRun(svc, "coder-turn", parent.RunID, dir, head)
 
 	// The original coding turn writes src/calc.go but no change-audit note →
 	// r-ca reprompt. Its code paths must be carried onto the run.
@@ -102,11 +100,10 @@ func TestBug425RepromptGateInfersFromCarriedCodePaths(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc.agentOrchestrator.setLoop(parent.RunID, AgentLoopState{Status: "running", Cap: 3, RoundCap: 3})
-	rs := newP4ChildRun(svc, "root-turn", "", dir, head)
-	rs.id = parent.RunID
+	// A reprompted coding leg is a spawned child — post-Task-455 the
+	// enforce-capable shape (bare root auto-warns).
+	rs := newP4ChildRun(svc, "coder-turn", parent.RunID, dir, head)
 	svc.mu.Lock()
-	svc.runs[parent.RunID] = rs
-	rs.workspaceCwd = dir
 	// The failing coding turn's paths, as the reprompt branch stashes them.
 	rs.pendingGateCodePaths = []string{"src/calc.go"}
 	svc.mu.Unlock()

@@ -41,7 +41,11 @@ func (s *InteractiveService) ensureGitNexusIndexAsync(workspace string) {
 	// BUG-629: auto-index must never arm under `go test` — its .gitnexus/
 	// writes race t.TempDir() cleanup and fail the suite on "directory
 	// not empty". runningUnderGoTest is shared with opencode_models_cache.
-	if workspace == "" || isRunnerManagedWorktreePath(workspace) || runningUnderGoTest() {
+	// Tests that stub the gitnexus binary to exercise this path explicitly
+	// opt back in via FLOWPILOT_GITNEXUS_AUTOINDEX=1 (same escape-hatch
+	// convention as FLOWPILOT_OPENCODE_MODELS_CACHE_PATH/FLOWPILOT_DEVIN_BIN).
+	if workspace == "" || isRunnerManagedWorktreePath(workspace) ||
+		(runningUnderGoTest() && os.Getenv("FLOWPILOT_GITNEXUS_AUTOINDEX") != "1") {
 		return
 	}
 	if _, err := os.Stat(filepath.Join(workspace, ".gitnexus")); err == nil {
