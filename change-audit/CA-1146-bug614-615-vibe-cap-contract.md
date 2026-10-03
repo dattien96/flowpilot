@@ -108,3 +108,18 @@ and subagent/debate prose rendered as ordinary chat rows in the main UI.
   replay tests updated to pass the hub context they simulate.
 - **detect_changes:** risk HIGH — blast radius on timeline/read seams only;
   changes are additive predicates, no state-shape or wire-schema change.
+
+## Follow-up 2 — redacted turns orphaned their replies (backfill/handoff)
+
+- **Live evidence:** `run-163587` resumed with 1514 events but its chat
+  transcript held only 3 records. `transcriptTurnsFromRun` (a) skipped a
+  `turn_started` with redacted `Prompt==""` WITHOUT flushing the pending
+  turn, and (b) dropped `message_completed`/`turn_completed` text when no
+  turn was open — every sub-agent spawn envelope and engine turn redacts,
+  so child-leg replies and seed-turn answers were silently lost from
+  backfill and handoff packing.
+- **Fix:** a redacted `turn_started` still flushes the pending turn; a
+  reply with no open turn opens an orphan turn (`User=""`) so the text is
+  kept. `backfillLegacyChatTranscript` already writes the assistant half of
+  user-less turns, so repaired transcripts surface the reply records.
+- **Tests (additive):** `TestTranscriptTurnsFromRun_KeepsRedactedTurnReplies`.

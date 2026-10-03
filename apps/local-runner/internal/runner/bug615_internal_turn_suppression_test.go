@@ -268,6 +268,28 @@ func TestUserFacingTranscriptEvents_ChildLegTurnsStayVisible(t *testing.T) {
 	}
 }
 
+// transcriptTurnsFromRun (backfill + handoff packing): a turn whose
+// turn_started prompt was redacted to "" — every sub-agent spawn envelope and
+// engine turn redacts — must not orphan its assistant reply. The reply is the
+// leg's real work ("I'll start by locating the Task-032 spec…"): dropping it
+// is exactly the "sub-agent response missing" symptom (BUG-615 follow-up).
+func TestTranscriptTurnsFromRun_KeepsRedactedTurnReplies(t *testing.T) {
+	rs := &interactiveRun{events: []ProviderEvent{
+		{Type: EventTurnStarted, Prompt: "", Seq: 1}, // [FlowPilot sub-agent — …] envelope, redacted
+		{Type: EventMessageCompleted, Text: "child work reply", Seq: 2},
+		{Type: EventTurnCompleted, Seq: 3},
+		{Type: EventTurnStarted, Prompt: "real user question", Seq: 4},
+		{Type: EventMessageCompleted, Text: "visible answer", Seq: 5},
+	}}
+	turns := transcriptTurnsFromRun(rs)
+	if len(turns) != 2 {
+		t.Fatalf("turns = %d, want 2 (orphaned redacted-turn reply must be kept)", len(turns))
+	}
+	if turns[0].Assistant != "child work reply" {
+		t.Fatalf("orphan turn assistant = %q", turns[0].Assistant)
+	}
+}
+
 // turnIsInternal: hub-only classification — dispatch-marked or flow-engine
 // prompt on the flow hub is internal; the same prompt on a child leg is the
 // leg's own work.

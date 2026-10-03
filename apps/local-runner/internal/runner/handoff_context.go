@@ -184,28 +184,32 @@ func transcriptTurnsFromRun(rs *interactiveRun) []transcriptTurn {
 	for _, ev := range rs.events {
 		switch ev.Type {
 		case EventTurnStarted:
+			// A redacted ("") prompt — sub-agent spawn envelopes and engine
+			// turns — is still a turn boundary: flush the pending turn so the
+			// reply opens an orphan turn instead of merging upward (BUG-615
+			// follow-up: orphaned child-leg replies were silently dropped).
+			flush()
 			if strings.TrimSpace(ev.Prompt) == "" {
 				continue
 			}
-			flush()
 			current = &transcriptTurn{User: ev.Prompt, StartSeq: ev.Seq, EndSeq: ev.Seq}
 		case EventMessageCompleted:
-			if current == nil {
-				continue
-			}
 			text := strings.TrimSpace(ev.Text)
 			if text == "" {
 				continue
 			}
+			if current == nil {
+				current = &transcriptTurn{StartSeq: ev.Seq}
+			}
 			current.EndSeq = ev.Seq
 			current.Assistant = appendTranscriptLine(current.Assistant, text)
 		case EventTurnCompleted:
-			if current == nil {
-				continue
-			}
 			text := strings.TrimSpace(ev.FinalMessage)
 			if text == "" {
 				continue
+			}
+			if current == nil {
+				current = &transcriptTurn{StartSeq: ev.Seq}
 			}
 			current.EndSeq = ev.Seq
 			current.Assistant = appendTranscriptLine(current.Assistant, text)
