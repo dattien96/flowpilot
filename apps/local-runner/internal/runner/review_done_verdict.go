@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"flowpilot-runner/internal/agentpack"
 )
@@ -374,6 +375,18 @@ func (s *InteractiveService) hubDoneVerdictError(parentRunID, hubID string) erro
 // BUG-565 (live run-69320): escalating on a missing verdict while its member
 // is still in flight parks the flow and cancels the member mid-turn, so the
 // verdict can never arrive. Callers must DEFER, not escalate.
+//
+// BUG-1176 (live run-183756): "live" must mean a path still exists that can
+// yield the verdict — an in-flight turn, a queued turn prompt, a live user/
+// post-turn gate, an armed reprompt/resume intent, or a Starting run —
+// mirroring hasActiveFlowChild's activity set. A bare non-terminal record
+// with none of those is a zombie: its turn ended without a durable
+// transition, no settle or user action will ever fire, and deferring on it
+// hung the flow at the sprint boundary until cancellation (the
+// no-auto-next-task regression — the boundary auto-advance never ran).
+// The step-RUNNING channel is kept only while no non-terminal child record
+// carries the label AND the stamp is inside the spawn grace — a stale
+// RUNNING step is a dead dispatch, not a live member.
 func (s *InteractiveService) missingVerdictLabelsWithLiveMember(parentRunID, hubID string) []string {
 	cohort := hubInboundCohortName(hubID)
 	if cohort == "" {
@@ -389,6 +402,7 @@ func (s *InteractiveService) missingVerdictLabelsWithLiveMember(parentRunID, hub
 	}
 	expected := cohortNodeLabels(nodes, cohort)
 	live := map[string]bool{}
+	childSeen := map[string]bool{}
 	for _, childID := range s.agentOrchestrator.listChildren(parentRunID) {
 		child := s.runs[childID]
 		if child == nil {
@@ -396,7 +410,13 @@ func (s *InteractiveService) missingVerdictLabelsWithLiveMember(parentRunID, hub
 		}
 		switch child.status {
 		case RunStatusCompleted, RunStatusFailed, RunStatusCancelled:
-		default:
+			// A terminal child cannot yield a new verdict, and it must not
+			// suppress the step channel — a re-dispatch stamped RUNNING may
+			// not have inserted its child row yet.
+			continue
+		}
+		childSeen[child.label] = true
+		if memberVerdictStillLive(child) {
 			live[child.label] = true
 		}
 	}
@@ -406,11 +426,74 @@ func (s *InteractiveService) missingVerdictLabelsWithLiveMember(parentRunID, hub
 		if strings.TrimSpace(verdicts[label]) != "" {
 			continue // verdict already recorded — not provisional
 		}
-		if live[label] || s.lookupFlowStepStatus(parentRunID, label) == StepStatusRunning {
+		if live[label] {
+			out = append(out, label)
+			continue
+		}
+		if childSeen[label] {
+			// A non-terminal child record exists — its own liveness above is
+			// authoritative; a stale RUNNING step stamp must not resurrect it.
+			continue
+		}
+		if s.flowStepRunningWithinSpawnGrace(parentRunID, label) {
 			out = append(out, label)
 		}
 	}
 	return out
+}
+
+// memberVerdictStillLive reports whether a non-terminal member child still
+// has a path that can yield its machine verdict (BUG-1176): a live provider
+// turn, a queued turn prompt, a user-visible approval/question gate, an
+// armed gate-reprompt or resume intent, a live post-turn gate, or the
+// Starting spawn window — the same activity set hasActiveFlowChild and the
+// cohort stall sweep already treat as real work. Called with s.mu held.
+func memberVerdictStillLive(child *interactiveRun) bool {
+	if child == nil {
+		return false
+	}
+	turnBusy := child.turnInFlight && child.postTurnGateCancel == nil
+	repromptArmed := strings.TrimSpace(child.pendingGateRepromptPrompt) != "" ||
+		strings.TrimSpace(child.pendingGateRepromptStepID) != ""
+	return turnBusy ||
+		strings.TrimSpace(child.pendingTurnPrompt) != "" ||
+		child.pendingApprovalID != "" ||
+		child.pendingQuestionID != "" ||
+		repromptArmed ||
+		strings.TrimSpace(child.pendingResumePrompt) != "" ||
+		gateCancelLive(child.postTurnGateStartedAt, child.postTurnGateCancel) ||
+		child.status == RunStatusStarting
+}
+
+// flowStepRunningWithinSpawnGrace reports whether the flow step for nodeID
+// is RUNNING and still inside the spawn grace — the only shape where the
+// missing-verdict defer may count a member live with NO child run record
+// (a dispatch in flight before the child row lands). A RUNNING step older
+// than defaultStallTimeout with no child is a dead dispatch: escalate and
+// let Continue redrive the member. An unparseable/zero StartedAt counts as
+// live — BUG-565's safe default on unverifiable rows.
+func (s *InteractiveService) flowStepRunningWithinSpawnGrace(parentRunID, nodeID string) bool {
+	if s == nil || s.workflowStore == nil {
+		return false
+	}
+	steps, err := s.workflowStore.LoadRunSteps(context.Background(), parentRunID)
+	if err != nil {
+		return false
+	}
+	for _, st := range steps {
+		if st.ID != nodeID && st.NodeID != nodeID {
+			continue
+		}
+		if st.Status != StepStatusRunning {
+			return false
+		}
+		started, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(st.StartedAt))
+		if err != nil {
+			return true
+		}
+		return time.Since(started) < defaultStallTimeout
+	}
+	return false
 }
 
 // isReviewVerdictGateReason reports whether an escalate GateReason belongs to
