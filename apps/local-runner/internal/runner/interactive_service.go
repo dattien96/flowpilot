@@ -6339,6 +6339,31 @@ func (s *InteractiveService) resumePendingFlowGate(runID string) {
 		loopParent = rs.parentRunID
 	}
 	if st := s.agentOrchestrator.loopStateFor(loopParent).Status; st == "stopped" || st == "done" || st == "blocked" {
+		// BUG-1177 (live run-183756): a CHILD of a merely-blocked parent keeps
+		// its armed settle — pendingFlowGateSettle is an owed terminal
+		// disposition, not a spawn intent. Dropping it stranded the member
+		// forever: status stayed running (markPendingFlowGateSettleLocked pins
+		// it), the verdict never joined the cohort, and no driver remained.
+		// Every eval outcome is already safe for a child (pass→join,
+		// park→card, reprompt→durable fenced park via
+		// handleSpawnedChildTurnFailure), so defer: the wedge sweep re-drives
+		// resumePendingFlowGate until the parent unblocks. Spawn intents still
+		// drop — the deferred eval re-derives them. Root runs and terminal
+		// parents keep the original clear below (P1-04 / safe-fix residual).
+		if rs.parentRunID != "" && st == "blocked" {
+			hadReprompt := strings.TrimSpace(rs.pendingGateRepromptPrompt) != "" ||
+				strings.TrimSpace(rs.pendingGateRepromptStepID) != ""
+			clearIntentFieldsLocked(rs, "reprompt")
+			var snap ProviderSessionState
+			if hadReprompt {
+				snap = sessionStateOf(rs)
+			}
+			s.mu.Unlock()
+			if hadReprompt {
+				_ = s.persistProviderSession(snap)
+			}
+			return
+		}
 		// Drop settle/reprompt under lock; preserve reprompt gen high-water.
 		hadStale := clearStaleFlowGateIntentsLocked(rs)
 		var snap ProviderSessionState

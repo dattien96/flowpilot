@@ -492,8 +492,12 @@ func TestBUG327_ResumePendingFlowGateKeepsWaitingWhenLoopBlocked(t *testing.T) {
 		if rs.status != RunStatusWaitingUserApr {
 			t.Fatalf("child status = %q, want %q (park must survive resume)", rs.status, RunStatusWaitingUserApr)
 		}
-		if rs.pendingFlowGateSettle {
-			t.Fatal("stale pendingFlowGateSettle must be cleared on blocked loop")
+		// BUG-1177: the armed settle is an owed terminal disposition — it
+		// defers while the parent loop is blocked (the wedge sweep re-drives
+		// it after unblock); the early return above is the pinned property,
+		// not the drop (dropping it orphaned members in live run-183756).
+		if !rs.pendingFlowGateSettle {
+			t.Fatal("pendingFlowGateSettle must defer (stay armed) on blocked loop")
 		}
 	})
 

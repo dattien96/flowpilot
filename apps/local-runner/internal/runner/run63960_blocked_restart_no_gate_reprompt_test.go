@@ -304,9 +304,17 @@ func TestRun63960ChildGateResumeSkippedWhenParentBlocked(t *testing.T) {
 	}
 	svc.mu.Lock()
 	child := svc.runs[childID]
-	if child.pendingFlowGateSettle {
+	// BUG-1177: the settle is an owed terminal disposition, not a spawn
+	// intent — dropping it orphaned the member forever (live run-183756
+	// zombie). It must defer while the parent is blocked; the wedge sweep
+	// re-drives it after unblock (asserted by bug1177 tests).
+	if !child.pendingFlowGateSettle {
 		svc.mu.Unlock()
-		t.Fatal("child settle must clear when parent blocked")
+		t.Fatal("child settle must defer (stay armed) while parent blocked")
+	}
+	if child.pendingGateRepromptPrompt != "" || child.pendingGateRepromptStepID != "" {
+		svc.mu.Unlock()
+		t.Fatal("reprompt spawn intent must still drop while parent blocked")
 	}
 	if child.pendingGateRepromptGen != 2 {
 		svc.mu.Unlock()
