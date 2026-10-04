@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { formatDependencyLabels } from "./agentDependencies";
-import { agentRunDisplayName, resolveMainAgentDisplay } from "./AgentsPanel";
+import { agentRunDisplayName, isExecutingAgentRun, resolveMainAgentDisplay } from "./AgentsPanel";
 import type { AgentRunSummary } from "@/types/contract";
 
 const runs: AgentRunSummary[] = [
@@ -83,4 +83,27 @@ test("resolveMainAgentDisplay: falls back to the last chat selection, then codex
   });
   assert.equal(withNothing.mainProvider, "codex");
   assert.equal(withNothing.mainModel, "");
+});
+
+// run-183756: the "N agents running" badge counted children parked at provider
+// approval prompts (waiting_approval) and question cards (waiting_question) as
+// running — five parked/zombie children read as "5 agents running" while only
+// one agent was actually executing. Only status==="running" counts; a stale
+// summary carrying status=running with a parked agentStatus is excluded too.
+test("isExecutingAgentRun counts only genuinely executing runs", () => {
+  const mk = (status: AgentRunSummary["status"], agentStatus?: string): AgentRunSummary => ({
+    runId: "r",
+    agentName: "a",
+    role: "r",
+    status,
+    createdAt: "2026-10-04T00:00:00Z",
+    agentStatus,
+  });
+  assert.equal(isExecutingAgentRun(mk("running")), true);
+  assert.equal(isExecutingAgentRun(mk("waiting_approval")), false);
+  assert.equal(isExecutingAgentRun(mk("waiting_question")), false);
+  assert.equal(isExecutingAgentRun(mk("waiting_user_approval")), false);
+  assert.equal(isExecutingAgentRun(mk("running", "waiting_user_approval")), false);
+  assert.equal(isExecutingAgentRun(mk("completed")), false);
+  assert.equal(isExecutingAgentRun(mk("cancelled")), false);
 });

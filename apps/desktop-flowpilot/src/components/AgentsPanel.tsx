@@ -38,6 +38,17 @@ export function agentRunDisplayName(run: Pick<AgentRunSummary, "agentName" | "la
   return run.label || run.agentName;
 }
 
+/**
+ * run-183756: the "N agents running" badge must count only children actually
+ * executing a turn. waiting_approval / waiting_question / waiting_user_approval
+ * are parked surfaces — counting them as running rendered five parked children
+ * as "5 agents running". A stale summary may carry status=running alongside a
+ * parked agentStatus; trust agentStatus in that pair.
+ */
+export function isExecutingAgentRun(run: Pick<AgentRunSummary, "status" | "agentStatus">): boolean {
+  return run.status === "running" && run.agentStatus !== "waiting_user_approval";
+}
+
 export function AgentsPanel(): React.ReactElement | null {
   const client = useStore((s) => s.client);
   const projects = useStore((s) => s.projects);
@@ -186,9 +197,7 @@ export function AgentsPanel(): React.ReactElement | null {
     return [...byId.values()].sort((a, b) => (b.createdAt ?? "").localeCompare(a.createdAt ?? ""));
   }, [agentRuns]);
 
-  const runningAgentCount = orderedRuns.filter(
-    (run) => run.status === "running" || run.status === "waiting_approval" || run.status === "waiting_question",
-  ).length;
+  const runningAgentCount = orderedRuns.filter(isExecutingAgentRun).length;
 
   const activeRuns = orderedRuns.filter((r) => r.status !== "completed" && r.status !== "failed" && r.status !== "cancelled");
   const closedRuns = orderedRuns.filter((r) => r.status === "completed" || r.status === "failed" || r.status === "cancelled");

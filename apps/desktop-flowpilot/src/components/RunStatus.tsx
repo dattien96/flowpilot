@@ -1,4 +1,5 @@
 import { useStore } from "@/state/store";
+import { isExecutingAgentRun } from "@/components/AgentsPanel";
 import type { RunStatus as RunStatusValue } from "@/types/contract";
 
 const LABEL: Record<RunStatusValue, string> = {
@@ -27,9 +28,7 @@ export function RunStatus(): React.ReactElement {
   const statusClass = ready ? "ready" : status;
   const statusLabel = ready ? "Run Ready" : LABEL[status];
 
-  const runningAgentCount = agentRuns.filter(
-    (run) => run.status === "running" || run.status === "waiting_approval" || run.status === "waiting_question",
-  ).length;
+  const runningAgentCount = agentRuns.filter(isExecutingAgentRun).length;
 
   return (
     <div className="run-status">
