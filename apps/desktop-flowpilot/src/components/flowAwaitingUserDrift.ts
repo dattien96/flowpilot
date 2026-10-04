@@ -6,6 +6,14 @@ export function parseDriftedPaths(gate: string): string[] | null {
   if (idx < 0) return null;
   let rest = gate.slice(idx + DRIFT_PATH_MARKER.length).trim();
   if (rest.endsWith(".")) rest = rest.slice(0, -1).trim();
+  // gate_hook.go appends "; not written via this leg's tool calls: ..." and
+  // " — if these are operator edits, ..." after the path list — cut at the
+  // first delimiter or the tail amends into declared_paths verbatim and the
+  // gate re-fires on every Allow (run-183756).
+  for (const delim of [";", "—", "–"]) {
+    const i = rest.indexOf(delim);
+    if (i >= 0) rest = rest.slice(0, i).trim();
+  }
   if (!rest) return null;
   const parts = rest
     .split(",")

@@ -2421,7 +2421,12 @@ func (s *InteractiveService) handleAmendFlow(w http.ResponseWriter, r *http.Requ
 	}
 	paths := make([]string, 0, len(body.Paths))
 	for _, p := range body.Paths {
-		if trimmed := strings.TrimSpace(p); trimmed != "" {
+		// StripDriftProseTail recovers the real path when a client forwarded
+		// the gate reason's "; not written..." / " — if these are..." tail
+		// verbatim (run-183756 Allow loop). Leftover prose that still fails
+		// the predicates below is reported via UnamendablePaths, not silently
+		// widened into the contract.
+		if trimmed := changecontract.StripDriftProseTail(p); trimmed != "" {
 			paths = append(paths, trimmed)
 		}
 	}

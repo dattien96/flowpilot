@@ -269,6 +269,16 @@ func parseDriftedPaths(gate string) []string {
 	rest = strings.TrimSpace(rest)
 	rest = strings.TrimSuffix(rest, ".")
 	rest = strings.TrimSpace(rest)
+	// gate_hook.go appends "; not written via this leg's tool calls: ..."
+	// and " — if these are operator edits, ..." after the path list — cut at
+	// the first delimiter or the tail amends into declared_paths verbatim
+	// and the gate re-fires on every Allow (run-183756).
+	if i := strings.IndexByte(rest, ';'); i >= 0 {
+		rest = strings.TrimSpace(rest[:i])
+	}
+	if i := strings.IndexAny(rest, "—–"); i >= 0 {
+		rest = strings.TrimSpace(rest[:i])
+	}
 	if rest == "" {
 		return nil
 	}

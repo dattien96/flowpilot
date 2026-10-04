@@ -25,6 +25,25 @@ test("parseDriftedPaths: trims trailing period and empty segments", () => {
   assert.equal(parseDriftedPaths("wrote outside the frozen contract's declared paths: "), null);
 });
 
+test("parseDriftedPaths: strips external-drift prose tail (live run-183756)", () => {
+  // gate_hook appends "; not written via this leg's tool calls: <paths>
+  // — if these are operator edits, amend ..." — the tail must never reach
+  // the amend payload or it joins declared_paths verbatim and the gate
+  // re-fires forever.
+  assert.deepEqual(
+    parseDriftedPaths(
+      "flow scope drift: wrote outside the frozen contract's declared paths: core/a.go; not written via this leg's tool calls: core/a.go — if these are operator edits, amend the contract to sanction them",
+    ),
+    ["core/a.go"],
+  );
+  assert.deepEqual(
+    parseDriftedPaths(
+      "flow scope drift: wrote outside the frozen contract's declared paths: a.go, b.go; not written via this leg's tool calls: a.go, b.go — if these are operator edits, amend the contract to sanction them",
+    ),
+    ["a.go", "b.go"],
+  );
+});
+
 test("awaitingUserDriftState: Allow only on non-cap non-stalled drift", () => {
   const drift = awaitingUserDriftState({
     blockReason: "escalate",

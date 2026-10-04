@@ -17,6 +17,34 @@ import (
 	"flowpilot-runner/internal/flowgate"
 )
 
+// prosePathChars are characters a repo-relative path entry never carries —
+// the scope-drift gate reason's own prose delimiters (";", em/en dashes) and
+// quote/control chars from shell or sentence text. filepath.Ext tolerates
+// them (".txt — if these..." reads as a non-empty extension), which let a
+// whole gate-reason tail join declared_paths verbatim: the real path stayed
+// unsanctioned and the drift gate re-fired on every Allow (run-183756
+// Task-038). Semicolons and dashes are technically legal filename chars, but
+// they are the gate's message delimiters — a path needing one cannot be
+// sanctioned through this channel anyway.
+const prosePathChars = ";:'\"`—–\t\r\n"
+
+// StripDriftProseTail cuts the gate-reason prose suffixes from a would-be
+// path entry — "; not written via this leg's tool calls: ..." and
+// " — if these are operator edits, amend ..." (gate_hook.go). Clients that
+// split the drift reason naively forward the whole tail as one "path";
+// stripping at the amend endpoint keeps Allow robust regardless of client
+// parse quality. Returns the trimmed remainder ("" when nothing precedes
+// the delimiters).
+func StripDriftProseTail(s string) string {
+	if i := strings.IndexByte(s, ';'); i >= 0 {
+		s = s[:i]
+	}
+	if i := strings.IndexAny(s, "—–"); i >= 0 {
+		s = s[:i]
+	}
+	return strings.TrimSpace(s)
+}
+
 // IsConcreteCodeTarget reports whether p names a specific code file — not a
 // directory bucket ("apps", "internal" — what inference produces), a glob,
 // a flag-like string (guards a downstream tool runner from reading "-x" as an
@@ -30,6 +58,8 @@ func IsConcreteCodeTarget(p string) bool {
 	case strings.HasPrefix(p, "-"):
 		return false
 	case strings.ContainsAny(p, "*?["):
+		return false
+	case strings.ContainsAny(p, prosePathChars):
 		return false
 	case filepath.Ext(p) == "":
 		return false
@@ -48,7 +78,7 @@ func IsConcreteCodeTarget(p string) bool {
 // unchanged for those shapes.
 func IsUserAllowableDriftPath(p string) bool {
 	p = strings.TrimSpace(p)
-	if p == "" || strings.HasPrefix(p, "-") || strings.ContainsAny(p, "*?[") {
+	if p == "" || strings.HasPrefix(p, "-") || strings.ContainsAny(p, "*?[") || strings.ContainsAny(p, prosePathChars) {
 		return false
 	}
 	if IsConcreteCodeTarget(p) {

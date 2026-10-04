@@ -26,6 +26,13 @@ func TestParseDriftedPaths(t *testing.T) {
 		{"with period", "flow scope drift: wrote outside the frozen contract's declared paths: calc_test.go.", []string{"calc_test.go"}},
 		{"prefix text", "flow gate block: flow scope drift: wrote outside the frozen contract's declared paths: calc_test.go", []string{"calc_test.go"}},
 		{"empty after marker", "wrote outside the frozen contract's declared paths: ", nil},
+		// BUG-1175 / live run-183756: the gate reason appends
+		// "; not written via this leg's tool calls: <paths> — if these are
+		// operator edits, amend ..." — the tail must never land in the
+		// amend payload or it joins declared_paths verbatim and the gate
+		// re-fires forever.
+		{"external-drift prose tail", "flow scope drift: wrote outside the frozen contract's declared paths: core/a.go; not written via this leg's tool calls: core/a.go — if these are operator edits, amend the contract to sanction them", []string{"core/a.go"}},
+		{"external-drift multi path", "flow scope drift: wrote outside the frozen contract's declared paths: a.go, b.go; not written via this leg's tool calls: a.go, b.go — if these are operator edits, amend the contract to sanction them", []string{"a.go", "b.go"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
