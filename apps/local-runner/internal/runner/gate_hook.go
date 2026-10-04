@@ -1122,16 +1122,20 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 		if len(codeOnlyWritten) > 0 {
 			filtered := codeOnlyWritten[:0]
 			for _, p := range codeOnlyWritten {
+				// D2: snapshot/baseline keys are normalized ("dep", not
+				// "dep/") — a diff row can still carry the untracked-dir
+				// trailing slash, so normalize before lookup.
+				key := strings.TrimSuffix(p, "/")
 				if rs != nil && rs.turnStartWorktree != nil {
-					if prev, ok := rs.turnStartWorktree[p]; ok {
-						if cur := worktreeFileFingerprint(cwd, p); prev == cur {
+					if prev, ok := rs.turnStartWorktree[key]; ok {
+						if cur := worktreeFileFingerprint(cwd, key); prev == cur {
 							continue
 						}
 					}
 				}
 				if rec.BaselineWorktree != nil {
-					if base, ok := rec.BaselineWorktree[p]; ok {
-						if cur := worktreeFileFingerprint(cwd, p); base == cur {
+					if base, ok := rec.BaselineWorktree[key]; ok {
+						if cur := worktreeFileFingerprint(cwd, key); base == cur {
 							continue
 						}
 					}
@@ -1198,6 +1202,26 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 				return true
 			}
 			msg := "flow scope drift: wrote outside the frozen contract's declared paths: " + strings.Join(drift, ", ")
+			// D10 (run-2062497): a drifted path absent from this turn's
+			// tool-call writes reached the diff some other way — a leg bash
+			// redirect OR a direct operator edit are indistinguishable in
+			// the diff, so the gate must still fail closed. Name those paths
+			// in the reason so the operator knows amend (not another retry)
+			// is the sanction for their own edits.
+			writtenSet := map[string]bool{}
+			for _, p := range workspaceRelPaths(cwd, fin.ChangedFiles) {
+				writtenSet[p] = true
+			}
+			var externalDrift []string
+			for _, p := range drift {
+				if !writtenSet[strings.TrimSuffix(p, "/")] {
+					externalDrift = append(externalDrift, p)
+				}
+			}
+			if len(externalDrift) > 0 {
+				msg += "; not written via this leg's tool calls: " + strings.Join(externalDrift, ", ") +
+					" — if these are operator edits, amend the contract to sanction them"
+			}
 			s.mu.Lock()
 			if r := s.runs[runID]; r != nil && r.gateEpoch == epoch {
 				s.emitLocked(r, ProviderEvent{
@@ -1872,6 +1896,9 @@ func snapshotWorktreeFingerprints(cwd string) map[string]string {
 		// V10R3 P1: do not TrimSpace â€” whitespace is significant in git -z paths
 		// (V10-07); trimming remaps " foo.go " â†’ "foo.go" and breaks attribution.
 		p := filepath.ToSlash(f.Path)
+		// D2: an untracked dir diffs as "dep/" while a committed gitlink
+		// diffs as "dep" — keep both shapes on one normalized key.
+		p = strings.TrimSuffix(p, "/")
 		if p == "" {
 			continue
 		}
@@ -1947,8 +1974,10 @@ func observeTurnScopedDiff(cwd, baseSHA string, turnStartWorktree map[string]str
 		}
 		if cur, isDirty := dirtyNow[p]; isDirty {
 			// Uncommitted: only include if new or content changed this turn.
-			prev, wasDirty := turnStartWorktree[p]
-			fp := worktreeFileFingerprint(cwd, p)
+			// D2: snapshot keys are normalized (no trailing slash).
+			key := strings.TrimSuffix(p, "/")
+			prev, wasDirty := turnStartWorktree[key]
+			fp := worktreeFileFingerprint(cwd, key)
 			if wasDirty && prev == fp {
 				// Pre-existing dirt unchanged â€” not this turn's edit.
 				_ = cur
@@ -1968,6 +1997,19 @@ func worktreeFileFingerprint(cwd, relPath string) string {
 	fi, err := os.Lstat(full)
 	if err != nil {
 		return "missing:" + relPath
+	}
+	if fi.IsDir() {
+		// D2 (live run-2062497): a directory in a git diff is a gitlink —
+		// a vendored submodule. Its identity is the pinned HEAD inside, not
+		// a dir-listing hash (dir size shifts whenever generated files land
+		// inside the tree, e.g. boringssl codegen — that made the fingerprint
+		// drift on every eval and produced an unwinnable park). Fall back to
+		// a stable dir marker for a non-repo directory.
+		if out, err := exec.Command("git", "-C", full, "rev-parse", "HEAD").Output(); err == nil {
+			return "githead:" + strings.TrimSpace(string(out))
+		}
+		sum := sha256.Sum256([]byte(fmt.Sprintf("dir:size=%d|mode=%v", fi.Size(), fi.Mode())))
+		return hex.EncodeToString(sum[:16])
 	}
 	if fi.Mode()&os.ModeSymlink != 0 {
 		target, _ := os.Readlink(full)
@@ -3603,6 +3645,10 @@ func turnSummaryFromTurnResult(turnID string, tr *flowgate.TurnResult, tokensCon
 		stripRuntimeMetadataPaths(append([]string(nil), tr.WrittenPaths...)),
 		stripRuntimeMetadataPaths(tr.ChangedPaths)...)
 	summary.TestResults = appendUniqueStrings(append([]string(nil), tr.Tests.Failed...), tr.Tests.Regressed...)
+	// run-2062497 D8: a turn that ran the oracle suite green is verification
+	// evidence — exempt from zero_delta_progress ("zero delta because the
+	// work was already done" was punished into pause_for_human loops live).
+	summary.TestsGreen = tr.Tests.Ran && len(tr.Tests.Passed) > 0 && len(tr.Tests.Failed) == 0 && len(tr.Tests.Regressed) == 0
 	return summary
 }
 

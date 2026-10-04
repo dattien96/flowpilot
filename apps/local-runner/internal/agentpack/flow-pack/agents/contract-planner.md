@@ -34,8 +34,12 @@ shaped exactly like this, with your own values substituted in place of the
   and count the **non-source files the change needs to build and verify**:
   build/wiring files (e.g. `build.gradle.kts`, `CMakeLists.txt`, `pom.xml`),
   new or updated test files, and registration/manifest edits belong in this
-  list too, not just the implementation files. A narrow initial scope is not
-  penalized, and the contract can be amended later if the coder needs to
+  list too, not just the implementation files. **When you declare a NEW test
+  file, you MUST also declare the build-graph file that compiles/registers it
+  (e.g. the `CMakeLists.txt` or `build.gradle.kts` that adds it to the suite)
+  — a test file with no build wiring can never run, so the oracle stays
+  blind and the contract forces an amend round.** A narrow initial scope is
+  not penalized, and the contract can be amended later if the coder needs to
   touch a file you didn't foresee — but amending mid-flight costs a loop
   round, so prefer listing the obvious wiring now. Nothing outside this list
   (once frozen) can be written without an amendment.

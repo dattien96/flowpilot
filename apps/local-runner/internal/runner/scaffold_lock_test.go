@@ -109,3 +109,46 @@ func TestScaffoldBodyViolationFeedsGateSignal(t *testing.T) {
 		}
 	}
 }
+
+// Live run-2062497 (Task-037): the scaffold leg wrote ONLY test files — the
+// contract's production stubs were scaffolded by an earlier task and live in
+// DeclaredPaths, not this turn's writes. The signature snapshot over
+// written-only produced an empty SignatureHash, so isSignatureLockedCoderChild
+// stayed false and the coder was never offered submit_review_outcome — the
+// renegotiate_signatures batch could not be filed at all. The signature pin
+// must cover the contract's declared production files, not just this turn's
+// writes.
+func TestRun2062497_ScaffoldTestOnlyTurnStillPinsSignatureHash(t *testing.T) {
+	dir, head := newContractFreezeTestRepo(t)
+	svc, parentID := newReproduceFixture(t, dir)
+	freezeP4Contract(t, dir, parentID, "implement", head, []string{"calc/calc.go", "calc/auth_test.go"})
+
+	// Production stub pre-exists from an earlier task's scaffold (not in this
+	// turn's writes) — exactly like Task-037's VaultSession.h placeholders.
+	writeRepoFile(t, dir, "calc/calc.go", "package calc\n\nimport \"errors\"\n\n// Add returns the sum of a and b.\nfunc Add(a, b int) error {\n\treturn errors.New(\"not implemented\")\n}\n")
+	writeRepoFile(t, dir, "calc/auth_test.go", "package calc\n\nimport \"testing\"\n\nfunc TestAuthRed(t *testing.T) {\n\tif err := Add(1, 2); err == nil {\n\t\tt.Fatal(\"expected not-implemented\")\n\t}\n}\n")
+
+	// The scaffold turn writes ONLY the locked test file — no prod files.
+	svc.recordScaffoldArtifactsLock(dir, parentID, []string{"calc/auth_test.go"})
+
+	store, err := changecontract.NewFrozenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, ok, err := store.GetFrozenForStep(parentID, "implement")
+	if err != nil || !ok {
+		t.Fatalf("frozen contract missing: ok=%v err=%v", ok, err)
+	}
+	if rec.SignatureHash == "" {
+		t.Fatal("SignatureHash must pin the declared production signatures even when the scaffold turn wrote only test files")
+	}
+	foundSig := false
+	for _, sig := range rec.LockedSignatures {
+		if contains(sig, "func Add(") {
+			foundSig = true
+		}
+	}
+	if !foundSig {
+		t.Fatalf("LockedSignatures must include the declared Add signature, got %v", rec.LockedSignatures)
+	}
+}

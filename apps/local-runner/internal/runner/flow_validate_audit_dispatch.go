@@ -2,11 +2,8 @@ package runner
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"log"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -1017,7 +1014,9 @@ func (s *InteractiveService) advanceToNextInlineOrDelegate(ctx context.Context, 
 	}
 	switch targetID {
 	case "done":
-		_, err := s.applyFlowControl(parentRunID, FlowControlInput{Status: "done", Summary: resultMessage})
+		// run-2062497: engine-dispatched terminal — the unvisited-spine guard
+		// applies (viaEngineEdge), while an operator POST stays forceable.
+		_, err := s.applyFlowControl(parentRunID, FlowControlInput{Status: "done", Summary: resultMessage, viaEngineEdge: true})
 		if err == nil {
 			markSourceDone()
 		}
@@ -1447,7 +1446,7 @@ func (s *InteractiveService) runAuditNode(ctx context.Context, parentRunID strin
 			// Sprint boundary (CA-1093): a finished sprint with plan tasks
 			// left auto-starts the next sprint — the boundary is not a user
 			// gate. Falls through to done only when nothing remains.
-			if s.maybeAutoAdvanceVibeSprintBoundary(ctx, parentRunID, node.ID) {
+			if s.maybeAutoAdvanceVibeSprintBoundary(ctx, parentRunID, node.ID, flowDoneEdgePredecessors(edges, node.ID)...) {
 				return true
 			}
 			if _, err := s.applyFlowControl(parentRunID, FlowControlInput{
@@ -1528,7 +1527,7 @@ func (s *InteractiveService) runAuditNode(ctx context.Context, parentRunID strin
 	// Sprint boundary (CA-1093): a finished sprint with plan tasks left
 	// auto-starts the next sprint — the boundary is not a user gate.
 	// Falls through to done only when nothing remains.
-	if s.maybeAutoAdvanceVibeSprintBoundary(ctx, parentRunID, node.ID) {
+	if s.maybeAutoAdvanceVibeSprintBoundary(ctx, parentRunID, node.ID, flowDoneEdgePredecessors(edges, node.ID)...) {
 		return true
 	}
 	if _, err := s.applyFlowControl(parentRunID, FlowControlInput{
@@ -1573,6 +1572,36 @@ func vibeSprintTopologyNodes(rs *interactiveRun) []agentpack.FlowNode {
 	return merged
 }
 
+// flowDoneEdgePredecessors returns the DIRECT forward-done predecessors of
+// nodeID — the nodes whose own settle chain dispatched this node. While this
+// node's terminal dispatch runs, those predecessors still read RUNNING only
+// because the DONE stamp lives inside the settle this call pre-empts (live
+// run-2062497: synthesis still RUNNING at the audit terminal vetoed the
+// sprint-boundary auto-advance; the flow settled done with plan tasks left
+// and the boundary only resurfaced ~97s later through the operator resume
+// path, as a user gate CA-1093 says must never exist). A RUNNING step that
+// is NOT a direct predecessor is a genuinely live leg and must still veto.
+func flowDoneEdgePredecessors(edges []agentpack.FlowEdge, nodeID string) []string {
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return nil
+	}
+	var out []string
+	for _, e := range edges {
+		if !strings.EqualFold(strings.TrimSpace(e.Kind), "forward") ||
+			!strings.EqualFold(strings.TrimSpace(e.When), "done") {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(e.To), nodeID) {
+			continue
+		}
+		if from := strings.TrimSpace(e.From); from != "" {
+			out = append(out, from)
+		}
+	}
+	return out
+}
+
 // vibeSprintEvidenceComplete reports whether a vibe sprint's audit may
 // auto-finalize on a non-requirement gate (CA-1096): the loop must carry no
 // open issues and every declared agent.code writer leg must have reached
@@ -1605,13 +1634,19 @@ func (s *InteractiveService) vibeSprintEvidenceComplete(parentRunID string) bool
 	return true
 }
 
-// hasRunningSprintStep reports whether any active flow node other than
-// excludeID is still RUNNING — a live leg owed a terminal transition whose
+// hasRunningSprintStep reports whether any active flow node outside
+// excludeIDs is still RUNNING — a live leg owed a terminal transition whose
 // settle re-drives the flow. Used by the BUG-561 audit defer: a not-ready
 // audit while a sprint leg is in flight is provisional evidence, the same
 // class as an open cohort (BUG-560), but hub ad-hoc spawns carry no
 // flow_cohort_id so the barrier check alone misses them.
-func (s *InteractiveService) hasRunningSprintStep(parentRunID, excludeID string) bool {
+func (s *InteractiveService) hasRunningSprintStep(parentRunID string, excludeIDs ...string) bool {
+	excluded := make(map[string]bool, len(excludeIDs)+1)
+	for _, id := range excludeIDs {
+		if id = strings.TrimSpace(id); id != "" {
+			excluded[id] = true
+		}
+	}
 	s.mu.Lock()
 	var ids []string
 	if rs := s.runs[parentRunID]; rs != nil {
@@ -1619,7 +1654,7 @@ func (s *InteractiveService) hasRunningSprintStep(parentRunID, excludeID string)
 		// during a debate the live sprint steps sit in vibeParkedNodes and a
 		// scan of activeFlowNodes alone misses a RUNNING tdd/coder leg.
 		for _, n := range vibeSprintTopologyNodes(rs) {
-			if id := strings.TrimSpace(n.ID); id != "" && id != excludeID {
+			if id := strings.TrimSpace(n.ID); id != "" && !excluded[id] {
 				ids = append(ids, id)
 			}
 		}
@@ -1937,16 +1972,19 @@ func baselineWorktreeFingerprint(workspace string) map[string]string {
 	out := make(map[string]string, len(files))
 	for _, f := range files {
 		p := filepath.ToSlash(f.Path)
+		// D2: git reports an untracked dir as "dep/" but the committed
+		// gitlink as "dep" — normalize so both shapes hit the same key the
+		// gate looks up.
+		p = strings.TrimSuffix(p, "/")
 		if p == "" || isFlowPlannerExcludedPath(p) {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(workspace, filepath.FromSlash(p)))
-		if err != nil {
-			out[p] = ""
-			continue
-		}
-		sum := sha256.Sum256(data)
-		out[p] = hex.EncodeToString(sum[:])
+		// D2 (live run-2062497): the baseline MUST use the same fingerprint
+		// function the drift gate compares against — sha256(content) here vs
+		// worktreeFileFingerprint's content|size|mode hash there made the
+		// baseline subtraction dead code for every path, and ""-for-dirs made
+		// vendored submodules drift forever. One function, one format.
+		out[p] = worktreeFileFingerprint(workspace, p)
 	}
 	if len(out) == 0 {
 		return nil

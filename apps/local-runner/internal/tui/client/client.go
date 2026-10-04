@@ -314,6 +314,9 @@ type AgentGraphSnapshot struct {
 	ParentRunID string            `json:"parentRunId"`
 	Runs        []AgentRunSummary `json:"runs"`
 	LoopState   AgentLoopState    `json:"loopState"`
+	// UnamendablePaths mirrors the runner's amend response: drift paths the
+	// Allow action could not widen into scope (dirs, non-concrete shapes).
+	UnamendablePaths []string `json:"unamendablePaths,omitempty"`
 }
 
 // DispatchAttentionItem mirrors runner.AttentionItem surfaced by

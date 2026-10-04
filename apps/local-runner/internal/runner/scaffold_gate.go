@@ -120,6 +120,14 @@ func (s *InteractiveService) recordScaffoldArtifactsLock(cwd, parentRunID string
 		if len(testPaths) == 0 && len(prodSignatures) == 0 {
 			return
 		}
+	} else if len(prodSignatures) == 0 && len(existing.DeclaredPaths) > 0 {
+		// Live finding (run-2062497, Task-037): a scaffold turn that writes ONLY
+		// test files — the contract's production stubs pre-exist under
+		// DeclaredPaths — pins an empty SignatureHash. The signature lock (and
+		// the coder's submit_review_outcome renegotiation surface) then never
+		// arms. Snapshot the union of this turn's writes and the declared
+		// scope so the pin covers every declared production signature.
+		prodSignatures, lockedSignatures = s.scaffoldSignatureSnapshot(cwd, appendUniqueStrings(written, existing.DeclaredPaths...))
 	}
 	rec, err := changecontract.LockScaffoldArtifacts(store, existing, testPaths, prodSignatures, lockedSignatures, time.Now().UTC())
 	if err != nil {

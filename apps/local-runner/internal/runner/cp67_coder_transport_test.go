@@ -656,3 +656,118 @@ func TestScaffoldLockFallsBackToDeclaredPathsOnReinvoke(t *testing.T) {
 		t.Fatal("LockedSignatures must be populated from the on-disk stubs")
 	}
 }
+
+// Live run-2062497 (D7): bufferCoderBatchSignatures keys the batch under the
+// parent's CURRENT stepID — a turn-scoped stamp that changes on every
+// park/resume/reinvoke between the coder's submit and its node completion.
+// The buffered batch then orphans: coderRenegotiatingForRun reads only
+// pending[parent.stepID] and sees nothing. The batch must survive a stepID
+// re-stamp — it is consumed by node completion, not by step id.
+func TestRun2062497_CoderBatchSurvivesStepIDRestamp(t *testing.T) {
+	svc, _ := newTestServer(t)
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	svc.mu.Lock()
+	svc.runs[parent.RunID].stepID = "step-4"
+	svc.mu.Unlock()
+
+	svc.bufferCoderBatchSignatures(parent.RunID, []CoderBatchSignatureRequest{
+		{Symbol: "Add", File: "calc/calc.go", CurrentSignature: "func Add(a,b int) error", ProposedSignature: "func Add(a,b int) (int,error)", Rationale: "need the sum"},
+	})
+
+	// A park/resume cycle between submit and completion re-stamps stepID.
+	svc.mu.Lock()
+	svc.runs[parent.RunID].stepID = "step-17"
+	svc.mu.Unlock()
+
+	if !svc.coderRenegotiatingForRun(parent.RunID) {
+		t.Fatal("batch orphaned by a stepID re-stamp between submit and completion")
+	}
+	batch := svc.consumeCoderBatchSignatures(parent.RunID)
+	if len(batch) != 1 || batch[0].Symbol != "Add" {
+		t.Fatalf("consume must return the buffered batch regardless of step drift, got %+v", batch)
+	}
+	if svc.coderRenegotiatingForRun(parent.RunID) {
+		t.Fatal("consume must clear the batch for good")
+	}
+}
+
+// Live run-2062497 (D1): sprint 3 sealed `done` with only tdd complete —
+// coder/validate/spec_align/reviewer were PENDING and got mass-settled to
+// SKIPPED by markFlowRunComplete while the suite was still RED. A done
+// verdict (agent-submitted or engine-edge dispatched) must not seal when
+// mandatory spine nodes — nodes reachable from the flow entry over
+// forward-done edges — were never dispatched. Optional continue-entry nodes
+// (synthesis_negotiation) must remain legitimately skippable.
+func TestRun2062497_DoneVerdictRejectsUnvisitedSpine(t *testing.T) {
+	svc, _ := newTestServer(t)
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	svc.agentOrchestrator.setLoop(parent.RunID, AgentLoopState{Status: "running", Cap: 5, RoundCap: 5})
+	nodes, edges := cp67NegotiationTopology()
+	svc.mu.Lock()
+	prs := svc.runs[parent.RunID]
+	prs.flowEngineDriven = true
+	prs.activeFlowNodes = nodes
+	prs.activeFlowEdges = edges
+	svc.mu.Unlock()
+	svc.reseedFlowStepRuntime(parent.RunID, nodes)
+	// Live state: scaffold (tdd) DONE, everything downstream never dispatched.
+	svc.setFlowStepStatus(context.Background(), parent.RunID, "test_signatures", StepStatusDone)
+
+	res, aerr := svc.applyFlowControl(parent.RunID, FlowControlInput{Status: "done", Summary: "audit ready", viaEngineEdge: true})
+	if aerr == nil || res.Status == "done" {
+		t.Fatalf("done must be rejected while spine nodes are unvisited, got res=%+v err=%v", res, aerr)
+	}
+	// The seal must not have run: spine nodes keep a truthful status (PENDING,
+	// or WAITING while the escalation parks them) — never fabricated
+	// SKIPPED/DONE.
+	steps, _ := svc.workflowStore.LoadRunSteps(context.Background(), parent.RunID)
+	for _, id := range []string{"implement", "validate", "reviewer", "synthesis"} {
+		st, _ := stepByID(steps, id)
+		if st.Status == StepStatusDone || st.Status == StepStatusSkipped {
+			t.Fatalf("%s = %q — a rejected done must not fabricate terminal status", id, st.Status)
+		}
+	}
+	// The rejection escalates to the operator like every blocked terminal transition.
+	st := svc.agentOrchestrator.loopStateFor(parent.RunID)
+	if st.Status != "blocked" {
+		t.Fatalf("loop status = %q, want blocked (escalated for human adjudication)", st.Status)
+	}
+}
+
+// Control: the same topology with every spine node done (negotiation node
+// legitimately PENDING — continue-only entry) must seal normally.
+func TestRun2062497_DoneVerdictSealsWhenSpineComplete(t *testing.T) {
+	svc, _ := newTestServer(t)
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	svc.agentOrchestrator.setLoop(parent.RunID, AgentLoopState{Status: "running", Cap: 5, RoundCap: 5})
+	nodes, edges := cp67NegotiationTopology()
+	svc.mu.Lock()
+	prs := svc.runs[parent.RunID]
+	prs.flowEngineDriven = true
+	prs.activeFlowNodes = nodes
+	prs.activeFlowEdges = edges
+	svc.mu.Unlock()
+	svc.reseedFlowStepRuntime(parent.RunID, nodes)
+	for _, id := range []string{"test_signatures", "implement", "validate", "reviewer", "synthesis"} {
+		svc.setFlowStepStatus(context.Background(), parent.RunID, id, StepStatusDone)
+	}
+	// synthesis_negotiation stays PENDING — legitimately skippable.
+
+	res, aerr := svc.applyFlowControl(parent.RunID, FlowControlInput{Status: "done", Summary: "audit ready", viaEngineEdge: true})
+	if aerr != nil || res.Status != "done" {
+		t.Fatalf("done must seal once the spine is complete, got res=%+v err=%v", res, aerr)
+	}
+	steps, _ := svc.workflowStore.LoadRunSteps(context.Background(), parent.RunID)
+	if st, _ := stepByID(steps, "synthesis_negotiation"); st.Status != StepStatusSkipped {
+		t.Fatalf("synthesis_negotiation = %q, want SKIPPED (optional node)", st.Status)
+	}
+}

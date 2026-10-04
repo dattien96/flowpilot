@@ -145,6 +145,64 @@ func TestAmendFlow_RejectsNonConcretePath(t *testing.T) {
 	}
 }
 
+// TestAmendFlow_MixedBatchAmendsConcreteAndReportsUnamendable reproduces the
+// live run-2062497 dead click: the drift gate reported [".gitmodules"-style
+// concrete file, "third_party/dep" directory gitlink]. The Allow click sent
+// both paths; AmendFrozenContractForAllow rejected the WHOLE batch on the
+// non-concrete entry, so amend 422'd and the park never lifted — the card
+// looked dead. The endpoint must widen the amendable subset and report the
+// unamendable remainder instead of failing the batch.
+func TestAmendFlow_MixedBatchAmendsConcreteAndReportsUnamendable(t *testing.T) {
+	_, srv, dir, runID := amendFlowParkedFixture(t)
+
+	status, body := doJSON(t, "POST", srv.URL+"/client/workflow-runs/"+runID+"/agent-loop/amend",
+		map[string]any{"paths": []string{"src/user.go", "third_party/dep"}}, nil)
+	if status != http.StatusOK {
+		t.Fatalf("mixed batch must amend the concrete member, not fail the batch: status=%d body=%s", status, body)
+	}
+
+	var snap AgentGraphSnapshot
+	if err := json.Unmarshal(body, &snap); err != nil {
+		t.Fatalf("decode amend response: %v", err)
+	}
+	foundUnamendable := false
+	for _, p := range snap.UnamendablePaths {
+		if p == "third_party/dep" {
+			foundUnamendable = true
+		}
+		if p == "src/user.go" {
+			t.Fatalf("concrete path must not be reported unamendable: %v", snap.UnamendablePaths)
+		}
+	}
+	if !foundUnamendable {
+		t.Fatalf("unamendable_paths must report third_party/dep, got %v", snap.UnamendablePaths)
+	}
+
+	reopened, err := changecontract.NewFrozenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	active, ok, err := reopened.GetFrozenForStep(runID, "coder")
+	if err != nil || !ok {
+		t.Fatalf("GetFrozenForStep ok=%v err=%v", ok, err)
+	}
+	if active.Version != 2 {
+		t.Fatalf("Version = %d, want 2 (amended subset)", active.Version)
+	}
+	foundUser := false
+	for _, p := range active.DeclaredPaths {
+		if p == "src/user.go" {
+			foundUser = true
+		}
+		if p == "third_party/dep" {
+			t.Fatalf("unamendable dir must not join DeclaredPaths: %v", active.DeclaredPaths)
+		}
+	}
+	if !foundUser {
+		t.Fatalf("amended DeclaredPaths must include src/user.go: %v", active.DeclaredPaths)
+	}
+}
+
 func TestAmendFlow_NoWideningNeededReturns404(t *testing.T) {
 	_, srv, _, runID := amendFlowParkedFixture(t)
 	// The frozen contract already declares src/calc.go — amending with the same

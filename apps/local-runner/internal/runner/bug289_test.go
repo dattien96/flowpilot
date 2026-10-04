@@ -203,6 +203,117 @@ func TestBug289_H4_ExpireApprovalClearsWaitingStatus(t *testing.T) {
 	}
 }
 
+// run-2062497 (live 08:09:08 → 08:10:35): a park-cancelled turn's in-flight
+// ask_user MCP call unwinds via ctx.Done → clearPendingQuestion. The card was
+// destroyed but waiting_question survived on the run — an orphaned wait only
+// the 60s wedge sweep healed. clearPending* must mirror the BUG-289 H4/F-4
+// flip that expireQuestion/expireApproval already do.
+func TestRun2062497_ClearPendingQuestionClearsWaitingStatus(t *testing.T) {
+	svc := bug289Service(t)
+	runID := "run-orphan-q"
+	qID := "q-1"
+	rs := &interactiveRun{
+		id:                runID,
+		status:            RunStatusWaitingQuestion,
+		agentStatus:       string(RunStatusWaitingQuestion),
+		pendingQuestionID: qID,
+		subs:              map[int64]chan ProviderEvent{},
+	}
+	svc.mu.Lock()
+	svc.runs[runID] = rs
+	svc.questions[qID] = &questionRecord{
+		id: qID, runID: runID, status: "pending",
+		resolve: make(chan questionResolveResult, 1),
+	}
+	svc.mu.Unlock()
+
+	svc.clearPendingQuestion(qID)
+
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	if rs.status == RunStatusWaitingQuestion {
+		t.Fatal("status still WaitingQuestion after pending clear — orphaned wait (run-2062497)")
+	}
+	if rs.pendingQuestionID != "" {
+		t.Fatalf("pendingQuestionID still %q", rs.pendingQuestionID)
+	}
+}
+
+func TestRun2062497_ClearPendingApprovalClearsWaitingStatus(t *testing.T) {
+	svc := bug289Service(t)
+	runID := "run-orphan-a"
+	apprID := "appr-1"
+	rs := &interactiveRun{
+		id:                runID,
+		status:            RunStatusWaitingApproval,
+		agentStatus:       string(RunStatusWaitingApproval),
+		pendingApprovalID: apprID,
+		subs:              map[int64]chan ProviderEvent{},
+	}
+	svc.mu.Lock()
+	svc.runs[runID] = rs
+	svc.approvals[apprID] = &approvalRecord{
+		id: apprID, runID: runID, status: "pending",
+		resolve: make(chan string, 1),
+	}
+	svc.mu.Unlock()
+
+	svc.clearPendingApproval(apprID)
+
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	if rs.status == RunStatusWaitingApproval {
+		t.Fatal("status still WaitingApproval after pending clear — orphaned wait (run-2062497)")
+	}
+	if rs.pendingApprovalID != "" {
+		t.Fatalf("pendingApprovalID still %q", rs.pendingApprovalID)
+	}
+}
+
+// run-2062497 emit-side twin: a question_required / permission_required event
+// that references no live pending record must NOT stamp waiting_* — that is
+// exactly how the run parks with no card (orphaned until the wedge sweep).
+func TestRun2062497_QuestionRequiredWithoutRecordDoesNotPark(t *testing.T) {
+	svc := bug289Service(t)
+	rs := &interactiveRun{
+		id:     "run-emit-q",
+		status: RunStatusRunning,
+		subs:   map[int64]chan ProviderEvent{},
+	}
+	svc.mu.Lock()
+	svc.runs[rs.id] = rs
+	svc.emitLocked(rs, ProviderEvent{
+		Type:       EventUserQuestionRequired,
+		QuestionID: "q-ghost", // no record in s.questions
+		Prompt:     "ghost question",
+	})
+	st := rs.status
+	svc.mu.Unlock()
+	if st == RunStatusWaitingQuestion {
+		t.Fatal("question_required with no pending record parked the run — cardless wait")
+	}
+}
+
+func TestRun2062497_PermissionRequiredWithoutRecordDoesNotPark(t *testing.T) {
+	svc := bug289Service(t)
+	rs := &interactiveRun{
+		id:     "run-emit-a",
+		status: RunStatusRunning,
+		subs:   map[int64]chan ProviderEvent{},
+	}
+	svc.mu.Lock()
+	svc.runs[rs.id] = rs
+	svc.emitLocked(rs, ProviderEvent{
+		Type:       EventPermissionRequired,
+		ApprovalID: "appr-ghost", // no record in s.approvals
+	})
+	st := rs.status
+	svc.mu.Unlock()
+	if st == RunStatusWaitingApproval {
+		t.Fatal("permission_required with no pending record parked the run — cardless wait")
+	}
+}
+
 // BUG-289 A6/F-9: one-decision guard field works after stamp.
 func TestBug289_A6_OneDecisionGuardAfterStamp(t *testing.T) {
 	svc := bug289Service(t)

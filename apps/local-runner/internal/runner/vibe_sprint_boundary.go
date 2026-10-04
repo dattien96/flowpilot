@@ -113,7 +113,13 @@ func inVibeSprintTopology(rs *interactiveRun) bool {
 // budget gate armed, or a sealed loop absorbed the flag); false leaves the
 // existing settle behavior untouched (non-vibe, empty plan, last sprint,
 // open cohort — the audit re-drives after the join, as before).
-func (s *InteractiveService) maybeAutoAdvanceVibeSprintBoundary(ctx context.Context, parentRunID, auditNodeID string) bool {
+// settleExcludes lists the audit node's settle ancestors — its direct
+// forward-done predecessors — which still read RUNNING while the terminal
+// dispatch executes only because markFlowRunComplete is the stamp this very
+// settle performs. Callers on the audit terminal path pass
+// flowDoneEdgePredecessors(edges, auditNodeID); resume/reopen paths pass
+// nothing (a RUNNING step there is a genuinely live leg and must veto).
+func (s *InteractiveService) maybeAutoAdvanceVibeSprintBoundary(ctx context.Context, parentRunID, auditNodeID string, settleExcludes ...string) bool {
 	// BUG-619: the boundary must never arm on unverifiable sprint work — a
 	// spurious or re-evaluated audit settle (resume re-drive, deferred join)
 	// reached this path with sprint legs still PENDING and stamped the task
@@ -124,7 +130,7 @@ func (s *InteractiveService) maybeAutoAdvanceVibeSprintBoundary(ctx context.Cont
 	// before s.mu — both helpers take it internally; DONE/open-issue state is
 	// terminal so the check cannot be raced into a false pass.
 	if !s.vibeSprintEvidenceComplete(parentRunID) ||
-		s.hasRunningSprintStep(parentRunID, auditNodeID) {
+		s.hasRunningSprintStep(parentRunID, append([]string{auditNodeID}, settleExcludes...)...) {
 		return false
 	}
 	s.mu.Lock()

@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -153,7 +154,15 @@ func (m *AppModel) cmdFetchOlderHistory() tea.Cmd {
 	if m.runHandle == nil || m.historyLoadedAfterSeq <= 0 || m.historyChunkInFlight {
 		return nil
 	}
-	runID := m.runHandle.RunID
+	// D12: a focused child transcripts owns its own event log — fetch older
+	// chunks from the child's run, never the parent's.
+	runID := m.mainRunID()
+	if m.viewingChild() {
+		runID = strings.TrimSpace(m.focusRunID)
+	}
+	if runID == "" {
+		return nil
+	}
 	floor := m.historyLoadedAfterSeq
 	newAfter := chatReplayChunkBefore(floor)
 	runnerURL := m.runnerURL

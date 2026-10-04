@@ -1474,6 +1474,17 @@ func (s *InteractiveService) stopAgentLoop(parentRunID string) (AgentGraphSnapsh
 			}
 		}
 	}
+	// run-2062497 D5: legs stamped cancelled while NOT turn-in-flight carry no
+	// live ctx for the adapter's ctx-Done cancel to propagate through — and a
+	// remote ACP session keeps working between prompts (cancelled tournament
+	// leg wrote into the workspace ~17h after the local stamp). Abort the
+	// remote session for every Devin leg going terminal here; in-flight legs
+	// are covered by turnCancel but the extra cancel is harmless
+	// (session/cancel kills in-flight work, never destroys the session).
+	devinAbortRunIDs := append([]string(nil), cancelledChildIDs...)
+	if parent := s.runs[parentRunID]; parent != nil && parent.providerKey == ProviderKeyDevin {
+		devinAbortRunIDs = append(devinAbortRunIDs, parentRunID)
+	}
 	// V10R4 P1: terminalize pending approval/question cards for parent+children
 	// so restart cannot rehydrate stale actionable cards for a stopped flow.
 	gateRunIDs := append([]string{parentRunID}, persistChildIDs...)
@@ -1611,6 +1622,13 @@ func (s *InteractiveService) stopAgentLoop(parentRunID string) (AgentGraphSnapsh
 			}
 		}
 	}
+	// run-2062497 D5: remote provider sessions outlive the local stamp — fire
+	// the best-effort abort for every Devin leg cancelled above. Reuses a live
+	// `devin acp` process when one exists; otherwise spawns one lazily under a
+	// bounded timeout (never blocks the Stop response).
+	for _, abortID := range devinAbortRunIDs {
+		s.abortDevinRemoteSession(abortID)
+	}
 	snap := s.agentGraphSnapshot(parentRunID)
 	s.emitAgentGraph(parentRunID, snap)
 	if persistErr != nil {
@@ -1626,6 +1644,69 @@ func (s *InteractiveService) stopAgentLoop(parentRunID string) (AgentGraphSnapsh
 			"stop applied in-memory but the durable stop fence could not be persisted: "+dispatchStopFenceErr.Error())
 	}
 	return snap, nil
+}
+
+// abortDevinRemoteSession best-effort aborts the remote Devin ACP session
+// pinned to a leg whose run went terminal. The remote session is
+// backend-owned: it keeps working after the local turn stream ends, after
+// the leg's turn ctx is gone, and after the runner restarts (run-2062497 D5:
+// a cancelled tournament leg kept writing into the workspace ~17h).
+// session/cancel only kills in-flight work on the session — it never
+// destroys the session — so firing it on a leg that later resumes is safe.
+// Local providers die with the runner; only the remote session needs this.
+// Never blocks the caller: the abort runs in a bounded goroutine.
+func (s *InteractiveService) abortDevinRemoteSession(runID string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	rs := s.runs[runID]
+	if rs == nil || s.runner == nil || rs.providerKey != ProviderKeyDevin {
+		s.mu.Unlock()
+		return
+	}
+	sid := strings.TrimSpace(rs.realProviderSessionID)
+	if sid == "" {
+		sid = strings.TrimSpace(rs.providerSessionID)
+	}
+	accountID := rs.providerAccountID
+	cwd := rs.workspaceCwd
+	s.mu.Unlock()
+	if !isDevinRealSessionID(sid) {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		// Reuse any live `devin acp` process — session/cancel targets the
+		// backend-owned session by id, not a process-local handle.
+		s.runner.devinProcessMu.Lock()
+		var h *devinProcessHandle
+		for _, cand := range s.runner.devinProcesses {
+			if cand != nil && cand.dispatcher != nil {
+				h = cand
+				break
+			}
+		}
+		s.runner.devinProcessMu.Unlock()
+		if h == nil {
+			scopeKey, env, err := s.runner.devinLaunchEnvForAccount(accountID)
+			if err != nil {
+				log.Printf("[devin-abort] launch env failed run=%s session=%s: %v", runID, sid, err)
+				return
+			}
+			h, err = s.runner.ensureDevinProcess(ctx, scopeKey, cwd, env, "", "")
+			if err != nil {
+				log.Printf("[devin-abort] ensure process failed run=%s session=%s: %v", runID, sid, err)
+				return
+			}
+		}
+		if err := h.dispatcher.notify("session/cancel", map[string]any{"sessionId": sid}); err != nil {
+			log.Printf("[devin-abort] session/cancel failed run=%s session=%s: %v", runID, sid, err)
+			return
+		}
+		log.Printf("[devin-abort] session/cancel sent run=%s session=%s", runID, sid)
+	}()
 }
 
 // cancelPendingGatesForRunsLocked marks in-memory pending approval/question
@@ -1996,6 +2077,32 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 				log.Printf("[flow-control] escalate after sprint-remaining refusal: %v", escErr)
 			}
 			return FlowControlResult{}, fmt.Errorf("applyFlowControl: %s", reason)
+		}
+		// run-2062497 (D1): a terminal `done` must not seal while mandatory
+		// spine nodes were never dispatched — markFlowRunComplete would settle
+		// them to SKIPPED and fabricate completion on a possibly-red oracle.
+		// Applies to agent verdicts AND engine-dispatched edge terminals;
+		// an operator POST /flow-control (neither flag) stays forceable.
+		if (in.agentInitiated || in.viaEngineEdge) && s.isFlowEngineDriven(parentRunID) {
+			if unvisited := s.unvisitedSpineNodes(parentRunID); len(unvisited) > 0 {
+				reason := fmt.Sprintf("flow done blocked: %d mandatory spine node(s) never dispatched (%s) — sealing would fabricate skipped work", len(unvisited), strings.Join(unvisited, ", "))
+				s.flowDiagLog(parentRunID, "flow_control_rejected_unvisited_spine",
+					"flow done refused: spine nodes never ran",
+					"nodes", strings.Join(unvisited, ","),
+				)
+				s.mu.Lock()
+				if r := s.runs[parentRunID]; r != nil && r.currentTurnID != "" && r.lastFlowControlTurnID == r.currentTurnID {
+					r.lastFlowControlTurnID = ""
+				}
+				s.mu.Unlock()
+				if _, escErr := s.applyFlowControl(parentRunID, FlowControlInput{
+					Status:  "escalate",
+					Summary: reason,
+				}); escErr != nil {
+					log.Printf("[flow-control] escalate after unvisited-spine refusal: %v", escErr)
+				}
+				return FlowControlResult{}, fmt.Errorf("applyFlowControl: %s", reason)
+			}
 		}
 		// BUG-288 #13 / Task-240 I-2: settle step timeline BEFORE publishing
 		// loop=done so consumers never see terminal loop with steps still RUNNING.
@@ -2813,8 +2920,13 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 	// instruction; their settle rejoins the cohort and re-invokes the hub on
 	// its own edges. Falls through when no live child maps — e.g. the member
 	// run was deleted — so generic resume still applies.
-	if prevBlockReason == "escalate" && isReviewVerdictGateReason(prevGateReason) {
-		if s.resumeVerdictDeficientMembers(parentRunID) {
+	if prevBlockReason == "escalate" && (isReviewVerdictGateReason(prevGateReason) || s.gateReasonNamesDeficientMemberVerdict(parentRunID, prevGateReason)) {
+		// run-2062497 D6: a cohort-split adjudication park authored by the hub
+		// itself never matched isReviewVerdictGateReason — Continue reparked on
+		// the stale member verdict. A reason naming a deficient member in
+		// verdict notation routes the same way, carrying the human's
+		// adjudication into the member re-drive.
+		if s.resumeVerdictDeficientMembers(parentRunID, feedback) {
 			return snap, nil
 		}
 	}
@@ -7230,17 +7342,29 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 
 	switch ev.Type {
 	case EventPermissionRequired:
-		rs.status = RunStatusWaitingApproval
-		rs.agentStatus = string(RunStatusWaitingApproval)
-		// BUG-288 #22: flow-engine child approval must stamp the parent step
-		// WAITING_USER_APPROVAL (by node label) so resume/replay can keep it
-		// instead of collapsing RUNNING → CANCELED after restart.
-		s.settleFlowChildStepAwaitingUserLocked(rs)
+		// run-2062497: only park on a LIVE pending record. Every in-process
+		// emit site persists the approval before emitting, so a missing/
+		// non-pending record means the card is already gone (or was never
+		// durable) — stamping waiting_* here would strand the run cardless
+		// until the wedge sweep heals it.
+		if rec := s.approvals[ev.ApprovalID]; rec != nil && rec.status == "pending" {
+			rs.status = RunStatusWaitingApproval
+			rs.agentStatus = string(RunStatusWaitingApproval)
+			// BUG-288 #22: flow-engine child approval must stamp the parent
+			// step WAITING_USER_APPROVAL (by node label) so resume/replay can
+			// keep it instead of collapsing RUNNING → CANCELED after restart.
+			s.settleFlowChildStepAwaitingUserLocked(rs)
+		}
 	case EventUserQuestionRequired:
-		rs.status = RunStatusWaitingQuestion
-		rs.agentStatus = string(RunStatusWaitingQuestion)
-		// BUG-288 #22: same WAITING stamp for child ask_user questions.
-		s.settleFlowChildStepAwaitingUserLocked(rs)
+		// run-2062497: same gate for questions — the mirrored emit onto the
+		// flow root carries the child's QuestionID, and s.questions is keyed
+		// by id, so the record is visible for owner and mirror alike.
+		if rec := s.questions[ev.QuestionID]; rec != nil && rec.status == "pending" {
+			rs.status = RunStatusWaitingQuestion
+			rs.agentStatus = string(RunStatusWaitingQuestion)
+			// BUG-288 #22: same WAITING stamp for child ask_user questions.
+			s.settleFlowChildStepAwaitingUserLocked(rs)
+		}
 	case EventTurnCompleted:
 		// Fall back to the last EventMessageCompleted text when FinalMessage is empty:
 		// Codex new-protocol (turn/completed) may not carry finalMessage directly; the
@@ -8684,6 +8808,21 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 			)
 			return SpawnAgentResult{}, fmt.Errorf("parent run %q loop is blocked (%s) — resolve the pending decision first", parentRunID, loop.BlockReason)
 		}
+		// run-2062497 D3 / CP-36 ("loop ends, no further spawns"): refuse a
+		// spawn on a sealed loop UP FRONT. Before this guard the child was
+		// created and its first turn then failed admission (flow_stopped),
+		// leaving zombie legs stamped leg_closed_reason=dispatch_failed and
+		// step-timeline mutations on a terminal run (live run-2081893/
+		// 2081899/2081905 across devin and grok). Remediation after done goes
+		// through the boundary Continue gate or a follow-up turn, not a
+		// sealed-loop spawn.
+		if loop := s.agentOrchestrator.loopStateFor(parentRunID); loop.Status == "done" || loop.Status == "stopped" {
+			s.flowDiagLog(parentRunID, "child_spawn_refused_sealed_loop", "child spawn refused: parent loop is sealed",
+				"agent", in.Agent,
+				"loop_status", loop.Status,
+			)
+			return SpawnAgentResult{}, fmt.Errorf("parent run %q loop is %s — no further spawns; use a boundary Continue or a follow-up turn for remediation", parentRunID, loop.Status)
+		}
 	}
 	if in.AgentDefOverride != nil {
 		agentDef = in.AgentDefOverride
@@ -9315,21 +9454,52 @@ func (s *InteractiveService) expireApproval(id string) {
 
 func (s *InteractiveService) clearPendingApproval(id string) {
 	var snapshot *ProviderApprovalState
+	var settleRunID string
+	var runSnap *ProviderSessionState
 	s.mu.Lock()
 	if rec := s.approvals[id]; rec != nil && rec.status == "pending" {
 		rec.status = "expired"
 		rec.revision++
 		if rs := s.runs[rec.runID]; rs != nil {
+			// BUG-507 parity: the requested effect is being dropped — record
+			// it as a durable run event rather than letting the card vanish
+			// with no trace.
+			details := rec.details
+			s.emitLocked(rs, ProviderEvent{
+				Type:       EventApprovalExpired,
+				ApprovalID: id,
+				Details:    &details,
+				Text:       "approval abandoned — caller context ended; requested action was not executed",
+			})
 			state := approvalStateFromRecord(rs, rec, "")
 			snapshot = &state
 		}
 	}
 	if rs := s.runs[s.approvalRunID(id)]; rs != nil && rs.pendingApprovalID == id {
 		rs.pendingApprovalID = ""
+		// run-2062497: the caller's ctx is gone (park-cancelled turn / MCP
+		// disconnect), so nothing downstream settles this wait — mirror
+		// expireApproval's BUG-289 flip or the run stays orphaned until the
+		// wedge sweep heals it (live: 87s cardless wait).
+		if rs.status == RunStatusWaitingApproval {
+			rs.status = RunStatusRunning
+			rs.agentStatus = string(RunStatusRunning)
+			settleRunID = rs.id
+		}
+		touchHubProgressLocked(rs)
+		snap := sessionStateOf(rs)
+		runSnap = &snap
 	}
 	s.mu.Unlock()
 	if snapshot != nil {
 		_ = s.persistApproval(*snapshot)
+	}
+	if runSnap != nil {
+		_ = s.persistProviderSession(*runSnap)
+	}
+	if settleRunID != "" {
+		s.notifyTurnIdle(settleRunID)
+		s.maybeScheduleHubStallCheck(settleRunID)
 	}
 }
 
@@ -9407,17 +9577,42 @@ func (s *InteractiveService) expireQuestion(id string) {
 
 func (s *InteractiveService) clearPendingQuestion(id string) {
 	var snapshot *ProviderQuestionState
+	var settleRunID string
+	var runSnap *ProviderSessionState
 	s.mu.Lock()
 	if rec := s.questions[id]; rec != nil && rec.status == "pending" {
 		rec.status = "expired"
 		rec.revision++
-		state := questionStateFromRecord(rec, "", "")
+		if rs := s.runs[rec.runID]; rs != nil {
+			// BUG-507 parity: surface the dropped question as a durable run
+			// event rather than letting the card vanish with no trace.
+			s.emitLocked(rs, ProviderEvent{
+				Type:       EventQuestionExpired,
+				QuestionID: id,
+				Prompt:     rec.prompt,
+				Text:       "question abandoned — caller context ended",
+			})
+		}
+		state := questionStateFromRecord(rec, "", rec.expiresAt)
 		snapshot = &state
 	}
 	if rec := s.questions[id]; rec != nil {
 		if rs := s.runs[rec.runID]; rs != nil {
 			if rs.pendingQuestionID == id {
 				rs.pendingQuestionID = ""
+				// run-2062497: the caller's ctx is gone (park-cancelled turn /
+				// MCP disconnect), so nothing downstream settles this wait —
+				// mirror expireQuestion's BUG-289 flip or the run stays
+				// orphaned until the wedge sweep heals it (live: 87s
+				// cardless wait).
+				if rs.status == RunStatusWaitingQuestion {
+					rs.status = RunStatusRunning
+					rs.agentStatus = string(RunStatusRunning)
+					settleRunID = rs.id
+				}
+				touchHubProgressLocked(rs)
+				snap := sessionStateOf(rs)
+				runSnap = &snap
 			}
 			s.healMirroredQuestionWaitLocked(rs, id)
 		}
@@ -9425,6 +9620,13 @@ func (s *InteractiveService) clearPendingQuestion(id string) {
 	s.mu.Unlock()
 	if snapshot != nil {
 		_ = s.persistQuestion(*snapshot)
+	}
+	if runSnap != nil {
+		_ = s.persistProviderSession(*runSnap)
+	}
+	if settleRunID != "" {
+		s.notifyTurnIdle(settleRunID)
+		s.maybeScheduleHubStallCheck(settleRunID)
 	}
 }
 

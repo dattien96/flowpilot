@@ -100,6 +100,11 @@ type TurnSummary struct {
 	FilesChanged         []string `json:"files_changed"`
 	TestResults          []string `json:"test_results"` // Danh sách tên test fail
 	ScopeOutOfScopePaths []string `json:"scope_out_of_scope_paths"`
+	// TestsGreen marks a turn where the gate observed the oracle suite run
+	// green. Verification evidence that the work is already complete — exempts
+	// zero_delta_progress (run-2062497 D8: an "already done" coder turn burned
+	// tokens re-verifying and was punished into pause_for_human loops).
+	TestsGreen bool `json:"tests_green,omitempty"`
 }
 
 // EvaluateTurnDrift evaluates the drift level after a completed turn

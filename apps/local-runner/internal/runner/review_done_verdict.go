@@ -252,7 +252,9 @@ func (s *InteractiveService) advanceHubFromCohortMachineVerdicts(parentRunID str
 			return true
 		}
 	}
-	_, err := s.applyFlowControl(parentRunID, FlowControlInput{Status: status})
+	// Engine-derived transition from machine verdicts — not an operator
+	// decision; the unvisited-spine guard applies (run-2062497).
+	_, err := s.applyFlowControl(parentRunID, FlowControlInput{Status: status, viaEngineEdge: true})
 	return err == nil
 }
 
@@ -423,13 +425,82 @@ func isReviewVerdictGateReason(reason string) bool {
 		(strings.Contains(r, "machine verdict") || strings.Contains(r, "verdict not approved"))
 }
 
+// gateReasonNamesDeficientMemberVerdict reports whether an escalate gate
+// reason adjudicates a deficient inbound-cohort member — it names the
+// member's label in verdict notation ("SPEC_ALIGN: blocked", "reviewer =
+// changes_requested"). run-2062497 D6: the synthesis hub authored the
+// cohort-split park in free text ("Cohort split needs human adjudication …
+// SPEC_ALIGN: blocked"), which never matched isReviewVerdictGateReason — so
+// Continue ran the generic hub reinvoke and re-parked on the identical stale
+// verdict. Only verdict-producing inbound cohorts (plan/review) count, and
+// the label must be followed by a verdict token — narrating a member in
+// passing ("the joined reviewer verdict describes…") does not trigger.
+func (s *InteractiveService) gateReasonNamesDeficientMemberVerdict(parentRunID, reason string) bool {
+	reason = strings.ToLower(strings.TrimSpace(reason))
+	if reason == "" {
+		return false
+	}
+	s.mu.Lock()
+	parent := s.runs[parentRunID]
+	var expected []string
+	var verdicts map[string]string
+	if parent != nil {
+		hubID := strings.TrimSpace(parent.activeHubNodeID)
+		if hubID == "" {
+			hubID = hubInlineNodeID(parent.activeFlowNodes)
+		}
+		expected = cohortNodeLabels(parent.activeFlowNodes, hubInboundCohortName(hubID))
+		verdicts = mergePendingReviewVerdictsLocked(parent, parent.lastReviewCohortVerdicts)
+	}
+	s.mu.Unlock()
+	for _, label := range expected {
+		v := strings.TrimSpace(verdicts[label])
+		if v == "approved" {
+			continue
+		}
+		if reasonNamesVerdict(reason, label) {
+			return true
+		}
+	}
+	return false
+}
+
+// reasonNamesVerdict reports whether the reason mentions label followed by a
+// verdict value in notation position ("<label>: blocked", "<label> =
+// changes_requested"). A bare label mention — or one separated from the
+// verdict by other words — does not count.
+func reasonNamesVerdict(reason, label string) bool {
+	l := strings.ToLower(strings.TrimSpace(label))
+	if l == "" {
+		return false
+	}
+	for idx := 0; idx <= len(reason); {
+		i := strings.Index(reason[idx:], l)
+		if i < 0 {
+			return false
+		}
+		pos := idx + i
+		rest := strings.TrimLeft(reason[pos+len(l):], " :=_(")
+		for _, vv := range []string{"approved", "blocked", "changes_requested", "changes requested", "missing", "not approved"} {
+			if strings.HasPrefix(rest, vv) {
+				return true
+			}
+		}
+		idx = pos + len(l)
+	}
+	return false
+}
+
 // resumeVerdictDeficientMembers re-drives every review-cohort member child
 // whose machine verdict is missing or not approved for the run's active hub
 // (CA-1098). Each matched member's settle-time reprompt budget is reset — a
 // user-driven Continue is a fresh attempt, not a continuation of the
 // exhausted budget. Returns false when no deficient member maps to a live
-// child, letting the caller fall through to the generic resume.
-func (s *InteractiveService) resumeVerdictDeficientMembers(parentRunID string) bool {
+// child, letting the caller fall through to the generic resume. The human's
+// continue feedback is prepended to the re-drive prompt (run-2062497 D6: a
+// cohort-split adjudication must REACH the deficient member so it
+// re-evaluates with the ruling in context, not re-park on the stale verdict).
+func (s *InteractiveService) resumeVerdictDeficientMembers(parentRunID, feedback string) bool {
 	s.mu.Lock()
 	parent := s.runs[parentRunID]
 	if parent == nil {
@@ -488,6 +559,9 @@ func (s *InteractiveService) resumeVerdictDeficientMembers(parentRunID string) b
 		"action of this turn with status=approved|changes_requested|blocked and a verdicts " +
 		"array containing one row per acceptance criterion. Wait for the tool result before " +
 		"writing any summary text."
+	if strings.TrimSpace(feedback) != "" {
+		prompt = "Human adjudication on the decision card: " + strings.TrimSpace(feedback) + "\n\n---\n\n" + prompt
+	}
 	redriven := false
 	for _, label := range labels {
 		want := label

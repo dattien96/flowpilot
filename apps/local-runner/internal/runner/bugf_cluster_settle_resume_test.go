@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"bytes"
 	"context"
 	"strings"
 	"sync/atomic"
@@ -170,6 +171,119 @@ func TestBug432_SpawnRefusedWhileParentLoopBlocked(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "blocked") {
 		t.Fatalf("refusal must name the blocked loop, got %v", err)
+	}
+}
+
+// run-2062497 D3 (live 06:59–07:03): operator remediation spawns on a DONE
+// loop were created then instantly failed at turn admission (flow_stopped),
+// leaving zombie legs with leg_closed_reason=dispatch_failed and step-timeline
+// mutations on a sealed run — run-2081893/2081899/2081905 across devin+grok.
+// CP-36's contract is "loop ends, no further spawns": the refusal must happen
+// at spawn time (typed reason), not after the leg is created.
+func TestRun2062497_SpawnRefusedWhileParentLoopDone(t *testing.T) {
+	svc, runID := clusterFService(t)
+	svc.agentOrchestrator.setLoop(runID, AgentLoopState{Status: "done"})
+
+	_, err := svc.spawnChildRun(context.Background(), runID, SpawnAgentInput{
+		Agent: "coder", Prompt: "remediation",
+	})
+	if err == nil {
+		t.Fatal("spawnChildRun created a child under a done parent loop — zombie leg (run-2062497)")
+	}
+	if !strings.Contains(err.Error(), "done") && !strings.Contains(err.Error(), "stopped") {
+		t.Fatalf("refusal must name the sealed loop, got %v", err)
+	}
+	svc.mu.Lock()
+	children := 0
+	for _, rs := range svc.runs {
+		if rs.parentRunID == runID {
+			children++
+		}
+	}
+	svc.mu.Unlock()
+	if children != 0 {
+		t.Fatalf("refused spawn must not leave a created child leg, children=%d", children)
+	}
+}
+
+func TestRun2062497_SpawnRefusedWhileParentLoopStopped(t *testing.T) {
+	svc, runID := clusterFService(t)
+	svc.agentOrchestrator.setLoop(runID, AgentLoopState{Status: "stopped"})
+
+	_, err := svc.spawnChildRun(context.Background(), runID, SpawnAgentInput{
+		Agent: "coder", Prompt: "remediation",
+	})
+	if err == nil {
+		t.Fatal("spawnChildRun created a child under a stopped parent loop — zombie leg (run-2062497)")
+	}
+}
+
+// run-2062497 D5 (live): a leg stamped cancelled carries no live turn ctx for
+// the adapter's ctx-Done session/cancel to fire through — the backend-owned
+// remote ACP session kept writing ~17h after the stamp. Stamping a Devin leg
+// terminal must fire a best-effort session/cancel through any live `devin
+// acp` process.
+func TestRun2062497_CancelledDevinLegAbortsRemoteSession(t *testing.T) {
+	svc, runID := clusterFService(t)
+	svc.runner = &Runner{devinProcesses: map[string]*devinProcessHandle{}}
+	var buf bytes.Buffer
+	svc.runner.devinProcesses["k"] = &devinProcessHandle{
+		dispatcher: newDevinDispatcher(&buf, nil),
+	}
+	childID := runID + "-leg"
+	svc.mu.Lock()
+	svc.runs[childID] = &interactiveRun{
+		id:                     childID,
+		parentRunID:            runID,
+		label:                  "coder",
+		status:                 RunStatusCancelled,
+		providerKey:            ProviderKeyDevin,
+		realProviderSessionID:  "working-pentagon",
+		subs:                   map[int64]chan ProviderEvent{},
+	}
+	svc.mu.Unlock()
+
+	svc.abortDevinRemoteSession(childID)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for !strings.Contains(buf.String(), "session/cancel") {
+		if time.Now().After(deadline) {
+			t.Fatalf("no session/cancel frame written for cancelled devin leg, got %q", buf.String())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !strings.Contains(buf.String(), "working-pentagon") {
+		t.Fatalf("cancel frame must carry the leg's session id, got %q", buf.String())
+	}
+}
+
+// The abort must no-op for local providers (their processes die with the
+// runner) and for legs without a real backend session id.
+func TestRun2062497_AbortSkipsNonDevinAndSyntheticSessions(t *testing.T) {
+	svc, runID := clusterFService(t)
+	svc.runner = &Runner{devinProcesses: map[string]*devinProcessHandle{}}
+	var buf bytes.Buffer
+	svc.runner.devinProcesses["k"] = &devinProcessHandle{
+		dispatcher: newDevinDispatcher(&buf, nil),
+	}
+	svc.mu.Lock()
+	svc.runs[runID+"-codex"] = &interactiveRun{
+		id: runID + "-codex", parentRunID: runID, status: RunStatusCancelled,
+		providerKey: ProviderKeyCodex, realProviderSessionID: "thread-1",
+		subs: map[int64]chan ProviderEvent{},
+	}
+	svc.runs[runID+"-devin-synth"] = &interactiveRun{
+		id: runID + "-devin-synth", parentRunID: runID, status: RunStatusCancelled,
+		providerKey: ProviderKeyDevin, realProviderSessionID: "thread-abc",
+		subs: map[int64]chan ProviderEvent{},
+	}
+	svc.mu.Unlock()
+
+	svc.abortDevinRemoteSession(runID + "-codex")
+	svc.abortDevinRemoteSession(runID + "-devin-synth")
+	time.Sleep(200 * time.Millisecond)
+	if buf.Len() != 0 {
+		t.Fatalf("non-devin/synthetic legs must not write cancel frames, got %q", buf.String())
 	}
 }
 

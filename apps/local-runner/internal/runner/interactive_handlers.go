@@ -2447,6 +2447,28 @@ func (s *InteractiveService) handleAmendFlow(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	// Partition: entries that can never join a frozen contract (globs, flags,
+	// extension-less files/buckets) must not sink the whole Allow click.
+	// run-2062497: a mixed batch [concrete file, submodule dir] 422'd on the
+	// dir entry, so the card looked dead while the concrete drift stayed
+	// parked. Amend what is amendable and report the rest; an
+	// all-unamendable batch keeps the CA-427 loud failure. IsAmendableDriftPath
+	// is the shared predicate — existing directories (gitlinks, untracked
+	// dirs) are amendable per D14.
+	var amendable, unamendable []string
+	for _, p := range paths {
+		if changecontract.IsAmendableDriftPath(workspace, p) {
+			amendable = append(amendable, p)
+		} else {
+			unamendable = append(unamendable, p)
+		}
+	}
+	if len(amendable) == 0 {
+		writeInteractiveError(w, newAPIErr(http.StatusUnprocessableEntity, "amend_failed",
+			fmt.Sprintf("no amendable path in request; each path is not a concrete code target and cannot widen scope: %s", strings.Join(paths, ", "))))
+		return
+	}
+
 	store, err := changecontract.NewFrozenStore(workspace)
 	if err != nil {
 		writeInteractiveError(w, newAPIErr(http.StatusUnprocessableEntity, "frozen_store_open_failed", err.Error()))
@@ -2458,7 +2480,7 @@ func (s *InteractiveService) handleAmendFlow(w http.ResponseWriter, r *http.Requ
 		if err != nil || !ok {
 			continue
 		}
-		next, err := changecontract.AmendFrozenContractForAllow(store, workspace, rec, paths, time.Now().UTC())
+		next, err := changecontract.AmendFrozenContractForAllow(store, workspace, rec, amendable, time.Now().UTC())
 		if err != nil {
 			writeInteractiveError(w, newAPIErr(http.StatusUnprocessableEntity, "amend_failed", err.Error()))
 			return
@@ -2477,5 +2499,6 @@ func (s *InteractiveService) handleAmendFlow(w http.ResponseWriter, r *http.Requ
 		writeInteractiveError(w, newAPIErr(http.StatusUnprocessableEntity, "continue_flow_failed", err.Error()))
 		return
 	}
+	snap.UnamendablePaths = unamendable
 	writeInteractiveJSON(w, http.StatusOK, snap)
 }

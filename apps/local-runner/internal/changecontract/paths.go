@@ -8,6 +8,7 @@ package changecontract
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path"
 	"path/filepath"
 	"sort"
@@ -57,6 +58,26 @@ func IsUserAllowableDriftPath(p string) bool {
 		return false
 	}
 	return flowgate.IsDocOrAuditFile(p)
+}
+
+// IsAmendableDriftPath is the Allow-path predicate shared by the amend
+// endpoint partition and AmendFrozenContractForAllow so they can never
+// disagree about what may join frozen scope. A user-allowable drift path is
+// amendable; so is an extension-less path that names an existing directory
+// under workspace (D14 / run-2062497: a submodule gitlink, or an untracked
+// dir git collapses to `dir/` — both arrive as real drift rows and an
+// allowed-extra entry exact-matches them). Extension-less files (Makefile)
+// and nonexistent buckets stay rejected per CA-427 Finding 5.
+func IsAmendableDriftPath(workspace, p string) bool {
+	if IsUserAllowableDriftPath(p) {
+		return true
+	}
+	np := normalizeScopePath(p)
+	if np == "" || filepath.Ext(np) != "" || strings.TrimSpace(workspace) == "" {
+		return false
+	}
+	info, err := os.Stat(filepath.Join(workspace, filepath.FromSlash(np)))
+	return err == nil && info.IsDir()
 }
 
 // NormalizeDeclaredCodePaths validates and normalizes a frozen-contract

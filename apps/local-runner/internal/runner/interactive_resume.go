@@ -1857,6 +1857,16 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 	if live {
 		s.maybeScheduleHubStallCheck(rs.id)
 	}
+	// run-2062497 D5: a leg persisted RUNNING means its turn was in-flight
+	// when the old process died. The local ctx died with it, so the adapter's
+	// ctx-Done cancel never fired — for a remote provider session the
+	// orphaned work keeps running (a cancelled leg wrote ~17h after the
+	// stamp). If this leg reconstructed terminal, abort its remote session;
+	// a leg reconstructed still-running re-drives and needs no abort.
+	if st.Status == RunStatusRunning && (rs.status == RunStatusCompleted ||
+		rs.status == RunStatusFailed || rs.status == RunStatusCancelled) {
+		s.abortDevinRemoteSession(rs.id)
+	}
 	return rs, nil
 }
 

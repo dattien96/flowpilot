@@ -162,7 +162,7 @@ func TestBug565_ContinueSpawnsNeverSpawnedReviewer(t *testing.T) {
 		return st
 	})
 
-	if !svc.resumeVerdictDeficientMembers(runID) {
+	if !svc.resumeVerdictDeficientMembers(runID, "") {
 		t.Fatal("resumeVerdictDeficientMembers must handle a never-spawned deficient member")
 	}
 

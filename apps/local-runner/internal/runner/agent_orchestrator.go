@@ -689,6 +689,13 @@ type FlowControlInput struct {
 	// boundary cancel/decline, POST /flow-control) is the human decision the
 	// contract defers to and must not be refused.
 	agentInitiated bool
+	// viaEngineEdge marks inputs produced by the engine itself while walking a
+	// forward edge into the terminal "done" pseudo-node (e.g. audit->done in
+	// tryAdvanceFlowThroughInline, or the cohort machine-verdict fallback).
+	// Like agentInitiated it is NOT a human decision, so terminal-seal
+	// invariants (unvisited spine guard, run-2062497) apply to it too; an
+	// operator POST /flow-control carries neither flag and stays forceable.
+	viaEngineEdge bool
 }
 
 // FlowControlResult is the engine's reply after processing a FlowControlInput.

@@ -1707,6 +1707,84 @@ func forwardDoneTargets(edges []agentpack.FlowEdge, fromNodeID string) []string 
 	return out
 }
 
+// spineNodeIDs returns the node ids reachable from the flow's entry nodes
+// following forward `when:done` edges only — the mandatory chain every sprint
+// must walk to legitimately reach the terminal "done" pseudo-node. Nodes
+// entered exclusively via continue/escalate edges (synthesis_negotiation,
+// ask_user) are NOT in the spine and stay legitimately skippable.
+func spineNodeIDs(nodes []agentpack.FlowNode, edges []agentpack.FlowEdge) map[string]bool {
+	nodeSet := make(map[string]bool, len(nodes))
+	for _, n := range nodes {
+		nodeSet[n.ID] = true
+	}
+	var queue []string
+	for _, n := range nodes {
+		if len(n.DependsOn) == 0 && !nodeHasIncomingForwardEdge(edges, n.ID) {
+			queue = append(queue, n.ID)
+		}
+	}
+	spine := make(map[string]bool, len(nodes))
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		if spine[cur] {
+			continue
+		}
+		spine[cur] = true
+		for _, next := range forwardDoneTargets(edges, cur) {
+			if nodeSet[next] && !spine[next] {
+				queue = append(queue, next)
+			}
+		}
+	}
+	return spine
+}
+
+// unvisitedSpineNodes returns the spine nodes whose step was never dispatched
+// (PENDING / WAITING_USER_APPROVAL) or has no step row at all — the set a
+// terminal `done` seal would fabricate as SKIPPED. RUNNING nodes are not
+// flagged: the inline node mid-dispatch (e.g. audit settling its own edge) is
+// legitimately RUNNING when its done edge fires, and a lingering RUNNING
+// delegate is the orphaned-child settle case, not premature seal (BUG-235).
+func (s *InteractiveService) unvisitedSpineNodes(parentRunID string) []string {
+	s.mu.Lock()
+	parent := s.runs[parentRunID]
+	if parent == nil {
+		s.mu.Unlock()
+		return nil
+	}
+	nodes := parent.activeFlowNodes
+	edges := parent.activeFlowEdges
+	s.mu.Unlock()
+	spine := spineNodeIDs(nodes, edges)
+	if len(spine) == 0 {
+		return nil
+	}
+	steps, err := s.workflowStore.LoadRunSteps(context.Background(), parentRunID)
+	if err != nil || len(steps) == 0 {
+		// No step evidence at all: the flow-runtime timeline was never seeded
+		// for this run, so a seal cannot fabricate skips either — the guard is
+		// vacuous, not a pass. (markFlowRunComplete reads the same store.)
+		return nil
+	}
+	statusByNode := make(map[string]RuntimeWorkflowStepStatus, len(steps))
+	for _, st := range steps {
+		statusByNode[st.NodeID] = st.Status
+	}
+	var out []string
+	for _, n := range nodes {
+		if !spine[n.ID] {
+			continue
+		}
+		switch statusByNode[n.ID] {
+		case StepStatusPending, StepStatusWaitingUserApr:
+			// seeded but never dispatched — a seal would fabricate SKIPPED
+			out = append(out, n.ID)
+		}
+	}
+	return out
+}
+
 func findFlowNode(nodes []agentpack.FlowNode, id string) (agentpack.FlowNode, bool) {
 	for _, n := range nodes {
 		if n.ID == id {

@@ -381,6 +381,123 @@ func TestVibeSprintBoundary_AuditAutoFinalizeParks(t *testing.T) {
 	// step table, so "audit" is sprint 2's node — PENDING is correct.)
 }
 
+// TestRun2062497_AuditSettleAutoAdvanceIgnoresSettleAncestor pins the live
+// run-2062497 boundary defect: the audit terminal dispatch runs INSIDE the
+// upstream synthesis settle — "synthesis" still reads RUNNING only because
+// its DONE stamp lives inside the markFlowRunComplete this very settle
+// performs. The BUG-619 running-step veto treated that settle-ancestor as
+// mid-flight work, auto-advance returned false, the flow settled done with
+// plan tasks left, and the boundary only re-surfaced ~97s later through the
+// operator resume path as a user gate (violating the CA-1093 contract).
+// The veto must exclude the audit's own done-edge predecessors — a genuinely
+// running NON-ancestor leg still vetoes.
+func TestRun2062497_AuditSettleAutoAdvanceIgnoresSettleAncestor(t *testing.T) {
+	svc, _ := newTestServer(t)
+	parent, err := svc.createRun(StartRunInput{
+		ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex,
+		WorkingMode: "vibe", Client: "tui",
+	})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	workspace := t.TempDir()
+	initGitRepoForAuditFixture(t, workspace)
+	// Feature-key registry committed before the flow diff (mirrors the
+	// bug-356 fixture) so the audit draft reaches "ready" — the not-ready
+	// branch defers on any RUNNING step by design (BUG-561) and cannot
+	// exercise the settle-ancestor veto this test pins.
+	p4WriteFile(t, workspace, "change-audit/FEATURE-KEYS.md", "- calc-core — arithmetic\n")
+	bug356GitCommit(t, workspace, "git", "add", "change-audit/FEATURE-KEYS.md")
+	bug356GitCommit(t, workspace, "git", "commit", "-m", "registry")
+	// Uncommitted task doc (with the required DoD checklist so tier-3 audit
+	// observation does not refuse it) → changedFilesSince sees a real diff.
+	p4WriteFile(t, workspace, boundaryTestPlan[0],
+		"# Task-904\n\n## Definition of Done\n- [x] snake eats food\n")
+	nodes := []agentpack.FlowNode{
+		{ID: "synthesis", Behavior: "hub.inline"},
+		{ID: "tdd", Behavior: "agent.code"},
+		{ID: "audit", Behavior: "artifact.audit_draft"},
+	}
+	edges := []agentpack.FlowEdge{
+		{From: "synthesis", To: "audit", When: "done", Kind: "forward"},
+		{From: "audit", To: "done", When: "done", Kind: "forward"},
+	}
+	auditNode, ok := findFlowNode(nodes, "audit")
+	if !ok {
+		t.Fatal("audit node")
+	}
+	svc.mu.Lock()
+	rs := svc.runs[parent.RunID]
+	rs.flowEngineDriven = true
+	rs.autoOrchestrate = true
+	rs.workspaceCwd = workspace
+	rs.activeFlowNodes = nodes
+	rs.activeFlowEdges = edges
+	rs.vibeTaskPlan = append([]string(nil), boundaryTestPlan...)
+	rs.vibeSprintIndex = 1
+	rs.flowValidationRetryState = &FlowValidationRetryState{Status: "passed"}
+	rs.planContextPackage = &FlowContextPackage{FeatureKey: "calc-core", FeatureConfidence: ConfidenceVerified}
+	svc.mu.Unlock()
+	svc.agentOrchestrator.setLoop(parent.RunID, AgentLoopState{Status: "running", Cap: 3, Mode: "explicit"})
+	svc.reseedFlowStepRuntime(parent.RunID, nodes)
+	// Live state at audit-terminal time (09:54:36): the coder leg is DONE
+	// (evidence complete) while synthesis — the node's own done-edge
+	// predecessor — still reads RUNNING because markFlowRunComplete is the
+	// stamp this settle is about to perform.
+	svc.setFlowStepStatus(context.Background(), parent.RunID, "synthesis", StepStatusRunning)
+	svc.setFlowStepStatus(context.Background(), parent.RunID, "tdd", StepStatusDone)
+
+	if !svc.runAuditNode(context.Background(), parent.RunID, edges, nodes, auditNode, "tests green") {
+		t.Fatal("runAuditNode must handle the audit completion")
+	}
+	loop := svc.agentOrchestrator.loopStateFor(parent.RunID)
+	if loop.Status == "done" {
+		t.Fatal("settle-ancestor RUNNING must not veto auto-advance — live run-2062497 settled done with tasks left")
+	}
+	svc.mu.Lock()
+	pending, idx := svc.runs[parent.RunID].vibeSprintBoundaryPending, svc.runs[parent.RunID].vibeSprintIndex
+	svc.mu.Unlock()
+	if pending {
+		t.Fatal("boundary gate must not park — sprint transition is automatic (CA-1093)")
+	}
+	if idx != 2 {
+		t.Fatalf("index=%d want 2 (sprint 2 taken automatically)", idx)
+	}
+}
+
+// TestRun2062497_RunningNonAncestorStillVetoesAutoAdvance: the BUG-619 guard
+// keeps its teeth — a RUNNING step that is NOT on the audit's settle chain
+// (no done-edge into audit) still blocks the boundary.
+func TestRun2062497_RunningNonAncestorStillVetoesAutoAdvance(t *testing.T) {
+	svc, _ := newTestServer(t)
+	runID := armBoundaryRun(t, svc, ProviderKeyCodex, workingmode.Vibe, boundaryTestPlan, 1)
+	// armBoundaryRun seeds steps but does not mount activeFlowNodes — mount
+	// the full topology so the running-step scan sees every leg.
+	nodes := []agentpack.FlowNode{
+		{ID: "validate", Behavior: "command.validate"},
+		{ID: "synthesis", Behavior: "hub.inline"},
+		{ID: "coder", Behavior: "agent.code"},
+		{ID: "audit", Behavior: "artifact.audit_draft"},
+	}
+	svc.mu.Lock()
+	rs := svc.runs[runID]
+	rs.activeFlowNodes = nodes
+	rs.activeFlowEdges = []agentpack.FlowEdge{
+		{From: "synthesis", To: "audit", When: "done", Kind: "forward"},
+	}
+	svc.mu.Unlock()
+	svc.reseedFlowStepRuntime(runID, nodes)
+	svc.setFlowStepStatus(context.Background(), runID, "audit", StepStatusDone)
+	svc.setFlowStepStatus(context.Background(), runID, "coder", StepStatusDone)
+	svc.setFlowStepStatus(context.Background(), runID, "synthesis", StepStatusDone)
+	// An independent leg still RUNNING and NOT an audit done-edge ancestor.
+	svc.setFlowStepStatus(context.Background(), runID, "validate", StepStatusRunning)
+
+	if svc.maybeAutoAdvanceVibeSprintBoundary(context.Background(), runID, "audit") {
+		t.Fatal("a genuinely running non-ancestor leg must still veto the boundary advance (BUG-619)")
+	}
+}
+
 // TestCA1093_AuditDoneAutoStartsNextSprint pins the new boundary contract on
 // the direct seam: a finished sprint audit with plan tasks left starts the
 // next sprint with NO pending gate, no blocked loop, and the vibe-sprint

@@ -12,13 +12,14 @@ import (
 )
 
 type focusStreamOpenedMsg struct {
-	RunID    string
-	Messages []ChatMessage // history after ResumeRun seed (empty if live-only)
-	AfterSeq int64         // stream live events after this seq
-	EvCh     <-chan client.ProviderEvent
-	Cancel   context.CancelFunc
-	Fallback string // resume failed → live-only fallback in effect (soft note)
-	Err      string // total failure (runner unreachable / child not resumable)
+	RunID                 string
+	Messages              []ChatMessage // history after ResumeRun seed (empty if live-only)
+	AfterSeq              int64         // stream live events after this seq
+	HistoryLoadedAfterSeq int64         // exclusive upper bound of unfetched older events (0 = all loaded)
+	EvCh                  <-chan client.ProviderEvent
+	Cancel                context.CancelFunc
+	Fallback              string // resume failed → live-only fallback in effect (soft note)
+	Err                   string // total failure (runner unreachable / child not resumable)
 }
 
 type focusStreamEventMsg struct {
@@ -323,15 +324,19 @@ func (m *AppModel) cmdFocusAgent(runID string) tea.Cmd {
 		handle, resumeErr := resumeChildRunForFocus(cl, runID)
 		if resumeErr == nil {
 			until := handle.LastEventSeq
+			// Tail replay (D12): same lazy window as main-chat open — a long
+			// child transcript must not stream from seq 0 on every focus.
+			after := chatReplayTailAfterSeq(until)
 			var collected []client.ProviderEvent
 			if until > 0 {
-				collected = collectReplayEvents(ctx, cl, runID, 0, until, chatReplayMaxEvents)
+				collected = collectReplayEvents(ctx, cl, runID, after, until, chatReplayMaxEvents)
 			}
 			trimmed := trimEventsFromTurnStart(collected)
 			msgs := replayChildHistoryMessages(trimmed)
 			ch := cl.StreamLive(ctx, runID, until)
 			return focusStreamOpenedMsg{
 				RunID: runID, Messages: msgs, AfterSeq: until,
+				HistoryLoadedAfterSeq: historyCursorAfterReplay(after, collected, trimmed),
 				EvCh: ch, Cancel: cancel,
 			}
 		}
@@ -572,7 +577,10 @@ type agentRunsHydratedMsg struct {
 type AgentGraphHydratedMsg struct {
 	ParentRunID string
 	Graph       *client.AgentGraphSnapshot
-	Err         string
+	// Notice is an optional operator-facing line posted as a system message
+	// alongside the hydrated graph (e.g. amend reported unamendable paths).
+	Notice string
+	Err    string
 }
 
 // cmdHydrateAgentGraph is a one-shot graph fetch on flow open so the TUI can

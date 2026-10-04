@@ -403,3 +403,39 @@ func TestResolveCorrectionAction_ExactThresholds(t *testing.T) {
 		}
 	}
 }
+
+// run-2062497 D8 (live): a coder turn whose work was already complete burned
+// tokens re-verifying, produced zero file delta, and was punished by
+// zero_delta_progress into pause_for_human + reprompt loops. A turn that ran
+// the oracle suite GREEN is completion-verification evidence, not drift — the
+// signal must not fire.
+func TestRun2062497_ZeroDeltaExemptWhenSuiteGreen(t *testing.T) {
+	current := TurnSummary{
+		TurnID:         "turn-9",
+		TokensConsumed: 50000,
+		FilesChanged:   nil,
+		TestsGreen:     true,
+	}
+	if checkZeroDeltaProgress(current) {
+		t.Fatal("zero_delta_progress fired on a green-suite verification turn (D8 false positive)")
+	}
+	event := EvaluateTurnDrift(nil, current)
+	for _, sig := range event.TriggeredSignals {
+		if sig == SignalZeroDeltaProgress {
+			t.Fatalf("zero_delta_progress must be exempt on green-suite turn, signals=%v", event.TriggeredSignals)
+		}
+	}
+}
+
+// The exemption must not mask real drift: heavy burn with zero delta and a
+// suite that ran RED (or never ran) still scores.
+func TestRun2062497_ZeroDeltaStillFiresWithoutGreenSuite(t *testing.T) {
+	for name, current := range map[string]TurnSummary{
+		"not_ran": {TurnID: "t1", TokensConsumed: 50000},
+		"failed":  {TurnID: "t2", TokensConsumed: 50000, TestResults: []string{"TestX"}},
+	} {
+		if !checkZeroDeltaProgress(current) {
+			t.Fatalf("%s: zero_delta_progress must fire when the suite is not green", name)
+		}
+	}
+}

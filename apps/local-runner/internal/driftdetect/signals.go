@@ -102,9 +102,11 @@ func normalizeForMatch(message string) string {
 // checkZeroDeltaProgress reports a zero-progress turn: heavy token burn with
 // no file delta (Task-335 §11). CP-23 R-2 guard: only counts when
 // TokensConsumed exceeds the minimum threshold (>2000 tokens) so legitimate
-// reasoning-only turns are never flagged as drift.
+// reasoning-only turns are never flagged as drift. run-2062497 D8: a turn
+// that ran the oracle suite GREEN (TestsGreen) is completion-verification
+// evidence, not drift — "zero delta because the work was already done".
 func checkZeroDeltaProgress(current TurnSummary) bool {
-	return current.TokensConsumed > zeroDeltaTokenGuard && len(current.FilesChanged) == 0
+	return current.TokensConsumed > zeroDeltaTokenGuard && len(current.FilesChanged) == 0 && !current.TestsGreen
 }
 
 // zeroDeltaTokenGuard is the CP-23 R-2 minimum token threshold ("> 2000

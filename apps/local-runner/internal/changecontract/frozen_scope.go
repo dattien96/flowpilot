@@ -436,6 +436,24 @@ func AmendFrozenContractForAllow(store *FrozenStore, workspace string, existing 
 			}
 			continue
 		}
+		// D14 (run-2062497): an extension-less path that names an existing
+		// directory is a real drift row — a submodule gitlink, or an
+		// untracked dir git collapses to `dir/`. It cannot be a DeclaredPath
+		// (IsConcreteCodeTarget correctly requires an extension) but as an
+		// allowed extra it exact-matches the row the gate reports. Files
+		// without extensions (Makefile) and nonexistent buckets stay
+		// rejected per CA-427 Finding 5. IsAmendableDriftPath is the single
+		// predicate shared with the endpoint partition.
+		if IsAmendableDriftPath(workspace, np) {
+			cleaned, err := normalizeAllowableExtraPath(workspace, trimmed)
+			if err != nil {
+				return FrozenContractRecord{}, err
+			}
+			if cleaned != "" {
+				extras = append(extras, cleaned)
+			}
+			continue
+		}
 		return FrozenContractRecord{}, fmt.Errorf("changecontract: amendment path %q is not a concrete code target and cannot widen scope", trimmed)
 	}
 	return amendFrozenContractUnion(store, workspace, existing, concrete, extras, now)

@@ -391,6 +391,12 @@ type AgentGraphSnapshot struct {
 	Edges       []AgentDependencyEdge `json:"edges"`
 	BusMessages []AgentBusMessage     `json:"busMessages"`
 	LoopState   AgentLoopState        `json:"loopState"`
+	// UnamendablePaths is set only on the agent-loop/amend response when the
+	// requested drift paths contained entries that cannot join a frozen
+	// contract (directories, glob/flag shapes, extension-less buckets). The
+	// amendable subset still widened scope; these remainder paths may re-park
+	// the flow on the next gate eval (live run-2062497 dead-Allow-click).
+	UnamendablePaths []string `json:"unamendablePaths,omitempty"`
 }
 
 // ProviderCapabilities advertises what a provider supports (03/04-07).

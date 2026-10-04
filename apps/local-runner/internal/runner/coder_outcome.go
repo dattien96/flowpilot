@@ -2,6 +2,7 @@ package runner
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"flowpilot-runner/internal/agentpack"
@@ -95,6 +96,17 @@ func parseCoderBatchSignatureRequests(body map[string]any) ([]CoderBatchSignatur
 	return out, nil
 }
 
+// sortedKeys returns the map's keys in deterministic order so buffered batch
+// reads are reproducible across steps.
+func sortedKeys(m map[string][]CoderBatchSignatureRequest) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 // stringFieldAny reads a string field off a decoded JSON map.
 func stringFieldAny(m map[string]any, key string) string {
 	v, _ := m[key].(string)
@@ -151,7 +163,10 @@ func (s *InteractiveService) bufferCoderBatchSignatures(parentRunID string, reqs
 }
 
 // snapshotCoderBatchSignatures returns a copy of the buffered batch requests
-// for the run's current step — the hub's mediation read.
+// for the run — the hub's mediation read. The batch belongs to the coder's
+// flow node, not the parent's volatile turn-scoped stepID: a park/resume or
+// reinvoke between the coder's submit and its completion re-stamps stepID
+// (run-2062497), which would orphan a batch read under only the current key.
 func (s *InteractiveService) snapshotCoderBatchSignatures(parentRunID string) []CoderBatchSignatureRequest {
 	if s == nil || parentRunID == "" {
 		return nil
@@ -162,18 +177,17 @@ func (s *InteractiveService) snapshotCoderBatchSignatures(parentRunID string) []
 	if parent == nil {
 		return nil
 	}
-	reqs := parent.pendingBatchSignatureByStep[parent.stepID]
-	if len(reqs) == 0 {
-		return nil
+	var out []CoderBatchSignatureRequest
+	for _, key := range sortedKeys(parent.pendingBatchSignatureByStep) {
+		out = append(out, parent.pendingBatchSignatureByStep[key]...)
 	}
-	out := make([]CoderBatchSignatureRequest, len(reqs))
-	copy(out, reqs)
 	return out
 }
 
-// consumeCoderBatchSignatures returns and clears the buffered batch for the
-// run's current step — the hub calls this once it has adjudicated the batch
-// so a renegotiation round is never replayed.
+// consumeCoderBatchSignatures returns and clears every buffered batch for the
+// run — the hub calls this once it has adjudicated the batch so a
+// renegotiation round is never replayed. Clears all step keys for the same
+// reason snapshot reads them: the step key at buffer time is not stable.
 func (s *InteractiveService) consumeCoderBatchSignatures(parentRunID string) []CoderBatchSignatureRequest {
 	if s == nil || parentRunID == "" {
 		return nil
@@ -184,9 +198,12 @@ func (s *InteractiveService) consumeCoderBatchSignatures(parentRunID string) []C
 	if parent == nil {
 		return nil
 	}
-	reqs := parent.pendingBatchSignatureByStep[parent.stepID]
-	delete(parent.pendingBatchSignatureByStep, parent.stepID)
-	return reqs
+	var out []CoderBatchSignatureRequest
+	for _, key := range sortedKeys(parent.pendingBatchSignatureByStep) {
+		out = append(out, parent.pendingBatchSignatureByStep[key]...)
+	}
+	clear(parent.pendingBatchSignatureByStep)
+	return out
 }
 
 // renderNegotiationBatchPrompt renders a consumed renegotiation batch into

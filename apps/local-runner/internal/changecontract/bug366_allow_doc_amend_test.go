@@ -1,6 +1,8 @@
 package changecontract
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -127,6 +129,50 @@ func TestBUG366_ConcreteAmendPreservesAllowedExtras(t *testing.T) {
 	}
 	if drift := FrozenContractScopeDrift(widened, []string{"src/extra.go", "change-audit/FEATURE-KEYS.md"}); drift != nil {
 		t.Fatalf("preserved extras must still be in-scope, drift=%v", drift)
+	}
+}
+
+// D14 (live run-2062497): a vendored submodule drifts as ONE path — the
+// gitlink `third_party/boringssl`, a directory on disk with no extension —
+// and Allow rejected it outright, leaving no sanctioned way out of the park.
+// A directory-shaped drift row is a real written path (gitlink, or an
+// untracked dir git collapses to `dir/`); allowing it exact-matches the row
+// the gate reports. Extension-less paths that do not name an existing
+// directory (Makefile, nonexistent buckets) stay rejected per CA-427
+// Finding 5.
+func TestRun2062497_ForAllowAcceptsExistingDirectory(t *testing.T) {
+	dir, store, rec := newAmendTestFixture(t)
+	if err := os.MkdirAll(filepath.Join(dir, "third_party", "boringssl"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	amended, err := AmendFrozenContractForAllow(store, dir, rec, []string{"third_party/boringssl"}, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("Allow on a directory-shaped drift row (submodule gitlink) must succeed: %v", err)
+	}
+	found := false
+	for _, p := range amended.AllowedExtraPaths {
+		if p == "third_party/boringssl" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("AllowedExtraPaths must carry the gitlink row: %v", amended.AllowedExtraPaths)
+	}
+	if drift := FrozenContractScopeDrift(amended, []string{"src/calc.go", "third_party/boringssl"}); drift != nil {
+		t.Fatalf("allowed gitlink must not re-drift, got %v", drift)
+	}
+}
+
+func TestRun2062497_ForAllowStillRejectsNonexistentAndFileBuckets(t *testing.T) {
+	dir, store, rec := newAmendTestFixture(t)
+	// A real extension-less FILE (Makefile shape) still fails Finding-5.
+	if err := os.WriteFile(filepath.Join(dir, "Makefile"), []byte("all:\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{"Makefile", "apps", "does/not/exist"} {
+		if _, err := AmendFrozenContractForAllow(store, dir, rec, []string{p}, time.Now().UTC()); err == nil {
+			t.Fatalf("ForAllow must still reject %q — only real directories are allowable", p)
+		}
 	}
 }
 

@@ -1319,7 +1319,13 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.addMessage("system", msg.Err, "error")
 			return m, nil
 		}
-		if m.runHandle == nil || m.runHandle.RunID != msg.RunID {
+		// D12: accept chunks for whichever transcript is on screen — the main
+		// run or a focused child — and drop stale fetches from the other.
+		activeTranscriptID := m.mainRunID()
+		if m.viewingChild() {
+			activeTranscriptID = strings.TrimSpace(m.focusRunID)
+		}
+		if activeTranscriptID == "" || activeTranscriptID != msg.RunID {
 			return m, nil
 		}
 		if m.historyLoadedAfterSeq > 0 && msg.NewLoadedAfterSeq >= m.historyLoadedAfterSeq {
@@ -1745,6 +1751,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.stopFocusStream()
+		m.historyLoadedAfterSeq = msg.HistoryLoadedAfterSeq
 		// Keep the system banner; append seeded history after it.
 		if len(msg.Messages) > 0 {
 			m.messages = append(m.messages, msg.Messages...)
@@ -1975,6 +1982,9 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.Graph != nil {
 			m.applyAgentGraph(msg.Graph)
+		}
+		if strings.TrimSpace(msg.Notice) != "" {
+			m.addMessage("system", msg.Notice, "warn")
 		}
 		return m, nil
 
@@ -5788,7 +5798,12 @@ func (m *AppModel) chatRowsSig() uint64 {
 	if m.useRightSidebar() {
 		_, _ = h.Write([]byte{9})
 	}
-	for _, msg := range m.messages {
+	// D12: hash only the windowed slice. Pre-window history is immutable
+	// (chunks only prepend; live events only append at the tail), so hashing
+	// every message's content each frame is O(total bytes) of pure waste —
+	// the main lag source on long sub-agent transcripts.
+	windowStart := m.windowStartIndex()
+	for _, msg := range m.messages[windowStart:] {
 		_, _ = h.Write([]byte(msg.Role))
 		_, _ = h.Write([]byte{0})
 		_, _ = h.Write([]byte(msg.Content))
@@ -7617,9 +7632,21 @@ func (m *AppModel) cmdAmendFlow(runID string, paths []string) tea.Cmd {
 		defer cancel()
 		g, err := cl.AmendFlow(ctx, parentID, amendPaths)
 		if err != nil {
-			return ErrMsg{Err: err}
+			// A rejected amend is operator-actionable feedback, not a transport
+			// failure — ErrMsg would also flip connStatus to error and paint
+			// the whole session broken (run-2062497 dead-click felt like a
+			// hang). Surface the server reason as a warning instead.
+			return AgentGraphHydratedMsg{
+				ParentRunID: parentID,
+				Notice:      "Amend failed: " + err.Error(),
+			}
 		}
-		return AgentGraphHydratedMsg{ParentRunID: parentID, Graph: g}
+		notice := ""
+		if len(g.UnamendablePaths) > 0 {
+			notice = "Scope widened, but these paths can't join a contract " +
+				"(may re-park): " + strings.Join(g.UnamendablePaths, ", ")
+		}
+		return AgentGraphHydratedMsg{ParentRunID: parentID, Graph: g, Notice: notice}
 	}
 }
 

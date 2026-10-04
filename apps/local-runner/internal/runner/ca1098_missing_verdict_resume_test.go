@@ -248,6 +248,110 @@ func TestCA1098UnrelatedEscalateKeepsGenericResume(t *testing.T) {
 	}
 }
 
+// run-2062497 D6 (live 03:38→03:41): a cohort-SPLIT escalate — REVIEWER
+// approved, SPEC_ALIGN blocked — was authored by the synthesis hub itself
+// ("Cohort split needs human adjudication … SPEC_ALIGN: blocked on scope
+// conflict"), so its gate reason does not match isReviewVerdictGateReason.
+// The human's adjudication Continue ran the generic hub reinvoke, the hub
+// re-attempted done, and the verdict gate re-parked on the identical stale
+// verdict (spec_align=blocked) — one wasted human round-trip. An escalate
+// park whose reason NAMES a deficient review-cohort member must route the
+// same way as the verdict-gate park: re-drive that member carrying the
+// human's adjudication so it re-evaluates with the ruling in context.
+func TestRun2062497_SplitAdjudicationContinueRedrivesDeficientMember(t *testing.T) {
+	providers := []ProviderKey{ProviderKeyClaude, ProviderKeyCodex, ProviderKeyGrok}
+	for _, pk := range providers {
+		t.Run(string(pk), func(t *testing.T) {
+			ch := make(chan TurnRequest, 8)
+			reg := newProviderRegistry()
+			registerKeyedCapture(reg, pk, ch)
+			svc := newInteractiveService(reg, newInteractiveCatalog(), newFakeWorkflowStore())
+			parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: pk})
+			if err != nil {
+				t.Fatalf("createRun: %v", err)
+			}
+			runID := parent.RunID
+			childID := ca1098ParkedVerdictWedge(t, svc, runID, pk)
+			// Live shape: the member's verdict is recorded but NOT approved,
+			// and the park reason is the hub's own split-adjudication text
+			// naming the deficient member — not the verdict-gate family.
+			svc.mu.Lock()
+			svc.runs[runID].lastReviewCohortVerdicts = map[string]string{"reviewer": "blocked"}
+			svc.mu.Unlock()
+			svc.agentOrchestrator.mutateLoop(runID, func(st AgentLoopState) AgentLoopState {
+				st.Status = "blocked"
+				st.BlockReason = "escalate"
+				st.GateReason = "Cohort split needs human adjudication — REVIEWER: approved — SPEC_ALIGN: blocked on scope conflict. HUMAN CHOICE: (a) accept partial; (b) hold."
+				return st
+			})
+
+			if _, err := svc.resumeFlowWithFeedback(runID, "accept as contract-scoped partial"); err != nil {
+				t.Fatalf("%s: resumeFlowWithFeedback: %v", pk, err)
+			}
+
+			deadline := time.Now().Add(10 * time.Second)
+			redriven := false
+			for !redriven {
+				select {
+				case req := <-ch:
+					if req.RunID == runID && !redriven {
+						t.Fatalf("%s: hub reinvoke fired before any member re-drive (prompt=%q) — stale-verdict repark wedge", pk, truncate1098(req.Prompt, 120))
+					}
+					if req.RunID == childID && strings.Contains(req.Prompt, "machine verdict was missing or not approved") {
+						redriven = true
+					}
+				case <-time.After(50 * time.Millisecond):
+					if time.Now().After(deadline) {
+						t.Fatalf("%s: split-adjudication Continue never re-drove the deficient member", pk)
+					}
+				}
+			}
+		})
+	}
+}
+
+// The trigger must NOT fire when the reason names a review-cohort label only
+// in passing (e.g. narrating a joined verdict) without adjudicating that
+// member's own verdict — the generic resume applies there.
+func TestRun2062497_AdjudicationReasonWithoutVerdictKeepsGenericResume(t *testing.T) {
+	providers := []ProviderKey{ProviderKeyClaude, ProviderKeyCodex, ProviderKeyGrok}
+	for _, pk := range providers {
+		t.Run(string(pk), func(t *testing.T) {
+			ch := make(chan TurnRequest, 8)
+			reg := newProviderRegistry()
+			registerKeyedCapture(reg, pk, ch)
+			svc := newInteractiveService(reg, newInteractiveCatalog(), newFakeWorkflowStore())
+			parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: pk})
+			if err != nil {
+				t.Fatalf("createRun: %v", err)
+			}
+			runID := parent.RunID
+			childID := ca1098ParkedVerdictWedge(t, svc, runID, pk)
+			svc.mu.Lock()
+			svc.runs[runID].lastReviewCohortVerdicts = map[string]string{"reviewer": "blocked"}
+			svc.mu.Unlock()
+			svc.agentOrchestrator.mutateLoop(runID, func(st AgentLoopState) AgentLoopState {
+				st.Status = "blocked"
+				st.BlockReason = "escalate"
+				// Mentions the label but no verdict adjudication of it.
+				st.GateReason = "Owner legs returned no actionable outcome; the joined reviewer verdict describes expected scaffold state — re-drive owners."
+				return st
+			})
+
+			if _, err := svc.resumeFlowWithFeedback(runID, "continue"); err != nil {
+				t.Fatalf("%s: resumeFlowWithFeedback: %v", pk, err)
+			}
+
+			svc.mu.Lock()
+			status := svc.runs[childID].status
+			svc.mu.Unlock()
+			if status == RunStatusRunning {
+				t.Fatalf("%s: non-adjudicating reason must not re-drive the reviewer child", pk)
+			}
+		})
+	}
+}
+
 func truncate1098(s string, n int) string {
 	if len(s) <= n {
 		return s
