@@ -100,6 +100,36 @@ func (s *InteractiveService) LiveWorkSnapshot(ctx context.Context) (lifecycle.Wo
 				Detail:      "inline flow node in flight",
 			})
 		}
+		// BUG-1180 (live run-204891): owed engine dispositions are protected
+		// work. Between gate-done and settle-finalize none of the in-flight
+		// markers above are armed, yet the run still owes a terminal verdict
+		// (pendingFlowGateSettle) or carries a durable re-drive intent
+		// (pendingResume*/pendingGateReprompt* — armed by park paths like the
+		// flow_awaiting_user fence). Draining in that window cancels a run
+		// that was seconds from converging (idle_grace fired at 00:07:01,
+		// settle finalized at 00:07:15, drain killed the root at 00:07:32).
+		// Gen counters are high-water marks — the prompt fields are the armed
+		// state, cleared on dispatch.
+		var owed []string
+		if rs.pendingFlowGateSettle {
+			owed = append(owed, "gate_settle")
+		}
+		if strings.TrimSpace(rs.pendingResumePrompt) != "" || strings.TrimSpace(rs.pendingResumeStepID) != "" {
+			owed = append(owed, "resume")
+		}
+		if strings.TrimSpace(rs.pendingGateRepromptPrompt) != "" || strings.TrimSpace(rs.pendingGateRepromptStepID) != "" {
+			owed = append(owed, "gate_reprompt")
+		}
+		if len(owed) > 0 {
+			items = append(items, lifecycle.WorkloadItem{
+				Kind:        "flow",
+				RunID:       rs.id,
+				ProjectID:   rs.projectID,
+				ProviderKey: provider,
+				Cancellable: true,
+				Detail:      "owed dispositions: " + strings.Join(owed, ","),
+			})
+		}
 		// Agent loop: root runs only; running/paused loops hold pending work
 		// the next client turn would resume — count them as protected so a
 		// detached runner does not silently drop a live orchestration.

@@ -45,6 +45,9 @@ type LifecycleDrainInput struct {
 	Reason    string
 	Requester string // describeRequester output for attribution logs
 	RestartID string // restart only — correlates the supervisor handoff
+	// Auto marks timer-driven drains (idle-grace expiry) with no external
+	// requester — housekeeping, not a confirmed user stop (BUG-1180).
+	Auto bool
 }
 
 // LifecycleRouteOptions wires the lifecycle endpoints. DrainFunc is invoked

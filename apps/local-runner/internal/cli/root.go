@@ -227,7 +227,13 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 							restartID = snap.Restart.RestartID
 						}
 						requester := lifecycleMgr.DrainRequester()
-						if requester == "" {
+						// BUG-1180: an empty DrainRequester means the drain was
+						// timer-driven (idle-grace expiry), not an accepted
+						// user/system action — mark it so the drain skips the
+						// terminalizing stop-all and lets durable run state
+						// reconstruct on the next boot.
+						auto := requester == ""
+						if auto {
 							requester = "lifecycle-manager"
 						}
 						drainOnceFn(runner.LifecycleDrainInput{
@@ -235,6 +241,7 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 							Reason:    "lifecycle:" + string(phase),
 							Requester: requester,
 							RestartID: restartID,
+							Auto:      auto,
 						})
 					}
 				},
@@ -2336,7 +2343,19 @@ func runSystemDrain(instance *runner.Runner, interactive *runner.InteractiveServ
 	// 1. Durable stop-all FIRST (Task-415): provider-agnostic — fences + cancels
 	//    every active run/turn/child/scaffold before process teardown so no
 	//    orphaned provider execution outlives the runner.
-	if interactive != nil {
+	//    BUG-1180 (live run-204891): timer-driven drains (idle-grace expiry)
+	//    are housekeeping exits, not a confirmed user stop — the unconditional
+	//    stop-all terminalized a sprint parked mid-escalation whose durable
+	//    intents were built to reconstruct on the next boot (00:07:32 kill).
+	//    Skip it for Auto drains: work is already zero by definition, provider
+	//    processes are reclaimed by cleanupSessionsBounded below, and parked /
+	//    intent-armed runs re-drive via reconstruction instead of being
+	//    cancelled. Accepted drains (manual /system, signal, restart request)
+	//    keep the full stop-all.
+	if interactive != nil && in.Auto {
+		log.Printf("[lifecycle] auto drain action=%s — skipping stop-all; durable run state reconstructs on next boot", in.Action)
+	}
+	if interactive != nil && !in.Auto {
 		ctx, cancel := context.WithTimeout(context.Background(), stopAllBudget)
 		res, err := interactive.StopAllForSystemAction(ctx, in.Reason)
 		cancel()
