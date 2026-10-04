@@ -10,7 +10,7 @@ builtin:
     required: true
     source: builtin
 policy:
-  cap: 3
+  cap: 20
   onCap: escalate
   extendBy: 2
   extendMax: 2
