@@ -3847,6 +3847,28 @@ func (s *InteractiveService) handleSpawnedChildTurnFailure(childRunID, parentRun
 			child.pendingResumeGen++
 			child.status = RunStatusWaitingUserApr
 			child.agentStatus = string(RunStatusWaitingUserApr)
+			// BUG-1179 (live run-204891): this park emits no event, so the
+			// emitLocked generic summary sync never runs — /agents kept
+			// reporting the parked child as running while the run record
+			// showed waiting_user_approval (orphan-wait shape with no
+			// actionable lane). Sync the orchestrator summary here.
+			if s.agentOrchestrator != nil {
+				if existing, ok := s.agentOrchestrator.currentSummary(parentRunID, child.id); ok {
+					existing.Status = RunStatusWaitingUserApr
+					existing.AgentStatus = "waiting_user_approval"
+					s.agentOrchestrator.upsertSummary(parentRunID, existing)
+				} else {
+					s.agentOrchestrator.upsertSummary(parentRunID, AgentRunSummary{
+						RunID:       child.id,
+						ParentRunID: parentRunID,
+						AgentName:   child.agentName,
+						Role:        child.role,
+						Status:      RunStatusWaitingUserApr,
+						AgentStatus: "waiting_user_approval",
+						Label:       child.label,
+					})
+				}
+			}
 			snap := sessionStateOf(child)
 			s.mu.Unlock()
 			if err := s.persistProviderSession(snap); err != nil {
