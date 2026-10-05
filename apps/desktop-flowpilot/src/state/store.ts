@@ -787,6 +787,11 @@ export interface AppState {
   selectStep(stepId: string): void;
   setScenario(scenario: ScenarioName): void;
   sendPrompt(prompt: string, skills?: string[], attachments?: PromptAttachment[]): Promise<void>;
+  /** BUG-1191: send a prompt to the FOCUSED child run — the composer-level
+   *  equivalent of POST /turns on a member run. A parked/waiting member that
+   *  owes work has no gate card to answer, so without this the operator had
+   *  no UX to un-stick it. */
+  sendAgentRunPrompt(prompt: string, attachments?: PromptAttachment[]): Promise<void>;
   approve(approvalId: string, decision: string, remember?: boolean): Promise<void>;
   answer(questionId: string, choice: string | string[]): Promise<void>;
   /**
@@ -2791,6 +2796,91 @@ export const useStore = create<AppState>((set, get) => ({
         timeline: [
           ...s.timeline.filter((it) => it.kind !== "thinking"),
           { kind: "system", id: `err-run-${s.timeline.length}`, text: runErrorMessage(err), tone: "error" },
+        ],
+      }));
+    } finally {
+      void get().loadRunHistory();
+    }
+  },
+
+  // BUG-1191: a focused child run's composer sends a real turn to THAT run —
+  // the UX equivalent of POST /turns on a member. Before this, the composer
+  // hard-blocked on child focus ("transcript is read-only") and a parked /
+  // waiting member with no gate card had no user-facing path to un-stick it.
+  // Admission stays server-side: mid-turn or gate-locked children answer 409.
+  async sendAgentRunPrompt(prompt, attachments) {
+    const { client } = get();
+    const focusedRunId = get().activeAgentRunId;
+    const mainRunId = get().mainRunId ?? get().runId;
+    if (!focusedRunId || focusedRunId === mainRunId) {
+      await get().sendPrompt(prompt, undefined, attachments);
+      return;
+    }
+    const draftKeyAtSend = draftKeyFor(get().chatId ?? null, get().runId ?? null, get().selectedProjectId ?? null);
+    const sendSeq = get()._streamRunSeq + 1;
+    set((s) => ({
+      status: "running",
+      recoverable: false,
+      latestTokenUsage: undefined,
+      contextNotice: undefined,
+      _streamingAssistantId: undefined,
+      _streamRunSeq: sendSeq,
+      timeline: [
+        ...s.timeline,
+        {
+          kind: "prompt",
+          id: `prompt-local-${++localPromptSeq}`,
+          text: prompt,
+          attachments:
+            attachments && attachments.length > 0
+              ? attachments.map((a) => ({
+                  id: a.id,
+                  originalName: a.originalName,
+                  mimeType: a.mimeType,
+                  previewUrl: `data:${a.mimeType};base64,${a.data}`,
+                }))
+              : undefined,
+        },
+        { kind: "thinking", id: `thinking-${s.timeline.length}`, text: "Thinking..." },
+      ],
+    }));
+    const turnInput: TurnInput = {
+      runId: focusedRunId,
+      stepId: get().activeStepId ?? "",
+      prompt,
+      attachments: attachments && attachments.length > 0 ? attachments : undefined,
+      idempotencyKey: `turn-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+    };
+    try {
+      await consumeStream(focusedRunId, client.sendTurn(turnInput), set, get);
+      void get().refreshAgentRuns();
+      void get().refreshWorkflowStepRuntime();
+      get().clearDraft(draftKeyAtSend);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[FlowPilot] sendAgentRunPrompt failed:", err);
+      if (!get().drafts[draftKeyAtSend]) {
+        get().setDraft(draftKeyAtSend, {
+          text: prompt,
+          attachments: attachments && attachments.length > 0 ? [...attachments] : undefined,
+          updatedAt: Date.now(),
+        });
+      }
+      const awaitingUser =
+        err instanceof RunnerApiError &&
+        (err.code === "flow_awaiting_user" ||
+          (err.status === 409 && /flow_awaiting_user|waiting for your decision/i.test(err.message)));
+      set((s) => ({
+        status: awaitingUser ? "blocked" : "failed",
+        recoverable: !awaitingUser,
+        timeline: [
+          ...s.timeline.filter((it) => it.kind !== "thinking"),
+          {
+            kind: "system",
+            id: `err-agent-send-${s.timeline.length}`,
+            text: runErrorMessage(err),
+            tone: awaitingUser ? "warn" : "error",
+          },
         ],
       }));
     } finally {

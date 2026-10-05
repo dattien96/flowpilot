@@ -309,6 +309,7 @@ export function ChatInput(): React.ReactElement {
   const skills = useStore((s) => s.skills);
   const projects = useStore((s) => s.projects);
   const sendPrompt = useStore((s) => s.sendPrompt);
+  const sendAgentRunPrompt = useStore((s) => s.sendAgentRunPrompt);
   const status = useStore((s) => s.status);
   const runId = useStore((s) => s.runId);
   const chatId = useStore((s) => s.chatId);
@@ -778,8 +779,16 @@ export function ChatInput(): React.ReactElement {
     [activeAccount, displayedTokenUsage, selectedModelInfo, selectedProvider],
   );
 
+  // BUG-1191: a focused member run accepts a user prompt unless its turn is
+  // mid-flight — POST /turns on a parked/waiting member is the only UX path
+  // that un-sticks a child owing work with no gate card to answer.
+  const focusedChildRun = childRunFocused ? agentRuns.find((run) => run.runId === activeAgentRunId) : undefined;
+  const childTurnBusy = !!focusedChildRun && (focusedChildRun.agentStatus === "running" || focusedChildRun.agentStatus === "spawned");
+  const childSendable = childRunFocused && !!runId && !childTurnBusy && !scaffoldActive && text.trim().length > 0;
   const canSend = isChatMode
-    ? hasSelectedProject && selectedProviderInstalled && selectedProviderConnected && !blocked && !hasBlockingChild && !childRunFocused && text.trim().length > 0 && !showPicker && !showAgentCommand && !showFilePicker
+    ? childRunFocused
+      ? hasSelectedProject && childSendable && !showPicker && !showAgentCommand && !showFilePicker
+      : hasSelectedProject && selectedProviderInstalled && selectedProviderConnected && !blocked && !hasBlockingChild && text.trim().length > 0 && !showPicker && !showAgentCommand && !showFilePicker
     : hasSelectedProject &&
       // CA-1084: a pending arm needs no tab pick — the armed run is a chat
       // run and the flow rides as flowRef, so the composer stays sendable.
@@ -949,10 +958,6 @@ export function ChatInput(): React.ReactElement {
 
   const send = async () => {
     if (!canSend) return;
-    if (childRunFocused) {
-      appendSystemMessage("Child transcript is read-only. Return to the main chat to send prompts.");
-      return;
-    }
     const trimmed = text.trim();
     const routed = parseMentionRouting(trimmed, agentRuns);
     if (routed) {
@@ -974,12 +979,24 @@ export function ChatInput(): React.ReactElement {
       }
       const routedAttachments = isChatMode && attachments.length > 0 ? attachments.map(toWire) : undefined;
       clearComposer();
+      // BUG-1191: a routed @mention targets a member run — send to it
+      // directly; the main-run composer path refuses child focus.
+      if (routed.runId !== mainRunId) {
+        await sendAgentRunPrompt(routed.prompt, routedAttachments);
+        return;
+      }
       await sendPrompt(routed.prompt, isChatMode ? selectedSkills : undefined, routedAttachments);
       return;
     }
     const wireAttachments =
       isChatMode && attachments.length > 0 ? attachments.map(toWire) : undefined;
     clearComposer();
+    // BUG-1191: a plain send while a member transcript is focused posts the
+    // turn to THAT member (the POST /turns bypass equivalent).
+    if (childRunFocused) {
+      await sendAgentRunPrompt(trimmed, wireAttachments);
+      return;
+    }
     await sendPrompt(trimmed, isChatMode ? selectedSkills : undefined, wireAttachments);
   };
 
@@ -1063,7 +1080,7 @@ export function ChatInput(): React.ReactElement {
       ? "Select a project first."
     : isChatMode
       ? childRunFocused
-        ? "Child transcript is read-only."
+        ? `Message ${focusedAgentName}…`
         : selectedProvider
           ? !selectedProviderInstalled
             ? "Install the provider CLI first."
@@ -1437,18 +1454,45 @@ export function ChatInput(): React.ReactElement {
         )}
         {childRunFocused ? (
           <>
+            {/* BUG-1191: the member transcript is no longer read-only — a
+                parked/waiting member with no gate card had no UX path to a
+                user instruction (the POST /turns bypass). The send targets
+                the focused run's own id via sendAgentRunPrompt. */}
             <div className="composer-note">
-              Transcript of <b>{focusedAgentName}</b> — return to the main chat to send prompts or use @agent routing.
+              Transcript of <b>{focusedAgentName}</b> — type to send a turn to this agent, or @mention another.
+            </div>
+            <div className="text-area-wrapper">
+              <textarea
+                key={clearSeq}
+                ref={textAreaRef}
+                className="text-area"
+                rows={2}
+                style={composerHeight ? { height: `${composerHeight}px` } : undefined}
+                placeholder={childTurnBusy ? `Waiting for ${focusedAgentName}'s current turn…` : `Message ${focusedAgentName}…`}
+                value={text}
+                onChange={(e) => {
+                  const newText = e.target.value;
+                  const newCursor = e.target.selectionStart ?? 0;
+                  setText(newText);
+                  setCursorPos(newCursor);
+                }}
+                onKeyDown={onKeyDown}
+                onPaste={onPaste}
+                onSelect={(e) => setCursorPos((e.target as HTMLTextAreaElement).selectionStart ?? 0)}
+              />
             </div>
             <div className="composer-toolbar">
               <span className="composer-spacer" />
-              {blocked && (
+              {childTurnBusy && (
                 <button type="button" className="icon-btn composer-send composer-send-stop" onClick={() => void stop()} aria-label="Stop child agent">
                   <StopIcon />
                 </button>
               )}
               <button type="button" className="composer-main-btn" onClick={backToMainRun}>
                 Back to main
+              </button>
+              <button type="button" className="icon-btn composer-send" onClick={send} disabled={!canSend} aria-label="Send to agent">
+                <SendIcon size={15} />
               </button>
             </div>
           </>
