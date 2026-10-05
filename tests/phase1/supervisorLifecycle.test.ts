@@ -192,6 +192,69 @@ test("TestSupervisor_RunnerPlannedRestartRestartsOnlyRunner", async () => {
   }
 });
 
+// CA-1217 (live 2026-10-05): a restart's fenced command is written BEFORE
+// the runner exits, but the 500ms command poll may not consume it first —
+// the exit handler then treated a planned restart as unexpected death and
+// tore down the whole stack. The exit handler now reads the control file
+// itself: a valid restart record at exit means planned respawn.
+test("TestSupervisor_PlannedRestartConsumedByExitHandlerStillRespawns", async () => {
+  const p = freshSupervisorDeadChildren();
+  try {
+    const sup = p.supervisor;
+    sup._internals.setNoExit(true);
+    sup._internals.setRunnerPort("1");
+    sup._internals.setRunnerInstanceId("inst-1");
+    const runner = fakeChild();
+    sup._internals.setRunnerProcess(runner);
+    sup.attachRunnerExitHandler(runner);
+    const ctl = tmpControl();
+    sup._internals.setControlPath(ctl);
+    writeFileSync(
+      ctl,
+      JSON.stringify({
+        action: "restart",
+        runnerInstanceId: "inst-1",
+        restartId: "rst-race",
+        requestedAt: new Date().toISOString(),
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        requester: "runner",
+      }),
+    );
+
+    // Exit BEFORE the 500ms poll can consume the fenced command.
+    runner.emit("exit", 0, null);
+    await sleep(600); // deferred 200ms + respawn
+
+    assert.equal(existsSync(ctl), false, "fenced restart command must be consumed");
+    assert.equal(p.spawned.length, 1, "exit-time fenced command must respawn the runner");
+    assert.equal(sup._internals.getExitedForTest(), false, "planned restart must not end the stack");
+  } finally {
+    p.restore();
+  }
+});
+
+// The same exit path without a fenced command stays the no-ghost policy.
+test("TestSupervisor_ExitWithoutFencedCommandStillTearsDown", async () => {
+  const p = freshSupervisorDeadChildren();
+  try {
+    const sup = p.supervisor;
+    sup._internals.setNoExit(true);
+    sup._internals.setRunnerPort("1");
+    const runner = fakeChild();
+    sup._internals.setRunnerProcess(runner);
+    sup.attachRunnerExitHandler(runner);
+    sup._internals.setControlPath(tmpControl()); // no command written
+
+    runner.emit("exit", 137, null);
+    await sleep(500);
+
+    assert.equal(sup._internals.getExitedForTest(), true, "unexpected exit must end the stack");
+    assert.equal(p.spawned.length, 0, "no silent respawn after unplanned runner death");
+  } finally {
+    p.restore();
+  }
+});
+
 test("TestSupervisor_UnexpectedRunnerExitDoesNotGhostRestart", async () => {
   const p = freshSupervisorDeadChildren();
   try {

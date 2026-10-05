@@ -525,6 +525,22 @@ function attachRunnerExitHandler(child) {
       // handlePlannedRunnerRestart, not here.
       return;
     }
+    // The drain writes the fenced command BEFORE the runner exits
+    // (runSystemDrain step 2 → os.Exit), so at exit the file already tells
+    // the truth — the 500ms command poll may simply not have consumed it
+    // yet. Check it here before declaring the death unexpected: a valid
+    // restart record means planned respawn, not stack teardown (live
+    // 2026-10-05: restart accepted at 21:59, exit handler beat the poll,
+    // whole stack died with no respawner left).
+    const cmd = readSupervisorCommand();
+    if (cmd && (cmd.action === 'restart' || cmd.action === 'restart-runner')) {
+      const verdict = validateSupervisorCommand(cmd, currentRunnerInstanceId);
+      if (verdict.valid) {
+        clearStaleSupervisorCommand();
+        void handlePlannedRunnerRestart(cmd);
+        return;
+      }
+    }
     handleRunnerExitUnexpected(code, signal);
   });
 }
@@ -1052,6 +1068,7 @@ module.exports = {
   startRunnerProcess,
   readSupervisorCommand,
   validateSupervisorCommand,
+  attachRunnerExitHandler,
   handlePlannedRunnerRestart,
   handleRunnerExitUnexpected,
   shutdownRunnerTree,
