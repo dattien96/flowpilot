@@ -107,8 +107,20 @@ func (s *InteractiveService) startResolvedFlowFromNode(ctx context.Context, pare
 		stallTimeout = time.Duration(record.Definition.Policy.StallTimeoutSec) * time.Second
 	}
 	s.mu.Lock()
+	overlayMount := false
 	if rs := s.runs[parentRunID]; rs != nil {
-		rs.stallTimeout = stallTimeout
+		// live-039 (run-183756): a mount over a parked flow (vibeParkedNodes
+		// non-empty — the owner-debate claim) is an overlay borrowing the
+		// parked flow's loop. Seeding the shared Cap/RoundCap/ExtendBy/
+		// NegotiationCap from the overlay's policy overwrote the sprint's
+		// budget permanently (restoreVibeFlowAfterDebate never re-seeds), so
+		// the sprint's own rounds reported against the debate leg's cap.
+		// The overlay's rounds stay bounded by its own mount/retry counters.
+		// stallTimeout is the same shared-loop seed — keep the parked flow's.
+		overlayMount = len(rs.vibeParkedNodes) > 0
+		if !overlayMount {
+			rs.stallTimeout = stallTimeout
+		}
 		// Task-242 tier-3: capture workspace HEAD once for aggregate audit diff.
 		if head, err := captureGitHead(rs.workspaceCwd); err == nil {
 			rs.flowStartGitHead = head
@@ -121,6 +133,9 @@ func (s *InteractiveService) startResolvedFlowFromNode(ctx context.Context, pare
 	s.mu.Unlock()
 	negotiationCap := record.Definition.Policy.NegotiationCap
 	s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
+		if overlayMount {
+			return st
+		}
 		// BUG-631 (live run-150388): an operator extend-cap grant is durable
 		// loop state — ExtendCount>0 with a granted Cap above the policy
 		// default means a human explicitly raised this run's headroom, and a
