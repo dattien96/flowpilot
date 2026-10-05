@@ -439,8 +439,17 @@ async function startServices() {
       runnerProcess = createManagedProcessRef(adoptedRunnerPid, false);
       // CP-81: learn the adopted runner's instance ID so fenced commands are
       // validated against this generation, and clear any command file left by
-      // a dead generation (T-6 startup hygiene).
-      void refreshRunnerInstanceId();
+      // a dead generation (T-6 startup hygiene). CA-1220: retry like the
+      // fresh-start path — a single fire-and-forget fetch that races
+      // /health readiness leaves currentRunnerInstanceId null forever,
+      // which makes every fenced command "unverifiable_instance" and turns
+      // a planned runner exit into a full stack teardown (live 23:11).
+      void (async () => {
+        for (let i = 0; i < 60 && !isExiting; i++) {
+          if (await refreshRunnerInstanceId()) return;
+          await sleep(500);
+        }
+      })();
     }
     clearStaleSupervisorCommand();
 
@@ -540,6 +549,23 @@ function attachRunnerExitHandler(child) {
         void handlePlannedRunnerRestart(cmd);
         return;
       }
+      // CA-1220: surface WHY the fenced record was rejected — a missing
+      // learned instance id (adopt path never retried), an empty writer
+      // identity, or a stale fence each mean something different, and the
+      // silent fall-through read identically to "no command at all".
+      console.warn(
+        `[Supervisor] Fenced ${cmd.action} command present at runner exit but failed validation ` +
+          `(reason=${verdict.reason || 'unknown'} writtenBy=${cmd.runnerInstanceId || 'none'} ` +
+          `known=${currentRunnerInstanceId || 'none'}).`,
+      );
+    } else if (cmd) {
+      // A record WAS present but not a restart action — malformed/partial
+      // writes and "shutdown" records land here; log instead of falling
+      // silently into the unexpected-death path (CA-1220).
+      console.warn(
+        `[Supervisor] Control record present at runner exit but not a restart ` +
+          `(action=${JSON.stringify(cmd.action)} legacy=${!!cmd.legacy}).`,
+      );
     }
     handleRunnerExitUnexpected(code, signal);
   });

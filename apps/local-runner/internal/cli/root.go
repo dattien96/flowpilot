@@ -2377,6 +2377,13 @@ func runSystemDrain(instance *runner.Runner, interactive *runner.InteractiveServ
 			RestartID:        in.RestartID,
 			Requester:        in.Requester,
 		}
+		if rec.RunnerInstanceID == "" {
+			// CA-1220: an empty fence identity makes the record unverifiable
+			// on the supervisor side (missing_instance) — a planned exit then
+			// reads as an unexpected death. Log it so the drain log carries
+			// the distinction.
+			log.Printf("[runner] supervisor %s command written with EMPTY runnerInstanceId (mgr snapshot unavailable)", in.Action)
+		}
 		if err := writeSupervisorCommandFenced(instance.Health().Cwd, rec); err != nil {
 			log.Printf("[runner] supervisor %s command write failed: %v — exiting anyway", in.Action, err)
 		}
