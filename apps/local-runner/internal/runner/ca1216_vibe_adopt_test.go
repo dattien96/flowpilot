@@ -174,7 +174,9 @@ func TestVibeAdopt_TaskPickSetsSinglePlanAndChains(t *testing.T) {
 	svc.mu.Lock()
 	stage2 := (*questionRecord)(nil)
 	for _, q := range svc.questions {
-		if q.runID == parentID && q.status == "pending" {
+		// The synthetic answer record never resolved the stored scope card —
+		// match the pending record by stage so map order can't pick it.
+		if q.runID == parentID && q.status == "pending" && vibeAdoptSelectStageFromPrompt(q.prompt) == "task" {
 			stage2 = q
 		}
 	}
@@ -226,7 +228,9 @@ func TestVibeAdopt_CpPickBuildsUnionPlan(t *testing.T) {
 	var stage2 *questionRecord
 	svc.mu.Lock()
 	for _, q := range svc.questions {
-		if q.runID == parentID && q.status == "pending" {
+		// The synthetic answer record never resolved the stored scope card —
+		// match the pending record by stage so map order can't pick it.
+		if q.runID == parentID && q.status == "pending" && vibeAdoptSelectStageFromPrompt(q.prompt) == "cp" {
 			stage2 = q
 		}
 	}

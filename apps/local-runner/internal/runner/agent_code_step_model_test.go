@@ -105,6 +105,11 @@ func TestSpawnFrozenWriterChildUsesStepDefinitionModel(t *testing.T) {
 		Model:    "gpt-5.4-mini",
 	}}
 	svc := newInteractiveService(reg, catalog, newFakeWorkflowStore())
+	// CA-1219: the resolved-provider account gate fails a cross-provider
+	// spawn whose target has no connected account — plant a connected codex
+	// auth file so the gpt-5.4-mini pin keeps its legitimate route.
+	home := isolateProviderHome(t)
+	plantCodexAuth(t, home)
 	parent, err := svc.createRun(StartRunInput{
 		ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyClaude, Model: "claude-sonnet",
 	})

@@ -66,6 +66,11 @@ func bug517NewChildPrompt(t *testing.T, svc *InteractiveService, parentID, oldCh
 }
 
 func TestBug517_RespawnSeedsInflightPrompt(t *testing.T) {
+	isolateProviderHome(t) // CA-1219: respawn gate requires a connected claude account — keep real-machine auth out of the sync
+	writeTask447Accounts(t, []ProviderAccount{
+		task447Account("cx-0", "codex", 0, true),
+		task447Account("cl-0", "claude", 0, true),
+	})
 	svc, _ := newSwitchTestService(t) // claude fake registered — cross-provider respawn lands on it
 	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
 	if err != nil {
@@ -73,7 +78,7 @@ func TestBug517_RespawnSeedsInflightPrompt(t *testing.T) {
 	}
 	child := bug517SpawnChild(t, svc, parent.RunID)
 	svc.mu.Lock()
-	child.lastPrompt = "write the first draft"           // old turn's title
+	child.lastPrompt = "write the first draft"          // old turn's title
 	child.lastFullPrompt = "write the first draft FULL" // old turn's full text
 	svc.mu.Unlock()
 
@@ -103,6 +108,7 @@ func TestBug517_RespawnSeedsInflightPrompt(t *testing.T) {
 // must be the refused prompt — not the stale lastPrompt title.
 func TestBug517_AdmissionCarriesInflightPromptToRespawnedChild(t *testing.T) {
 	now := time.Now().UTC()
+	isolateProviderHome(t) // CA-1219: respawn gate requires a connected claude account — keep real-machine auth out of the sync
 	writeTask447Accounts(t, []ProviderAccount{
 		task447Account("cx-0", "codex", 0, true),
 		task447Account("cl-0", "claude", 0, true),
@@ -136,6 +142,11 @@ func TestBug517_AdmissionCarriesInflightPromptToRespawnedChild(t *testing.T) {
 }
 
 func TestBug517_RespawnFallsBackToFullPromptNotTruncatedTitle(t *testing.T) {
+	isolateProviderHome(t) // CA-1219: respawn gate requires a connected claude account — keep real-machine auth out of the sync
+	writeTask447Accounts(t, []ProviderAccount{
+		task447Account("cx-0", "codex", 0, true),
+		task447Account("cl-0", "claude", 0, true),
+	})
 	svc, _ := newSwitchTestService(t)
 	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
 	if err != nil {

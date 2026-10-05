@@ -448,7 +448,7 @@ func (s *InteractiveService) resolveConnectedAccount(providerKey, accountID stri
 // error names the connected providers so a hub tool caller can re-pick —
 // or omit the override to inherit — instead of discovering the dead end
 // after the child row exists.
-func (s *InteractiveService) ensureSpawnProviderConnected(providerKey ProviderKey) error {
+func (s *InteractiveService) ensureSpawnProviderConnected(providerKey ProviderKey, hint string) error {
 	accounts, err := s.listProviderAccounts()
 	if err != nil {
 		return err
@@ -471,7 +471,7 @@ func (s *InteractiveService) ensureSpawnProviderConnected(providerKey ProviderKe
 	if len(connected) == 0 {
 		return fmt.Errorf("spawn_agent: provider %q has no connected local account (no provider is connected)", providerKey)
 	}
-	return fmt.Errorf("spawn_agent: provider %q has no connected local account (connected: %s); omit the provider override to inherit the parent run's provider", providerKey, strings.Join(connected, ", "))
+	return fmt.Errorf("spawn_agent: provider %q has no connected local account (connected: %s); %s", providerKey, strings.Join(connected, ", "), hint)
 }
 
 // noteAccountBlockedLocked records a live-observed hard limit. Called under

@@ -2263,7 +2263,31 @@ func (s *InteractiveService) resolveFlowNodeModel(ctx context.Context, parentRun
 	}
 	if strings.EqualFold(strings.TrimSpace(flowNodeAgentName(node)), "contract-planner") ||
 		strings.EqualFold(strings.TrimSpace(node.ID), scoutNodeID) {
-		return strings.TrimSpace(node.Model)
+		model := strings.TrimSpace(node.Model)
+		if model == "" {
+			return ""
+		}
+		// CA-1219 (live run-295434): the planner is the hub's contract voice
+		// and must follow the hub's provider (CA-616). CA-616 skipped the
+		// step-row lookup, but a mirrored flow row still carries
+		// step_definitions.model onto node.Model itself — a stale "gpt-5.4"
+		// pin resolved the planner to codex (no connected account → dead
+		// child before its first turn). Honor a pin only when it maps to
+		// the parent's own provider — a same-provider tier override stays
+		// valid (admin's devin/swe-2-high under a devin hub); any
+		// cross-provider pin is a stranded route, so fall back to inherit.
+		if pk, ok := providerKeyFromModel(model); ok {
+			s.mu.Lock()
+			var parentKey ProviderKey
+			if parent := s.runs[parentRunID]; parent != nil {
+				parentKey = parent.providerKey
+			}
+			s.mu.Unlock()
+			if parentKey != "" && ProviderKey(pk) != parentKey {
+				return ""
+			}
+		}
+		return model
 	}
 	if hit := s.resolveConfiguredModelForAgent(ctx, node.ID, flowNodeAgentName(node), s.flowRefForRun(parentRunID)); hit != "" {
 		return hit

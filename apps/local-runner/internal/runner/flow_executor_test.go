@@ -534,6 +534,15 @@ func TestCoderCompletionAutoSpawnsReviewerCohortWithOwnModel(t *testing.T) {
 	})
 
 	svc := newInteractiveService(reg, catalog, newFakeWorkflowStore())
+	// CA-1219: the resolved-provider account gate fails a cross-provider
+	// spawn whose target has no connected account — plant a connected
+	// claude account so the "Flow: Reviewer" claude-sonnet pin keeps its
+	// legitimate cross-provider route.
+	isolateProviderHome(t)
+	writeTask447Accounts(t, []ProviderAccount{
+		task447Account("cx-0", "codex", 0, true),
+		task447Account("cl-0", "claude", 0, true),
+	})
 	parent, err := svc.createRun(StartRunInput{
 		ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex, Model: "gpt-5.4-mini",
 	})
@@ -557,7 +566,6 @@ func TestCoderCompletionAutoSpawnsReviewerCohortWithOwnModel(t *testing.T) {
 	})
 
 	svc.mu.Lock()
-	defer svc.mu.Unlock()
 	for _, run := range svc.runs {
 		if run.parentRunID != parent.RunID {
 			continue
@@ -573,6 +581,25 @@ func TestCoderCompletionAutoSpawnsReviewerCohortWithOwnModel(t *testing.T) {
 			}
 		}
 	}
+	svc.mu.Unlock()
+
+	// CA-1219: verdict-less fake adapters drive the reviewer reprompt/respawn
+	// loop asynchronously — drain every child to a terminal status (and out of
+	// its in-flight turn) so TempDir cleanup does not race transcript writes.
+	waitLoop(t, "reviewer cohort terminal", 15*time.Second, func() bool {
+		svc.mu.Lock()
+		defer svc.mu.Unlock()
+		for _, run := range svc.runs {
+			if run.parentRunID != parent.RunID {
+				continue
+			}
+			terminal := run.status == RunStatusCompleted || run.status == RunStatusFailed || run.status == RunStatusCancelled
+			if !terminal || run.turnInFlight {
+				return false
+			}
+		}
+		return true
+	})
 }
 
 // TestResolveFlowNodeModelScopesByFlowRef is CA-358: two built-in flows both

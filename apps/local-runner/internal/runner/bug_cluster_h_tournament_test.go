@@ -312,6 +312,14 @@ func newTournamentFreezeService(t *testing.T) *InteractiveService {
 }
 
 func TestBug426_RolloutPassthroughSpawnsCandidates(t *testing.T) {
+	// CA-1219: tournament candidates legitimately route cross-provider
+	// (candidate-a pins claude-sonnet under the codex parent) — the
+	// resolved-provider account gate needs both seats connected.
+	isolateProviderHome(t)
+	writeTask447Accounts(t, []ProviderAccount{
+		task447Account("cx-0", "codex", 0, true),
+		task447Account("cl-0", "claude", 0, true),
+	})
 	svc := newTournamentFreezeService(t)
 	repo := tournamentE2EBugRepo(t)
 

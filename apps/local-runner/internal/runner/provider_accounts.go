@@ -42,7 +42,12 @@ type providerAccountState struct {
 }
 
 func (r *Runner) ListProviderAccounts() ([]ProviderAccount, error) {
-	state, err := r.loadProviderAccountState()
+	// CA-1219: resolve the store path ONCE per read-modify-write — a second
+	// resolution inside save could observe a different env override (tests
+	// re-pin FLOWPILOT_PROVIDER_ACCOUNTS_CONFIG_PATH per test) and clobber a
+	// sibling store with this call's stale state.
+	path := providerAccountsConfigPath()
+	state, err := r.loadProviderAccountStateAt(path)
 	if err != nil {
 		return nil, err
 	}
@@ -50,7 +55,7 @@ func (r *Runner) ListProviderAccounts() ([]ProviderAccount, error) {
 	updated, changed := r.syncProviderAccounts(state.Accounts)
 	if changed {
 		state.Accounts = updated
-		if err := r.saveProviderAccountState(state); err != nil {
+		if err := r.saveProviderAccountStateAt(path, state); err != nil {
 			return nil, err
 		}
 	}
@@ -60,7 +65,8 @@ func (r *Runner) ListProviderAccounts() ([]ProviderAccount, error) {
 
 func (r *Runner) ConnectProviderAccount(providerKey string) (ProviderAccount, error) {
 	r.invalidateProvidersCache()
-	state, err := r.loadProviderAccountState()
+	path := providerAccountsConfigPath()
+	state, err := r.loadProviderAccountStateAt(path)
 	if err != nil {
 		return ProviderAccount{}, err
 	}
@@ -96,13 +102,13 @@ func (r *Runner) ConnectProviderAccount(providerKey string) (ProviderAccount, er
 	}
 
 	state.Accounts = append(accounts, account)
-	if err := r.saveProviderAccountState(state); err != nil {
+	if err := r.saveProviderAccountStateAt(path, state); err != nil {
 		return ProviderAccount{}, err
 	}
 
 	if err := r.StartInteractiveAuth(providerKey, homePath); err != nil {
 		state.Accounts = removeProviderAccountByID(state.Accounts, account.ID)
-		_ = r.saveProviderAccountState(state)
+		_ = r.saveProviderAccountStateAt(path, state)
 		return ProviderAccount{}, err
 	}
 
@@ -111,7 +117,8 @@ func (r *Runner) ConnectProviderAccount(providerKey string) (ProviderAccount, er
 
 func (r *Runner) VerifyProviderAccount(accountID string) (ProviderAccount, bool, error) {
 	r.invalidateProvidersCache()
-	state, err := r.loadProviderAccountState()
+	path := providerAccountsConfigPath()
+	state, err := r.loadProviderAccountStateAt(path)
 	if err != nil {
 		return ProviderAccount{}, false, err
 	}
@@ -134,7 +141,7 @@ func (r *Runner) VerifyProviderAccount(accountID string) (ProviderAccount, bool,
 
 	accounts[accountIndex] = account
 	state.Accounts = accounts
-	if err := r.saveProviderAccountState(state); err != nil {
+	if err := r.saveProviderAccountStateAt(path, state); err != nil {
 		return ProviderAccount{}, false, err
 	}
 
@@ -149,7 +156,8 @@ func (r *Runner) VerifyProviderAccount(accountID string) (ProviderAccount, bool,
 
 func (r *Runner) ActivateProviderAccount(accountID string) (ProviderAccount, error) {
 	r.invalidateProvidersCache()
-	state, err := r.loadProviderAccountState()
+	path := providerAccountsConfigPath()
+	state, err := r.loadProviderAccountStateAt(path)
 	if err != nil {
 		return ProviderAccount{}, err
 	}
@@ -174,7 +182,7 @@ func (r *Runner) ActivateProviderAccount(accountID string) (ProviderAccount, err
 	accounts[accountIndex] = account
 
 	state.Accounts = accounts
-	if err := r.saveProviderAccountState(state); err != nil {
+	if err := r.saveProviderAccountStateAt(path, state); err != nil {
 		return ProviderAccount{}, err
 	}
 
@@ -188,7 +196,8 @@ func (r *Runner) ActivateProviderAccount(accountID string) (ProviderAccount, err
 }
 
 func (r *Runner) DeleteProviderAccount(accountID string) error {
-	state, err := r.loadProviderAccountState()
+	path := providerAccountsConfigPath()
+	state, err := r.loadProviderAccountStateAt(path)
 	if err != nil {
 		return err
 	}
@@ -218,7 +227,7 @@ func (r *Runner) DeleteProviderAccount(accountID string) error {
 	}
 
 	state.Accounts = accounts
-	return r.saveProviderAccountState(state)
+	return r.saveProviderAccountStateAt(path, state)
 }
 
 func (r *Runner) ResolveProviderAccount(providerKey string, accountID string) (ProviderAccount, error) {
@@ -277,7 +286,8 @@ func (r *Runner) resolveAdapterAccount(providerKey, accountID string) (ProviderA
 }
 
 func (r *Runner) TestProviderAccount(accountID string) (ProviderAccount, error) {
-	state, err := r.loadProviderAccountState()
+	path := providerAccountsConfigPath()
+	state, err := r.loadProviderAccountStateAt(path)
 	if err != nil {
 		return ProviderAccount{}, err
 	}
@@ -301,7 +311,7 @@ func (r *Runner) TestProviderAccount(accountID string) (ProviderAccount, error) 
 	account.LastUsedAt = &now
 	accounts[accountIndex] = account
 	state.Accounts = accounts
-	if err := r.saveProviderAccountState(state); err != nil {
+	if err := r.saveProviderAccountStateAt(path, state); err != nil {
 		return ProviderAccount{}, err
 	}
 
@@ -309,7 +319,10 @@ func (r *Runner) TestProviderAccount(accountID string) (ProviderAccount, error) 
 }
 
 func (r *Runner) loadProviderAccountState() (providerAccountState, error) {
-	path := providerAccountsConfigPath()
+	return r.loadProviderAccountStateAt(providerAccountsConfigPath())
+}
+
+func (r *Runner) loadProviderAccountStateAt(path string) (providerAccountState, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -330,7 +343,10 @@ func (r *Runner) loadProviderAccountState() (providerAccountState, error) {
 }
 
 func (r *Runner) saveProviderAccountState(state providerAccountState) error {
-	path := providerAccountsConfigPath()
+	return r.saveProviderAccountStateAt(providerAccountsConfigPath(), state)
+}
+
+func (r *Runner) saveProviderAccountStateAt(path string, state providerAccountState) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}

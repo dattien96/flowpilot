@@ -132,6 +132,14 @@ func TestBug556_ExplicitSpawnModelStillWins(t *testing.T) {
 		Model:    "grok-4.7",
 	}}
 	svc := newInteractiveService(bug556Registry(), catalog, newFakeWorkflowStore())
+	// CA-1219: the resolved-provider account gate fails a cross-provider
+	// spawn whose target has no connected account — plant a connected
+	// claude account so the explicit claude model pin keeps its route.
+	isolateProviderHome(t)
+	writeTask447Accounts(t, []ProviderAccount{
+		task447Account("cx-0", "codex", 0, true),
+		task447Account("cl-0", "claude", 0, true),
+	})
 
 	parent, apiErr := svc.createRun(StartRunInput{
 		ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex, Cwd: t.TempDir(),

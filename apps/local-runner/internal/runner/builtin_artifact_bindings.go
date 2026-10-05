@@ -62,6 +62,9 @@ var builtinHarnessArtifactFlowIDs = map[string]struct{}{
 	"vibe-ingest":      {},
 	"vibe-cp-ingest":   {},
 	"vibe-sprint":      {},
+	// CA-1216: vibe-adopt-sprint clones the vibe-sprint node set — same
+	// file_artifact bindings, same mirror-seed requirement.
+	"vibe-adopt-sprint": {},
 	// CP-90: vibe-tasks declares the cp_md input binding on
 	// task_plan_reader — same mirror-seed requirement as the slicer.
 	"vibe-tasks": {},

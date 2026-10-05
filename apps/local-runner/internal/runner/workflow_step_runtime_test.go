@@ -152,6 +152,16 @@ func TestWorkflowStepsRuntimeReflectsPerNodeModelOverride(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
+	// CA-1219: the resolved-provider account gate fails a cross-provider
+	// spawn whose target has no connected account — plant a connected
+	// claude account so the reviewer cohort's claude-sonnet pin keeps its
+	// legitimate cross-provider route.
+	isolateProviderHome(t)
+	writeTask447Accounts(t, []ProviderAccount{
+		task447Account("cx-0", "codex", 0, true),
+		task447Account("cl-0", "claude", 0, true),
+	})
+
 	parent, err := svc.createRun(StartRunInput{
 		ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex, Model: "gpt-5.4-mini",
 	})

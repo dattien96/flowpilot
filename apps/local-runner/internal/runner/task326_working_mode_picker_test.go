@@ -29,13 +29,14 @@ func requirePickerOmit(t *testing.T, set map[string]struct{}, id string) {
 }
 
 // Scenario: vibe picker is vibe-ingest then vibe-cp-ingest (+ CP-90
-// vibe-tasks for pre-broken task plans).
+// vibe-tasks for pre-broken task plans, + CA-1216 vibe-adopt for
+// pre-existing code).
 // Input: flowPickerOptions(vibe)
-// Expect: ids == [vibe-ingest, vibe-cp-ingest, vibe-tasks]
+// Expect: ids == [vibe-ingest, vibe-cp-ingest, vibe-tasks, vibe-adopt]
 func TestPicker_VibeListsOnlyIngest(t *testing.T) {
 	ids := workingmode.FlowPickerOptions("vibe")
-	if len(ids) != 3 || ids[0] != "vibe-ingest" || ids[1] != "vibe-cp-ingest" || ids[2] != "vibe-tasks" {
-		t.Fatalf("vibe picker = %v, want [vibe-ingest vibe-cp-ingest vibe-tasks]", ids)
+	if len(ids) != 4 || ids[0] != "vibe-ingest" || ids[1] != "vibe-cp-ingest" || ids[2] != "vibe-tasks" || ids[3] != "vibe-adopt" {
+		t.Fatalf("vibe picker = %v, want [vibe-ingest vibe-cp-ingest vibe-tasks vibe-adopt]", ids)
 	}
 }
 

@@ -306,7 +306,7 @@ type interactiveRun struct {
 	// file check counts only for the attested task, so a stale block left
 	// by an abandoned leg/run cannot satisfy a fresh task's TDD evidence.
 	// Durable via ProviderSessionState.VibeTddSigAttestedTask.
-	vibeTddSigAttestedTask string
+	vibeTddSigAttestedTask  string
 	vibeCoderResumeInFlight bool
 	vibeResumeConfirm       bool
 	vibeResumeFromNode      string
@@ -5973,7 +5973,7 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 		VibeDeferredFlowStarts:          append([]VibeDeferredFlowStart(nil), rs.vibeDeferredFlowStarts...),
 		VibeDebateMounts:                rs.vibeDebateMounts,
 		VibeDebateMountsByEntity:        copyStringIntMap(rs.vibeDebateMountsByEntity),
-		VibeTddSigAttestedTask:            rs.vibeTddSigAttestedTask,
+		VibeTddSigAttestedTask:          rs.vibeTddSigAttestedTask,
 		PendingBatchSignatureByStep:     copyBatchSignatureMap(rs.pendingBatchSignatureByStep),
 		FlowStartGitHead:                rs.flowStartGitHead,
 		PendingFlowGateSettle:           rs.pendingFlowGateSettle,
@@ -9238,12 +9238,20 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 	// local account. The child then dies at adapter construction, burning a
 	// run row, a flow-node verdict, and a recovery cycle. Fail the spawn
 	// itself with an actionable error listing the connected providers so the
-	// caller can re-pick — or omit the override to inherit. Scoped to the
-	// cross-provider override: a same-provider explicit pin can never strand
-	// on accounts (the parent already runs under it), while pack-configured
-	// model routing and plain inheritance keep their existing behavior.
-	if strings.TrimSpace(in.Provider) != "" && providerKey != parentProviderKey {
-		if err := s.ensureSpawnProviderConnected(providerKey); err != nil {
+	// caller can re-pick — or omit the override to inherit.
+	// CA-1219 (live run-295434): the same stranded-child outcome arrives via
+	// NON-explicit paths — a mirrored step_definitions.model pin carried
+	// onto the flow node (in.Model → providerKeyFromModel) or an agent-def
+	// provider pin. Gate the RESOLVED provider whenever it differs from the
+	// parent's: same-provider inheritance can never strand on accounts (the
+	// parent already runs under it), while any cross-provider route to a
+	// disconnected provider must fail here, before the child row exists.
+	if providerKey != "" && providerKey != parentProviderKey {
+		hint := "omit the provider override to inherit the parent run's provider"
+		if strings.TrimSpace(in.Provider) == "" {
+			hint = "the resolved provider comes from a node/agent model pin — repin it to a connected provider's model or connect that provider"
+		}
+		if err := s.ensureSpawnProviderConnected(providerKey, hint); err != nil {
 			return SpawnAgentResult{}, err
 		}
 	}
