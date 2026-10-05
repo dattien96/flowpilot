@@ -2811,6 +2811,24 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 	s.emitAgentGraph(parentRunID, snap)
 	go s.persistParentSession(parentRunID)
 
+	// CA-1215 (live run-262417): an armed pendingHubReinvokePrompt (a
+	// hub.notify reinvoke that re-armed while the loop was blocked)
+	// short-circuits Continue below — every verdict-gate escalate then
+	// drained the armed prompt into ANOTHER hub re-prompt that re-parked on
+	// the identical member verdict, and the CA-1098 deficient-member
+	// re-drive downstream never ran (3 consecutive park cycles at
+	// 20:04/20:07/20:08 while spec_align stayed waiting_user_approval).
+	// When the park's gate reason adjudicates a deficient member verdict,
+	// the member re-drive owns the resume: its settle rejoins the cohort
+	// and re-invokes the hub on its own edges, so the already-drained armed
+	// prompt is redundant. Falls through to the armed prompt when no live
+	// deficient member maps, preserving BUG-284's same-node retry.
+	if prevBlockReason == "escalate" && (isReviewVerdictGateReason(prevGateReason) || s.gateReasonNamesDeficientMemberVerdict(parentRunID, prevGateReason)) {
+		if s.resumeVerdictDeficientMembers(parentRunID, feedback) {
+			return snap, nil
+		}
+	}
+
 	if pendingPrompt != "" {
 		go s.maybeAutoReinvokeHubWithPrompt(parentRunID, pendingPrompt)
 		return snap, nil
