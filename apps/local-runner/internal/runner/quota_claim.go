@@ -474,6 +474,22 @@ func (s *InteractiveService) ensureSpawnProviderConnected(providerKey ProviderKe
 	return fmt.Errorf("spawn_agent: provider %q has no connected local account (connected: %s); %s", providerKey, strings.Join(connected, ", "), hint)
 }
 
+// spawnProviderConnected reports whether a connected local account exists for
+// providerKey — the bool half of ensureSpawnProviderConnected for call sites
+// (CA-1221 stranded-pin fallback) that downgrade rather than reject.
+func (s *InteractiveService) spawnProviderConnected(providerKey ProviderKey) bool {
+	accounts, err := s.listProviderAccounts()
+	if err != nil {
+		return false
+	}
+	for _, a := range accounts {
+		if a.AuthStatus == "connected" && a.ProviderKey == string(providerKey) {
+			return true
+		}
+	}
+	return false
+}
+
 // noteAccountBlockedLocked records a live-observed hard limit. Called under
 // s.mu from the provider_limit emit path; acquires quotaMu inside (the only
 // permitted nesting order — claim never holds quotaMu into s.mu).

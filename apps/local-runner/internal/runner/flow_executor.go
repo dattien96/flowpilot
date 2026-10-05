@@ -2289,10 +2289,41 @@ func (s *InteractiveService) resolveFlowNodeModel(ctx context.Context, parentRun
 		}
 		return model
 	}
-	if hit := s.resolveConfiguredModelForAgent(ctx, node.ID, flowNodeAgentName(node), s.flowRefForRun(parentRunID)); hit != "" {
+	// CA-1221 (live run-297392): on vibe sprint chains every delegate is
+	// designed to inherit the hub's session provider. A resolved pin that
+	// routes cross-provider is valid only while the target provider has a
+	// connected local account — mirrored step_definitions rows outlive the
+	// run that minted them (vibe_adopt_sprint_* rows still carry gpt-5.4
+	// from run-295434's dead codex route; merge-duplicate upserts never
+	// clear model), so a stranded pin escalates on every future mount.
+	// Skip it and let the child inherit; pins to connected providers stay
+	// honored (legitimate cross-provider route, e.g. reviewer cohorts).
+	honor := func(model string) bool {
+		pk, ok := providerKeyFromModel(model)
+		if !ok {
+			return true
+		}
+		s.mu.Lock()
+		var parentKey ProviderKey
+		var vibeChain bool
+		if parent := s.runs[parentRunID]; parent != nil {
+			parentKey = parent.providerKey
+			vibeChain = vibeSprintIsAdopt(parent) ||
+				workingmode.BareFlowID(parent.chatFlowRef) == vibeSprintFlowID
+		}
+		s.mu.Unlock()
+		if !vibeChain || parentKey == "" || pk == parentKey {
+			return true
+		}
+		return s.spawnProviderConnected(pk)
+	}
+	if hit := s.resolveConfiguredModelForAgent(ctx, node.ID, flowNodeAgentName(node), s.flowRefForRun(parentRunID)); hit != "" && honor(hit) {
 		return hit
 	}
-	return strings.TrimSpace(node.Model)
+	if model := strings.TrimSpace(node.Model); model != "" && honor(model) {
+		return model
+	}
+	return ""
 }
 
 // flowRefForRun returns the active built-in/chat flowRef for model scoping.

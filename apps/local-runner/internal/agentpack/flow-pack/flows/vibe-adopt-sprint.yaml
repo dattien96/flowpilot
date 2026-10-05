@@ -140,15 +140,19 @@ edges:
     to: context
     when: done
     kind: forward
-  # Task-459 T-2: adopt enters at verification — the suite runs first so the
-  # review cohort sees a real baseline signal on the pre-existing diff. tdd
-  # is reachable only via the synthesis_negotiation back-edge (defects).
+  # Task-459 T-2 / CA-1221 (live run-297392): adopt enters through the
+  # characterization scaffold — context.produce requires a spawnable
+  # delegate/writer as its forward done target (the context package is packed
+  # into that consumer's prompt), so a command.validate target escalates.
+  # tdd declares the existing-behavior contract first, then the suite runs
+  # so the review cohort sees a real baseline signal on the pre-existing
+  # diff. coder is reachable only via remediation back-edges.
   - from: context
-    to: validate
+    to: tdd
     when: done
     kind: forward
   - from: tdd
-    to: coder
+    to: validate
     when: done
     kind: forward
   - from: coder
@@ -183,13 +187,14 @@ edges:
     to: synthesis_negotiation
     when: continue
     kind: forward
-  # Topology anchor: the remediation back-edge below is excluded from
-  # entry/dominance computation (kind:back), which would strand tdd as an
-  # "entry node" — illegal for agent.scaffold. This forward edge carries the
-  # never-emitted `remediate` status so tdd stays reachable-on-paper; the
-  # real re-entry still rides the continue back-edge only.
+  # Topology anchor: remediation back-edges (validate→coder,
+  # synthesis→coder) are excluded from entry/dominance computation
+  # (kind:back), which would strand coder as an "entry node" — illegal for
+  # agent.code. This forward edge carries the never-emitted `remediate`
+  # status so coder stays reachable-on-paper; the real re-entry still rides
+  # the continue back-edges only.
   - from: synthesis_negotiation
-    to: tdd
+    to: coder
     when: remediate
     kind: forward
   - from: synthesis_negotiation

@@ -59,8 +59,11 @@ func adoptTestParentRun(t *testing.T, svc *InteractiveService, dir string) strin
 	return parent.RunID
 }
 
-// Topology: the adopt sprint enters at validate, never at tdd; the defect
-// remediation re-entry still rides the continue back-edge.
+// Topology (CA-1221): the adopt sprint enters through the characterization
+// scaffold — context.produce may only forward to a spawnable delegate/writer,
+// so the suite entry is context→tdd→validate, never context→validate. coder
+// stays reachable only through remediation back-edges plus the inert
+// `remediate` forward anchor that keeps it non-entry.
 func TestVibeAdoptSprint_TopologyEntersAtValidate(t *testing.T) {
 	pack, err := agentpack.LoadBuiltinPack()
 	if err != nil {
@@ -76,23 +79,35 @@ func TestVibeAdoptSprint_TopologyEntersAtValidate(t *testing.T) {
 	if def == nil {
 		t.Fatal("vibe-adopt-sprint not in builtin pack")
 	}
-	var contextToValidate, contextToTdd, remediateBack bool
+	var contextToTdd, tddToValidate, tddToCoder, coderAnchor, remediateBack bool
 	for _, e := range def.Edges {
-		if e.From == "context" && e.To == "validate" && e.When == "done" && e.Kind == "forward" {
-			contextToValidate = true
-		}
-		if e.From == "context" && e.To == "tdd" {
+		if e.From == "context" && e.To == "tdd" && e.When == "done" && e.Kind == "forward" {
 			contextToTdd = true
+		}
+		if e.From == "tdd" && e.To == "validate" && e.When == "done" && e.Kind == "forward" {
+			tddToValidate = true
+		}
+		if e.From == "tdd" && e.To == "coder" {
+			tddToCoder = true
+		}
+		if e.From == "synthesis_negotiation" && e.To == "coder" && e.When == "remediate" && e.Kind == "forward" {
+			coderAnchor = true
 		}
 		if e.From == "synthesis_negotiation" && e.To == "tdd" && e.When == "continue" && e.Kind == "back" {
 			remediateBack = true
 		}
 	}
-	if !contextToValidate {
-		t.Fatal("adopt sprint must enter validate from context")
+	if !contextToTdd {
+		t.Fatal("adopt sprint must enter through tdd from context (spawnable target)")
 	}
-	if contextToTdd {
-		t.Fatal("adopt sprint must not enter tdd on first pass")
+	if !tddToValidate {
+		t.Fatal("tdd must hand off to validate so the suite runs before the review cohort")
+	}
+	if tddToCoder {
+		t.Fatal("adopt sprint must not route tdd into coder on the happy path")
+	}
+	if !coderAnchor {
+		t.Fatal("coder needs the inert remediate forward anchor to stay non-entry")
 	}
 	if !remediateBack {
 		t.Fatal("defect remediation must keep the continue back-edge into tdd")
