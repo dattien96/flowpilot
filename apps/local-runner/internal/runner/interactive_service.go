@@ -627,6 +627,12 @@ type interactiveRun struct {
 	// submit_review_outcome call cancelled in flight, so the verdict never
 	// reaches the bridge — reprompting is the only recovery).
 	verdictRepromptCount int
+	// verdictAutoRedrives bounds done-edge auto-redrives of verdict-deficient
+	// cohort members (BUG-1184): a terminal-failed member leg gets bounded
+	// automatic resurrection before the gate escalates to a human park.
+	// Resets when a fresh member verdict lands
+	// (snapshotReviewCohortVerdictsLocked) — per missing-verdict episode.
+	verdictAutoRedrives int
 	// verdictRepromptInFlight marks the currently-running turn as an
 	// engine-issued missing-verdict reprompt (BUG-559): it was never asked
 	// for a draft, so cachePreflightDraftLocked must not let its
@@ -1963,7 +1969,7 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 					// member mid-turn, so it never lands. Defer exactly like
 					// rejected_cohort_incomplete: unstamp the decision, keep the
 					// loop running; the member's settle/join re-invokes the hub.
-					if labels := s.missingVerdictLabelsWithLiveMember(parentRunID, "synthesis"); len(labels) > 0 {
+					if labels := s.missingVerdictLabelsWithLiveMember(parentRunID, "synthesis"); len(labels) > 0 || s.autoRedriveVerdictDeficientMembers(parentRunID) {
 						s.mu.Lock()
 						if r := s.runs[parentRunID]; r != nil && r.currentTurnID != "" && r.lastFlowControlTurnID == r.currentTurnID {
 							r.lastFlowControlTurnID = ""
@@ -8668,7 +8674,9 @@ func (s *InteractiveService) advanceHubDoneThroughEdge(targetRunID string, in Fl
 			// park would cancel it mid-turn so the verdict can never arrive.
 			// Defer: unstamp the decision, keep the loop running; the member's
 			// settle/join re-invokes the hub, which re-submits done.
-			if labels := s.missingVerdictLabelsWithLiveMember(targetRunID, hubID); len(labels) > 0 {
+			// BUG-1184: no live member either → auto-redrive the deficient
+			// member once (bounded) instead of escalating straight to a park.
+			if labels := s.missingVerdictLabelsWithLiveMember(targetRunID, hubID); len(labels) > 0 || s.autoRedriveVerdictDeficientMembers(targetRunID) {
 				s.mu.Lock()
 				if r := s.runs[targetRunID]; r != nil && r.currentTurnID != "" && r.lastFlowControlTurnID == r.currentTurnID {
 					r.lastFlowControlTurnID = ""

@@ -171,6 +171,9 @@ func (s *InteractiveService) snapshotReviewCohortVerdictsLocked(parentRunID stri
 		}
 		if v := strings.TrimSpace(e.MachineVerdict); v != "" {
 			parent.lastReviewCohortVerdicts[label] = v
+			// BUG-1184: a landing verdict is progress — reset the auto-redrive
+			// budget so the NEXT missing-verdict episode gets a fresh bound.
+			parent.verdictAutoRedrives = 0
 		} else {
 			delete(parent.lastReviewCohortVerdicts, label)
 		}
@@ -531,6 +534,75 @@ func (s *InteractiveService) flowStepRunningWithinSpawnGrace(parentRunID, nodeID
 		return time.Since(started) < defaultStallTimeout
 	}
 	return false
+}
+
+// maxVerdictAutoRedrives bounds the done-edge auto-redrive of verdict-
+// deficient members (BUG-1184): a terminal-failed member leg gets one
+// automatic resurrection before the gate escalates to a human park — the
+// counter resets whenever a fresh member verdict lands, so the bound applies
+// per missing-verdict episode rather than per run lifetime.
+const maxVerdictAutoRedrives = 2
+
+// autoRedriveVerdictDeficientMembers re-drives verdict-deficient cohort
+// members whose leg is no longer live — a terminal member (failed/cancelled/
+// completed verdict-less) cannot produce the missing verdict and previously
+// escalated straight to a human park even though resumeVerdictDeficientMembers
+// (CA-1098) already resurrects dead legs or spawns replacements (BUG-1184).
+// Scoped: the trigger requires a MISSING verdict backed by a terminal member
+// record — never-spawned members and bare-zombie children keep the pinned
+// escalate contract (CP-61 / BUG-1176), and a recorded-but-not-approved
+// verdict stays human-adjudicated. Bounded: verdictAutoRedrives caps attempts
+// per episode and resets when a fresh member verdict lands
+// (snapshotReviewCohortVerdictsLocked). Returns true when a member was
+// re-driven or spawned — the caller must then DEFER the hub done decision
+// exactly like the member-in-flight branch.
+func (s *InteractiveService) autoRedriveVerdictDeficientMembers(parentRunID string) bool {
+	s.mu.Lock()
+	rs := s.runs[parentRunID]
+	if rs == nil || rs.verdictAutoRedrives >= maxVerdictAutoRedrives {
+		s.mu.Unlock()
+		return false
+	}
+	hubID := strings.TrimSpace(rs.activeHubNodeID)
+	if hubID == "" {
+		hubID = hubInlineNodeID(rs.activeFlowNodes)
+	}
+	expected := cohortNodeLabels(rs.activeFlowNodes, hubInboundCohortName(hubID))
+	verdicts := mergePendingReviewVerdictsLocked(rs, rs.lastReviewCohortVerdicts)
+	missing := map[string]bool{}
+	for _, label := range expected {
+		if strings.TrimSpace(verdicts[label]) == "" {
+			missing[label] = true
+		}
+	}
+	terminalMember := false
+	for _, childID := range s.agentOrchestrator.listChildren(parentRunID) {
+		child := s.runs[childID]
+		if child == nil || !missing[child.label] {
+			continue
+		}
+		switch child.status {
+		case RunStatusCompleted, RunStatusFailed, RunStatusCancelled:
+			terminalMember = true
+		}
+		if terminalMember {
+			break
+		}
+	}
+	if !terminalMember {
+		s.mu.Unlock()
+		return false
+	}
+	rs.verdictAutoRedrives++
+	attempt := rs.verdictAutoRedrives
+	s.mu.Unlock()
+	if !s.resumeVerdictDeficientMembers(parentRunID, "") {
+		return false
+	}
+	s.flowDiagLog(parentRunID, "verdict_deficient_member_auto_redrive",
+		"done-edge verdict gate: auto re-driving terminal deficient member(s)",
+		"attempt", fmt.Sprintf("%d/%d", attempt, maxVerdictAutoRedrives))
+	return true
 }
 
 // isReviewVerdictGateReason reports whether an escalate GateReason belongs to
