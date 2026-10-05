@@ -261,7 +261,19 @@ func (s *InteractiveService) maybeSettleVibeOwnerDebate(parentRunID string) bool
 		stTrig != "" && stTrig != StepStatusRunning &&
 		st1 != StepStatusRunning && st1 != StepStatusDone &&
 		st2 != StepStatusRunning && st2 != StepStatusDone
-	if !ownersFailed && !ownersStarved {
+	// live-039 (run-225691 round-4): the mount stamped debate_trigger RUNNING
+	// but the trigger's hub turn never dispatched owner legs — every heal
+	// early-returned on this shape (starved required stTrig != RUNNING, the
+	// zombie heal needs owners DONE/RUNNING, hub_stalled is shielded). A
+	// trigger RUNNING far past any dispatch window with no in-flight hub work
+	// and zero owner children is a dead dispatch: re-drive it through the
+	// same bounded ladder. The age bound + in-flight checks preserve the
+	// BUG-624 mount-window contract above.
+	triggerWedged := ownerChildren == 0 &&
+		st1 != StepStatusRunning && st1 != StepStatusDone &&
+		st2 != StepStatusRunning && st2 != StepStatusDone &&
+		s.vibeDebateTriggerWedge(parentRunID)
+	if !ownersFailed && !ownersStarved && !triggerWedged {
 		return false
 	}
 	if stSyn == StepStatusRunning || stSyn == StepStatusDone || stSyn == StepStatusWaitingUserApr {
@@ -304,12 +316,74 @@ func (s *InteractiveService) maybeSettleVibeOwnerDebate(parentRunID string) bool
 		touchHubProgressLocked(r)
 	}
 	s.mu.Unlock()
+	if triggerWedged && !ownersFailed && !ownersStarved {
+		// The overlay is already mounted — a full re-resolve would re-swap a
+		// live graph. Re-drive just the trigger turn so the hub emits the
+		// debate_trigger done verdict that fans out owner_1/owner_2.
+		s.flowDiagLog(parentRunID, "vibe_debate_trigger_wedge_redrive",
+			"debate_trigger RUNNING with no in-flight dispatch and zero owner children; re-driving trigger turn",
+			"retry", retries+1,
+		)
+		s.maybeAutoReinvokeHubWithPrompt(parentRunID, vibeDebateTriggerWedgePrompt)
+		return true
+	}
 	s.flowDiagLog(parentRunID, "vibe_owner_fail_retry",
 		"both owners failed; retrying vibe-owner-debate",
 		"retry", retries+1,
 	)
 	s.startResolvedFlow(context.Background(), parentRunID, workingmode.PackPrefix+vibeOwnerDebateFlowID, "owner members failed; retry debate")
 	return true
+}
+
+// vibeDebateTriggerWedgeBound is how old a debate_trigger RUNNING stamp may
+// be with no in-flight hub work before it counts as a dead dispatch. The
+// legit mount/dispatch window is seconds — this stays far below any stall
+// timeout while excluding every mid-settle race.
+const vibeDebateTriggerWedgeBound = 45 * time.Second
+
+// vibeDebateTriggerWedgePrompt re-drives the dead trigger dispatch the way
+// vibeDebateSynthesisResumePrompt re-drives a lost synthesis turn.
+const vibeDebateTriggerWedgePrompt = "[flow-engine] The owner-debate overlay is mounted but the debate_trigger dispatch was lost: debate_trigger is RUNNING yet no owner_1/owner_2 legs were ever spawned. This is the debate_trigger turn — evaluate the gated verdicts and emit flow_control status=done for debate_trigger so the owner legs dispatch, or escalate if the verdict cannot be formed."
+
+// vibeDebateTriggerWedge reports whether the debate overlay's trigger node is
+// dead-dispatched: debate_trigger stamped RUNNING past the dispatch bound
+// while the parent has no turn in flight, no post-turn gate eval, no armed
+// settle, and no queued hub reinvoke. Callers hold the mount/settle
+// single-flights; this only reads the aged-stamp + liveness fields.
+func (s *InteractiveService) vibeDebateTriggerWedge(parentRunID string) bool {
+	if s.workflowStore == nil {
+		return false
+	}
+	steps, err := s.workflowStore.LoadRunSteps(context.Background(), parentRunID)
+	if err != nil {
+		return false
+	}
+	var trig *RuntimeWorkflowStep
+	for i := range steps {
+		if strings.TrimSpace(steps[i].NodeID) == "debate_trigger" {
+			trig = &steps[i]
+			break
+		}
+	}
+	if trig == nil || trig.Status != StepStatusRunning {
+		return false
+	}
+	started, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(trig.StartedAt))
+	if err != nil || time.Since(started) < vibeDebateTriggerWedgeBound {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rs := s.runs[parentRunID]
+	if rs == nil {
+		return false
+	}
+	return !rs.turnInFlight &&
+		!rs.pendingFlowGateSettle &&
+		!rs.pendingHubReinvoke &&
+		!rs.reinvokeInFlight &&
+		!rs.vibeDebateMountInFlight &&
+		!gateCancelLive(rs.postTurnGateStartedAt, rs.postTurnGateCancel)
 }
 
 // vibeDebateSynthesisResumePrompt re-drives the debate hub's synthesis turn
