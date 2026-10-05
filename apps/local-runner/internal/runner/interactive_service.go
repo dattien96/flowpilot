@@ -3115,6 +3115,8 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 	var orphanIDs []string
 	var resumeIDs []string
 	orphanNodes := nodes
+	orphanGateDebt := map[string]bool{}
+	orphanLabels := map[string]string{}
 	for _, cid := range s.agentOrchestrator.listChildren(parentRunID) {
 		c := s.runs[cid]
 		if c == nil {
@@ -3136,11 +3138,15 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 			continue
 		}
 		if c.status != RunStatusWaitingUserApr ||
-			c.pendingApprovalID != "" || s.pendingQuestionGatesWorkLocked(c) ||
-			len(c.pendingGateCodePaths) == 0 {
+			c.pendingApprovalID != "" || s.pendingQuestionGatesWorkLocked(c) {
 			continue
 		}
+		// BUG-1185: gate-debt (pendingGateCodePaths) is no longer the only
+		// orphan evidence — a child parked mid-step with an unfinished flow
+		// step row owes work too; the step-status filter runs below.
 		orphanIDs = append(orphanIDs, cid)
+		orphanLabels[cid] = c.label
+		orphanGateDebt[cid] = len(c.pendingGateCodePaths) > 0
 		if orphanNodes == nil {
 			orphanNodes = s.runs[parentRunID].activeFlowNodes
 		}
@@ -3149,15 +3155,35 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 	for _, id := range resumeIDs {
 		go s.flushDurableTurnIntents(id)
 	}
+	// BUG-1185: a parked child with no gate debt is still owed work when its
+	// flow step never reached a terminal state — the park froze it mid-step.
+	// Load the parent's step rows once; Running/WaitingUserApr steps are the
+	// unfinished evidence (Pending rows belong to the flow's own dispatch;
+	// terminal rows mean nothing is owed).
+	unfinishedStep := map[string]bool{}
+	if s.workflowStore != nil {
+		if steps, err := s.workflowStore.LoadRunSteps(context.Background(), parentRunID); err == nil {
+			for _, st := range steps {
+				if st.Status == StepStatusRunning || st.Status == StepStatusWaitingUserApr {
+					unfinishedStep[st.ID] = true
+					if st.NodeID != "" {
+						unfinishedStep[st.NodeID] = true
+					}
+				}
+			}
+		}
+	}
 	orphanRedrived := false
 	for _, orphanID := range orphanIDs {
-		label := ""
-		s.mu.Lock()
-		if c := s.runs[orphanID]; c != nil {
-			label = c.label
+		label := orphanLabels[orphanID]
+		gateDebt := orphanGateDebt[orphanID]
+		if !gateDebt && !unfinishedStep[label] {
+			continue // parked with nothing owed — not an orphan
 		}
-		s.mu.Unlock()
 		prompt := "[flow-engine] Resume: your previous turn was parked before its post-turn gate finished. Re-check the flagged code paths, fix any remaining violations, and resubmit."
+		if !gateDebt {
+			prompt = "[flow-engine] Resume: your turn was parked while the flow waited on the user. Continue your node's work and finish it."
+		}
 		if node, ok := findFlowNode(orphanNodes, label); ok {
 			prompt = composeFlowNodeAgentPrompt(s.workspaceCwdFor(parentRunID), prompt, node)
 		}
