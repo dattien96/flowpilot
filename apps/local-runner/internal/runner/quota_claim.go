@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 )
@@ -440,6 +441,37 @@ func (s *InteractiveService) resolveConnectedAccount(providerKey, accountID stri
 		}
 	}
 	return ProviderAccount{}, fmt.Errorf("account %q for provider %q not found", accountID, providerKey)
+}
+
+// ensureSpawnProviderConnected fail-closes a child spawn whose resolved
+// provider has no connected local account (CA-1218, live run-295277). The
+// error names the connected providers so a hub tool caller can re-pick —
+// or omit the override to inherit — instead of discovering the dead end
+// after the child row exists.
+func (s *InteractiveService) ensureSpawnProviderConnected(providerKey ProviderKey) error {
+	accounts, err := s.listProviderAccounts()
+	if err != nil {
+		return err
+	}
+	connected := make([]string, 0, len(accounts))
+	seen := make(map[string]bool, len(accounts))
+	for _, a := range accounts {
+		if a.AuthStatus != "connected" {
+			continue
+		}
+		if a.ProviderKey == string(providerKey) {
+			return nil
+		}
+		if !seen[a.ProviderKey] {
+			seen[a.ProviderKey] = true
+			connected = append(connected, a.ProviderKey)
+		}
+	}
+	sort.Strings(connected)
+	if len(connected) == 0 {
+		return fmt.Errorf("spawn_agent: provider %q has no connected local account (no provider is connected)", providerKey)
+	}
+	return fmt.Errorf("spawn_agent: provider %q has no connected local account (connected: %s); omit the provider override to inherit the parent run's provider", providerKey, strings.Join(connected, ", "))
 }
 
 // noteAccountBlockedLocked records a live-observed hard limit. Called under

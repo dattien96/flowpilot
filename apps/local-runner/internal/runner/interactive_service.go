@@ -9232,6 +9232,22 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 		s.mu.Unlock()
 	}
 
+	// CA-1218 (live run-295277): a hub spawn_agent call may carry an explicit
+	// provider override — the devin hub picked "codex" straight from the
+	// tool-schema examples — that resolves to a provider with no connected
+	// local account. The child then dies at adapter construction, burning a
+	// run row, a flow-node verdict, and a recovery cycle. Fail the spawn
+	// itself with an actionable error listing the connected providers so the
+	// caller can re-pick — or omit the override to inherit. Scoped to the
+	// cross-provider override: a same-provider explicit pin can never strand
+	// on accounts (the parent already runs under it), while pack-configured
+	// model routing and plain inheritance keep their existing behavior.
+	if strings.TrimSpace(in.Provider) != "" && providerKey != parentProviderKey {
+		if err := s.ensureSpawnProviderConnected(providerKey); err != nil {
+			return SpawnAgentResult{}, err
+		}
+	}
+
 	// Resolve the child model and reasoning effort.
 	// Priority: BUG-228's in.Model (a flow node's own step-configured model) >
 	// agent definition > same-provider inheritance > per-provider default.
