@@ -7,6 +7,7 @@ import {
   lastActivityAt,
   runActivityKind,
 } from "@/state/runActivity";
+import { STEP_RUNTIME_POLL_MS, stepRuntimeNeedsPoll } from "@/components/flowStepRuntimePoll";
 import { ChevronLeftIcon, ChevronRightIcon } from "@/components/icons";
 
 // BUG-156: dedicated collapsible middle sidebar for Flow Mode's step timeline,
@@ -82,6 +83,18 @@ export function FlowTimelineSidebar(): React.ReactElement | null {
     if (!visible) return;
     void refreshWorkflowStepRuntime();
   }, [visible, refreshWorkflowStepRuntime, mainRunId]);
+
+  // BUG-1198 (live run-225691): SSE-driven refreshes can miss bursts — a
+  // dropped agent_graph_updated leaves the rail stale indefinitely (runner
+  // had stamped coder/validate/spec_align DONE ~104s before the rail caught
+  // up). Keep a slow catch-up poll while the rail is live; it stops on an
+  // all-terminal list so a settled flow never burns requests.
+  const needsPoll = stepRuntimeNeedsPoll(steps, runStarted);
+  useEffect(() => {
+    if (!visible || !needsPoll) return;
+    const id = window.setInterval(() => void refreshWorkflowStepRuntime(), STEP_RUNTIME_POLL_MS);
+    return () => window.clearInterval(id);
+  }, [visible, needsPoll, refreshWorkflowStepRuntime]);
 
   // Task-458: 1s local tick ages the liveness chip. The interval only runs
   // while a step is RUNNING and the sidebar is visible — an idle, parked or
