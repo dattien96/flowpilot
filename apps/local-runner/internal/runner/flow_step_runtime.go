@@ -549,8 +549,24 @@ func (s *InteractiveService) persistTransitionLogDegradedMarker(parentRunID stri
 // the sole terminal settler.
 func (s *InteractiveService) markFlowRunComplete(ctx context.Context, parentRunID string) {
 	s.flowDiagLog(parentRunID, "flow_run_complete_begin", "marking flow run complete")
+	// CA-1210 (live run-262417): the step list for one runID holds rows from
+	// EVERY mounted flow that shared it (vibe-tasks parent graph + each
+	// sprint graph). The done-declaration is authoritative only over the
+	// flow that emitted it — the currently active node set — so a sprint
+	// sealing must not stamp foreign-mount rows (live: the parent graph's
+	// task_plan_reader was stamped DONE by a sprint's audit). An empty
+	// active set keeps the legacy stamp-everything behavior.
+	activeIDs := make(map[string]bool)
+	for _, n := range s.activeFlowNodesFor(parentRunID) {
+		if id := strings.TrimSpace(n.ID); id != "" {
+			activeIDs[id] = true
+		}
+	}
 	if steps, err := s.workflowStore.LoadRunSteps(ctx, parentRunID); err == nil {
 		for _, st := range steps {
+			if len(activeIDs) > 0 && !activeIDs[st.ID] && !activeIDs[st.NodeID] {
+				continue
+			}
 			switch st.Status {
 			case StepStatusDone, StepStatusFailed, StepStatusSkipped, StepStatusCanceled:
 				continue // already terminal
