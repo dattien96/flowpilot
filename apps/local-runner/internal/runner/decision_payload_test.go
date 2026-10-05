@@ -362,32 +362,56 @@ func TestRunUpdates_InitialSnapshotIsAtomicWithSubscription(t *testing.T) {
 	}
 }
 
-// TestRunUpdates_ExcludesDelegatedChildRuns: child-agent runs (parentRunID
-// set) are never in the lane set — not in the snapshot, not via drain (T-3).
-func TestRunUpdates_ExcludesDelegatedChildRuns(t *testing.T) {
+// TestRunUpdates_ChildLanesOnlyForOwnDecision: child-agent runs (parentRunID
+// set) stay lane-less while they WORK — progress rides the parent's
+// projection (T-3). But a child blocked on ITS OWN human decision gets a
+// lane: per-run decisions never aggregate onto the parent lane and children
+// never reach run history, so without a lane the member's approval/question
+// is invisible everywhere (BUG-1190 — live run-204891: a spec-aligner's
+// spawn-permission question sat ~7min unseen; a parked member stranded
+// ~95min with no surface). Park-frozen children (waiting_user_approval)
+// still stay out — the parent's card owns their unblock.
+func TestRunUpdates_ChildLanesOnlyForOwnDecision(t *testing.T) {
 	svc := NewInteractiveService()
 	parent := mkDecisionRun(svc, "run-429-parent", "proj-1")
-	child := mkDecisionRun(svc, "run-429-child", "proj-1")
-	child.parentRunID = parent.id
+	quiet := mkDecisionRun(svc, "run-429-quiet", "proj-1")
+	quiet.parentRunID = parent.id
+	parked := mkDecisionRun(svc, "run-429-parked", "proj-1")
+	parked.parentRunID = parent.id
+	parked.status = RunStatusWaitingUserApr
+	blocked := mkDecisionRun(svc, "run-429-blocked", "proj-1")
+	blocked.parentRunID = parent.id
 
 	subID, _, snapshot := svc.subscribeRunUpdates()
 	defer svc.unsubscribeRunUpdates(subID)
 	for _, p := range snapshot {
-		if p.RunID == child.id {
-			t.Fatalf("child run %q leaked into snapshot", child.id)
+		if p.RunID == quiet.id || p.RunID == blocked.id || p.RunID == parked.id {
+			t.Fatalf("child run %q leaked into snapshot without own decision state", p.RunID)
 		}
 	}
 
+	// Own pending approval → lane with the actionable decision.
 	svc.mu.Lock()
-	svc.approvals["appr-child"] = pendingApprovalRec("appr-child", child.id)
-	svc.markRunRealtimeDirtyLocked(child.id)
-	svc.markRunRealtimeDirtyLocked(parent.id)
+	svc.approvals["appr-child"] = pendingApprovalRec("appr-child", blocked.id)
+	blocked.pendingApprovalID = "appr-child"
+	blocked.status = RunStatusWaitingApproval
+	svc.markRunRealtimeDirtyLocked(blocked.id)
 	svc.mu.Unlock()
 
+	var lane *RunRealtimeProjection
 	for _, f := range svc.drainRunUpdates(subID) {
-		if f.RunID == child.id {
-			t.Fatalf("child run produced mux frame: %+v", f)
+		if f.RunID == quiet.id || f.RunID == parked.id {
+			t.Fatalf("non-blocked child produced mux frame: %+v", f)
 		}
+		if f.RunID == blocked.id && f.Kind == RunRealtimeUpsert && f.Run != nil {
+			lane = f.Run
+		}
+	}
+	if lane == nil {
+		t.Fatal("child blocked on its own approval produced no lane — decision unreachable in the client")
+	}
+	if len(lane.Decisions) != 1 || lane.Decisions[0].ID != "approval:appr-child" {
+		t.Fatalf("child lane decisions = %+v", lane.Decisions)
 	}
 }
 

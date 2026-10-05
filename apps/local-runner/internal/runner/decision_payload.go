@@ -587,8 +587,27 @@ const runUpdateSnapshotChunk = 32
 // isRealtimeVisibleRun limits the mux to top-level/user-visible lanes (T-3):
 // delegated child runs (parentRunID != "") are excluded — their progress
 // continues through the parent's graph/event projection.
+//
+// Exception (live run-204891): a child BLOCKED ON THE HUMAN owns its decision
+// — a pending approval/question record or a waiting_approval/waiting_question
+// status. Those records are per-run (decisionPayloadsForRunLocked keys on
+// rec.runID == rs.id) and child runs never reach run history either, so
+// without a lane the member's question/approval is invisible everywhere:
+// no inbox item, no badge, only an AgentsPanel status chip. The live cost
+// was a spec-aligner's spawn-permission question sitting ~7min unseen and a
+// parked cohort member stranded ~95min with no surface at all. Park-frozen
+// children (waiting_user_approval from a parent park) intentionally stay
+// lane-less — the parent's decision card owns their unblock, and surfacing
+// every frozen member would flood the inbox on each park.
 func isRealtimeVisibleRun(rs *interactiveRun) bool {
-	return rs != nil && rs.parentRunID == ""
+	if rs == nil {
+		return false
+	}
+	if rs.parentRunID == "" {
+		return true
+	}
+	return rs.pendingApprovalID != "" || rs.pendingQuestionID != "" ||
+		rs.status == RunStatusWaitingApproval || rs.status == RunStatusWaitingQuestion
 }
 
 // runStatusTerminal is the lane-removal predicate for the mux. It is sourced
