@@ -2,6 +2,7 @@ package flowgate
 
 import (
 	"bytes"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -211,6 +212,68 @@ func HasTaskDoc(diff []ChangedFile) bool {
 		}
 	}
 	return false
+}
+
+// HasTaskDocInPaths mirrors HasTaskDoc for held/written path lists (no git
+// status) — same parity as HasBugFixDocInPaths / HasChangeAuditNoteInPaths so
+// a pending re-check carrying pendingGateCodePaths with an empty GitDiff
+// still sees the task doc the flow authored (BUG-288 #8 shape, BUG-1183).
+func HasTaskDocInPaths(paths []string) bool {
+	for _, p := range paths {
+		if strings.Contains(p, "FORMAT-REFERENCE-") {
+			continue
+		}
+		if strings.Contains(p, "requirements/08-Task") || strings.Contains(p, "Task-") {
+			return true
+		}
+	}
+	return false
+}
+
+// TaskDocExistsOnDisk reports whether a task document exists under the
+// workspace's requirements/08-Task tree (BUG-1183). Non-writer legs —
+// reviewer, spec-aligner, synthesis — routinely reference "Task-NNN" without
+// authoring its doc; requiring the doc inside that turn's diff is a false
+// positive when the doc already exists in the repo (authored by an earlier
+// leg or a human). When taskIDs holds extracted "Task-NNN" ids, a doc whose
+// base name is exactly "<id>.md" or starts with "<id>-" satisfies; with no
+// ids, any Task-*.md under the tree satisfies (mirroring HasTaskDoc's loose
+// path check). Empty workspaceCwd returns false — the caller keeps its
+// pre-disk-fallback behavior (fail-closed).
+func TaskDocExistsOnDisk(workspaceCwd string, taskIDs []string) bool {
+	root := strings.TrimSpace(workspaceCwd)
+	if root == "" {
+		return false
+	}
+	base := filepath.Join(root, "requirements", "08-Task")
+	found := false
+	_ = filepath.WalkDir(base, func(_ string, d fs.DirEntry, err error) error {
+		if err != nil || found {
+			return nil
+		}
+		if d.IsDir() {
+			return nil
+		}
+		name := d.Name()
+		if !strings.HasPrefix(name, "Task-") || !strings.HasSuffix(name, ".md") {
+			return nil
+		}
+		if len(taskIDs) == 0 {
+			found = true
+			return nil
+		}
+		for _, id := range taskIDs {
+			if id == "" {
+				continue
+			}
+			if name == id+".md" || strings.HasPrefix(name, id+"-") || strings.HasPrefix(name, id+"_") {
+				found = true
+				return nil
+			}
+		}
+		return nil
+	})
+	return found
 }
 
 func HasBugFixDoc(diff []ChangedFile) bool {

@@ -11,6 +11,18 @@ import (
 
 var taskIDRegex = regexp.MustCompile(`\bTask-\d+\b`)
 
+// taskRefIDs extracts every Task-NNN id the turn references — the declared
+// SourceDocID pin (which may itself be a doc path) plus the final message —
+// so the r-task disk fallback can scope the workspace check to the named
+// task(s) instead of any doc at all (BUG-1183).
+func taskRefIDs(tr TurnResult) []string {
+	ids := taskIDRegex.FindAllString(tr.FinalMessage, -1)
+	if tr.SourceDocID != "" {
+		ids = append(ids, taskIDRegex.FindAllString(tr.SourceDocID, -1)...)
+	}
+	return ids
+}
+
 func Evaluate(tr TurnResult, rules []Rule) []Violation {
 	var violations []Violation
 	for _, rule := range rules {
@@ -82,7 +94,8 @@ func checkRule(rule Rule, tr TurnResult) *Violation {
 		if !hasTaskRef {
 			hasTaskRef = taskIDRegex.MatchString(tr.FinalMessage)
 		}
-		if hasTaskRef && !HasTaskDoc(tr.GitDiff) {
+		if hasTaskRef && !HasTaskDoc(tr.GitDiff) && !HasTaskDocInPaths(tr.WrittenPaths) &&
+			!TaskDocExistsOnDisk(tr.WorkspaceCwd, taskRefIDs(tr)) {
 			if tr.ChangeType == "task" {
 				return &Violation{
 					Rule:        rule,
