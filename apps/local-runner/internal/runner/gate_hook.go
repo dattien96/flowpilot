@@ -1517,6 +1517,18 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 		// BUG-630: the waiver reads only the current task's ledger section —
 		// another task's declared zero-red must not leak across the file.
 		tr.ScaffoldRedWaived = vibeScaffoldRedWaivedForTask(cwd, sigTaskID)
+		if !tr.ScaffoldRedWaived {
+			// Task-459 (vibe-adopt): a contract declaring failure_type:
+			// characterization licenses green-by-design tests over
+			// pre-existing code — adopt sprints only; on every other flow the
+			// declaration is inert and the RED gate applies unchanged.
+			s.mu.Lock()
+			adopt := parentID != "" && s.runs[parentID] != nil && vibeSprintIsAdopt(s.runs[parentID])
+			s.mu.Unlock()
+			if adopt && vibeScaffoldCharacterizationForTask(cwd, sigTaskID) {
+				tr.ScaffoldRedWaived = true
+			}
+		}
 		// BUG-630: attest the signatures section for this run's current task
 		// only when the scaffold leg actually WROTE the ledger this turn —
 		// a pre-existing (stale/abandoned-leg) block is not evidence.
@@ -2477,6 +2489,13 @@ func (s *InteractiveService) SubmitGateDecision(runID, option, customText string
 	// parked hub re-drives with the remediation in its reinvoke note. Runs
 	// with their own decision surface (vibeSprintBoundaryPending /
 	// vibeResumeConfirm) were already handled above.
+	// Task-459 (vibe-adopt): while the adopt-select question card owns this
+	// run's decision surface, a stray gate-decision must not ride the generic
+	// blocked-loop path — the question IS the surface.
+	if s.vibeAdoptSelectPendingLocked(runID) {
+		s.mu.Unlock()
+		return newAPIErr(409, "adopt_select_pending", "answer the adopt-select card first (scope then candidate)")
+	}
 	decisionTarget := ""
 	if loop := s.agentOrchestrator.loopStateFor(runID); loop.Status == "blocked" {
 		decisionTarget = runID

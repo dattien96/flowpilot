@@ -96,6 +96,18 @@ flows:
     editable: false
     selectableIn: []
     cloneable: false
+  # Task-459: fourth vibe entry — adopt pre-existing code: adopt_select parks
+  # on a scope/candidate question card, then chains vibe-adopt-sprint.
+  - path: flows/vibe-adopt.yaml
+    visibility: builtin
+    editable: false
+    selectableIn: []
+    cloneable: false
+  - path: flows/vibe-adopt-sprint.yaml
+    visibility: builtin
+    editable: false
+    selectableIn: []
+    cloneable: false
 tools:
   - tools/submit-review-outcome.yaml
   - tools/vibe-requirement-outcome.yaml

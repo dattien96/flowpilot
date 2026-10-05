@@ -22,7 +22,8 @@ export function wireWorkingMode(labelOrMode: string | undefined): WorkingMode {
 export function flowPickerOptions(mode: string | undefined): string[] {
   if (wireWorkingMode(mode) === WORKING_MODE_VIBE) {
     // CP-90: vibe-tasks = third entry (locked CP + existing parented tasks).
-    return ["vibe-ingest", "vibe-cp-ingest", "vibe-tasks"];
+    // Task-459: vibe-adopt = fourth entry (adopt code written outside FlowPilot).
+    return ["vibe-ingest", "vibe-cp-ingest", "vibe-tasks", "vibe-adopt"];
   }
   return [...DEV_HARNESS_FIVE];
 }
@@ -36,8 +37,8 @@ const PACK_PREFIX = "flowpilot-core-flow-pack/";
 
 /** Builtin mirrors that exist as rows but are never user-startable. */
 const HIDDEN_FLOW_IDS = new Set(["review-loop", "rag-harness", "cp-harness-smoke"]);
-const VIBE_USER_FLOW_IDS = new Set(["vibe-ingest", "vibe-cp-ingest", "vibe-tasks"]);
-const VIBE_SYSTEM_FLOW_IDS = new Set(["vibe-sprint", "vibe-owner-debate"]);
+const VIBE_USER_FLOW_IDS = new Set(["vibe-ingest", "vibe-cp-ingest", "vibe-tasks", "vibe-adopt"]);
+const VIBE_SYSTEM_FLOW_IDS = new Set(["vibe-sprint", "vibe-owner-debate", "vibe-adopt-sprint"]);
 
 /** Strip an optional "flowpilot-core-flow-pack/" prefix (BareFlowID). */
 export function bareFlowId(ref: string | undefined): string {

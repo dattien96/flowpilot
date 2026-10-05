@@ -297,7 +297,9 @@ func TestVibeTasks_UserStartGate(t *testing.T) {
 		t.Fatal("vibe-sprint must stay system-only")
 	}
 	got := workingmode.FlowPickerOptions("vibe")
-	want := []string{"vibe-ingest", "vibe-cp-ingest", "vibe-tasks"}
+	// Task-459: vibe-adopt joins the user entries (adopt code written
+	// outside FlowPilot, scope/candidate select card then adopt-sprint chain).
+	want := []string{"vibe-ingest", "vibe-cp-ingest", "vibe-tasks", "vibe-adopt"}
 	if len(got) != len(want) {
 		t.Fatalf("FlowPickerOptions(vibe) = %v, want %v", got, want)
 	}

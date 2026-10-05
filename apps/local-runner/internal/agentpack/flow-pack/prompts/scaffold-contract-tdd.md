@@ -72,7 +72,12 @@ final message in the face's shape:
 - `stubs`: one row per file — `{file, symbols: [{name, kind, signature}]}`
   with `kind` one of `function|method|interface|struct|class`
 - `test_suite`: `{test_file, red_tests: [...], failure_type}` where
-  `failure_type` is `not_implemented` or `assertion_failure`
+  `failure_type` is `not_implemented` or `assertion_failure`. On a
+  `vibe-adopt-sprint` remediation for a coverage gap only (the spec-align
+  verdict classified the requirement MISSING — never OUTDATED or
+  CONTRADICTS), you may instead write a green-by-design characterization
+  suite and declare `red_tests: []` + `failure_type: characterization`;
+  any real defect keeps honest RED tests and the standard failure types.
 
 Never report the handover as free prose. After your gate passes, the runner
 locks your test files read-only and snapshots every signature — the coder

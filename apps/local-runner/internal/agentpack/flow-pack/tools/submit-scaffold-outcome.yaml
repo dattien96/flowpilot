@@ -64,6 +64,11 @@ input:
           enum:
             - not_implemented
             - assertion_failure
+            # Task-459 (vibe-adopt): tests characterize already-implemented
+            # behavior — green-by-design. Accepted by r-scaffold-red only on
+            # adopt sprints and only when the declared contract also carries
+            # failure_type: characterization (schema-declared, never prose).
+            - characterization
 statusMap:
   scaffold_ready: done
   blocked: escalate

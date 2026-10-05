@@ -671,7 +671,7 @@ func questionRecordKind(rec *questionRecord) string {
 	if rec.kind != "" {
 		return rec.kind
 	}
-	for _, k := range []string{quotaRouteQuestionKind, usageBudgetQuestionKind, contextPressureQuestionKind} {
+	for _, k := range []string{quotaRouteQuestionKind, usageBudgetQuestionKind, contextPressureQuestionKind, vibeAdoptSelectQuestionKind} {
 		if strings.HasPrefix(rec.prompt, k+":") {
 			return k
 		}

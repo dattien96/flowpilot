@@ -91,10 +91,11 @@ func TestSubmitScaffoldOutcomeSchemaValidation(t *testing.T) {
 			t.Fatalf("symbols.kind enum = %v, want %v", kindEnum, want)
 		}
 	}
-	// test_suite.failure_type enum: not_implemented | assertion_failure (T-4).
+	// test_suite.failure_type enum: not_implemented | assertion_failure (T-4)
+	// | characterization (Task-459: adopt-mode green-by-design coverage).
 	ftEnum := nestedEnum(t, face, []string{"test_suite"}, "failure_type")
-	if len(ftEnum) != 2 || ftEnum[0] != "not_implemented" || ftEnum[1] != "assertion_failure" {
-		t.Fatalf("failure_type enum = %v, want [not_implemented assertion_failure]", ftEnum)
+	if len(ftEnum) != 3 || ftEnum[0] != "not_implemented" || ftEnum[1] != "assertion_failure" || ftEnum[2] != "characterization" {
+		t.Fatalf("failure_type enum = %v, want [not_implemented assertion_failure characterization]", ftEnum)
 	}
 	// payloadMap forwards stubs + test_suite verbatim for hub reading.
 	if face.PayloadMap["stubs"] != "payload.stubs" || face.PayloadMap["test_suite"] != "payload.test_suite" {

@@ -13526,6 +13526,7 @@ func (s *InteractiveService) AnswerQuestion(questionID string, choice []string) 
 	// to a semantic handler instead of a turn reprompt.
 	var decisionTarget *interactiveRun
 	var usageBudgetChoice, pressureChoice, quotaRouteChoice string
+	var adoptRec *questionRecord
 	if len(rec.choice) > 0 {
 		decisionTarget = s.runs[rec.runID]
 		// questionRecordKind recovers the kind from the persisted prompt prefix
@@ -13537,6 +13538,8 @@ func (s *InteractiveService) AnswerQuestion(questionID string, choice []string) 
 			pressureChoice = rec.choice[0]
 		case quotaRouteQuestionKind:
 			quotaRouteChoice = rec.choice[0]
+		case vibeAdoptSelectQuestionKind:
+			adoptRec = rec
 		}
 	}
 	s.mu.Unlock()
@@ -13551,6 +13554,9 @@ func (s *InteractiveService) AnswerQuestion(questionID string, choice []string) 
 		if aerr := s.applyQuotaRouteAnswer(decisionTarget, questionID, quotaRouteChoice); aerr != nil {
 			return s.restorePendingQuotaQuestion(questionID, aerr)
 		}
+	}
+	if decisionTarget != nil && adoptRec != nil {
+		s.applyVibeAdoptSelectAnswer(decisionTarget, adoptRec)
 	}
 
 	if resumeStepTurn {

@@ -10,8 +10,9 @@ import {
 
 test("chrome toggle vibe filters picker to vibe entries", () => {
   const ids = flowPickerOptions("vibe");
-  // CP-90: vibe-tasks joins the two ingest entries.
-  assert.deepEqual(ids, ["vibe-ingest", "vibe-cp-ingest", "vibe-tasks"]);
+  // CP-90: vibe-tasks joins the two ingest entries; Task-459: vibe-adopt
+  // is the fourth entry (adopt code written outside FlowPilot).
+  assert.deepEqual(ids, ["vibe-ingest", "vibe-cp-ingest", "vibe-tasks", "vibe-adopt"]);
 });
 
 test("chrome toggle normal hides vibe-*", () => {

@@ -196,6 +196,59 @@ func vibeScaffoldRedWaivedIn(text string) bool {
 	return emptyRed && noneType
 }
 
+// vibeScaffoldCharacterizationForTask reports whether the current task's
+// declared contract marks the suite as characterization-shaped —
+// failure_type: characterization AND red_tests: [] (Task-459). A
+// characterization suite is green-by-design over pre-existing code, so it
+// declares no RED reproduction tests; a contract naming red tests is a real
+// defect remediation and must ride the normal RED gate even on adopt
+// sprints. Callers scope acceptance to adopt sprints only; on any other
+// flow the declaration is inert and the RED gate applies unchanged.
+func vibeScaffoldCharacterizationForTask(cwd, taskID string) bool {
+	raw, err := os.ReadFile(filepath.Join(cwd, filepath.FromSlash(vibeTddSignaturesRel)))
+	if err != nil {
+		return false
+	}
+	sections := vibeTddSignatureSections(string(raw))
+	labelled := false
+	for _, sec := range sections {
+		if sec.taskID != "" {
+			labelled = true
+			break
+		}
+	}
+	if taskID = strings.TrimSpace(taskID); taskID == "" || !labelled {
+		return vibeScaffoldCharacterizationIn(string(raw))
+	}
+	for _, sec := range sections {
+		if sec.taskID == taskID {
+			return vibeScaffoldCharacterizationIn(sec.body)
+		}
+	}
+	return false
+}
+
+// vibeScaffoldCharacterizationIn is the "last declared value wins" scan over
+// one text block, mirroring vibeScaffoldRedWaivedIn: both keys must hold —
+// red_tests: [] AND failure_type: characterization.
+func vibeScaffoldCharacterizationIn(text string) bool {
+	emptyRed, characterization := false, false
+	for _, line := range strings.Split(text, "\n") {
+		f := strings.FieldsFunc(line, func(r rune) bool {
+			return r == ' ' || r == '\t' || r == '`' || r == '-'
+		})
+		for i := 0; i < len(f)-1; i++ {
+			switch f[i] {
+			case "red_tests:":
+				emptyRed = f[i+1] == "[]"
+			case "failure_type:":
+				characterization = f[i+1] == "characterization"
+			}
+		}
+	}
+	return emptyRed && characterization
+}
+
 // vibeScaffoldRedWaivedForTask scopes the waiver to the current task's own
 // ledger section (BUG-630): a file with ANY task-labelled section only
 // waives when the section for taskID itself declares zero-red — another

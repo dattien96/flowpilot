@@ -30,8 +30,10 @@ func TestLoadBuiltinPack(t *testing.T) {
 	// CP-65 Task-370 adds tournament-harness (multi-candidate PDR flow,
 	// opt-in selectable, never default).
 	// CP-90 adds vibe-tasks (pre-broken Task sprint entry).
-	if len(pack.Flows) != 14 {
-		t.Fatalf("expected 14 built-in flows, got %d", len(pack.Flows))
+	// Task-459 adds vibe-adopt + vibe-adopt-sprint (verify-first adoption of
+	// code written outside FlowPilot).
+	if len(pack.Flows) != 16 {
+		t.Fatalf("expected 16 built-in flows, got %d", len(pack.Flows))
 	}
 	names := SortedAgentNames(pack.Agents)
 	for _, want := range []string{"coder", "reviewer", "synthesizer", "tester", "owner", "vibe-intake"} {

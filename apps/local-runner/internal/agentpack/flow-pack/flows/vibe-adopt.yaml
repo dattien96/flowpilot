@@ -1,0 +1,35 @@
+id: vibe-adopt
+version: "1"
+description: Vibe adopt entry — verify-first adoption for code written outside FlowPilot. adopt_select parks on an engine question card — stage 1 picks the scope (task | cp), stage 2 lists Task-*.md or CP-*.md candidates — then the sprint chain mounts vibe-adopt-sprint graphs over the chosen plan (one task or every task parented to the chosen CP).
+mode: flow
+builtin:
+  editable: false
+  selectableIn: []
+  cloneable: false
+  mirror:
+    required: true
+    source: builtin
+policy:
+  cap: 20
+  onCap: escalate
+  extendBy: 2
+  extendMax: 2
+acceptance_nodes: []
+nodes:
+  # Runner-intercepted select node (same class as cp_lock's user.confirm
+  # marker): the flow engine never dispatches the behavior — the node id
+  # routes to the adopt-select park/question machinery instead.
+  - id: adopt_select
+    run: inline
+    lifecycle: once
+    behavior: user.confirm
+    join: all
+edges:
+  - from: adopt_select
+    to: done
+    when: done
+    kind: forward
+  - from: adopt_select
+    to: ask_user
+    when: escalate
+    kind: forward

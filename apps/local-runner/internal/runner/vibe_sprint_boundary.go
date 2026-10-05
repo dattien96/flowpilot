@@ -448,6 +448,9 @@ func (s *InteractiveService) continueVibeSprintBoundary(parentRunID, note string
 	switch {
 	case d.Start:
 		prompt := vibeSprintPromptWithNote(d.Task, note)
+		if vibeSprintIsAdopt(rs) {
+			prompt = prompt + "\n\n[vibe-adopt] The implementation for this task already exists (written outside FlowPilot). You are verifying alignment against the requirement chain, not authoring it."
+		}
 		// Task-351 (CP-62 P-6): the boundary-continue start is the STANDARD
 		// next-sprint entry — it must carry the previous sprint's handoff
 		// exactly like maybeStartNextVibeSprint does (d.Sprint is already
@@ -651,14 +654,19 @@ func (s *InteractiveService) startTakenVibeSprint(parentRunID, prompt, takenTask
 		return
 	}
 	cwd := rs.workspaceCwd
+	adopt := vibeSprintIsAdopt(rs)
 	s.mu.Unlock()
 	abandonActiveFrozenContractsForRun(cwd, parentRunID, "vibe-sprint next task")
-	stampVibeTaskInProgress(cwd, takenTask)
+	// Task-459: adopt sprints verify pre-existing work — never flip the doc
+	// back to in_progress.
+	if !adopt {
+		stampVibeTaskInProgress(cwd, takenTask)
+	}
 	before := make(map[string]struct{})
 	for _, cid := range s.agentOrchestrator.listChildren(parentRunID) {
 		before[cid] = struct{}{}
 	}
-	ref := workingmode.PackPrefix + vibeSprintFlowID
+	ref := vibeSprintFlowRefFor(rs)
 	s.startResolvedFlow(context.Background(), parentRunID, ref, prompt)
 	// Only a new, non-cancelled child proves the sprint actually started: a
 	// spawn aborted by Stop registers its child and then cancels it, so a

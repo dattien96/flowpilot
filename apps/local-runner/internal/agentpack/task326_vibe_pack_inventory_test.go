@@ -15,8 +15,9 @@ func TestPack_InventoryUnchanged(t *testing.T) {
 		t.Fatalf("LoadBuiltinPack: %v", err)
 	}
 	// CP-90: +vibe-tasks (sprint pre-broken tasks under a locked CP).
-	if len(pack.Flows) != 14 {
-		t.Fatalf("flows=%d, want 14", len(pack.Flows))
+	// Task-459: +vibe-adopt, +vibe-adopt-sprint (adopt pre-existing code).
+	if len(pack.Flows) != 16 {
+		t.Fatalf("flows=%d, want 16", len(pack.Flows))
 	}
 	if len(pack.Agents) != 11 {
 		t.Fatalf("agents=%d, want 11 (%v)", len(pack.Agents), SortedAgentNames(pack.Agents))

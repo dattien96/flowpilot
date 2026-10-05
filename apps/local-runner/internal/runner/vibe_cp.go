@@ -60,9 +60,17 @@ func inferPackFlowRefFromNodes(nodes []agentpack.FlowNode, fallback string) stri
 		return workingmode.PackPrefix + id
 	}
 	switch {
+	case ids[vibeAdoptSelectNodeID]:
+		return pick(vibeAdoptFlowID)
 	case ids["owner_1"] && ids["owner_2"]:
 		return pick(vibeOwnerDebateFlowID)
 	case ids["tdd"] && ids["coder"]:
+		// Task-459: adopt-sprint mounts share the vibe-sprint node set — the
+		// topology alone cannot tell them apart, so an explicit adopt ref is
+		// authoritative (a stale non-adopt ref still corrects to vibe-sprint).
+		if workingmode.BareFlowID(fallback) == vibeAdoptSprintFlowID {
+			return fallback
+		}
 		return pick(vibeSprintFlowID)
 	// CP-90: vibe-tasks shares cp_reader/cp_lock with vibe-cp-ingest — the
 	// reader node is the only discriminator, so it must win first.
@@ -99,7 +107,8 @@ func vibeInheritsSessionModel(nodeID string) bool {
 func vibeChainHandoffNode(nodeID string) bool {
 	switch strings.TrimSpace(nodeID) {
 	case vibeCpWriterNodeID, vibeDebateSynthesisNodeID,
-		vibeTaskSlicerNodeID, vibeSprintSlicerNodeID, vibeTaskPlanReaderNodeID:
+		vibeTaskSlicerNodeID, vibeSprintSlicerNodeID, vibeTaskPlanReaderNodeID,
+		vibeAdoptSelectNodeID:
 		return true
 	default:
 		return false
@@ -326,8 +335,10 @@ func (s *InteractiveService) maybeStartNextVibeSprint(parentRunID string) {
 	}
 	d := s.takeNextVibeSprintLocked(rs)
 	cwd := ""
+	adopt := false
 	if rs != nil {
 		cwd = rs.workspaceCwd
+		adopt = vibeSprintIsAdopt(rs)
 	}
 	if d.Start {
 		// A new sprint start supersedes any earlier boundary decline: the
@@ -337,7 +348,11 @@ func (s *InteractiveService) maybeStartNextVibeSprint(parentRunID string) {
 	s.mu.Unlock()
 	if d.Start {
 		abandonActiveFrozenContractsForRun(cwd, parentRunID, "vibe-sprint next task")
-		stampVibeTaskInProgress(cwd, d.Task)
+		// Task-459: an adopt sprint verifies pre-existing work — it does not
+		// author, so the doc's status must not flip back to in_progress.
+		if !adopt {
+			stampVibeTaskInProgress(cwd, d.Task)
+		}
 	}
 	if d.Locked {
 		log.Printf("[vibe-cp] skip vibe-sprint; cp_lock still waiting run=%s", parentRunID)
@@ -357,11 +372,14 @@ func (s *InteractiveService) maybeStartNextVibeSprint(parentRunID string) {
 		}
 		return
 	}
-	ref := workingmode.PackPrefix + vibeSprintFlowID
+	ref := vibeSprintFlowRefFor(rs)
 	// CP-62 P-6 (Task-342): carry the previous sprint's verified handoff into
 	// the entry prompt — decisions/findings survive across sprints. A missing
 	// file degrades to the bare task reference (graceful fallback, T-4).
 	prompt := d.Task
+	if adopt {
+		prompt = prompt + "\n\n[vibe-adopt] The implementation for this task already exists (written outside FlowPilot). You are verifying alignment against the requirement chain, not authoring it."
+	}
 	if handoff := previousSprintHandoffContext(cwd, d.Sprint); handoff != "" {
 		prompt = prompt + "\n\n" + handoff
 	}
@@ -1371,6 +1389,11 @@ func (s *InteractiveService) onVibeCpNodeDone(parentRunID, completedNodeID strin
 		s.maybeStartVibeCpIngest(parentRunID)
 	case vibeDebateSynthesisNodeID:
 		s.restoreVibeFlowAfterDebate(parentRunID)
+	case vibeAdoptSelectNodeID:
+		// Task-459: adopt_select's apply already wrote vibeTaskPlan +
+		// vibeCpDocID + index — the completion only needs the chain seam to
+		// mount the first vibe-adopt-sprint.
+		s.maybeStartNextVibeSprint(parentRunID)
 	case vibeTaskSlicerNodeID, vibeSprintSlicerNodeID, vibeTaskPlanReaderNodeID:
 		// BUG-363: fail closed when the slicer wrote nothing. With a visible
 		// workspace and zero Task files, starting a sprint from the SS-glob

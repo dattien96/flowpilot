@@ -153,6 +153,25 @@ func (s *InteractiveService) startResolvedFlowFromNode(ctx context.Context, pare
 		return st
 	})
 
+	// Task-459 (vibe-adopt): the wrapper flow's only node is adopt_select —
+	// an engine-emitted question card, not a spawnable delegate. Mount the
+	// topology, then park on the scope card instead of entry dispatch.
+	if workingmode.BareFlowID(record.FlowRef) == vibeAdoptFlowID {
+		s.mu.Lock()
+		if rs := s.runs[parentRunID]; rs != nil {
+			rs.activeFlowEdges = record.Definition.Edges
+			rs.activeFlowNodes = record.Definition.Nodes
+			rs.activeFlowAcceptanceNodes = append([]string(nil), record.Definition.AcceptanceNodes...)
+			rs.chatFlowRef = record.FlowRef
+		}
+		s.mu.Unlock()
+		if s.isFlowEngineDriven(parentRunID) {
+			s.reseedFlowStepRuntime(parentRunID, record.Definition.Nodes)
+		}
+		s.parkVibeAdoptSelect(parentRunID)
+		return
+	}
+
 	entryNodes := entryDelegateNodes(record.Definition)
 	if startNodeID != "" {
 		node, ok := findFlowNode(record.Definition.Nodes, startNodeID)
@@ -1509,7 +1528,7 @@ func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID
 		// handoff shape (CP-90 added the reader but missed this list).
 		if completedNodeID == vibeCpWriterNodeID || completedNodeID == vibeTaskSlicerNodeID ||
 			completedNodeID == vibeSprintSlicerNodeID || completedNodeID == vibeTaskPlanReaderNodeID ||
-			completedNodeID == vibeDebateSynthesisNodeID {
+			completedNodeID == vibeDebateSynthesisNodeID || completedNodeID == vibeAdoptSelectNodeID {
 			s.flowDiagLog(parentRunID, "flow_advance_vibe_terminal_done", "claimed vibe writer/slicer/debate terminal done without hub reinvoke",
 				"completed_node_id", completedNodeID,
 			)

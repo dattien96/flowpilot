@@ -46,11 +46,16 @@ var vibeUserFlowIDs = map[string]struct{}{
 	// CP-90: vibe-tasks — third user entry for a prepared workspace (CP +
 	// Task-*.md already broken); skips task_slicer entirely.
 	"vibe-tasks": {},
+	// Task-459: vibe-adopt — fourth user entry for code written outside
+	// FlowPilot; parks on a scope/candidate select card then chains
+	// vibe-adopt-sprint over the chosen plan.
+	"vibe-adopt": {},
 }
 
 var vibeSystemFlowIDs = map[string]struct{}{
 	"vibe-sprint":        {},
 	"vibe-owner-debate":  {},
+	"vibe-adopt-sprint": {},
 }
 
 // Error is a frozen-code gate failure.
@@ -210,7 +215,7 @@ func FlowPickerOptions(mode string) []string {
 		return nil
 	}
 	if norm == Vibe {
-		return []string{"vibe-ingest", "vibe-cp-ingest", "vibe-tasks"}
+		return []string{"vibe-ingest", "vibe-cp-ingest", "vibe-tasks", "vibe-adopt"}
 	}
 	out := make([]string, len(DevHarnessFive))
 	copy(out, DevHarnessFive)

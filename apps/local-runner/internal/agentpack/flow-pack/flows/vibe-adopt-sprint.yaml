@@ -1,0 +1,214 @@
+id: vibe-adopt-sprint
+version: "1"
+description: Vibe adopt per-sprint — clone of vibe-sprint v2 for code that already exists (written outside FlowPilot). The first pass enters at validate (context --done--> validate) instead of tdd, so the suite + review cohort verify the pre-existing diff; defect findings re-enter the normal remediation loop (synthesis_negotiation --continue--> tdd -> coder -> validate) with the RED gate unchanged.
+mode: flow
+builtin:
+  editable: false
+  selectableIn: []
+  cloneable: false
+  mirror:
+    required: true
+    source: builtin
+policy:
+  cap: 20
+  onCap: escalate
+  extendBy: 2
+  extendMax: 2
+  negotiationCap: 5
+tools:
+  - tools/vibe-requirement-outcome.yaml
+  - tools/submit-scaffold-outcome.yaml
+  - tools/submit-coder-outcome.yaml
+  - tools/submit-review-outcome.yaml
+contextProfiles:
+  scout:
+    candidateSources: [conventions, canonical.head, feature.history]
+    maxEstPromptTokens: 6000
+  coder:
+    candidateSources: [conventions, canonical.head, change.contract, source.dependence, source.excerpt]
+    maxEstPromptTokens: 24000
+  tdd:
+    candidateSources: [conventions, canonical.head, change.contract, source.excerpt]
+    maxEstPromptTokens: 12000
+  reviewer:
+    candidateSources: [conventions, change.contract, source.excerpt]
+    maxEstPromptTokens: 12000
+  specalign:
+    candidateSources: [conventions, canonical.head, change.contract, source.excerpt]
+    maxEstPromptTokens: 12000
+acceptance_nodes:
+  - validate
+  - synthesis
+  - audit
+nodes:
+  - id: preflight_contract_plan
+    run: delegate
+    lifecycle: once
+    behavior: agent.delegate
+    workloadClass: high_reasoning
+    agent: agents/contract-planner.md
+    posture: read_only
+    contextProfile: scout
+  - id: preflight_contract_freeze
+    run: inline
+    lifecycle: once
+    behavior: contract.freeze
+  - id: context
+    run: inline
+    lifecycle: once
+    behavior: context.produce
+  - id: tdd
+    run: delegate
+    lifecycle: reinvoke
+    behavior: agent.scaffold
+    workloadClass: coding
+    agent: agents/scaffold-architect.md
+    promptTemplate: prompts/scaffold-contract-tdd.md
+    join: all
+    model: claude-sonnet-4-5
+    contextProfile: tdd
+    artifactBindings:
+      - direction: output
+        slotName: tdd_signatures
+        artifactInstanceId: tdd_signatures
+        artifactTypeId: file_artifact.v1
+        required: true
+        position: 0
+        config:
+          pathTemplate: requirements/.flowpilot/vibe/tdd-signatures.md
+  - id: coder
+    run: delegate
+    lifecycle: reinvoke
+    behavior: agent.code
+    workloadClass: coding
+    agent: agents/coder.md
+    promptTemplate: prompts/implement-scaffold-body.md
+    join: all
+    contextProfile: coder
+  - id: validate
+    run: inline
+    lifecycle: once
+    behavior: command.validate
+  - id: spec_align
+    run: delegate
+    lifecycle: spawn
+    behavior: agent.delegate
+    workloadClass: high_reasoning
+    agent: agents/spec-aligner.md
+    promptTemplate: prompts/spec-align-check.md
+    posture: read_only
+    contextProfile: specalign
+    dependsOn:
+      - validate
+    cohort: review
+    join: all
+  - id: reviewer
+    run: delegate
+    lifecycle: spawn
+    behavior: agent.delegate
+    workloadClass: high_reasoning
+    agent: agents/reviewer.md
+    promptTemplate: prompts/review-safe-fix-contract.md
+    posture: read_only
+    contextProfile: reviewer
+    dependsOn:
+      - validate
+    cohort: review
+    join: all
+  - id: synthesis
+    run: inline
+    lifecycle: reinvoke
+    behavior: hub.inline
+    agent: agents/synthesizer.md
+    join: all
+  - id: synthesis_negotiation
+    run: inline
+    lifecycle: reinvoke
+    behavior: hub.inline
+    agent: agents/synthesizer.md
+    join: all
+  - id: audit
+    run: inline
+    lifecycle: once
+    behavior: artifact.audit_draft
+edges:
+  - from: preflight_contract_plan
+    to: preflight_contract_freeze
+    when: done
+    kind: forward
+  - from: preflight_contract_freeze
+    to: context
+    when: done
+    kind: forward
+  # Task-459 T-2: adopt enters at verification — the suite runs first so the
+  # review cohort sees a real baseline signal on the pre-existing diff. tdd
+  # is reachable only via the synthesis_negotiation back-edge (defects).
+  - from: context
+    to: validate
+    when: done
+    kind: forward
+  - from: tdd
+    to: coder
+    when: done
+    kind: forward
+  - from: coder
+    to: validate
+    when: done
+    kind: forward
+  - from: validate
+    to: coder
+    when: continue
+    kind: back
+  - from: validate
+    to: spec_align
+    when: done
+    kind: forward
+  - from: validate
+    to: reviewer
+    when: done
+    kind: forward
+  - from: reviewer
+    to: synthesis
+    when: done
+    kind: forward
+  - from: validate
+    to: ask_user
+    when: escalate
+    kind: forward
+  - from: synthesis
+    to: coder
+    when: continue
+    kind: back
+  - from: synthesis
+    to: synthesis_negotiation
+    when: continue
+    kind: forward
+  # Topology anchor: the remediation back-edge below is excluded from
+  # entry/dominance computation (kind:back), which would strand tdd as an
+  # "entry node" — illegal for agent.scaffold. This forward edge carries the
+  # never-emitted `remediate` status so tdd stays reachable-on-paper; the
+  # real re-entry still rides the continue back-edge only.
+  - from: synthesis_negotiation
+    to: tdd
+    when: remediate
+    kind: forward
+  - from: synthesis_negotiation
+    to: tdd
+    when: continue
+    kind: back
+  - from: synthesis_negotiation
+    to: synthesis
+    when: done
+    kind: forward
+  - from: synthesis
+    to: audit
+    when: done
+    kind: forward
+  - from: synthesis
+    to: ask_user
+    when: escalate
+    kind: forward
+  - from: audit
+    to: done
+    when: done
+    kind: forward
