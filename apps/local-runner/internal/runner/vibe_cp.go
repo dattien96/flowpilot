@@ -206,6 +206,20 @@ func (s *InteractiveService) takeNextVibeSprintLocked(rs *interactiveRun) vibeSp
 		// looped seven debates on one child).
 		rs.vibeDebateMounts = 0
 		rs.vibeDebateMountsByEntity = nil
+		// Every Task owns its own defaultVibeTaskRoundCap budget (vibe
+		// contract): the shared loop counter must reset with the take or
+		// sprint N's consumed rounds starve sprint N+1 (live run-262417
+		// opened Task-042 at 7/20 after Task-041 burned 7). ExtendCount
+		// resets with it so the mount seed re-applies the policy cap instead
+		// of carrying the prior task's extension; NegotiationRound is the
+		// same phase-scoped budget class. Locked/Budget/Done takes return
+		// before here and never touch the in-flight sprint's budget.
+		s.agentOrchestrator.mutateLoop(rs.id, func(st AgentLoopState) AgentLoopState {
+			st.Round = 0
+			st.ExtendCount = 0
+			st.NegotiationRound = 0
+			return st
+		})
 	}
 	return d
 }

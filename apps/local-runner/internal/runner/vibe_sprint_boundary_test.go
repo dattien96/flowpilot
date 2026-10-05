@@ -1866,3 +1866,52 @@ func TestVibeSprintBoundary_ResumeConfirmSkipsLiveChildren(t *testing.T) {
 		t.Fatalf("loop=%q must stay running", loop.Status)
 	}
 }
+
+func TestVibeSprintBoundary_TakeResetsTaskRoundBudget(t *testing.T) {
+	// The vibe contract gives every Task its own 20-round budget
+	// (defaultVibeTaskRoundCap). Sprint N's consumed rounds, operator cap
+	// extensions, and negotiation rounds must not carry into sprint N+1 —
+	// live run-262417 opened Task-042 at 7/20 after Task-041 burned 7.
+	svc, _ := newTestServer(t)
+	runID := armBoundaryRun(t, svc, ProviderKeyCodex, workingmode.Vibe, boundaryTestPlan, 1)
+	svc.agentOrchestrator.setLoop(runID, AgentLoopState{
+		Status: "running", Mode: "explicit",
+		Round: 7, ExtendCount: 1, Cap: 22, RoundCap: 22,
+		NegotiationRound: 3, NegotiationCap: 5,
+	})
+	if !svc.maybeParkVibeSprintBoundary(context.Background(), runID, "audit", false) {
+		t.Fatal("must park first")
+	}
+	if !svc.continueVibeSprintBoundary(runID, "") {
+		t.Fatal("boundary continue must take the next sprint")
+	}
+	loop := svc.agentOrchestrator.loopStateFor(runID)
+	if loop.Round != 0 {
+		t.Fatalf("round=%d want 0 — every task gets a fresh %d-round budget", loop.Round, defaultVibeTaskRoundCap)
+	}
+	if loop.ExtendCount != 0 {
+		t.Fatalf("extendCount=%d want 0 — the prior task's extension must not carry over", loop.ExtendCount)
+	}
+	if loop.NegotiationRound != 0 {
+		t.Fatalf("negotiationRound=%d want 0 — negotiation budget is per task", loop.NegotiationRound)
+	}
+}
+
+func TestVibeSprintBoundary_NonStartTakeKeepsRoundBudget(t *testing.T) {
+	// A Locked/Budget/Done decision is not a task start — the round budget
+	// belongs to the sprint still in flight and must NOT be reset by a
+	// peeking take.
+	svc, _ := newTestServer(t)
+	runID := armBoundaryRun(t, svc, ProviderKeyCodex, workingmode.Vibe, boundaryTestPlan, 1)
+	svc.agentOrchestrator.setLoop(runID, AgentLoopState{
+		Status: "running", Mode: "explicit", Round: 7, Cap: 20, RoundCap: 20,
+	})
+	svc.mu.Lock()
+	svc.runs[runID].vibeAwaitingLock = true
+	svc.mu.Unlock()
+	svc.maybeStartNextVibeSprint(runID)
+	loop := svc.agentOrchestrator.loopStateFor(runID)
+	if loop.Round != 7 {
+		t.Fatalf("round=%d want 7 — a non-start take must not reset the task budget", loop.Round)
+	}
+}
