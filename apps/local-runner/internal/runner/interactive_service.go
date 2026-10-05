@@ -3499,17 +3499,34 @@ func (s *InteractiveService) parkFlowForAwaitingUser(parentRunID string, opts ..
 			continue
 		}
 		child.pendingTurnPrompt = ""
-		child.pendingGateRepromptPrompt = ""
-		child.pendingGateRepromptStepID = ""
-		child.pendingGateRepromptGen = 0
-		// BUG-538: a never-dispatched child's durable resume intent is its
-		// FIRST turn (spawned successor refused by this very park), not a stale
-		// continuation — wiping it re-strands the leg claim forever. Dispatch
-		// gates still fence it while blocked.
-		if child.turnCount > 0 {
-			child.pendingResumePrompt = ""
-			child.pendingResumeStepID = ""
-			child.pendingResumeGen = 0
+		// BUG-1188 follow-up: only wipe reprompt/resume intents on children
+		// this park is actually freezing. An intent armed on an
+		// already-parked child (e.g. a child reprompt refused by this same
+		// blocked loop and parked on the durable intent) is the
+		// owed-delivery handoff the resume sweep flushes after unblock —
+		// wiping it re-strands the member forever (BUG-1185 shape). Route
+		// the wipe through clearIntentFieldsLocked so the full bookkeeping
+		// clears consistently and the gen high-water is kept: a bare gen=0
+		// left stale deliveredGen/acceptedTurn behind, letting a re-armed
+		// intent false-positive the flush's consumed check.
+		if child.status != RunStatusWaitingUserApr {
+			clearIntentFieldsLocked(child, "reprompt")
+			// BUG-538: a never-dispatched child's durable resume intent is
+			// its FIRST turn (spawned successor refused by this very park),
+			// not a stale continuation — wiping it re-strands the leg claim
+			// forever. Dispatch gates still fence it while blocked. The
+			// wipe must also drop delivered/accepted/fail bookkeeping —
+			// leaving stale markers let a re-armed intent false-positive
+			// the flush's consumed check; pendingResumeApprovalID/Decision
+			// stay untouched (card two-write reconcile owns them).
+			if child.turnCount > 0 {
+				child.pendingResumePrompt = ""
+				child.pendingResumeStepID = ""
+				child.pendingResumeDeliveredGen = 0
+				child.pendingResumeAcceptedTurn = ""
+				child.pendingResumeFailCount = 0
+				child.pendingResumeFailGen = 0
+			}
 		}
 		child.pendingFlowGateSettle = false
 		child.pendingFlowGateFinalMsg = ""
@@ -3649,16 +3666,24 @@ func (s *InteractiveService) parkFlowForAwaitingUserLocked(parentRunID string) {
 			continue
 		}
 		child.pendingTurnPrompt = ""
-		child.pendingGateRepromptPrompt = ""
-		child.pendingGateRepromptStepID = ""
-		child.pendingGateRepromptGen = 0
-		// BUG-538: same never-dispatched carve-out as the unlocked park —
-		// the parked successor's resume intent is its first turn, not a
-		// stale auto-continuation.
-		if child.turnCount > 0 {
-			child.pendingResumePrompt = ""
-			child.pendingResumeStepID = ""
-			child.pendingResumeGen = 0
+		// Same BUG-1188 carve-out as the unlocked park: intents armed on an
+		// already-parked child are the owed-delivery handoff, not live
+		// auto-intents — wiping them re-strands the member. The canonical
+		// clear keeps gen high-water and drops delivered/accepted/fail
+		// bookkeeping consistently.
+		if child.status != RunStatusWaitingUserApr {
+			clearIntentFieldsLocked(child, "reprompt")
+			// BUG-538: same never-dispatched carve-out as the unlocked
+			// park — the parked successor's resume intent is its first
+			// turn, not a stale auto-continuation.
+			if child.turnCount > 0 {
+				child.pendingResumePrompt = ""
+				child.pendingResumeStepID = ""
+				child.pendingResumeDeliveredGen = 0
+				child.pendingResumeAcceptedTurn = ""
+				child.pendingResumeFailCount = 0
+				child.pendingResumeFailGen = 0
+			}
 		}
 		child.pendingFlowGateSettle = false
 		child.pendingFlowGateFinalMsg = ""

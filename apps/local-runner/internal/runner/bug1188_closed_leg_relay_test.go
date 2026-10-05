@@ -112,13 +112,17 @@ func TestBug1188_RelayedSuccessClearsSourceReinvokeInFlight(t *testing.T) {
 
 	svc.scheduleChildTurn(src.id, "step-hub", "synthesize the cohort note")
 
-	deadline := time.Now().Add(1500 * time.Millisecond)
+	// The flag clear (scheduleChildTurn success path) runs AFTER startTurn
+	// returns — which is AFTER the relayed leg's turnInFlight/currentTurnID
+	// are already set. Breaking the poll on legTurn therefore races the
+	// outer goroutine's scheduling gap; poll for the flag itself and only
+	// use leg evidence to decide skip-vs-assert.
+	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		svc.mu.Lock()
-		srcFlag := src.reinvokeInFlight
-		legTurn := lr.turnInFlight || lr.status == RunStatusRunning && lr.currentTurnID != ""
+		done := !src.reinvokeInFlight
 		svc.mu.Unlock()
-		if legTurn || !srcFlag {
+		if done {
 			break
 		}
 		time.Sleep(5 * time.Millisecond)
@@ -194,5 +198,114 @@ func TestBug1188_FlowAwaitingUserChildRepromptParksOnDurableIntent(t *testing.T)
 	}
 	if child.pendingHubReinvoke {
 		t.Fatal("child armed the parent-only pendingHubReinvoke path")
+	}
+}
+
+// BUG-1188 follow-up: the durable reprompt armed on a parked child must
+// survive a SUBSEQUENT parkFlowForAwaitingUser on the parent (a second
+// escalate/cap while the loop is still blocked). parkFlowForAwaitingUser's
+// child sweep wiped pendingGateReprompt* on every child unconditionally —
+// the BUG-354 "no live auto-intents" contract — but an intent armed on an
+// already-parked child is not a live auto-intent: it is the owed-delivery
+// handoff the resume sweep flushes after unblock. Wiping it re-creates the
+// BUG-1185 strand: child stays waiting_user_approval, no pending record, no
+// driver (live run-215331 sat parked ~95min through several parent blocks).
+// Only children this park is actually freezing (still running/starting)
+// lose their intents.
+func TestBug1188_ReParkPreservesParkedChildRepromptIntent(t *testing.T) {
+	svc := bug289Service(t)
+	parentID, childID := "run-1188rp", "run-1188rc"
+
+	svc.mu.Lock()
+	svc.runs[parentID] = &interactiveRun{
+		id:               parentID,
+		flowEngineDriven: true,
+		status:           RunStatusRunning,
+		subs:             map[int64]chan ProviderEvent{},
+	}
+	// Shape left by the flow_awaiting_user park above: already
+	// waiting_user_approval with the durable reprompt armed.
+	svc.runs[childID] = &interactiveRun{
+		id:                        childID,
+		parentRunID:               parentID,
+		label:                     "coder",
+		status:                    RunStatusWaitingUserApr,
+		agentStatus:               "waiting_user_approval",
+		turnCount:                 1,
+		pendingGateRepromptPrompt: "reprompt after verdict",
+		pendingGateRepromptStepID: "step-1",
+		pendingGateRepromptGen:    1,
+		subs:                      map[int64]chan ProviderEvent{},
+	}
+	svc.mu.Unlock()
+	svc.agentOrchestrator.registerChild(parentID, childID)
+
+	svc.parkFlowForAwaitingUser(parentID)
+
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	child := svc.runs[childID]
+	if child.pendingGateRepromptPrompt != "reprompt after verdict" ||
+		child.pendingGateRepromptStepID != "step-1" {
+		t.Fatalf("re-park wiped the parked child's armed reprompt (prompt=%q step=%q) — owed reprompt dropped, member re-stranded",
+			child.pendingGateRepromptPrompt, child.pendingGateRepromptStepID)
+	}
+	if child.pendingGateRepromptGen != 1 {
+		t.Fatalf("reprompt gen = %d after re-park, want 1 (high-water kept for claim idempotency)", child.pendingGateRepromptGen)
+	}
+}
+
+// A RUNNING child is what the BUG-354 wipe contract targets — keep wiping,
+// but through the canonical clearIntentFieldsLocked: the old 3-field wipe
+// zeroed the gen while leaving deliveredGen/acceptedTurn/failCount/failGen
+// behind. A re-armed intent (gen back to 1) could then hit the flush's
+// "delivered == gen && acceptedTurn != ''" consumed check and be cleared
+// as already-delivered — a silent second-class drop on top of the wipe.
+func TestBug1188_ParkWipeUsesConsistentIntentClear(t *testing.T) {
+	svc := bug289Service(t)
+	parentID, childID := "run-1188wp", "run-1188wc"
+
+	svc.mu.Lock()
+	svc.runs[parentID] = &interactiveRun{
+		id:               parentID,
+		flowEngineDriven: true,
+		status:           RunStatusRunning,
+		subs:             map[int64]chan ProviderEvent{},
+	}
+	svc.runs[childID] = &interactiveRun{
+		id:                             childID,
+		parentRunID:                    parentID,
+		label:                          "coder",
+		status:                         RunStatusRunning,
+		agentStatus:                    string(RunStatusRunning),
+		turnCount:                      2,
+		pendingGateRepromptPrompt:      "stale reprompt",
+		pendingGateRepromptStepID:      "step-x",
+		pendingGateRepromptGen:         3,
+		pendingGateRepromptDeliveredGen: 2,
+		pendingGateRepromptAcceptedTurn: "turn-old",
+		pendingGateRepromptFailCount:   2,
+		pendingGateRepromptFailGen:     2,
+		subs:                           map[int64]chan ProviderEvent{},
+	}
+	svc.mu.Unlock()
+	svc.agentOrchestrator.registerChild(parentID, childID)
+
+	svc.parkFlowForAwaitingUser(parentID)
+
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	child := svc.runs[childID]
+	if child.pendingGateRepromptPrompt != "" || child.pendingGateRepromptStepID != "" {
+		t.Fatalf("running child reprompt must still wipe (BUG-354): prompt=%q step=%q",
+			child.pendingGateRepromptPrompt, child.pendingGateRepromptStepID)
+	}
+	if child.pendingGateRepromptDeliveredGen != 0 || child.pendingGateRepromptAcceptedTurn != "" {
+		t.Fatalf("stale delivered/accepted markers survived the wipe: deliveredGen=%d acceptedTurn=%q — a re-armed intent can false-positive the consumed check",
+			child.pendingGateRepromptDeliveredGen, child.pendingGateRepromptAcceptedTurn)
+	}
+	if child.pendingGateRepromptFailCount != 0 || child.pendingGateRepromptFailGen != 0 {
+		t.Fatalf("stale fail budget survived the wipe: count=%d gen=%d — a fresh re-arm inherits a spent budget",
+			child.pendingGateRepromptFailCount, child.pendingGateRepromptFailGen)
 	}
 }

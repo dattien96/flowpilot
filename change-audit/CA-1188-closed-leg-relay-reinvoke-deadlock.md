@@ -62,3 +62,22 @@ dispatch); child refusal parks on the durable intent without burning
 budget or arming the parent-only path. BUG-289 (retry budget),
 BUG-454 (child reprompt retry), BUG-564 (hub_parked transient),
 BUG-1176/1177/1179/1180 all still green.
+
+## Follow-up — park re-fire must not wipe the armed child reprompt
+
+Post-commit review found the durable-intent park above was fragile against a
+SECOND `parkFlowForAwaitingUser` on the still-blocked parent: its child sweep
+wiped `pendingGateReprompt*`/`pendingResume*` on every child unconditionally
+(the BUG-354 "parked flow holds no live auto-intents" contract). An intent
+armed on an already-parked child is not a live auto-intent — it is the
+owed-delivery handoff the resume sweep flushes — so the wipe re-stranded the
+member (BUG-1185 shape). The wipe also zeroed `gen` while leaving
+`deliveredGen`/`acceptedTurn`/`failCount`/`failGen` — a re-armed intent could
+then false-positive the flush's `delivered==gen && acceptedTurn!=""` consumed
+check, or inherit a spent fail budget.
+
+Both park variants now skip reprompt/resume intent wipes on children already
+`waiting_user_approval`, and the running-child wipe clears the full
+bookkeeping (gen high-water kept per the canonical `clearIntentFieldsLocked`).
+Tests: `TestBug1188_ReParkPreservesParkedChildRepromptIntent` +
+`TestBug1188_ParkWipeUsesConsistentIntentClear`.
