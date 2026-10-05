@@ -284,6 +284,9 @@ type ndjsonSessionRecord struct {
 	// BUG-595: per-sprint owner-debate mount counter (cap must survive
 	// restart or the run-100368 unbounded loop resumes with a fresh budget).
 	VibeDebateMounts int `json:"vibe_debate_mounts,omitempty"`
+	// BUG-1182: per-gated-entity mount ledger — restart must not drop it or
+	// resumed mounts re-spend a fresh per-entity budget.
+	VibeDebateMountsByEntity map[string]int `json:"vibe_debate_mounts_by_entity,omitempty"`
 	// VibeTddSigAttestedTask is the BUG-630 provenance flag: the Task-NNN
 	// whose tdd-signatures.md section this run's scaffold leg was observed
 	// writing. Restart must not drop it or a mid-sprint restart re-blocks
@@ -945,6 +948,7 @@ func sessionStateFromRecord(r ndjsonSessionRecord) ProviderSessionState {
 		VibeParkedGatedRunIDs:              append([]string(nil), r.VibeParkedGatedRunIDs...),
 		VibeDeferredFlowStarts:             append([]VibeDeferredFlowStart(nil), r.VibeDeferredFlowStarts...),
 		VibeDebateMounts:                   r.VibeDebateMounts,
+		VibeDebateMountsByEntity:           copyStringIntMap(r.VibeDebateMountsByEntity),
 		VibeTddSigAttestedTask:             r.VibeTddSigAttestedTask,
 		PendingBatchSignatureByStep:        copyBatchSignatureMap(r.PendingBatchSignatureByStep),
 		FlowStartGitHead:                   r.FlowStartGitHead,
@@ -1487,6 +1491,7 @@ func sessionRecordFrom(s ProviderSessionState) ndjsonSessionRecord {
 		VibeParkedGatedRunIDs:              append([]string(nil), s.VibeParkedGatedRunIDs...),
 		VibeDeferredFlowStarts:             append([]VibeDeferredFlowStart(nil), s.VibeDeferredFlowStarts...),
 		VibeDebateMounts:                   s.VibeDebateMounts,
+		VibeDebateMountsByEntity:           copyStringIntMap(s.VibeDebateMountsByEntity),
 		VibeTddSigAttestedTask:             s.VibeTddSigAttestedTask,
 		PendingBatchSignatureByStep:        copyBatchSignatureMap(s.PendingBatchSignatureByStep),
 		FlowStartGitHead:                   s.FlowStartGitHead,
@@ -1573,6 +1578,17 @@ func copyStringMap(m map[string]string) map[string]string {
 		return nil
 	}
 	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
+
+func copyStringIntMap(m map[string]int) map[string]int {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string]int, len(m))
 	for k, v := range m {
 		out[k] = v
 	}

@@ -11,10 +11,36 @@ import (
 
 const maxVibeOwnerFailRetries = 2
 
-// maxVibeDebateMountsPerSprint bounds gate-triggered owner-debate mounts per
-// sprint (BUG-595, live run-100368): seven mounts on the same gated child
-// burned ~8h. Hitting it escalates like any other capped loop.
+// maxVibeDebateMountsPerSprint bounds gate-triggered owner-debate mounts
+// per gated entity per sprint (BUG-595 live run-100368, scoped per entity by
+// BUG-1182): seven mounts on the same gated child burned ~8h. Hitting it
+// escalates like any other capped loop.
 const maxVibeDebateMountsPerSprint = 3
+
+// maxVibeDebateMountsSprintCeiling bounds TOTAL mounts across all gated
+// entities in one sprint (BUG-1182): per-entity accounting fixes cross-entity
+// starvation but must not make the aggregate loop unbounded.
+const maxVibeDebateMountsSprintCeiling = 3 * maxVibeDebateMountsPerSprint
+
+// vibeDebateEntityKeyLocked resolves the mount-budget entity for a gated
+// run: the member's flow label survives leg respawns (a replacement leg is
+// still the same entity); an unresolvable child falls back to its run id;
+// an un-gated divert (drift-only on the hub) shares the "hub" bucket.
+// BUG-1182: three debates on member A must not exhaust member B's first
+// remediation — the old single per-sprint counter starved later gated
+// entities. Caller holds s.mu.
+func (s *InteractiveService) vibeDebateEntityKeyLocked(gatedRunID string) string {
+	gatedRunID = strings.TrimSpace(gatedRunID)
+	if gatedRunID == "" {
+		return "hub"
+	}
+	if c := s.runs[gatedRunID]; c != nil {
+		if label := strings.TrimSpace(c.label); label != "" {
+			return "node:" + label
+		}
+	}
+	return "run:" + gatedRunID
+}
 
 // maxVibeDeferredFlowStarts bounds the deferred-start queue (BUG-594): a
 // claim normally holds a handful of legitimately-deferred mounts; anything

@@ -1353,6 +1353,7 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 		// silently re-clobbers the overlay / resets the cap.
 		vibeDeferredFlowStarts: append([]VibeDeferredFlowStart(nil), st.VibeDeferredFlowStarts...),
 		vibeDebateMounts:       st.VibeDebateMounts,
+		vibeDebateMountsByEntity: copyStringIntMap(st.VibeDebateMountsByEntity),
 		vibeTddSigAttestedTask: st.VibeTddSigAttestedTask,
 		// BUG-478: parked merge card + patch snapshots were RAM-only — a
 		// restart dropped every actionable alternate.
@@ -1415,6 +1416,7 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 		rs.vibeParkedGatedRunIDs = nil
 		rs.vibeDeferredFlowStarts = nil
 		rs.vibeDebateMounts = 0
+		rs.vibeDebateMountsByEntity = nil
 		rs.vibeDebateMountInFlight = false
 		rs.vibeSprintBoundaryPending = false
 		rs.vibeResumeConfirm = false

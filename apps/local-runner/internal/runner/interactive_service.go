@@ -289,6 +289,12 @@ type interactiveRun struct {
 	// a fresh park increments; takeNextVibeSprintLocked resets. The cap
 	// escalates instead of looping debates (live run-100368).
 	vibeDebateMounts int
+	// vibeDebateMountsByEntity ledgers mounts per gated entity (BUG-1182):
+	// key is the member's flow node label (stable across leg respawns), a
+	// run-id fallback, or the shared "hub" bucket for un-gated diverts. The
+	// per-entity cap is maxVibeDebateMountsPerSprint; vibeDebateMounts stays
+	// the sprint-wide total bounded by maxVibeDebateMountsSprintCeiling.
+	vibeDebateMountsByEntity map[string]int
 	// vibeDebateMountInFlight is true between stashVibeFlowForDebate's park
 	// and the mount goroutine's post-check (BUG-594): an unmounted claim
 	// observed in that window is still resolving — never release it.
@@ -5860,6 +5866,7 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 		// silently re-clobbers the overlay or resets the cap on resume.
 		VibeDeferredFlowStarts:          append([]VibeDeferredFlowStart(nil), rs.vibeDeferredFlowStarts...),
 		VibeDebateMounts:                rs.vibeDebateMounts,
+		VibeDebateMountsByEntity:        copyStringIntMap(rs.vibeDebateMountsByEntity),
 		VibeTddSigAttestedTask:            rs.vibeTddSigAttestedTask,
 		PendingBatchSignatureByStep:     copyBatchSignatureMap(rs.pendingBatchSignatureByStep),
 		FlowStartGitHead:                rs.flowStartGitHead,

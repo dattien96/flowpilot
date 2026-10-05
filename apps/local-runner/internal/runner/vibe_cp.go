@@ -205,6 +205,7 @@ func (s *InteractiveService) takeNextVibeSprintLocked(rs *interactiveRun) vibeSp
 		// budget — the mount counter must not carry over (live run-100368
 		// looped seven debates on one child).
 		rs.vibeDebateMounts = 0
+		rs.vibeDebateMountsByEntity = nil
 	}
 	return d
 }
@@ -1066,8 +1067,14 @@ func (s *InteractiveService) stashVibeFlowForDebate(parentRunID, gatedRunID stri
 		st.pendingNarrow = false
 		st.mu.Unlock()
 	}
-	// BUG-595: every fresh park counts toward the per-sprint mount cap.
+	// BUG-595: every fresh park counts toward the sprint mount cap.
+	// BUG-1182: also ledger it per gated entity — the cap is per entity,
+	// with the total still bounded by the sprint ceiling.
 	rs.vibeDebateMounts++
+	if rs.vibeDebateMountsByEntity == nil {
+		rs.vibeDebateMountsByEntity = map[string]int{}
+	}
+	rs.vibeDebateMountsByEntity[s.vibeDebateEntityKeyLocked(gatedRunID)]++
 	return true
 }
 

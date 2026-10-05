@@ -203,6 +203,9 @@ type ProviderSessionState struct {
 	// escalates to a human park instead of an unbounded debate loop
 	// (live run-100368).
 	VibeDebateMounts int `json:"vibeDebateMounts,omitempty"`
+	// BUG-1182: per-gated-entity mount ledger — the cap is per entity, so
+	// a restart must not drop it or resumed mounts re-spend a fresh budget.
+	VibeDebateMountsByEntity map[string]int `json:"vibeDebateMountsByEntity,omitempty"`
 	// VibeTddSigAttestedTask mirrors ndjsonSessionRecord's
 	// vibe_tdd_sig_attested_task (BUG-630): the Task-NNN whose
 	// tdd-signatures.md section this run's scaffold leg wrote — file-based

@@ -178,16 +178,32 @@ func (s *InteractiveService) startVibeOwnerDebate(hub, gatedRunID, message strin
 	// sequential debates on the same gated child burned ~8h. At the cap the
 	// divert escalates like any other capped loop instead of parking the
 	// sprint for yet another debate.
+	// BUG-1182: the budget is per gated entity — mounts resolving member A
+	// must not exhaust member B's remediation. The sprint ceiling bounds the
+	// aggregate, and a resume-restored legacy counter (map absent, int set)
+	// keeps the old whole-sprint cap until fresh mounts record entities.
 	s.mu.Lock()
 	rs := s.runs[hub]
-	atCap := rs != nil && rs.vibeDebateMounts >= maxVibeDebateMountsPerSprint &&
+	entityKey := ""
+	entityMounts, totalMounts := 0, 0
+	ledgerEmpty := true
+	if rs != nil {
+		entityKey = s.vibeDebateEntityKeyLocked(gatedRunID)
+		entityMounts = rs.vibeDebateMountsByEntity[entityKey]
+		totalMounts = rs.vibeDebateMounts
+		ledgerEmpty = len(rs.vibeDebateMountsByEntity) == 0
+	}
+	atCap := rs != nil &&
+		(entityMounts >= maxVibeDebateMountsPerSprint ||
+			totalMounts >= maxVibeDebateMountsSprintCeiling ||
+			(ledgerEmpty && totalMounts >= maxVibeDebateMountsPerSprint)) &&
 		len(rs.vibeParkedNodes) == 0 &&
 		workingmode.BareFlowID(rs.chatFlowRef) != vibeOwnerDebateFlowID &&
 		!vibeDebateClaimForeignLocked(rs)
 	s.mu.Unlock()
 	if atCap {
-		log.Printf("[vibe-gate] owner debate mount cap reached hub=%s gated=%s mounts=%d",
-			hub, gatedRunID, maxVibeDebateMountsPerSprint)
+		log.Printf("[vibe-gate] owner debate mount cap reached hub=%s gated=%s entity=%s entity_mounts=%d total=%d",
+			hub, gatedRunID, entityKey, entityMounts, totalMounts)
 		s.escalateVibeDebateMountCap(hub, message)
 		return
 	}
