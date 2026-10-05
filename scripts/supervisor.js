@@ -111,6 +111,14 @@ let isRestarting = false;
 // consumed — the runner self-exits after its drain, so its exit is EXPECTED
 // and must respawn only the runner, not the stack.
 let plannedRunnerRestart = false;
+// CA-1222 (live 23:33): the command poll consumes a valid fenced restart
+// record by deleting the file before its 200ms deferred action — the runner
+// 'exit' event then reads an absent file and classifies a PLANNED drain as
+// an unexpected death → full-stack teardown that force-kills the very runner
+// the deferred action just respawned. The poll hands the consumed record to
+// the exit handler through this slot: whichever side consumes first, the
+// exit path always sees it and takes the planned-restart branch.
+let pendingRestartCmd = null;
 // Cached runnerInstanceId learned from /health while the runner was alive —
 // used to fence stale supervisor.cmd records after the writer has exited.
 let currentRunnerInstanceId = null;
@@ -521,6 +529,7 @@ function startRunnerProcess() {
   });
   runnerProcess.detached = process.platform !== 'win32';
   currentRunnerInstanceId = null;
+  pendingRestartCmd = null;
   attachRunnerExitHandler(runnerProcess);
 }
 
@@ -541,7 +550,11 @@ function attachRunnerExitHandler(child) {
     // restart record means planned respawn, not stack teardown (live
     // 2026-10-05: restart accepted at 21:59, exit handler beat the poll,
     // whole stack died with no respawner left).
-    const cmd = readSupervisorCommand();
+    // CA-1222: the command poll may have already consumed (deleted) the
+    // fenced record this exit belongs to — consult the handoff slot before
+    // the filesystem so a planned drain can never read as an unplanned death.
+    const cmd = pendingRestartCmd || readSupervisorCommand();
+    pendingRestartCmd = null;
     if (cmd && (cmd.action === 'restart' || cmd.action === 'restart-runner')) {
       const verdict = validateSupervisorCommand(cmd, currentRunnerInstanceId);
       if (verdict.valid) {
@@ -749,8 +762,17 @@ async function pollSupervisorCommand() {
       handleRestart();
     }, 200);
   } else if (cmd.action === 'restart' || cmd.action === 'restart-runner') {
-    // Fenced runner restart (Task-419 T-3): runner-only respawn.
+    // Fenced runner restart (Task-419 T-3): runner-only respawn. CA-1222:
+    // hand the consumed record to the exit handler — the runner's exit is
+    // imminent and must take the planned path even though the file is gone.
+    // The timeout is only a hung-drain watchdog: if the exit handler claims
+    // the record first, plannedRunnerRestart is set and this is a no-op; if
+    // teardown began (isExiting) respawning mid-teardown is what the race
+    // used to do — never repeat it.
+    pendingRestartCmd = cmd;
     setTimeout(() => {
+      if (isExiting || plannedRunnerRestart || pendingRestartCmd !== cmd) return;
+      pendingRestartCmd = null;
       void handlePlannedRunnerRestart(cmd);
     }, 200);
   }

@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 const require2 = createRequire(__filename);
-const SUPERVISOR_PATH = resolve(__dirname, "../../../scripts/supervisor.js");
+const SUPERVISOR_PATH = resolve(__dirname, "../../scripts/supervisor.js");
 
 interface FakeChild {
   pid: number;
@@ -187,6 +187,54 @@ test("TestSupervisor_RunnerPlannedRestartRestartsOnlyRunner", async () => {
     );
     assert.equal(sup._internals.getPlannedRunnerRestart(), false);
     assert.equal(sup._internals.getExitedForTest(), false);
+  } finally {
+    p.restore();
+  }
+});
+
+// CA-1222 (live 2026-10-05 23:33): the poll won the consume race — it
+// validated + DELETED the fenced record and deferred its action 200ms, then
+// the runner 'exit' event fired in between. The exit handler read an absent
+// file, classified the planned drain as unexpected death, and the teardown's
+// force-kill hit the runner the deferred action had just respawned. The
+// consumed record now hands off through pendingRestartCmd: whichever side
+// consumes first, the exit path still sees it and stays planned.
+test("TestSupervisor_PollConsumedRestartExitStillRespawns", async () => {
+  const p = freshSupervisorDeadChildren();
+  try {
+    const sup = p.supervisor;
+    sup._internals.setNoExit(true);
+    sup._internals.setRunnerPort("1");
+    sup._internals.setRunnerInstanceId("inst-1");
+    const runner = fakeChild();
+    sup._internals.setRunnerProcess(runner);
+    sup.attachRunnerExitHandler(runner);
+    const ctl = tmpControl();
+    sup._internals.setControlPath(ctl);
+    writeFileSync(
+      ctl,
+      JSON.stringify({
+        action: "restart",
+        runnerInstanceId: "inst-1",
+        restartId: "rst-poll-race",
+        requestedAt: new Date().toISOString(),
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        requester: "runner",
+      }),
+    );
+
+    // Poll consumes first — the file is gone before the exit lands.
+    await sup.pollSupervisorCommand();
+    assert.equal(existsSync(ctl), false, "poll must consume the fenced record");
+
+    // Exit fires inside the 200ms watchdog window: the handoff slot, not
+    // the filesystem, must carry the record.
+    runner.emit("exit", 0, null);
+    await sleep(600); // watchdog 200ms + respawn
+
+    assert.equal(p.spawned.length, 1, "planned restart must respawn exactly one runner");
+    assert.equal(sup._internals.getExitedForTest(), false, "consumed planned record must not tear down the stack");
+    assert.equal(sup._internals.getPlannedRunnerRestart(), false);
   } finally {
     p.restore();
   }
