@@ -11354,9 +11354,43 @@ func (s *InteractiveService) finalizeInputLocked(rs *interactiveRun, turnID stri
 			if e.Path != "" {
 				in.ChangedFiles = append(in.ChangedFiles, workspaceRelPath(rs.workspaceCwd, e.Path))
 			}
+		case EventToolStarted:
+			in.ToolCalls++
+			if cmd := execCommandFromToolInput(e.Input); cmd != "" {
+				in.ExecCommands = append(in.ExecCommands, cmd)
+			}
 		}
 	}
 	return in
+}
+
+// execCommandFromToolInput pulls a shell-command string out of a
+// tool_started Input across provider shapes: a bare string (codex exec
+// "input"), or a map carrying command-shaped keys (claude Bash
+// {"command": ...}, devin rawInput {"command"|"cmd"|...}). Non-exec tools
+// (write/edit/read) carry file/content keys — never these names — so
+// scanning every tool is safe. CA-1212.
+func execCommandFromToolInput(input any) string {
+	switch v := input.(type) {
+	case string:
+		return v
+	case map[string]any:
+		for _, k := range []string{"command", "cmd", "shell", "script", "input", "argv"} {
+			if s, ok := v[k].(string); ok && strings.TrimSpace(s) != "" {
+				return s
+			}
+		}
+		if arr, ok := v["argv"].([]any); ok {
+			parts := make([]string, 0, len(arr))
+			for _, a := range arr {
+				if s, ok := a.(string); ok {
+					parts = append(parts, s)
+				}
+			}
+			return strings.Join(parts, " ")
+		}
+	}
+	return ""
 }
 
 // clearDurableRecoveryStateLocked drops gate-pending and resume/reprompt intents

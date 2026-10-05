@@ -35,6 +35,12 @@ type finalizeInput struct {
 	TurnID       string
 	FinalMessage string
 	ChangedFiles []string
+	// ExecCommands lists command-shaped tool inputs this leg ran this turn —
+	// per-leg authorship evidence for the coding-child commit gate (CA-1212).
+	// ToolCalls counts tool_started events this turn so the gate can tell
+	// "telemetry present, no commit" from "telemetry degraded".
+	ExecCommands []string
+	ToolCalls    int
 }
 
 type finalizeState struct {

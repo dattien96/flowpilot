@@ -1553,7 +1553,16 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 	// V10 P0: Gemini (and any adapter without RequestApproval) may still create
 	// commits under YOLO. Detect new commits since turn base and block coding
 	// children â€” commit is reserved for audit/commit-prep (Task-242 D-7).
-	if isCodingChild && len(collectCommitSubjectsSince(cwd, baseSHA)) > 0 {
+	// CA-1212 (live run-262417): workspace-level observation cannot attribute
+	// a commit to a leg — parallel siblings share cwd, so one leg's commit
+	// lands inside EVERY sibling's turn window AND its ObserveGitDiffSince
+	// (the spec-aligner was blocked for the rework leg's commit eb27e87).
+	// Attribution now comes from this leg's own tool telemetry: block only
+	// when ITS turn ran a commit-shaped command. Tool telemetry present but
+	// clean → provably not the author → skip. Zero tool telemetry → degraded
+	// evidence → keep the workspace-level block (fail-closed, Task-242's
+	// invariant intact).
+	if commitGateBlocksLeg(isCodingChild, collectCommitSubjectsSince(cwd, baseSHA), fin) {
 		if !s.gateEpochStillValid(runID, epoch) {
 			return true
 		}
@@ -1859,6 +1868,25 @@ func isFlowCodeWritingChild(rs *interactiveRun, node agentpack.FlowNode, nodeOK 
 	// V9-22: WrittenPaths fallback only when git observation produced no code
 	// delta (parser empty / error), not when AI wrote then reverted to zero net.
 	return hasWrites && len(diff) == 0
+}
+
+// commitGateBlocksLeg decides whether the commit gate may block THIS leg.
+// Attribution (CA-1212): workspace-level "a commit appeared" cannot name the
+// author across parallel siblings — only this leg's own tool telemetry can.
+// Block when (a) the leg provably authored a commit-shaped command, or
+// (b) telemetry is degraded (zero tool calls) and a commit exists — the
+// fail-closed fallback that preserves Task-242's invariant. A leg with tool
+// telemetry and no commit command is provably innocent: skip.
+func commitGateBlocksLeg(isCodingChild bool, newCommitSubjects []string, fin finalizeInput) bool {
+	if !isCodingChild || len(newCommitSubjects) == 0 {
+		return false
+	}
+	for _, cmd := range fin.ExecCommands {
+		if looksLikeGitCommitCommand(cmd) {
+			return true
+		}
+	}
+	return fin.ToolCalls == 0
 }
 
 // isFlowReviewerChild detects genuine review agents via explicit pack/spawn
