@@ -366,6 +366,45 @@ func (s *InteractiveService) markForwardDonePredecessorsSkipped(ctx context.Cont
 	}
 }
 
+// settleAdjudicatedDonePredecessors stamps still-nonterminal strict done-edge
+// predecessors of completedNodeID whose own delegate leg produced a durably
+// Completed session. A leg can finish without its node ever stamping — the
+// settle is consumed by a gate divert, a debate stash, or a stale-completion
+// claim (live run-225691: tdd stayed RUNNING while coder, validate and
+// spec_align all stamped DONE). When the flow adjudicates PAST such a node —
+// its successor completed and is advancing — the RUNNING/WAITING predecessor
+// row would otherwise leak forever.
+//
+// Fail-closed on evidence: only a persistedCompletedChildExists leg is proof
+// the predecessor's outcome was adjudicated. A predecessor with no completed
+// leg — genuinely in-flight parallel work, or a never-dispatched spine node —
+// is left untouched (markForwardDonePredecessorsSkipped owns the PENDING
+// resume case; RUNNING-with-live-leg is real work).
+func (s *InteractiveService) settleAdjudicatedDonePredecessors(parentRunID string, edges []agentpack.FlowEdge, completedNodeID string) {
+	for _, pred := range flowForwardDonePredecessors(edges, completedNodeID) {
+		switch st := s.lookupFlowStepStatus(parentRunID, pred); st {
+		case StepStatusDone, StepStatusSkipped, StepStatusFailed, StepStatusCanceled:
+			continue
+		}
+		if !s.persistedCompletedChildExists(parentRunID, pred) {
+			continue
+		}
+		// Round re-entry (synthesis_negotiation → tdd on continue) reuses
+		// node ids: a prior leg's Completed session survives in the index
+		// while the NEW leg is live. Live work wins — never stamp over a
+		// predecessor whose current leg is still producing its outcome.
+		if s.vibeNodeHasLiveWork(parentRunID, pred) {
+			continue
+		}
+		s.flowDiagLog(parentRunID, "flow_advance_settles_adjudicated_predecessor",
+			"advance past a still-nonterminal predecessor whose leg is durably completed; stamping DONE",
+			"completed_node_id", completedNodeID,
+			"predecessor_node_id", pred,
+		)
+		s.setFlowStepStatus(context.Background(), parentRunID, pred, StepStatusDone)
+	}
+}
+
 // resolveWorkflowFlowRef bridges a Flow-Mode workflow-picker launch to the flow
 // executor (BUG-174). A workflow-picker run carries a workflowID but no flowRef
 // (the desktop only sends flowRef for the chat "bug" sub-mode), so its selected
@@ -1339,6 +1378,16 @@ func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID
 	nodes := parent.activeFlowNodes
 	s.mu.Unlock()
 	round := s.agentOrchestrator.loopStateFor(parentRunID).Round
+	flowDriven := s.isFlowEngineDriven(parentRunID)
+
+	// BUG-1197 (live run-225691): before consuming this completion, settle
+	// strict done-edge predecessors whose legs durably completed but whose
+	// step rows were never stamped — their settles were consumed by gate
+	// diverts / debate stash / stale-completion claims. Leaving them RUNNING
+	// leaks a mid-spine RUNNING badge while every successor stamps DONE.
+	if flowDriven {
+		s.settleAdjudicatedDonePredecessors(parentRunID, edges, completedNodeID)
+	}
 
 	// CP-67 P-5 (B-6): a coder node completing with a pending renegotiation
 	// batch routes to the signature-negotiation hub — the hub.inline node
@@ -1492,7 +1541,6 @@ func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID
 	// BUG-174: the node that just completed is DONE on the step timeline; its
 	// forward targets become RUNNING as they are spawned below. Gated to
 	// flow-engine-driven runs so the AI-driven spawn_agent path is untouched.
-	flowDriven := s.isFlowEngineDriven(parentRunID)
 	if flowDriven {
 		s.setFlowStepStatus(context.Background(), parentRunID, completedNodeID, StepStatusDone)
 	}
