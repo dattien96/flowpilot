@@ -4896,6 +4896,41 @@ func (s *InteractiveService) scheduleChildTurn(runID, stepID, prompt string) {
 					// the reprompt silently and the cohort never joins. Keep
 					// reinvokeInFlight and retry the same scheduled turn after
 					// the busy window, bounded by the same fail counter.
+					if err.code == "flow_awaiting_user" {
+						// BUG-1188 (live run-204891): the parent's decision
+						// card is open — an in-process retry cannot beat a
+						// human-scale park, and dropping the reprompt strands
+						// the cohort member on the same shape as BUG-1185.
+						// Arm the durable gate-reprompt intent instead:
+						// resumeFlowWithFeedback's child sweep flushes it
+						// after unblock (preserving repromptAttempts per
+						// BUG-539), and the intent survives restart. The
+						// parked status mirrors handleSpawnedChildTurnFailure
+						// so the orchestrator summary agrees (BUG-1179).
+						rs.pendingGateRepromptPrompt = prompt
+						rs.pendingGateRepromptStepID = stepID
+						rs.pendingGateRepromptGen++
+						rs.reinvokeInFlight = false
+						rs.status = RunStatusWaitingUserApr
+						rs.agentStatus = string(RunStatusWaitingUserApr)
+						parentID := rs.parentRunID
+						if s.agentOrchestrator != nil {
+							if existing, ok := s.agentOrchestrator.currentSummary(parentID, rs.id); ok {
+								existing.Status = RunStatusWaitingUserApr
+								existing.AgentStatus = "waiting_user_approval"
+								s.agentOrchestrator.upsertSummary(parentID, existing)
+							}
+						}
+						parkSnap := sessionStateOf(rs)
+						s.mu.Unlock()
+						if perr := s.persistProviderSession(parkSnap); perr != nil {
+							log.Printf("[reinvoke] persist reprompt park failed child=%s: %v", runID, perr)
+						}
+						s.flowDiagLog(parentID, "child_reprompt_parked_awaiting_user",
+							"child reprompt refused by parked parent loop; armed durable reprompt intent for resume flush",
+							"child_run_id", runID)
+						return
+					}
 					rs.hubReinvokeStartFailCount++
 					if rs.hubReinvokeStartFailCount <= 3 &&
 						(err.code == "turn_in_progress" || err.code == "gate_in_progress" || err.code == "hub_parked") {
@@ -4936,7 +4971,14 @@ func (s *InteractiveService) scheduleChildTurn(runID, stepID, prompt string) {
 				// retries inside ~1s and stranded the armed pending until the
 				// watchdog parked the flow. Keep pending armed and leave the
 				// re-fire to the CA-1091 child-settle drain + stall tick.
-				if err.code == "hub_parked" {
+				// BUG-1188 (live run-204891): flow_awaiting_user is the same
+				// transient class — the reinvoke raced the blocked→running
+				// resume transition or a still-open decision card. Counting
+				// it saturated the budget during a legitimate
+				// context-pressure leg rotation: every drain path then gated
+				// off (shouldDrain / hub_stall tick) and the armed pending
+				// dead-locked the sprint in hub_stalled forever.
+				if err.code == "hub_parked" || err.code == "flow_awaiting_user" {
 					transientBusy = true
 				} else {
 					rs.hubReinvokeStartFailCount++
@@ -4970,7 +5012,20 @@ func (s *InteractiveService) scheduleChildTurn(runID, stepID, prompt string) {
 				}
 			}
 			s.maybeScheduleHubStallCheck(runID)
+			return
 		}
+		// BUG-1188 (live run-204891): a closed-leg run's startTurn relays onto
+		// the chat's active successor leg — the success path clears
+		// reinvokeInFlight on the run the turn actually lands on, leaving the
+		// SOURCE run's flag true forever. Every later maybeAutoReinvokeHub*
+		// guard then defers on it and the loop dead-locks in hub_stalled.
+		// The scheduler owns the flag on runID — clear it for any successful
+		// admission, relayed or not.
+		s.mu.Lock()
+		if rs := s.runs[runID]; rs != nil {
+			rs.reinvokeInFlight = false
+		}
+		s.mu.Unlock()
 	}(runID, stepID, prompt)
 }
 
