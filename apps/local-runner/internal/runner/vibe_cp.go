@@ -1085,6 +1085,14 @@ func (s *InteractiveService) restoreVibeFlowAfterDebate(parentRunID string) bool
 		s.mu.Unlock()
 		return false
 	}
+	// live-039 (run-183756): capture the overlay's node ids before the swap —
+	// its rows persist through the sprint reseed, and any still non-terminal
+	// (a WAITING debate_trigger park is the live case) must be finalized or
+	// the durable step ledger reports a gate that is still parked forever.
+	var overlayNodeIDs []string
+	for _, n := range rs.activeFlowNodes {
+		overlayNodeIDs = append(overlayNodeIDs, strings.TrimSpace(n.ID))
+	}
 	rs.activeFlowNodes = rs.vibeParkedNodes
 	rs.activeFlowEdges = rs.vibeParkedEdges
 	rs.activeFlowAcceptanceNodes = rs.vibeParkedAcceptance
@@ -1145,6 +1153,7 @@ func (s *InteractiveService) restoreVibeFlowAfterDebate(parentRunID string) bool
 	s.mu.Unlock()
 	if s.isFlowEngineDriven(parentRunID) {
 		s.reseedFlowStepRuntime(parentRunID, nodes)
+		s.finalizeConcludedOverlaySteps(parentRunID, overlayNodeIDs, nodes)
 	}
 	// Durable-first: the cleared parked topology and the armed reprompts must
 	// both survive a restart landing between restore and dispatch.
@@ -1185,6 +1194,39 @@ func (s *InteractiveService) restoreVibeFlowAfterDebate(parentRunID string) bool
 		}(deferred)
 	}
 	return true
+}
+
+// finalizeConcludedOverlaySteps stamps the unmounted overlay's step rows
+// SKIPPED when they are still non-terminal at restore time — the overlay
+// concluded, so a WAITING/PENDING row would otherwise report a park that can
+// never resolve (live-039: debate_trigger stayed WAITING_USER_APPROVAL in
+// the durable ledger after the debate concluded and the sprint resumed).
+// Ids that collide with the restored topology and RUNNING rows with a live
+// leg are left alone — live work owns its own settle.
+func (s *InteractiveService) finalizeConcludedOverlaySteps(parentRunID string, overlayNodeIDs []string, restoredNodes []agentpack.FlowNode) {
+	if len(overlayNodeIDs) == 0 {
+		return
+	}
+	restored := make(map[string]bool, len(restoredNodes))
+	for _, n := range restoredNodes {
+		restored[strings.TrimSpace(n.ID)] = true
+	}
+	for _, nodeID := range overlayNodeIDs {
+		if nodeID == "" || restored[nodeID] {
+			continue
+		}
+		switch s.lookupFlowStepStatus(parentRunID, nodeID) {
+		case StepStatusDone, StepStatusSkipped, StepStatusFailed, StepStatusCanceled, "":
+			continue
+		}
+		if s.vibeNodeHasLiveWork(parentRunID, nodeID) {
+			continue
+		}
+		s.flowDiagLog(parentRunID, "overlay_step_finalized_on_restore",
+			"concluded overlay's non-terminal step finalized",
+			"node_id", nodeID)
+		s.setFlowStepStatus(context.Background(), parentRunID, nodeID, StepStatusSkipped)
+	}
 }
 
 // vibeDebateResumeRepromptPrompt builds the gated child's remediation
