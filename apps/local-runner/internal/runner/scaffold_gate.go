@@ -138,6 +138,78 @@ func (s *InteractiveService) recordScaffoldArtifactsLock(cwd, parentRunID string
 		testPaths, shortHash(prodSignatures), writerID, rec.Version)
 }
 
+// scaffoldUnregisteredTestFiles returns written C/C++ test sources that no
+// CMake manifest in the workspace references — an unregistered test is never
+// compiled, so a green (or red) suite proves nothing about it. CA-1205 (live
+// run-183756): vault_metadata_test.cpp was never added to CMakeLists.txt and
+// the r-scaffold-red all-green signal reprompted the wrong fix. Other build
+// systems (Gradle sourceSets, go test, cargo) auto-discover tests, so the
+// check is deliberately CMake-only — no manifest text means no signal.
+func (s *InteractiveService) scaffoldUnregisteredTestFiles(cwd string, written []string) []string {
+	var candidates []string
+	seen := map[string]bool{}
+	for _, rel := range written {
+		rel = strings.TrimSpace(filepath.ToSlash(rel))
+		if rel == "" || seen[rel] || !flowgate.IsTestFile(rel) {
+			continue
+		}
+		switch strings.ToLower(filepath.Ext(rel)) {
+		case ".c", ".cc", ".cpp", ".cxx":
+			seen[rel] = true
+			candidates = append(candidates, rel)
+		}
+	}
+	if len(candidates) == 0 {
+		return nil
+	}
+	manifest := cmakeManifestText(cwd)
+	if manifest == "" {
+		return nil
+	}
+	var out []string
+	for _, rel := range candidates {
+		if !strings.Contains(manifest, filepath.Base(rel)) {
+			out = append(out, rel)
+		}
+	}
+	return out
+}
+
+// cmakeManifestText concatenates every CMakeLists.txt / *.cmake under cwd
+// into one searchable blob. The walk skips VCS, build output, and vendored
+// trees; unreadable or oversized manifests contribute nothing (fail-open).
+func cmakeManifestText(cwd string) string {
+	var b strings.Builder
+	_ = filepath.WalkDir(cwd, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			switch d.Name() {
+			case ".git", ".gradle", ".idea", "node_modules", "build", "out", "external":
+				return filepath.SkipDir
+			}
+			if strings.HasPrefix(d.Name(), "cmake-build-") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		name := d.Name()
+		if name != "CMakeLists.txt" && !strings.HasSuffix(name, ".cmake") {
+			return nil
+		}
+		if dInfo, err := d.Info(); err == nil && dInfo.Size() > 1<<20 {
+			return nil
+		}
+		if data, err := os.ReadFile(path); err == nil {
+			b.Write(data)
+			b.WriteByte('\n')
+		}
+		return nil
+	})
+	return b.String()
+}
+
 // scaffoldTestFiles returns the written test files (workspace-relative).
 func scaffoldTestFiles(written []string) []string {
 	var out []string

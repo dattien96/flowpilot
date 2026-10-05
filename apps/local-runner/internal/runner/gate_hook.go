@@ -1498,6 +1498,10 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 		nonStub, syms := s.scaffoldStaticBodyViolations(cwd, tr.WrittenPaths)
 		tr.ScaffoldBodyNonStub = nonStub
 		tr.NonStubSymbols = syms
+		// CA-1205 (live run-183756): a C/C++ test file no CMake manifest
+		// references can never run — the all-green signal then reprompts the
+		// wrong fix. Flag them so r-scaffold-red points at registration.
+		tr.ScaffoldUnregisteredTests = s.scaffoldUnregisteredTestFiles(cwd, tr.WrittenPaths)
 		// Declared zero-red contract (live wedge run-17384): remediation may
 		// adjudicate a pre-existing implementation as the accepted artifact —
 		// tdd-signatures.md then records red_tests:[] + failure_type:none, and

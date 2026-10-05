@@ -51,7 +51,8 @@ func EnabledScaffoldRules(base []Rule, expected bool) []Rule {
 // static whitelist. A waived turn (declared zero-red contract) is satisfied
 // by a green suite instead — the accepted artifact is the contract.
 func ScaffoldSatisfied(tr TurnResult) bool {
-	if !tr.ScaffoldExpected || !tr.Tests.Ran || tr.ScaffoldCompileFailed || len(tr.ScaffoldPreExistingTouched) > 0 {
+	if !tr.ScaffoldExpected || !tr.Tests.Ran || tr.ScaffoldCompileFailed ||
+		len(tr.ScaffoldPreExistingTouched) > 0 || len(tr.ScaffoldUnregisteredTests) > 0 {
 		return false
 	}
 	if tr.ScaffoldRedWaived {
@@ -75,6 +76,17 @@ func checkScaffoldRedRule(rule Rule, tr TurnResult) *Violation {
 		return &Violation{
 			Rule: rule,
 			Detail: "the scaffold modified production file(s) that existed at contract freeze: " + strings.Join(tr.ScaffoldPreExistingTouched, ", ") + " — restore them byte-for-byte; the scaffold may only create NEW declared files as whitelist stubs (the coder fills the bodies)",
+		}
+	}
+	// CA-1205 (live run-183756): a test file that is never wired into the
+	// build can never run — the suite's green came from other suites, and
+	// the all-green signal reads as "stubs implemented", a false positive
+	// that reprompts the wrong fix. Registration is a precondition for both
+	// the red and the waived paths, so it checks before either.
+	if len(tr.ScaffoldUnregisteredTests) > 0 {
+		return &Violation{
+			Rule: rule,
+			Detail: "test file(s) written this turn are not wired into the build — the suite ran without them: " + strings.Join(tr.ScaffoldUnregisteredTests, ", ") + " — add each file to the build manifest (e.g. CMakeLists.txt target_sources/add_executable + add_test/gtest_discover_tests) so the suite actually compiles and runs your tests",
 		}
 	}
 	// Declared zero-red contract (live wedge run-15525/run-17384): the

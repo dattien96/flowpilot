@@ -188,6 +188,12 @@ type TurnResult struct {
 	// The scaffold may only CREATE declared files that did not exist yet —
 	// a pre-existing production file is read-only for it.
 	ScaffoldPreExistingTouched []string `json:"scaffold_preexisting_touched,omitempty"`
+	// ScaffoldUnregisteredTests (CA-1205) names C/C++ test sources written
+	// this turn that no CMake manifest in the workspace references — an
+	// unregistered test is never compiled, so a green suite proves nothing
+	// about it (live run-183756: vault_metadata_test.cpp never added to
+	// CMakeLists.txt; the all-green signal came from already-landed suites).
+	ScaffoldUnregisteredTests []string `json:"scaffold_unregistered_tests,omitempty"`
 }
 
 // DodExplanation is the schema'd or-explained payload for r-dod-complete

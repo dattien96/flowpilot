@@ -52,6 +52,42 @@ func TestRuleScaffoldRedRejectsAllGreen(t *testing.T) {
 	}
 }
 
+func TestRuleScaffoldRedRejectsUnregisteredTests(t *testing.T) {
+	// CA-1205 (live run-183756): a test file no build manifest references is
+	// never compiled — the all-green signal then reprompts "implemented
+	// stubs" when the real fix is registering the file. The violation must
+	// name registration, not implementation.
+	tr := scaffoldTurnResult()
+	tr.Tests.Failed = nil // green — but only because the new test never ran
+	tr.ScaffoldUnregisteredTests = []string{"core/vault/vault_metadata_test.cpp"}
+	v := checkScaffoldRedRule(ScaffoldRedRule(), tr)
+	if v == nil {
+		t.Fatal("unregistered test file must violate r-scaffold-red")
+	}
+	if !strings.Contains(v.Detail, "vault_metadata_test.cpp") ||
+		!strings.Contains(strings.ToLower(v.Detail), "build manifest") {
+		t.Fatalf("unregistered-test detail must name the file and the build wiring, got %q", v.Detail)
+	}
+	if ScaffoldSatisfied(tr) {
+		t.Fatal("a turn with unregistered tests is never satisfied — the suite saw nothing of them")
+	}
+}
+
+func TestRuleScaffoldRedUnregisteredPrecedesAllGreen(t *testing.T) {
+	// Ordering: registration is a precondition, so the detail must not
+	// accuse the stubs of carrying implementation.
+	tr := scaffoldTurnResult()
+	tr.Tests.Failed = nil
+	tr.ScaffoldUnregisteredTests = []string{"x_test.cpp"}
+	v := checkScaffoldRedRule(ScaffoldRedRule(), tr)
+	if v == nil {
+		t.Fatal("unregistered test must violate")
+	}
+	if strings.Contains(strings.ToLower(v.Detail), "stubs contain real implementation") {
+		t.Fatalf("registration violation must take precedence over the all-green signal, got %q", v.Detail)
+	}
+}
+
 func TestRuleScaffoldRedSuppressesTestRules(t *testing.T) {
 	// The scaffold suite is MEANT to be red: r-tests/r-reg must be suppressed
 	// for exactly this turn while r-scaffold-red is armed.
