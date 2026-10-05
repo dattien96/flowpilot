@@ -1122,6 +1122,40 @@ func (s *InteractiveService) spawnFlowDelegateLeg(ctx context.Context, parentRun
 	return true
 }
 
+// settleVibeSprintTaskDocForEpoch moves the sprint's task doc todo→done —
+// but ONLY while the sprint epoch that captured it is still current.
+// CA-1211 (live run-262417): an audit body dispatched for sprint N can land
+// after the boundary take advanced vibeSprintIndex to N+1 — resolving the
+// doc from the live index moved the NEW sprint's todo doc into done/ before
+// its work began. The epoch check, the fs rename, and the plan re-point are
+// under one s.mu hold so a take cannot interleave between verify and move.
+// Returns the settled (done/) path, or "" when nothing moved.
+func (s *InteractiveService) settleVibeSprintTaskDocForEpoch(parentRunID, nodeID, workspace, sprintTaskDoc string, sprintIndex int) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r := s.runs[parentRunID]
+	if r == nil {
+		return ""
+	}
+	if r.vibeSprintIndex != sprintIndex {
+		s.flowDiagLog(parentRunID, "vibe_task_doc_settle_stale_epoch",
+			"audit task-doc settle refused — sprint epoch advanced",
+			"node_id", nodeID, "task_doc", sprintTaskDoc,
+			"captured_index", fmt.Sprintf("%d", sprintIndex),
+			"current_index", fmt.Sprintf("%d", r.vibeSprintIndex))
+		return ""
+	}
+	i := vibeSprintCurrentPlanIndex(r.vibeSprintIndex, len(r.vibeTaskPlan))
+	if i >= len(r.vibeTaskPlan) || r.vibeTaskPlan[i] != sprintTaskDoc {
+		return ""
+	}
+	settled := settleVibeTaskDocDone(workspace, sprintTaskDoc)
+	if settled != "" && settled != sprintTaskDoc {
+		r.vibeTaskPlan[i] = settled
+	}
+	return settled
+}
+
 // runAuditNode implements F-2: wires artifact.audit_draft to the real
 // BuildAuditDraft (change-ledger block + commit-message suggestion),
 // replacing the stub that only echoed RawArgs["summary"]. Persists the
@@ -1139,6 +1173,7 @@ func (s *InteractiveService) runAuditNode(ctx context.Context, parentRunID strin
 	rs := s.runs[parentRunID]
 	var state FlowValidationRetryState
 	var workspace, changeType, baseSHA, sprintTaskDoc string
+	var sprintIndex int
 	if rs != nil {
 		if rs.flowValidationRetryState != nil {
 			state = *rs.flowValidationRetryState
@@ -1152,8 +1187,10 @@ func (s *InteractiveService) runAuditNode(ctx context.Context, parentRunID strin
 			baseSHA = rs.turnStartGitHead
 		}
 		// BUG-566: the sprint currently under audit owns a Task doc — settle
-		// it below, before observation.
+		// it below, before observation. The sprint INDEX is captured here so
+		// the settle can verify the sprint epoch has not advanced (CA-1211).
 		if rs.vibeSprintIndex > 0 && len(rs.vibeTaskPlan) > 0 && inVibeSprintTopology(rs) {
+			sprintIndex = rs.vibeSprintIndex
 			sprintTaskDoc = rs.vibeTaskPlan[vibeSprintCurrentPlanIndex(rs.vibeSprintIndex, len(rs.vibeTaskPlan))]
 		}
 	}
@@ -1173,14 +1210,7 @@ func (s *InteractiveService) runAuditNode(ctx context.Context, parentRunID strin
 	// behavior. The plan entry is re-pointed at done/ so downstream status
 	// reads and the boundary DoD stamp resolve the moved file.
 	if sprintTaskDoc != "" && workspace != "" {
-		if settled := settleVibeTaskDocDone(workspace, sprintTaskDoc); settled != "" && settled != sprintTaskDoc {
-			s.mu.Lock()
-			if r := s.runs[parentRunID]; r != nil {
-				if i := vibeSprintCurrentPlanIndex(r.vibeSprintIndex, len(r.vibeTaskPlan)); i < len(r.vibeTaskPlan) && r.vibeTaskPlan[i] == sprintTaskDoc {
-					r.vibeTaskPlan[i] = settled
-				}
-			}
-			s.mu.Unlock()
+		if settled := s.settleVibeSprintTaskDocForEpoch(parentRunID, node.ID, workspace, sprintTaskDoc, sprintIndex); settled != "" && settled != sprintTaskDoc {
 			s.flowDiagLog(parentRunID, "vibe_task_doc_settled", "sprint task doc moved todo→done",
 				"node_id", node.ID, "task_doc", settled)
 		}
