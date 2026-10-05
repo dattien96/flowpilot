@@ -318,6 +318,21 @@ func (s *InteractiveService) switchChatLeg(ctx context.Context, chatID string, r
 		s.mu.Unlock()
 		return chatSwitchResponse{}, newAPIErr(http.StatusConflict, "handoff_run_busy", "cannot switch while the chat leg is active (turn/approval/question pending)")
 	}
+	// BUG-1187 (live run-204891): a leg minted while the source owns a LIVE
+	// agent loop is a plain normal_chat run — it does not inherit the
+	// in-flight loop binding, so the flow keeps waiting on a hub whose
+	// session moved to an orphan leg. Guard in Phase A so every leg-minting
+	// caller (provider switch AND context rotate_leg) is covered; a sealed
+	// loop's run is plain chat (BUG-302/308) and switches normally.
+	if s.agentOrchestrator != nil {
+		switch s.agentOrchestrator.loopStateFor(src.id).Status {
+		case "", "done", "stopped":
+		default:
+			s.mu.Unlock()
+			return chatSwitchResponse{}, newAPIErr(http.StatusConflict, "flow_in_progress",
+				"cannot rotate the chat leg while a flow loop is in progress on this run")
+		}
+	}
 	if s.chatSwitchInFlight[chatID] {
 		s.mu.Unlock()
 		return chatSwitchResponse{}, newAPIErr(http.StatusConflict, "handoff_run_busy", "a provider switch is already in flight")

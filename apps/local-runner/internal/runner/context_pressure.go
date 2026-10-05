@@ -174,7 +174,7 @@ func (s *InteractiveService) emitContextPressureCardLocked(rs *interactiveRun, u
 		}
 	}
 	options := []QuestionOption{}
-	if contextResetEligibleLocked(rs) {
+	if s.contextResetEligibleLocked(rs) {
 		options = append(options, QuestionOption{Label: "rotate_leg", Description: "reset the provider session on the same account/model, reseeded from durable context"})
 	}
 	options = append(options,
@@ -234,11 +234,35 @@ func (s *InteractiveService) emitContextPressureCardLocked(rs *interactiveRun, u
 	}
 }
 
-// contextResetEligibleLocked reports whether a same-binding leg reset is
-// meaningful for this run: only long-lived root sessions persist one
-// provider session across turns. Caller must hold s.mu.
-func contextResetEligibleLocked(rs *interactiveRun) bool {
+// contextResetShapeEligibleLocked is the permanent-shape half of leg-reset
+// eligibility: root run, chat-attached, active leg. A shape-ineligible run
+// never becomes eligible again; the live-loop refusal below is transient
+// (it lifts when the loop seals). Caller must hold s.mu.
+func contextResetShapeEligibleLocked(rs *interactiveRun) bool {
 	return rs.parentRunID == "" && rs.chatID != "" && rs.legState == LegStateActive
+}
+
+// contextResetEligibleLocked reports whether a same-binding leg reset is
+// meaningful NOW: the permanent shape plus no live agent loop owned by the
+// run. BUG-1187 (live run-204891): a sprint hub's in-flight loop is keyed
+// on the source run — switchChatLeg mints a plain normal_chat leg
+// that does not inherit the binding, so the flow keeps waiting on a hub
+// whose session moved to an orphan leg. Caller must hold s.mu.
+func (s *InteractiveService) contextResetEligibleLocked(rs *interactiveRun) bool {
+	if !contextResetShapeEligibleLocked(rs) {
+		return false
+	}
+	if o := s.agentOrchestrator; o != nil {
+		switch o.loopStateFor(rs.id).Status {
+		case "", "done", "stopped":
+			// No live loop — never launched (a pending latch still
+			// survives a switch via FlowArm, CP-89 Task-451) or sealed into
+			// plain chat (BUG-302/308). Rotation is safe.
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // applyContextPressureAnswer applies a resolved context_pressure_90 choice.
@@ -253,7 +277,7 @@ func (s *InteractiveService) applyContextPressureAnswer(rs *interactiveRun, opti
 	switch strings.TrimSpace(optionID) {
 	case "rotate_leg":
 		s.mu.Lock()
-		if contextResetEligibleLocked(rs) {
+		if s.contextResetEligibleLocked(rs) {
 			rs.contextResetPending = true
 		}
 		s.mu.Unlock()
@@ -272,7 +296,7 @@ func (s *InteractiveService) maybeOfferContextResetAtAdmissionLocked(rs *interac
 	if s == nil || rs == nil || !contextPressureEnabled() {
 		return
 	}
-	if !contextResetEligibleLocked(rs) {
+	if !s.contextResetEligibleLocked(rs) {
 		return
 	}
 	legID := rs.providerSessionID
@@ -314,8 +338,13 @@ func (s *InteractiveService) consumePendingContextReset(ctx context.Context, run
 		s.mu.Unlock()
 		return ""
 	}
-	if !contextResetEligibleLocked(rs) {
-		rs.contextResetPending = false
+	if !s.contextResetEligibleLocked(rs) {
+		// BUG-1187: shape-ineligible means the intent can never fire — drop
+		// it. A live-loop refusal is transient: keep the committed reset so
+		// it executes at the first admission after the flow seals.
+		if !contextResetShapeEligibleLocked(rs) {
+			rs.contextResetPending = false
+		}
 		s.mu.Unlock()
 		return ""
 	}
