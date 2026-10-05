@@ -9214,6 +9214,30 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 		rs.uiInitiated = in.UIInitiated
 		rs.waitForResult = in.Wait
 		rs.flowCohortId = in.FlowCohortID
+		// BUG-1194 (live run-225691 / replacement leg run-260972): a member
+		// re-dispatch that arrives without an explicit cohort id — the
+		// member_stalled Continue respawn, the failed-delegate fresh spawn,
+		// a hub ad-hoc spawn_agent — must still fill the seat an OPEN cohort
+		// barrier holds for its label, or its completion can never join and
+		// the barrier wedges waiting on a leg that no longer exists. The
+		// seat is inherited, not grown: expected is already counting this
+		// label's slot. A drained barrier or consumed seat never rebinds —
+		// the explicit re-drive path owns rejoin (rearmCohortIfDrainedLocked).
+		if rs.flowCohortId == "" && !in.CohortSeatInherited {
+			seatLabel := in.Label
+			if seatLabel == "" {
+				seatLabel = in.Agent
+			}
+			if cid := s.openCohortSeatForLabelLocked(parentRunID, seatLabel); cid != "" {
+				rs.flowCohortId = cid
+				in.CohortSeatInherited = true
+				defer func() {
+					s.flowDiagLog(parentRunID, "child_spawn_cohort_rebound",
+						"cohort-less spawn rebound to an open barrier seat",
+						"child_run_id", handle.RunID, "label", rs.label, "cohort_id", cid)
+				}()
+			}
+		}
 		if parent := s.runs[parentRunID]; parent != nil {
 			rs.workingMode = parent.workingMode
 			idx, total, name := vibeTaskProgress(parent.vibeTaskPlan, parent.vibeSprintIndex)

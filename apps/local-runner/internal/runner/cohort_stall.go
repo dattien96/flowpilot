@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -39,6 +40,57 @@ func (s *InteractiveService) openCohortMemberRuns(parentRunID string) []*interac
 		out = append(out, child)
 	}
 	return out
+}
+
+// openSeatForLabel reports whether cohortID's barrier is still waiting on a
+// seat for label: the barrier is open (expected>0, buffered<expected) and no
+// real entry consumed the label's seat. A `cancelled` entry is a released-seat
+// placeholder (BUG-553) — it does not consume the seat, a later real result
+// replaces it.
+func (o *AgentOrchestrator) openSeatForLabel(parentRunID, cohortID, label string) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	k := cohortKey(parentRunID, cohortID)
+	exp := o.cohortExpected[k]
+	if exp <= 0 || len(o.cohort[k]) >= exp {
+		return false
+	}
+	label = strings.TrimSpace(label)
+	for _, e := range o.cohort[k] {
+		if strings.TrimSpace(e.Label) == label && e.Status != "cancelled" {
+			return false
+		}
+	}
+	return true
+}
+
+// openCohortSeatForLabelLocked returns the cohort id whose open barrier still
+// holds a seat for the given member label — i.e. the barrier cannot complete
+// until a leg with that label reports. Newest matching prior leg wins (a
+// label can recur across rounds; only the latest live cohort matters).
+// Drained barriers and consumed seats return "" — rebinding those would
+// re-open a delivered join or attach a completion that dedupe drops.
+// Caller holds s.mu.
+func (s *InteractiveService) openCohortSeatForLabelLocked(parentRunID, label string) string {
+	label = strings.TrimSpace(label)
+	if label == "" || s.agentOrchestrator == nil {
+		return ""
+	}
+	children := s.agentOrchestrator.listChildren(parentRunID)
+	for i := len(children) - 1; i >= 0; i-- {
+		c := s.runs[children[i]]
+		if c == nil || c.label != label {
+			continue
+		}
+		cid := strings.TrimSpace(c.flowCohortId)
+		if cid == "" {
+			continue
+		}
+		if s.agentOrchestrator.openSeatForLabel(parentRunID, cid, label) {
+			return cid
+		}
+	}
+	return ""
 }
 
 // memberAlreadyBuffered reports whether label already has a cohort entry.
@@ -85,6 +137,7 @@ func (s *InteractiveService) maybeScheduleStallCheck(parentRunID string) {
 	if timeout <= 0 {
 		timeout = defaultStallTimeout
 	}
+	diverted := slices.Clone(parent.vibeParkedGatedRunIDs)
 	s.mu.Unlock()
 	if !s.agentOrchestrator.hasOpenCohort(parentRunID) {
 		return
@@ -95,6 +148,12 @@ func (s *InteractiveService) maybeScheduleStallCheck(parentRunID string) {
 	found := false
 	for _, child := range s.openCohortMemberRuns(parentRunID) {
 		s.mu.Lock()
+		// BUG-1195: a member diverted into the mounted debate is parked for
+		// its post-debate reprompt — held work, not silence.
+		if slices.Contains(diverted, child.id) {
+			s.mu.Unlock()
+			continue
+		}
 		// BUG-1186: advisory cards (context_pressure/usage_budget) are not
 		// gates — only a real gating question suppresses stall detection.
 		hasGate := child.pendingApprovalID != "" || s.pendingQuestionGatesWorkLocked(child)
@@ -168,6 +227,12 @@ func (s *InteractiveService) checkAndBlockStalledMembers(parentRunID string) boo
 	if timeout <= 0 {
 		timeout = defaultStallTimeout
 	}
+	// BUG-1195 (live run-225691, gated leg run-258141): a member diverted
+	// into an already-mounted debate is parked on purpose — its post-debate
+	// reprompt owns the re-drive (restoreVibeFlowAfterDebate). Held work is
+	// not silence; counting it parked the hub mid-debate and the follow-on
+	// respawn needed BUG-1194's seat re-bind.
+	diverted := slices.Clone(parent.vibeParkedGatedRunIDs)
 	// Only act while the loop is still advancing.
 	s.mu.Unlock()
 	loop := s.agentOrchestrator.loopStateFor(parentRunID)
@@ -182,6 +247,10 @@ func (s *InteractiveService) checkAndBlockStalledMembers(parentRunID string) boo
 	now := time.Now().UTC()
 	for _, child := range s.openCohortMemberRuns(parentRunID) {
 		s.mu.Lock()
+		if slices.Contains(diverted, child.id) {
+			s.mu.Unlock()
+			continue
+		}
 		// Gate visible → wait forever (T-11(a)); do not stall.
 		// BUG-288 R13-06: post-turn gate in progress is also a "gate" — not stalled.
 		// BUG-354 P2-R2 (sub-agent review F1, run-540927): while the post-turn
