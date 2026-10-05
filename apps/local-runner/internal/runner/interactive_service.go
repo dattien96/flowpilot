@@ -3136,7 +3136,7 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 			continue
 		}
 		if c.status != RunStatusWaitingUserApr ||
-			c.pendingApprovalID != "" || c.pendingQuestionID != "" ||
+			c.pendingApprovalID != "" || s.pendingQuestionGatesWorkLocked(c) ||
 			len(c.pendingGateCodePaths) == 0 {
 			continue
 		}
@@ -5277,7 +5277,7 @@ func (s *InteractiveService) redriveQuietFlowLoop(parentRunID string) {
 	quiet := !rs.turnInFlight && !rs.reinvokeInFlight &&
 		rs.pendingRestartRunID == "" && rs.pendingGateRepromptPrompt == "" &&
 		rs.pendingResumePrompt == "" && !rs.pendingHubReinvoke &&
-		!rs.pendingFlowGateSettle && rs.pendingApprovalID == "" && rs.pendingQuestionID == "" &&
+		!rs.pendingFlowGateSettle && rs.pendingApprovalID == "" && !s.pendingQuestionGatesWorkLocked(rs) &&
 		!rs.vibeAwaitingLock && !rs.vibeResumeConfirm && !rs.vibeSprintBoundaryPending &&
 		!rs.vibeSprintStartInFlight && !rs.vibeSprintBoundaryDeclined
 	if quiet {
@@ -5288,7 +5288,7 @@ func (s *InteractiveService) redriveQuietFlowLoop(parentRunID string) {
 			}
 			if ch.turnInFlight || ch.pendingTurnPrompt != "" || ch.pendingGateRepromptPrompt != "" ||
 				ch.pendingResumePrompt != "" || ch.pendingFlowGateSettle ||
-				ch.pendingApprovalID != "" || ch.pendingQuestionID != "" ||
+				ch.pendingApprovalID != "" || s.pendingQuestionGatesWorkLocked(ch) ||
 				ch.status == RunStatusRunning || ch.status == RunStatusStarting ||
 				ch.status == RunStatusWaitingApproval || ch.status == RunStatusWaitingQuestion ||
 				ch.status == RunStatusWaitingUserApr {

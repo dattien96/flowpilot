@@ -95,7 +95,9 @@ func (s *InteractiveService) maybeScheduleStallCheck(parentRunID string) {
 	found := false
 	for _, child := range s.openCohortMemberRuns(parentRunID) {
 		s.mu.Lock()
-		hasGate := child.pendingApprovalID != "" || child.pendingQuestionID != ""
+		// BUG-1186: advisory cards (context_pressure/usage_budget) are not
+		// gates — only a real gating question suppresses stall detection.
+		hasGate := child.pendingApprovalID != "" || s.pendingQuestionGatesWorkLocked(child)
 		last := child.lastProviderEventAt
 		inFlight := child.turnInFlight
 		status := child.status
@@ -190,7 +192,7 @@ func (s *InteractiveService) checkAndBlockStalledMembers(parentRunID string) boo
 		// without a live gate is not busy). Approval/question cards still wait
 		// forever — those are real user-visible forms (T-11(a)).
 		gateLive := gateCancelLive(child.postTurnGateStartedAt, child.postTurnGateCancel)
-		hasGate := child.pendingApprovalID != "" || child.pendingQuestionID != "" || gateLive
+		hasGate := child.pendingApprovalID != "" || s.pendingQuestionGatesWorkLocked(child) || gateLive
 		// BUG-539 (live run-2830): an armed gate-reprompt/resume intent is
 		// queued remediation, not silence — dispatch is fenced while the loop
 		// is blocked, so counting the member as stalled parks the flow and the

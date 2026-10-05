@@ -416,7 +416,7 @@ func (s *InteractiveService) missingVerdictLabelsWithLiveMember(parentRunID, hub
 			continue
 		}
 		childSeen[child.label] = true
-		if memberVerdictStillLive(child) {
+		if s.memberVerdictStillLive(child) {
 			live[child.label] = true
 		}
 	}
@@ -447,8 +447,11 @@ func (s *InteractiveService) missingVerdictLabelsWithLiveMember(parentRunID, hub
 // turn, a queued turn prompt, a user-visible approval/question gate, an
 // armed gate-reprompt or resume intent, a live post-turn gate, or the
 // Starting spawn window — the same activity set hasActiveFlowChild and the
-// cohort stall sweep already treat as real work. Called with s.mu held.
-func memberVerdictStillLive(child *interactiveRun) bool {
+// cohort stall sweep already treat as real work. Advisory cards
+// (context-pressure / usage-budget) are excluded: they gate nothing and can
+// never produce the verdict — live run-204891 wedged the done-edge defer on
+// exactly that card (BUG-1186). Called with s.mu held.
+func (s *InteractiveService) memberVerdictStillLive(child *interactiveRun) bool {
 	if child == nil {
 		return false
 	}
@@ -458,11 +461,45 @@ func memberVerdictStillLive(child *interactiveRun) bool {
 	return turnBusy ||
 		strings.TrimSpace(child.pendingTurnPrompt) != "" ||
 		child.pendingApprovalID != "" ||
-		child.pendingQuestionID != "" ||
+		s.pendingQuestionGatesWorkLocked(child) ||
 		repromptArmed ||
 		strings.TrimSpace(child.pendingResumePrompt) != "" ||
 		gateCancelLive(child.postTurnGateStartedAt, child.postTurnGateCancel) ||
 		child.status == RunStatusStarting
+}
+
+// pendingQuestionGatesWorkLocked reports whether a run is held by a REAL
+// user gate — a pending question whose answer changes the member's work
+// (approval cards, quota routing). Advisory cards — context_pressure_90 and
+// usage_budget_exceeded — surface a decision but neither block the member's
+// turn path nor yield a machine verdict, so they must not count toward
+// liveness, stall-suppression or quiet checks (BUG-1186). A dangling
+// pendingQuestionID (record not resolvable) is unverifiable durable state:
+// fail closed and count it live (BUG-565 posture). Caller holds s.mu.
+func (s *InteractiveService) pendingQuestionGatesWorkLocked(rs *interactiveRun) bool {
+	if rs == nil {
+		return false
+	}
+	if id := rs.pendingQuestionID; id != "" {
+		rec := s.questions[id]
+		if rec == nil {
+			return true
+		}
+		if rec.kind != contextPressureQuestionKind && rec.kind != usageBudgetQuestionKind {
+			return true
+		}
+	}
+	// pendingQuestionID is single-valued — an advisory card may have
+	// overwritten it while an earlier gating question is still open; scan for
+	// any surviving gate.
+	for _, rec := range s.questions {
+		if rec != nil && rec.runID == rs.id &&
+			(rec.status == "pending" || rec.status == "resolving") &&
+			rec.kind != contextPressureQuestionKind && rec.kind != usageBudgetQuestionKind {
+			return true
+		}
+	}
+	return false
 }
 
 // flowStepRunningWithinSpawnGrace reports whether the flow step for nodeID

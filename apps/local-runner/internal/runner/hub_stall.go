@@ -117,17 +117,20 @@ func (s *InteractiveService) hasActiveFlowChild(parentRunID string) bool {
 		// cancel must not shield the hub.)
 		repromptArmed := child.pendingGateRepromptPrompt != "" ||
 			child.pendingGateRepromptStepID != ""
+		// BUG-1186: an advisory card (context_pressure/usage_budget) is not
+		// gated work — it cannot yield progress, only gating questions count.
+		questionGate := s.pendingQuestionGatesWorkLocked(child)
 		ghost := child.status == RunStatusRunning &&
 			!turnBusy &&
 			child.pendingTurnPrompt == "" &&
 			child.pendingApprovalID == "" &&
-			child.pendingQuestionID == "" &&
+			!questionGate &&
 			!repromptArmed &&
 			!gateLive
 		active := turnBusy ||
 			child.pendingTurnPrompt != "" ||
 			child.pendingApprovalID != "" ||
-			child.pendingQuestionID != "" ||
+			questionGate ||
 			repromptArmed ||
 			gateLive ||
 			child.status == RunStatusStarting ||
@@ -386,7 +389,7 @@ func (s *InteractiveService) checkAndBlockStalledHub(runID string) bool {
 	// new turns while the gate is settling (gate_in_progress), so no race.
 	hubTurnBusy := rs.turnInFlight && rs.postTurnGateCancel == nil
 	busy := hubTurnBusy || rs.reinvokeInFlight ||
-		rs.pendingApprovalID != "" || rs.pendingQuestionID != "" ||
+		rs.pendingApprovalID != "" || s.pendingQuestionGatesWorkLocked(rs) ||
 		gateCancelLive(rs.postTurnGateStartedAt, rs.postTurnGateCancel) ||
 		strings.TrimSpace(rs.pendingGateRepromptPrompt) != "" ||
 		strings.TrimSpace(rs.pendingResumePrompt) != ""
@@ -414,7 +417,7 @@ func (s *InteractiveService) checkAndBlockStalledHub(runID string) bool {
 		s.mu.Lock()
 		hasCard := false
 		if r := s.runs[runID]; r != nil {
-			hasCard = r.pendingApprovalID != "" || r.pendingQuestionID != ""
+			hasCard = r.pendingApprovalID != "" || s.pendingQuestionGatesWorkLocked(r)
 		}
 		s.mu.Unlock()
 		if hasCard {
