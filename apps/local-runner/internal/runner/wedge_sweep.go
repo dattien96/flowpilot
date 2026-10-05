@@ -49,8 +49,10 @@ func (s *InteractiveService) sweepWedgedFlowWork() {
 	}
 	var heals []healWait
 	type deadDispatchRun struct {
-		runID string
-		nodes []agentpack.FlowNode
+		runID       string
+		edges       []agentpack.FlowEdge
+		nodes       []agentpack.FlowNode
+		lastEventAt time.Time
 	}
 	var deadDispatchRuns []deadDispatchRun
 
@@ -119,8 +121,10 @@ func (s *InteractiveService) sweepWedgedFlowWork() {
 			!rs.reinvokeInFlight && !rs.vibeDebateMountInFlight &&
 			!gateCancelLive(rs.postTurnGateStartedAt, rs.postTurnGateCancel) {
 			deadDispatchRuns = append(deadDispatchRuns, deadDispatchRun{
-				runID: id,
-				nodes: append([]agentpack.FlowNode(nil), rs.activeFlowNodes...),
+				runID:       id,
+				edges:       append([]agentpack.FlowEdge(nil), rs.activeFlowEdges...),
+				nodes:       append([]agentpack.FlowNode(nil), rs.activeFlowNodes...),
+				lastEventAt: rs.lastProviderEventAt,
 			})
 		}
 		// (2) deferred audit — collect under lock, dispatch outside.
@@ -154,7 +158,7 @@ func (s *InteractiveService) sweepWedgedFlowWork() {
 		s.maybeResolveZombieVibeDebate(id)
 	}
 	for _, c := range deadDispatchRuns {
-		s.maybeRedriveDeadDispatchedSteps(c.runID, c.nodes)
+		s.maybeRedriveDeadDispatchedSteps(c.runID, c.edges, c.nodes, c.lastEventAt)
 	}
 }
 
@@ -295,7 +299,7 @@ var flowStepDeadDispatchBound = vibeDebateTriggerWedgeBound
 // Re-drive: hub.inline nodes re-invoke the hub turn; delegate nodes get a
 // matching-leg reinvoke first (preserves leg lineage) and a fresh
 // spawnChildRun otherwise — BUG-1194 cohort rebind inside covers open seats.
-func (s *InteractiveService) maybeRedriveDeadDispatchedSteps(parentRunID string, nodes []agentpack.FlowNode) {
+func (s *InteractiveService) maybeRedriveDeadDispatchedSteps(parentRunID string, edges []agentpack.FlowEdge, nodes []agentpack.FlowNode, lastEventAt time.Time) {
 	if s == nil || s.workflowStore == nil || len(nodes) == 0 {
 		return
 	}
@@ -307,6 +311,39 @@ func (s *InteractiveService) maybeRedriveDeadDispatchedSteps(parentRunID string,
 	for _, st := range steps {
 		if st.NodeID != "" {
 			byNode[st.NodeID] = st
+		}
+	}
+	// CA-1203: a PENDING node whose activation edge fired but whose dispatch
+	// was consumed (debate divert, overlay restore) is the same dead end as
+	// the RUNNING class — it just never got stamped. The dispatch window is
+	// real though: the predecessor's settle goroutine still owns the spawn for
+	// a few moments after stamping DONE, so only a silent run proves loss.
+	silent := lastEventAt.IsZero() || time.Since(lastEventAt) >= flowStepDeadDispatchBound
+	if silent && s.agentOrchestrator != nil && !s.agentOrchestrator.hasOpenCohort(parentRunID) {
+		for _, node := range nodes {
+			if byNode[strings.TrimSpace(node.ID)].Status != StepStatusPending {
+				continue
+			}
+			preds := flowDirectDonePredecessors(edges, node.ID)
+			if len(preds) == 0 {
+				continue // entry-shape node — the mount path owns it
+			}
+			ready := true
+			for _, p := range preds {
+				switch byNode[p].Status {
+				case StepStatusDone, StepStatusSkipped:
+				default:
+					ready = false
+				}
+			}
+			if !ready || s.deadDispatchNonTerminalChildExists(parentRunID, node.ID) ||
+				s.persistedCompletedChildExists(parentRunID, node.ID) {
+				continue
+			}
+			if canonical, ok := agentpack.NormalizeBehaviorID(node.Behavior); ok && canonical == "artifact.audit_draft" {
+				continue // class (2) owns audit deferral — it must also wait out unrelated RUNNING sprint steps
+			}
+			s.redispatchPendingFlowNode(parentRunID, edges, nodes, node)
 		}
 	}
 	hubRedriven := false
@@ -347,6 +384,79 @@ func (s *InteractiveService) maybeRedriveDeadDispatchedSteps(parentRunID string,
 	}
 }
 
+// flowDirectDonePredecessors returns the direct forward-done edge sources
+// into nodeID — the activation condition — unlike flowForwardDonePredecessors
+// which walks the whole transitive upstream.
+func flowDirectDonePredecessors(edges []agentpack.FlowEdge, nodeID string) []string {
+	var out []string
+	for _, e := range edges {
+		if strings.EqualFold(strings.TrimSpace(e.Kind), "forward") &&
+			strings.EqualFold(strings.TrimSpace(e.When), "done") &&
+			strings.TrimSpace(e.To) == strings.TrimSpace(nodeID) &&
+			strings.TrimSpace(e.From) != "" {
+			out = append(out, strings.TrimSpace(e.From))
+		}
+	}
+	return out
+}
+
+// pendingDispatchableFlowNodes returns active-topology nodes that are PENDING
+// even though every direct forward-done predecessor already settled — the
+// activation edge fired (or a divert/overlay consumed the completion) but the
+// node's own dispatch never landed. Only kinds the runner can self-drive
+// count: inline-dispatchable nodes and provider-backed delegate nodes.
+// CA-1203 (live run-183756): coder sat PENDING after the debate overlay
+// consumed tdd's completion, and the hub-done verdict gate escalated into a
+// WAITING loop that could never produce the missing reviewer verdicts —
+// spec_align/reviewer depend on validate, which depends on coder.
+func (s *InteractiveService) pendingDispatchableFlowNodes(parentRunID string, edges []agentpack.FlowEdge, nodes []agentpack.FlowNode) []agentpack.FlowNode {
+	if s == nil || s.workflowStore == nil {
+		return nil
+	}
+	steps, err := s.workflowStore.LoadRunSteps(context.Background(), parentRunID)
+	if err != nil {
+		return nil
+	}
+	byNode := make(map[string]RuntimeWorkflowStepStatus, len(steps))
+	for _, st := range steps {
+		if st.NodeID != "" {
+			byNode[st.NodeID] = st.Status
+		}
+	}
+	var out []agentpack.FlowNode
+	for _, node := range nodes {
+		if byNode[node.ID] != StepStatusPending {
+			continue
+		}
+		preds := flowDirectDonePredecessors(edges, node.ID)
+		if len(preds) == 0 {
+			continue // entry-shape node — the mount path owns its dispatch
+		}
+		ready := true
+		for _, p := range preds {
+			switch byNode[p] {
+			case StepStatusDone, StepStatusSkipped:
+			default:
+				ready = false
+			}
+		}
+		if !ready {
+			continue
+		}
+		if s.deadDispatchNonTerminalChildExists(parentRunID, node.ID) {
+			continue
+		}
+		if canonical, ok := agentpack.NormalizeBehaviorID(node.Behavior); ok && canonical == "artifact.audit_draft" {
+			continue // the dedicated deferrer owns audit — and it can't produce a missing verdict anyway
+		}
+		if !flowNodeInlineDispatchable(node) && flowNodeAgentName(node) == "" {
+			continue // no self-drive path — diag-visible via the sweep caller
+		}
+		out = append(out, node)
+	}
+	return out
+}
+
 // deadDispatchNonTerminalChildExists reports whether any child leg of
 // parentRunID carries label in a non-terminal status. Broader than
 // vibeNodeHasLiveWork: a waiting_user_approval leg is a carded park that owns
@@ -365,6 +475,42 @@ func (s *InteractiveService) deadDispatchNonTerminalChildExists(parentRunID, lab
 		}
 	}
 	return false
+}
+
+// redispatchPendingFlowNode re-drives a PENDING node whose activation edge
+// fired but whose dispatch never landed (CA-1203). Dispatch goes through the
+// same seams a fresh advance uses: inline handlers for inline-dispatchable
+// kinds, the hub reinvoke for hub.inline, and redriveDeadDelegateLeg for
+// provider-backed delegate nodes. Terminal-result rows are never candidates —
+// the caller only hands in PENDING nodes with all-terminal done-preds.
+func (s *InteractiveService) redispatchPendingFlowNode(parentRunID string, edges []agentpack.FlowEdge, nodes []agentpack.FlowNode, node agentpack.FlowNode) {
+	if canonical, ok := agentpack.NormalizeBehaviorID(node.Behavior); ok && canonical == "hub.inline" {
+		s.flowDiagLog(parentRunID, "pending_dispatch_hub_redrive",
+			"hub node PENDING with all done-preds settled; dispatch never landed — re-driving hub reinvoke",
+			"node_id", node.ID)
+		s.maybeAutoReinvokeHubWithPrompt(parentRunID,
+			"[flow-engine] Node \""+node.ID+"\" is ready to run (all predecessors settled) but its hub turn was never dispatched. Run that node's evaluation turn now.")
+		return
+	}
+	if flowNodeInlineDispatchable(node) {
+		s.flowDiagLog(parentRunID, "pending_dispatch_inline_redrive",
+			"inline node PENDING with all done-preds settled; dispatch never landed — running inline handler",
+			"node_id", node.ID, "behavior", node.Behavior)
+		s.tryAdvanceFlowThroughInline(parentRunID, edges, nodes, node,
+			"[flow-engine] Predecessor completions were consumed without dispatching this node — running it now.")
+		return
+	}
+	agentName := flowNodeAgentName(node)
+	if agentName == "" {
+		s.flowDiagLog(parentRunID, "pending_dispatch_unhandled_kind",
+			"node PENDING with all done-preds settled but no self-drive path for its behavior",
+			"node_id", node.ID, "behavior", node.Behavior)
+		return
+	}
+	s.flowDiagLog(parentRunID, "pending_dispatch_delegate_redrive",
+		"delegate node PENDING with all done-preds settled; dispatch never landed — re-driving leg",
+		"node_id", node.ID)
+	s.redriveDeadDelegateLeg(parentRunID, node, agentName)
 }
 
 // redriveDeadDelegateLeg re-drives a delegate node whose dispatch was lost:
@@ -386,8 +532,9 @@ func (s *InteractiveService) redriveDeadDelegateLeg(parentRunID string, node age
 		return child.label == nodeID ||
 			(strings.TrimSpace(child.label) == "" && strings.EqualFold(strings.TrimSpace(child.agentName), agentName))
 	}) {
+		s.setFlowStepStatus(context.Background(), parentRunID, nodeID, StepStatusRunning)
 		s.flowDiagLog(parentRunID, "dead_dispatch_leg_reinvoked",
-			"delegate step RUNNING with dead dispatch; reinvoked matching leg",
+			"delegate leg reinvoked for lost dispatch",
 			"node_id", nodeID)
 		return
 	}
@@ -402,11 +549,12 @@ func (s *InteractiveService) redriveDeadDelegateLeg(parentRunID string, node age
 		Model:            s.delegateSpawnModel(context.Background(), parentRunID, node),
 	}); err != nil {
 		s.flowDiagLog(parentRunID, "dead_dispatch_leg_spawn_failed",
-			"delegate step RUNNING with dead dispatch; fresh leg spawn failed",
+			"delegate leg spawn failed for lost dispatch",
 			"node_id", nodeID, "error", err.Error())
 		return
 	}
+	s.setFlowStepStatus(context.Background(), parentRunID, nodeID, StepStatusRunning)
 	s.flowDiagLog(parentRunID, "dead_dispatch_leg_spawned",
-		"delegate step RUNNING with dead dispatch; spawned fresh leg",
+		"delegate fresh leg spawned for lost dispatch",
 		"node_id", nodeID)
 }

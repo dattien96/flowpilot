@@ -1957,8 +1957,14 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 		if in.viaReviewOutcome && in.reviewOutcomeStatus == "approved" {
 			s.mu.Lock()
 			requireVerdict := false
-			if rs := s.runs[parentRunID]; rs != nil && flowRequiresSynthesisMachineVerdict(rs) {
-				requireVerdict = true
+			var flowEdges []agentpack.FlowEdge
+			var flowNodes []agentpack.FlowNode
+			if rs := s.runs[parentRunID]; rs != nil {
+				if flowRequiresSynthesisMachineVerdict(rs) {
+					requireVerdict = true
+				}
+				flowEdges = append([]agentpack.FlowEdge(nil), rs.activeFlowEdges...)
+				flowNodes = append([]agentpack.FlowNode(nil), rs.activeFlowNodes...)
 			}
 			s.mu.Unlock()
 			if requireVerdict {
@@ -1969,7 +1975,13 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 					// member mid-turn, so it never lands. Defer exactly like
 					// rejected_cohort_incomplete: unstamp the decision, keep the
 					// loop running; the member's settle/join re-invokes the hub.
-					if labels := s.missingVerdictLabelsWithLiveMember(parentRunID, "synthesis"); len(labels) > 0 || s.autoRedriveVerdictDeficientMembers(parentRunID) {
+					// CA-1203: same defer when undispatched upstream work can
+					// still drive the chain to the verdict (dispatch consumed
+					// by the debate divert — escalating parks on a verdict
+					// nobody can ever submit).
+					if labels := s.missingVerdictLabelsWithLiveMember(parentRunID, "synthesis"); len(labels) > 0 ||
+						s.autoRedriveVerdictDeficientMembers(parentRunID) ||
+						len(s.pendingDispatchableFlowNodes(parentRunID, flowEdges, flowNodes)) > 0 {
 						s.mu.Lock()
 						if r := s.runs[parentRunID]; r != nil && r.currentTurnID != "" && r.lastFlowControlTurnID == r.currentTurnID {
 							r.lastFlowControlTurnID = ""
@@ -8676,7 +8688,15 @@ func (s *InteractiveService) advanceHubDoneThroughEdge(targetRunID string, in Fl
 			// settle/join re-invokes the hub, which re-submits done.
 			// BUG-1184: no live member either → auto-redrive the deficient
 			// member once (bounded) instead of escalating straight to a park.
-			if labels := s.missingVerdictLabelsWithLiveMember(targetRunID, hubID); len(labels) > 0 || s.autoRedriveVerdictDeficientMembers(targetRunID) {
+			// CA-1203 (live run-183756): escalation is only a real dead end
+			// when nothing upstream can still produce the verdict. A PENDING
+			// node whose done-edge predecessors already settled (dispatch
+			// consumed by the debate divert) is self-healing work — defer so
+			// the chain reaches the reviewer cohort on its own instead of
+			// parking on a verdict nobody can submit.
+			if labels := s.missingVerdictLabelsWithLiveMember(targetRunID, hubID); len(labels) > 0 ||
+				s.autoRedriveVerdictDeficientMembers(targetRunID) ||
+				len(s.pendingDispatchableFlowNodes(targetRunID, edges, nodes)) > 0 {
 				s.mu.Lock()
 				if r := s.runs[targetRunID]; r != nil && r.currentTurnID != "" && r.lastFlowControlTurnID == r.currentTurnID {
 					r.lastFlowControlTurnID = ""
