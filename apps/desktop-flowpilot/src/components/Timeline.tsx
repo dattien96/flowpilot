@@ -196,7 +196,7 @@ function MarkdownContent({ text }: { text: string }): React.ReactElement {
   );
 }
 
-const TIMELINE_PAGE_SIZE = 6;
+const TIMELINE_PAGE_SIZE = 3;
 
 function countPrompts(timeline: TimelineItem[]): number {
   return timeline.filter((item) => item.kind === "prompt").length;

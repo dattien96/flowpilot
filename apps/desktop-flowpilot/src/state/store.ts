@@ -1424,7 +1424,7 @@ export const useStore = create<AppState>((set, get) => ({
     const stream = client.focusAgentRun
       ? client.focusAgentRun(runId, agentFocusController.signal)
       : client.streamRun(runId, 0, agentFocusController.signal);
-    void consumeAgentStream(runId, stream, streamRunSeq, afterSeq, handle.status, set, get).catch((err) => {
+    void consumeAgentStream(runId, stream, streamRunSeq, afterSeq, handle.status, set, get, handle.lastEventSeq).catch((err) => {
       if (!shouldApplyRunEvent(get().runId, runId) || get()._streamRunSeq !== streamRunSeq) return;
       set((s) => ({
         status: "failed",
@@ -1470,10 +1470,12 @@ export const useStore = create<AppState>((set, get) => ({
     // Task-433 T-2: a pinned-but-missing snapshot must not silently no-op —
     // fall back to resume + full replay.
     let resumedStatus: RunStatus = restore?.status ?? "running";
+    let resumedLastEventSeq = restore?.lastEventSeq;
     if (!restore) {
       try {
         const handle = await get().client.resumeRun(mainRunId);
         resumedStatus = handle.status;
+        resumedLastEventSeq = handle.lastEventSeq;
         if (shouldApplyRunEvent(get().runId, mainRunId) && get()._streamRunSeq === streamRunSeq) {
           set({ status: handle.status, activeStepId: handle.stepId });
         }
@@ -1500,6 +1502,7 @@ export const useStore = create<AppState>((set, get) => ({
       resumedStatus,
       set,
       get,
+      resumedLastEventSeq,
     ).finally(() => {
       if (activeAgentFocusStreamController === agentFocusController) {
         activeAgentFocusStreamController = undefined;
@@ -4735,12 +4738,35 @@ async function consumeAgentStream(
   replayStatus: RunStatus,
   set: (fn: (s: AppState) => Partial<AppState>) => void,
   get: () => AppState,
+  lastEventSeq?: number,
 ): Promise<void> {
   const isStale = () => !shouldApplyRunEvent(get().runId, runId) || get()._streamRunSeq !== streamRunSeq;
+  // BUG-1193: focusing a coder/agent leg replays its whole persisted backlog
+  // (streamRun from seq 0). Applying every frame individually costs ~3 store
+  // updates per event — a run with thousands of events froze the renderer on
+  // open. Mirror consumeHistoryReplayStream: buffer events up to the durable
+  // boundary and apply them in one pass; only the live tail stays per-event.
+  const persistedEvents: ProviderEventDTO[] = [];
+  const replayBoundary = lastEventSeq && lastEventSeq > 0 ? lastEventSeq : undefined;
+  let replayingPersistedEvents = replayBoundary !== undefined;
+  const flushPersistedEvents = () => {
+    if (persistedEvents.length === 0 || isStale()) return;
+    applyHistoryReplayEvents(runId, persistedEvents, set);
+    persistedEvents.length = 0;
+    settleTerminalReplayVisuals(runId, replayStatus, set);
+  };
   for await (const e of stream) {
     if (isStale()) return;
     if (!isEventForRun(e, runId)) continue;
     if (e.seq <= afterSeq) continue;
+    if (replayingPersistedEvents) {
+      persistedEvents.push(e);
+      if (e.seq < replayBoundary!) continue;
+      flushPersistedEvents();
+      replayingPersistedEvents = false;
+      if (shouldStopHistoryReplay(replayStatus, e, lastEventSeq)) break;
+      continue;
+    }
     // Task-458: a live arrival is liveness evidence even when the event is one
     // this stream delegates elsewhere (orchestration types below).
     set((s) => ({ lastActivityByRun: stampRunActivity(s.lastActivityByRun, e, Date.now()) }));
@@ -4757,6 +4783,7 @@ async function consumeAgentStream(
       },
     }));
   }
+  flushPersistedEvents();
 }
 
 async function consumeOrchestrationStream(
