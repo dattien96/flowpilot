@@ -386,3 +386,38 @@ func TestOpencodeAdapterSessionPersistenceAndResume(t *testing.T) {
 	_ = json.Marshal
 	_ = fmt.Sprintf
 }
+
+// BUG-1189: a dead ACP peer — session/new answers but session/prompt never
+// returns and the notification stream stays open and silent — used to leave
+// SendTurn blocked on the turn select forever (the run read "running" with
+// nothing able to settle it). The idle bound must end the turn with an error.
+func TestBug1189_SendTurnFailsOnSilentPeer(t *testing.T) {
+	d, fg := startFakeOpencode(t, nil)
+	fg.serve(func(fg *fakeOpencode, m map[string]any) {
+		if m["method"] == "session/new" {
+			fg.reply(m["id"], map[string]any{"sessionId": "ses_dead"})
+		}
+		// session/prompt intentionally unanswered — dead provider shape.
+	})
+	old := opencodeTurnIdleBound
+	opencodeTurnIdleBound = 150 * time.Millisecond
+	defer func() { opencodeTurnIdleBound = old }()
+
+	a := newOpencodeAdapter(d, "/tmp")
+	bridge := &fakeOpencodeBridge{}
+	req := TurnRequest{RunID: "run-1", Prompt: "hello"}
+
+	done := make(chan error, 1)
+	go func() { done <- a.SendTurn(context.Background(), req, bridge) }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("SendTurn on a silently-dead peer must fail, not hang or pass")
+		}
+		if !strings.Contains(err.Error(), "idle") {
+			t.Fatalf("expected idle-bound error, got %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("SendTurn hung on a silently-dead peer — idle bound missing")
+	}
+}

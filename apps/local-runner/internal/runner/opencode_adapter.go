@@ -59,6 +59,18 @@ type opencodeAdapter struct {
 // a permission request was DENIED (CA-712): live wire captures show opencode
 // 1.18.x never streams the answer after a denial, so the generic 8s is pure
 // latency — the session/load replay recovery takes over after this grace.
+// opencodeTurnIdleBound is the quiet-window cap on the SendTurn select loop
+// (BUG-1189): when neither session/prompt's result nor any session
+// notification arrives for this long, the ACP peer is dead — the turn fails
+// instead of hanging forever. Var so tests can shrink it.
+var opencodeTurnIdleBound = 5 * time.Minute
+
+// opencodePostResultDrainCap bounds TOTAL time drainOpencodeNotificationsBlocking
+// may run after session/prompt already resolved (BUG-1189): the per-activity
+// timer resets on every notification, so a sick peer emitting an endless
+// keepalive/usage stream would otherwise never let the drain return.
+var opencodePostResultDrainCap = 90 * time.Second
+
 var opencodeEmptyTextWait = 8 * time.Second
 
 var opencodeDeniedEmptyTextWait = 1500 * time.Millisecond
@@ -343,11 +355,23 @@ func (a *opencodeAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge 
 	}()
 
 	var lastText string
+	// BUG-1189 (live suite hang): the turn loop must not wait forever on a
+	// silently-dead ACP peer — session/prompt never returns and the
+	// notification stream never closes nor delivers, leaving all select arms
+	// mute and SendTurn blocked indefinitely. Silence is death, not slowness:
+	// a live opencode turn emits usage/tool/chunk frames continuously, so a
+	// bounded quiet window means the peer is gone. The timer resets on every
+	// notification; ctx cancel and RPC completion still win immediately.
+	idle := time.NewTimer(opencodeTurnIdleBound)
+	defer idle.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			_ = a.dispatcher.notify("session/cancel", map[string]any{"sessionId": sessionID})
 			return ctx.Err()
+		case <-idle.C:
+			_ = a.dispatcher.notify("session/cancel", map[string]any{"sessionId": sessionID})
+			return fmt.Errorf("opencode acp turn idle: no session/prompt result and no session notifications for %s", opencodeTurnIdleBound)
 		case outcome := <-done:
 			if outcome.err != nil {
 				if limit, ok := classifyProviderLimit(ProviderKeyOpencode, nil, outcome.err); ok {
@@ -397,6 +421,7 @@ func (a *opencodeAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge 
 			if !ok {
 				return fmt.Errorf("opencode acp stream closed mid-turn")
 			}
+			resetOpencodeTimer(idle, opencodeTurnIdleBound)
 			lastText = a.applyOpencodeNotification(sessionID, n, bridge, lastText)
 		}
 	}
@@ -433,8 +458,14 @@ func (a *opencodeAdapter) drainOpencodeNotifications(sessionID string, notif <-c
 func (a *opencodeAdapter) drainOpencodeNotificationsBlocking(ctx context.Context, sessionID string, notif <-chan opencodeNotification, bridge TurnBridge, lastText string, timeout time.Duration) string {
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
+	// BUG-1189: the per-notification resets below can extend the drain
+	// indefinitely under a sick peer's endless stream — cap total wall time.
+	deadline := time.Now().Add(opencodePostResultDrainCap)
 	hasText := strings.TrimSpace(lastText) != ""
 	for {
+		if !time.Now().Before(deadline) {
+			return lastText
+		}
 		select {
 		case <-ctx.Done():
 			return lastText
