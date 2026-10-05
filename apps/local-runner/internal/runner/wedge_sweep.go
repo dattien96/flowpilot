@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"context"
 	"strings"
 	"time"
 
@@ -47,6 +48,11 @@ func (s *InteractiveService) sweepWedgedFlowWork() {
 		runID string
 	}
 	var heals []healWait
+	type deadDispatchRun struct {
+		runID string
+		nodes []agentpack.FlowNode
+	}
+	var deadDispatchRuns []deadDispatchRun
 
 	now := time.Now().UTC()
 	s.mu.Lock()
@@ -101,6 +107,22 @@ func (s *InteractiveService) sweepWedgedFlowWork() {
 				heals = append(heals, healWait{runID: id})
 			}
 		}
+		// (5) live run-183756 (dead dispatch): a step stamped RUNNING whose
+		// dispatch never materialized — no turn, no leg, no driver. coder was
+		// RUNNING >5min after a batch reset with zero ACP traffic; the
+		// synthesis hub reinvoke was consumed with no turn either. Only
+		// collect when the run itself is live and every run-level driver is
+		// quiet — an in-flight turn/settle/reinvoke owns the window.
+		if rs.parentRunID == "" && rs.flowEngineDriven && len(rs.activeFlowNodes) > 0 &&
+			rs.status == RunStatusRunning &&
+			!rs.turnInFlight && !rs.pendingFlowGateSettle && !rs.pendingHubReinvoke &&
+			!rs.reinvokeInFlight && !rs.vibeDebateMountInFlight &&
+			!gateCancelLive(rs.postTurnGateStartedAt, rs.postTurnGateCancel) {
+			deadDispatchRuns = append(deadDispatchRuns, deadDispatchRun{
+				runID: id,
+				nodes: append([]agentpack.FlowNode(nil), rs.activeFlowNodes...),
+			})
+		}
 		// (2) deferred audit — collect under lock, dispatch outside.
 		if rs.parentRunID == "" && rs.flowEngineDriven && len(rs.activeFlowNodes) > 0 {
 			for _, n := range rs.activeFlowNodes {
@@ -130,6 +152,9 @@ func (s *InteractiveService) sweepWedgedFlowWork() {
 	}
 	for _, id := range zombieDebates {
 		s.maybeResolveZombieVibeDebate(id)
+	}
+	for _, c := range deadDispatchRuns {
+		s.maybeRedriveDeadDispatchedSteps(c.runID, c.nodes)
 	}
 }
 
@@ -243,4 +268,145 @@ func (s *InteractiveService) maybeRedispatchDeferredAudit(parentRunID string, ed
 		msg = resultMessage[0]
 	}
 	s.runAuditNode(ctx, parentRunID, edges, nodes, node, msg)
+}
+
+// flowStepDeadDispatchBound is how old a RUNNING step stamp may be with no
+// live work before it counts as a dead dispatch. The normal
+// stamp→spawn→turn-start window is seconds; this mirrors the established
+// vibeDebateTriggerWedgeBound for the same wedge class.
+var flowStepDeadDispatchBound = vibeDebateTriggerWedgeBound
+
+// maybeRedriveDeadDispatchedSteps heals the "node RUNNING, nothing executing"
+// wedge (live run-183756: coder stamped RUNNING after a batch reset with zero
+// provider traffic; synthesis hub reinvoke consumed, no turn row). A step can
+// only be legitimately RUNNING while a leg, a hub turn, or a run-level driver
+// owns it — the caller already filtered run-level drivers, so an aged RUNNING
+// step that survives the checks below is a lost dispatch and gets re-driven
+// through the same paths a fresh advance would use.
+//
+// Skips, in order:
+//   - no step row / not RUNNING / fresh stamp (dispatch still in flight)
+//   - any non-terminal child leg carrying the label — running, waiting_*,
+//     idle/starting all count (a waiting_user_approval leg is a visible park
+//     that owns its own resume, never residue)
+//   - a persisted Completed leg — the leg finished; the settle/advance gap
+//     that left the stamp is BUG-1197's class, not a dead dispatch
+//
+// Re-drive: hub.inline nodes re-invoke the hub turn; delegate nodes get a
+// matching-leg reinvoke first (preserves leg lineage) and a fresh
+// spawnChildRun otherwise — BUG-1194 cohort rebind inside covers open seats.
+func (s *InteractiveService) maybeRedriveDeadDispatchedSteps(parentRunID string, nodes []agentpack.FlowNode) {
+	if s == nil || s.workflowStore == nil || len(nodes) == 0 {
+		return
+	}
+	steps, err := s.workflowStore.LoadRunSteps(context.Background(), parentRunID)
+	if err != nil {
+		return
+	}
+	byNode := make(map[string]RuntimeWorkflowStep, len(steps))
+	for _, st := range steps {
+		if st.NodeID != "" {
+			byNode[st.NodeID] = st
+		}
+	}
+	hubRedriven := false
+	for _, node := range nodes {
+		st, ok := byNode[strings.TrimSpace(node.ID)]
+		if !ok || st.Status != StepStatusRunning {
+			continue
+		}
+		started, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(st.StartedAt))
+		if err != nil || time.Since(started) < flowStepDeadDispatchBound {
+			continue
+		}
+		if s.vibeNodeHasLiveWork(parentRunID, node.ID) ||
+			s.deadDispatchNonTerminalChildExists(parentRunID, node.ID) ||
+			s.persistedCompletedChildExists(parentRunID, node.ID) {
+			continue
+		}
+		if canonical, ok := agentpack.NormalizeBehaviorID(node.Behavior); ok && canonical == "hub.inline" {
+			if hubRedriven {
+				continue
+			}
+			s.flowDiagLog(parentRunID, "dead_dispatch_hub_redrive",
+				"hub node RUNNING with no turn ever dispatched; re-driving hub reinvoke",
+				"node_id", node.ID)
+			s.maybeAutoReinvokeHubWithPrompt(parentRunID,
+				"[flow-engine] Node \""+node.ID+"\" is stamped RUNNING but its hub turn was never dispatched — the reinvoke/dispatch was lost. Run that node's evaluation turn now: read the current step state and emit its flow_control outcome.")
+			hubRedriven = true
+			continue
+		}
+		agentName := flowNodeAgentName(node)
+		if agentName == "" {
+			s.flowDiagLog(parentRunID, "dead_dispatch_unhandled_kind",
+				"step RUNNING with no live work but no re-drive path for its behavior",
+				"node_id", node.ID, "behavior", node.Behavior)
+			continue
+		}
+		s.redriveDeadDelegateLeg(parentRunID, node, agentName)
+	}
+}
+
+// deadDispatchNonTerminalChildExists reports whether any child leg of
+// parentRunID carries label in a non-terminal status. Broader than
+// vibeNodeHasLiveWork: a waiting_user_approval leg is a carded park that owns
+// its resume — counting it live keeps the sweep from double-dispatching it.
+func (s *InteractiveService) deadDispatchNonTerminalChildExists(parentRunID, label string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, child := range s.runs {
+		if child == nil || child.parentRunID != parentRunID || child.label != label {
+			continue
+		}
+		switch child.status {
+		case RunStatusCompleted, RunStatusFailed, RunStatusCancelled:
+		default:
+			return true
+		}
+	}
+	return false
+}
+
+// redriveDeadDelegateLeg re-drives a delegate node whose dispatch was lost:
+// reinvoke a matching prior leg when one exists (failed legs retry in place),
+// else spawn a fresh leg labelled node.ID. Mirrors the failed-delegate
+// Continue respawn contract — same prompt composition and contract inject.
+func (s *InteractiveService) redriveDeadDelegateLeg(parentRunID string, node agentpack.FlowNode, agentName string) {
+	cwd := s.workspaceCwdFor(parentRunID)
+	prompt := composeFlowNodeAgentPrompt(cwd,
+		"[flow-engine] This node is stamped RUNNING but no turn ever ran — its dispatch was lost. Do the node's work now and report your outcome.",
+		node)
+	prompt = appendResolvedVibeTemplatedInputs(prompt, node, s.vibeResolvedSlicerSource(parentRunID))
+	prompt = appendChangeContractIfAnyWithSecret(cwd, parentRunID, prompt, s.markerSecret)
+	nodeID := node.ID
+	if s.reinvokeMatchingFlowChild(parentRunID, prompt, func(child *interactiveRun) bool {
+		if child.status == RunStatusCancelled {
+			return false
+		}
+		return child.label == nodeID ||
+			(strings.TrimSpace(child.label) == "" && strings.EqualFold(strings.TrimSpace(child.agentName), agentName))
+	}) {
+		s.flowDiagLog(parentRunID, "dead_dispatch_leg_reinvoked",
+			"delegate step RUNNING with dead dispatch; reinvoked matching leg",
+			"node_id", nodeID)
+		return
+	}
+	agentDef, _ := resolvePackAgentDefinition(agentName)
+	if _, err := s.spawnChildRun(context.Background(), parentRunID, SpawnAgentInput{
+		Agent:            agentName,
+		Prompt:           prompt,
+		Wait:             false,
+		Label:            nodeID,
+		AutoOrchestrate:  true,
+		AgentDefOverride: agentDef,
+		Model:            s.delegateSpawnModel(context.Background(), parentRunID, node),
+	}); err != nil {
+		s.flowDiagLog(parentRunID, "dead_dispatch_leg_spawn_failed",
+			"delegate step RUNNING with dead dispatch; fresh leg spawn failed",
+			"node_id", nodeID, "error", err.Error())
+		return
+	}
+	s.flowDiagLog(parentRunID, "dead_dispatch_leg_spawned",
+		"delegate step RUNNING with dead dispatch; spawned fresh leg",
+		"node_id", nodeID)
 }
