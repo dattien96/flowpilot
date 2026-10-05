@@ -5637,45 +5637,63 @@ func (s *InteractiveService) flowRootIDLocked(rs *interactiveRun) string {
 	return ""
 }
 
-// healMirroredQuestionWaitLocked clears the CA-642 mirrored waiting_question
-// stamp on a resolved/expired question's root flow run (BUG-470). The mirror
-// emitLocked flips root.status to waiting_question via applyRunEventLocked,
-// but owner-run healing only touches s.runs[rec.runID] — the root stayed
-// waiting_question with no pending question (live run-102429). Heal only when
-// the resolved question was the last pending wait mirrored onto that root: a
-// root-owned pending question (pendingQuestionID), a pending approval, or
-// another pending question owned by a sibling in the same flow tree keeps the
-// wait. Caller must hold s.mu.
+// healMirroredQuestionWaitLocked clears the CA-642/CA-1207 mirrored
+// waiting_question stamp on a resolved/expired question's mirror targets
+// (BUG-470). The mirror emitLocked flips the target's status to
+// waiting_question via applyRunEventLocked, but owner-run healing only
+// touches s.runs[rec.runID] — the mirrored run stayed waiting_question with
+// no pending question (live run-102429). Mirror targets are the owner's flow
+// root AND every sibling leg of its chat (CA-1207: rotate_leg mints a new
+// root with no parentRunID for flowRootIDLocked to reach). Heal only when
+// the resolved question was the last pending wait mirrored onto a target:
+// a target-owned pending question (pendingQuestionID), a pending approval,
+// or another pending question whose owner still mirrors onto that target
+// keeps the wait. Caller must hold s.mu.
 func (s *InteractiveService) healMirroredQuestionWaitLocked(owner *interactiveRun, resolvedQuestionID string) {
 	if owner == nil {
 		return
 	}
-	rootID := s.flowRootIDLocked(owner)
-	if rootID == "" {
-		return
+	var targets []*interactiveRun
+	if rootID := s.flowRootIDLocked(owner); rootID != "" {
+		if root := s.runs[rootID]; root != nil {
+			targets = append(targets, root)
+		}
 	}
-	root := s.runs[rootID]
-	if root == nil || root.status != RunStatusWaitingQuestion {
-		return
+	if owner.chatID != "" {
+		for _, leg := range s.activeChatLegsLocked(owner.chatID) {
+			if leg != owner {
+				targets = append(targets, leg)
+			}
+		}
 	}
-	if root.pendingQuestionID != "" {
-		return
-	}
-	for id, rec := range s.questions {
-		if rec == nil || rec.status != "pending" || id == resolvedQuestionID {
+	for _, target := range targets {
+		if target.status != RunStatusWaitingQuestion || target.pendingQuestionID != "" {
 			continue
 		}
-		if other := s.runs[rec.runID]; other != nil && s.flowRootIDLocked(other) == rootID {
-			return
+		kept := false
+		for id, rec := range s.questions {
+			if rec == nil || rec.status != "pending" || id == resolvedQuestionID {
+				continue
+			}
+			other := s.runs[rec.runID]
+			if other != nil && other != target &&
+				(s.flowRootIDLocked(other) == target.id ||
+					(other.chatID != "" && other.chatID == target.chatID)) {
+				kept = true
+				break
+			}
 		}
+		if kept {
+			continue
+		}
+		if target.pendingApprovalID != "" {
+			target.status = RunStatusWaitingApproval
+			target.agentStatus = string(RunStatusWaitingApproval)
+			continue
+		}
+		target.status = RunStatusRunning
+		target.agentStatus = string(RunStatusRunning)
 	}
-	if root.pendingApprovalID != "" {
-		root.status = RunStatusWaitingApproval
-		root.agentStatus = string(RunStatusWaitingApproval)
-		return
-	}
-	root.status = RunStatusRunning
-	root.agentStatus = string(RunStatusRunning)
 }
 
 func (s *InteractiveService) nextID(prefix string) string {
@@ -8345,9 +8363,33 @@ func (b *turnBridge) askQuestion(extraCtx context.Context, prompt string, option
 	// no card to answer. Mirror the question onto the root flow run's stream
 	// (walking nested sub-hub chains); AnswerQuestion resolves globally by
 	// question id, so answering from the main timeline unblocks the child.
+	mirroredTo := map[string]bool{}
 	if rootID := s.flowRootIDLocked(b.rs); rootID != "" {
 		if root := s.runs[rootID]; root != nil {
 			s.emitLocked(root, ProviderEvent{
+				Type:        EventUserQuestionRequired,
+				QuestionID:  rec.id,
+				Prompt:      prompt,
+				Options:     options,
+				MultiSelect: multiSelect,
+			})
+			mirroredTo[rootID] = true
+		}
+	}
+	// CA-1207 (BUG-1186 residual, live run-204891 → run-225672): rotate_leg
+	// mints a NEW root run for the same chat — parentRunID is empty, so the
+	// flow-root mirror above never reaches the superseded leg the operator
+	// still watches (the old leg's detail showed "running" with no card while
+	// q-226099 sat pending ~25min). Mirror the question onto every
+	// non-terminal sibling leg of the same chat so whichever leg the client
+	// streams surfaces the card; healMirroredQuestionWaitLocked clears the
+	// mirrored wait when it resolves.
+	if b.rs.chatID != "" {
+		for _, leg := range s.activeChatLegsLocked(b.rs.chatID) {
+			if leg == b.rs || mirroredTo[leg.id] || runStatusTerminal(leg.status) {
+				continue
+			}
+			s.emitLocked(leg, ProviderEvent{
 				Type:        EventUserQuestionRequired,
 				QuestionID:  rec.id,
 				Prompt:      prompt,
