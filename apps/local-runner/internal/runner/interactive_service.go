@@ -2666,7 +2666,25 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 	// runs on this run, so the decision is delivered exactly once even
 	// across re-parks and restarts.
 	if feedback != "" {
-		s.appendPendingAgentContext(parentRunID, "Operator feedback: "+feedback)
+		// CA-1214 (live run-262417): a vibe adjudication also lands in the
+		// durable adjudications ledger so the re-driven leg cites a record id
+		// (adj-N) instead of interpreting freeform text — the AC-4 deferral
+		// flip-flopped approved→blocked because no citable waiver existed.
+		note := "Operator feedback: " + feedback
+		s.mu.Lock()
+		vibeRun := false
+		taskDocID := ""
+		if rs := s.runs[parentRunID]; rs != nil {
+			vibeRun = rs.workingMode == "vibe" || inVibeSprintTopology(rs)
+			taskDocID = vibeCurrentTaskDocIDLocked(rs)
+		}
+		s.mu.Unlock()
+		if vibeRun {
+			if adjID := s.appendVibeAdjudication(parentRunID, taskDocID, feedback); adjID != "" {
+				note = fmt.Sprintf("Operator adjudication %s (durable: %s): %s", adjID, vibeAdjudicationsRel, feedback)
+			}
+		}
+		s.appendPendingAgentContext(parentRunID, note)
 	}
 
 	snap := s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
