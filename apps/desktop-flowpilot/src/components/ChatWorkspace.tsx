@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { sidebarScrollRestoreTarget } from "@/components/sidebarScrollPreserve";
 import { filterNavigatorWorkflows } from "@/app/navigatorCatalog";
-import { filterWorkflowsForWorkingMode } from "@/state/workingMode";
+import { filterWorkflowsForWorkingMode, userFlowSelectableForMode } from "@/state/workingMode";
 import { Navigator } from "@/components/Navigator";
 import { ChatInput } from "@/components/ChatInput";
 import { TerminalPanel } from "@/components/TerminalPanel";
@@ -59,6 +59,18 @@ function WorkflowControlPanel(): React.ReactElement | null {
     () => filterWorkflowsForWorkingMode(filterNavigatorWorkflows(workflows, selectedProjectId), workingMode),
     [selectedProjectId, workflows, workingMode],
   );
+  // BUG-1199: a reopened run's flow may resolve to a row the mode filter
+  // keeps out of the startable set (e.g. the vibe-sprint system mirror).
+  // A <select> whose value matches no option renders blank — append the
+  // selected row so the running flow still shows as ticked; it stays
+  // disabled below so it can never be re-armed as a manual pick.
+  const optionWorkflows = useMemo(() => {
+    if (!selectedWorkflowId || visibleWorkflows.some((w) => w.id === selectedWorkflowId)) {
+      return visibleWorkflows;
+    }
+    const selected = workflows.find((w) => w.id === selectedWorkflowId);
+    return selected ? [...visibleWorkflows, selected] : visibleWorkflows;
+  }, [visibleWorkflows, selectedWorkflowId, workflows]);
 
   return (
     <section className="workflow-rail workflow-rail-right">
@@ -152,10 +164,11 @@ function WorkflowControlPanel(): React.ReactElement | null {
                 <option value="" disabled>
                   Select a workflow…
                 </option>
-                {visibleWorkflows.map((workflow) => {
+                {optionWorkflows.map((workflow) => {
                   const resolves = Boolean(workflow.model || project?.model);
+                  const startable = userFlowSelectableForMode(workingMode, workflow.packFlowId ?? workflow.id);
                   return (
-                    <option key={workflow.id} value={workflow.id} disabled={!resolves}>
+                    <option key={workflow.id} value={workflow.id} disabled={!resolves || !startable}>
                       {workflow.name} {!resolves ? " (No model set)" : ""}
                     </option>
                   );

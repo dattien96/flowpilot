@@ -3919,6 +3919,18 @@ export const useStore = create<AppState>((set, get) => ({
     // (and locked) even though the run itself was correctly resumed as a
     // flow-engine-driven Review Loop run underneath.
     const chatStartMode: ChatStartMode = historyItem?.subMode === "bug" ? "bugfix" : "normal";
+    // BUG-1199 (live run-225691): a chat-launched flow run carries no
+    // workflowId — its durable flow identity is flowRef (possibly
+    // pack-prefixed, e.g. "flowpilot-core-flow-pack/vibe-sprint"). Resolve it
+    // back to the catalog row so the Workflow select shows the running flow
+    // instead of a blank pick; builtin mirrors match via packFlowId.
+    const reopenedFlowRef = (handle.flowRef as string | undefined) || historyItem?.flowRef || "";
+    const reopenedWorkflowId =
+      historyItem?.workflowId ||
+      (handle as { workflowId?: string }).workflowId ||
+      (reopenedFlowRef
+        ? get().workflows.find((w) => bareFlowId(w.packFlowId ?? w.id) === bareFlowId(reopenedFlowRef))?.id ?? ""
+        : "");
     const isDetached =
       !isWorkflowHistoryItem &&
       Boolean(effectiveChatId) &&
@@ -3941,8 +3953,13 @@ export const useStore = create<AppState>((set, get) => ({
       activeWorktreePath: historyItem?.worktreePath ?? handle.worktreePath ?? "",
       activeWorktreeState: historyItem?.worktreeState ?? "",
       chatMode: isWorkflowHistoryItem ? "workflow_step_auto" : "normal_chat",
-      ...(isWorkflowHistoryItem && historyItem?.workflowId
-        ? { launchMode: "workflow", selectedWorkflowId: historyItem.workflowId }
+      // BUG-1199: every flow-driven run reopens on the Workflow pane, and a
+      // chat-launched run clears a stale pick when its ref resolves to no row.
+      ...(isWorkflowHistoryItem
+        ? {
+            launchMode: "workflow" as const,
+            selectedWorkflowId: reopenedWorkflowId || undefined,
+          }
         : {}),
       chatStartMode,
       flowRef: chatStartMode === "bugfix" ? historyItem?.flowRef : undefined,
