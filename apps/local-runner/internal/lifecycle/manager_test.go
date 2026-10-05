@@ -360,6 +360,31 @@ func TestLifecycle_IdleGraceDeadlineDrainsShutdown(t *testing.T) {
 	}
 }
 
+func TestLifecycle_SupervisedNeverIdleExits(t *testing.T) {
+	// CA-1206: supervised runners are owned by scripts/supervisor.js fenced
+	// commands — the runner exposes the lifecycle API but must never
+	// idle-exit on its own. A desktop detach used to drain the whole stack
+	// ~30s later (client-managed semantics leaking into supervised).
+	rig := newTestRig(t, func(c *Config) { c.Mode = ModeSupervised })
+	rig.clock.Advance(31 * time.Second) // past BootGrace, zero leases
+	if s, _ := rig.m.Snapshot(context.Background()); s.Phase != PhaseReady {
+		t.Fatalf("supervised boot with no leases: phase = %s, want ready (never idle_grace)", s.Phase)
+	}
+	// Last-lease release on a supervised runner parks in ready, not
+	// idle_grace — shutdown belongs to fenced supervisor commands.
+	rig2 := newTestRig(t, func(c *Config) { c.Mode = ModeSupervised })
+	rig2.clock.Advance(31 * time.Second)
+	tui := rig2.register(t, ClientKindTUI, "tui-1")
+	rig2.m.Release(context.Background(), ReleaseInput{
+		LeaseID: tui.LeaseID, LeaseToken: tui.LeaseToken,
+		RunnerInstanceID: "inst-test", Generation: tui.Generation,
+	})
+	rig2.clock.Advance(61 * time.Second) // release + past idle grace
+	if s, _ := rig2.m.Snapshot(context.Background()); s.Phase != PhaseReady {
+		t.Fatalf("supervised last-lease release: phase = %s, want ready — supervisor fenced commands own shutdown", s.Phase)
+	}
+}
+
 func TestLifecycle_WorkloadBlocksIdleGrace(t *testing.T) {
 	rig := newTestRig(t, nil)
 	rig.register(t, ClientKindTUI, "tui-1")

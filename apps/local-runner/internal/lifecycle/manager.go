@@ -492,7 +492,11 @@ func (m *Manager) transitionForStateLocked(now time.Time) {
 func (m *Manager) transitionOnceLocked(now time.Time) bool {
 	leases := len(m.leases)
 	work := m.workload.ActiveCount()
-	persistent := m.cfg.Mode == ModePersistent
+	// CA-1206 (live supervised drains): supervised runners never idle-exit —
+	// shutdown/restart authority belongs to fenced supervisor.cmd records
+	// (CP-81 Task-419, scripts/supervisor.js). Treating them client-managed
+	// drained the stack ~30s after every desktop detach.
+	neverIdleExit := m.cfg.Mode == ModePersistent || m.cfg.Mode == ModeSupervised
 
 	switch m.phase {
 	case PhaseStarting:
@@ -501,7 +505,7 @@ func (m *Manager) transitionOnceLocked(now time.Time) bool {
 			return true
 		}
 		if now.Sub(m.startedAt) >= m.cfg.BootGrace {
-			if persistent {
+			if neverIdleExit {
 				m.setPhaseLocked(PhaseReady)
 			} else {
 				m.enterIdleGraceLocked(now)
@@ -516,7 +520,7 @@ func (m *Manager) transitionOnceLocked(now time.Time) bool {
 			m.setPhaseLocked(PhaseOrphanedWork)
 			return true
 		}
-		if !persistent {
+		if !neverIdleExit {
 			m.enterIdleGraceLocked(now)
 			return true
 		}
@@ -526,7 +530,7 @@ func (m *Manager) transitionOnceLocked(now time.Time) bool {
 			return true
 		}
 		if work == 0 {
-			if persistent {
+			if neverIdleExit {
 				m.setPhaseLocked(PhaseReady)
 			} else {
 				m.enterIdleGraceLocked(now)

@@ -23,8 +23,12 @@ const (
 
 // LifecycleMode is the runner boot mode (SD-28 §5). "persistent" runners never
 // idle-exit; "client-managed" runners idle-exit when the last lease leaves and
-// no protected work remains; "supervised" is client-managed but launched by
-// scripts/supervisor.js (Task-419) — same lease semantics, distinct telemetry.
+// no protected work remains; "supervised" runners are launched by
+// scripts/supervisor.js (CP-81 Task-419) and never idle-exit either —
+// shutdown/restart authority is coordinated via fenced supervisor.cmd records,
+// so an idle supervised runner stays up until the supervisor tells it to stop
+// (CA-1206: client-managed idle-drain tore the stack down ~30s after every
+// desktop detach).
 type LifecycleMode string
 
 const (
