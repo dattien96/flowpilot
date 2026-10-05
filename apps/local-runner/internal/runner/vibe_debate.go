@@ -184,6 +184,32 @@ func vibeOwnerStepFailed(st RuntimeWorkflowStepStatus) bool {
 	return st == StepStatusFailed || st == StepStatusCanceled
 }
 
+// vibeOwnerDebateMemberRequiresVerdictLocked reports whether a completed
+// cohort child is an owner leg of the mounted vibe-owner-debate overlay.
+// Owner verdicts feed debate_synthesis exactly like reviewer verdicts feed
+// synthesis, but the overlay declares no acceptance_nodes and
+// debate_synthesis is not a known cohort-gated hub, so the generic
+// missing-verdict reprompt gate at child settle skips them (live
+// run-183756 / run-174243: grok owner legs ended mid-investigation with
+// intent-prose, no submit_review_outcome → debate_synthesis had nothing to
+// synthesize → blocked → user escalation, twice in one run). Callers hold
+// s.mu.
+func vibeOwnerDebateMemberRequiresVerdictLocked(parent, child *interactiveRun) bool {
+	if parent == nil || child == nil || !vibeOwnerDebateGraph(parent.activeFlowNodes) {
+		return false
+	}
+	nodeID := strings.TrimSpace(child.stepID)
+	if nodeID == "" {
+		nodeID = strings.TrimSpace(child.label)
+	}
+	for _, n := range parent.activeFlowNodes {
+		if strings.TrimSpace(n.ID) == nodeID && strings.TrimSpace(n.Cohort) == "owner_debate" {
+			return true
+		}
+	}
+	return false
+}
+
 // maybeSettleVibeOwnerDebate retries or parks when both owners failed and
 // debate_synthesis has not started. Prevents owner-fail → 2m hub_stalled.
 // Returns true when it retried the debate or parked cap.

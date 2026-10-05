@@ -7006,7 +7006,8 @@ func (s *InteractiveService) settleFlowChildTurnCompletedLocked(rs *interactiveR
 				(flowRequiresSynthesisMachineVerdict(parent) ||
 					flowRequiresHubMachineVerdict(parent, "plan_synthesis") ||
 					flowRequiresHubMachineVerdict(parent, "synthesis") ||
-					flowRequiresHubMachineVerdict(parent, "cp_synthesis")) &&
+					flowRequiresHubMachineVerdict(parent, "cp_synthesis") ||
+					vibeOwnerDebateMemberRequiresVerdictLocked(parent, rs)) &&
 				rs.verdictRepromptCount < 2 {
 				rs.verdictRepromptCount++
 				stepID := rs.stepID
