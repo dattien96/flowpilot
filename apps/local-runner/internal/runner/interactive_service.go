@@ -2695,6 +2695,18 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 		// same quiet-redrive seam resumePendingLoopWork owns —
 		// redriveQuietFlowLoop self-gates on flow topology + the full quiet
 		// predicate, so a busy loop is untouched.
+		// CA-1213 (live run-262417): the orphan sweep below only ran on the
+		// BLOCKED path — a continue landing while the loop shows "running"
+		// early-returned here, and the quiet redrive treats a parked
+		// waiting_user_approval child as busy-evidence and no-ops. Net
+		// effect: a card consumed while the loop was running stranded every
+		// freeze-parked child forever (spec_align leg parked ~5min until a
+		// later continue happened to hit a blocked loop). Sweep orphans
+		// first — it self-filters to children actually owed work and refuses
+		// while a parent decision surface is still live.
+		if orphanRedrived, _ := s.redriveParkedFlowOrphans(parentRunID, nil); orphanRedrived {
+			return s.agentGraphSnapshot(parentRunID), nil
+		}
 		s.redriveQuietFlowLoop(parentRunID)
 		return s.agentGraphSnapshot(parentRunID), nil
 	}
@@ -3135,7 +3147,66 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 	// paths and re-arms or clears the reprompt. Children with their own
 	// pending approval/question cards are excluded — those answer the user's
 	// decision, not the park.
+	orphanRedrived, flushedIntents := s.redriveParkedFlowOrphans(parentRunID, nodes)
+	if orphanRedrived {
+		return snap, nil
+	}
+
+	// BUG-550 (live run-2012663): a gate-reprompt-exhausted escalate parks a
+	// PLAIN chat run too — no hub, no flow nodes, no children for the sweep
+	// above to flush — so the generic tail's maybeAutoReinvokeHubWithNote
+	// no-ops on autoOrchestrate=false and the hub-stall watchdog refuses
+	// non-flow runs (!rs.flowEngineDriven). Retry flipped the loop to running
+	// and emitted agent_graph_updated, then stranded it with no turn — a
+	// silent composer soft-lock. When the sweep dispatched nothing, re-drive
+	// a real turn on the run itself; the parked gate violation rides the
+	// prompt so a bare Retry does not re-violate blind and burn straight
+	// back into escalate.
+	if prevBlockReason == "escalate" && flushedIntents == 0 {
+		resumePrompt := feedback
+		if violation := strings.TrimPrefix(strings.TrimSpace(prevGateReason), "Gate reprompt exhausted: "); violation != "" {
+			note := "[flow-engine] Resumed after a gate escalation. Outstanding gate violation: " + violation +
+				"\n\nResolve the violation first, then continue."
+			if strings.TrimSpace(resumePrompt) != "" {
+				resumePrompt = strings.TrimSpace(resumePrompt) + "\n\n---\n\n" + note
+			} else {
+				resumePrompt = note
+			}
+		}
+		if s.resumeParkedPlainChat(parentRunID, resumePrompt, prevBlockReason) {
+			return snap, nil
+		}
+	}
+
+	resumeNote := ""
+	if feedback != "" {
+		resumeNote = "[flow-engine] The flow was paused awaiting your input. User guidance:\n" + feedback +
+			"\n\n---\n\nRe-evaluate with this guidance in mind, then call submit_review_outcome with your decision."
+	}
+	go s.maybeAutoReinvokeHubWithNote(parentRunID, resumeNote)
+	return snap, nil
+
+}
+
+// redriveParkedFlowOrphans re-drives children parked waiting_user_approval
+// that are still owed work: gate debt (pendingGateCodePaths), a durable
+// resume/reprompt intent (flushed through the claiming path, BUG-538/539),
+// or a non-terminal flow step row (the park froze the leg mid-step,
+// BUG-1185). Returns (orphanRedrived, flushedIntents): orphanRedrived is
+// true when at least one parked child was re-driven; flushedIntents counts
+// durable resume/reprompt intents queued for the claiming flush — the
+// BUG-550 escalate fallback uses it to know work was dispatched.
+func (s *InteractiveService) redriveParkedFlowOrphans(parentRunID string, nodes []agentpack.FlowNode) (bool, int) {
 	s.mu.Lock()
+	// CA-1213: while the parent still owns a live decision surface the park
+	// belongs to that card — its parked children stay frozen until the card
+	// is answered. The sweep only revives orphans after the surface clears.
+	if rs := s.runs[parentRunID]; rs == nil ||
+		rs.pendingApprovalID != "" || s.pendingQuestionGatesWorkLocked(rs) ||
+		rs.vibeResumeConfirm || rs.vibeSprintBoundaryPending {
+		s.mu.Unlock()
+		return false, 0
+	}
 	var orphanIDs []string
 	var resumeIDs []string
 	orphanNodes := nodes
@@ -3171,7 +3242,7 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 		orphanIDs = append(orphanIDs, cid)
 		orphanLabels[cid] = c.label
 		orphanGateDebt[cid] = len(c.pendingGateCodePaths) > 0
-		if orphanNodes == nil {
+		if orphanNodes == nil && s.runs[parentRunID] != nil {
 			orphanNodes = s.runs[parentRunID].activeFlowNodes
 		}
 	}
@@ -3219,44 +3290,7 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 			orphanRedrived = true
 		}
 	}
-	if orphanRedrived {
-		return snap, nil
-	}
-
-	// BUG-550 (live run-2012663): a gate-reprompt-exhausted escalate parks a
-	// PLAIN chat run too — no hub, no flow nodes, no children for the sweep
-	// above to flush — so the generic tail's maybeAutoReinvokeHubWithNote
-	// no-ops on autoOrchestrate=false and the hub-stall watchdog refuses
-	// non-flow runs (!rs.flowEngineDriven). Retry flipped the loop to running
-	// and emitted agent_graph_updated, then stranded it with no turn — a
-	// silent composer soft-lock. When the sweep dispatched nothing, re-drive
-	// a real turn on the run itself; the parked gate violation rides the
-	// prompt so a bare Retry does not re-violate blind and burn straight
-	// back into escalate.
-	if prevBlockReason == "escalate" && len(resumeIDs) == 0 {
-		resumePrompt := feedback
-		if violation := strings.TrimPrefix(strings.TrimSpace(prevGateReason), "Gate reprompt exhausted: "); violation != "" {
-			note := "[flow-engine] Resumed after a gate escalation. Outstanding gate violation: " + violation +
-				"\n\nResolve the violation first, then continue."
-			if strings.TrimSpace(resumePrompt) != "" {
-				resumePrompt = strings.TrimSpace(resumePrompt) + "\n\n---\n\n" + note
-			} else {
-				resumePrompt = note
-			}
-		}
-		if s.resumeParkedPlainChat(parentRunID, resumePrompt, prevBlockReason) {
-			return snap, nil
-		}
-	}
-
-	resumeNote := ""
-	if feedback != "" {
-		resumeNote = "[flow-engine] The flow was paused awaiting your input. User guidance:\n" + feedback +
-			"\n\n---\n\nRe-evaluate with this guidance in mind, then call submit_review_outcome with your decision."
-	}
-	go s.maybeAutoReinvokeHubWithNote(parentRunID, resumeNote)
-	return snap, nil
-
+	return orphanRedrived, len(resumeIDs)
 }
 
 // resumeParkedPlainChat re-drives a parked plain chat run (drift pause, or a
