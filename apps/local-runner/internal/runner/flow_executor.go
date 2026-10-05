@@ -396,27 +396,71 @@ func (s *InteractiveService) markForwardDonePredecessorsSkipped(ctx context.Cont
 // is left untouched (markForwardDonePredecessorsSkipped owns the PENDING
 // resume case; RUNNING-with-live-leg is real work).
 func (s *InteractiveService) settleAdjudicatedDonePredecessors(parentRunID string, edges []agentpack.FlowEdge, completedNodeID string) {
-	for _, pred := range flowForwardDonePredecessors(edges, completedNodeID) {
+	preds := flowForwardDonePredecessors(edges, completedNodeID)
+	if len(preds) == 0 {
+		return
+	}
+	// Hoist the session-index read once (unlocked): a snapshot that misses a
+	// just-completed leg degrades fail-closed (no stamp) — the safe direction.
+	var sessions []ProviderSessionState
+	sessionsLoaded := false
+	loadSessions := func() bool {
+		if sessionsLoaded {
+			return true
+		}
+		sessionsLoaded = true
+		indexReader, ok := s.workflowStore.(SessionIndexReader)
+		if !ok {
+			return false
+		}
+		var err error
+		sessions, err = indexReader.ListAllProviderSessions(context.Background())
+		if err != nil {
+			log.Printf("settleAdjudicatedDonePredecessors: session index unreadable for parent %s: %v", parentRunID, err)
+			return false
+		}
+		return true
+	}
+	for _, pred := range preds {
 		switch st := s.lookupFlowStepStatus(parentRunID, pred); st {
 		case StepStatusDone, StepStatusSkipped, StepStatusFailed, StepStatusCanceled:
 			continue
 		}
-		if !s.persistedCompletedChildExists(parentRunID, pred) {
+		if !loadSessions() {
 			continue
 		}
-		// Round re-entry (synthesis_negotiation → tdd on continue) reuses
-		// node ids: a prior leg's Completed session survives in the index
-		// while the NEW leg is live. Live work wins — never stamp over a
-		// predecessor whose current leg is still producing its outcome.
-		if s.vibeNodeHasLiveWork(parentRunID, pred) {
-			continue
+		// CA-1209 (live run-262417): the evidence check and the stamp must
+		// sit inside ONE s.mu hold. vibeSprintIndex advances under s.mu at
+		// every sprint take — a settle that evaluated with sprint N's index
+		// but stamped after the boundary lands its DONE on sprint N+1's
+		// reseeded row (sprint-042's synthesis read DONE from sprint-041's
+		// late audit settle → audit auto-fired → the whole sprint sealed
+		// false-complete in seconds). Under one hold the interleave is
+		// impossible: if the take won first, the new index scopes the
+		// session scan to the new sprint's legs and the stale stamp is
+		// refused; if we win first, the stamp hits the prior sprint's rows
+		// and the mount's PENDING reseed still wins.
+		s.mu.Lock()
+		sprintIndex := 0
+		if rs := s.runs[parentRunID]; rs != nil {
+			sprintIndex = rs.vibeSprintIndex
 		}
-		s.flowDiagLog(parentRunID, "flow_advance_settles_adjudicated_predecessor",
-			"advance past a still-nonterminal predecessor whose leg is durably completed; stamping DONE",
-			"completed_node_id", completedNodeID,
-			"predecessor_node_id", pred,
-		)
-		s.setFlowStepStatus(context.Background(), parentRunID, pred, StepStatusDone)
+		if completedChildSessionInList(sessions, parentRunID, pred, sprintIndex) &&
+			!s.vibeNodeHasLiveWorkLocked(parentRunID, pred) {
+			// Round re-entry (synthesis_negotiation → tdd on continue)
+			// reuses node ids: a prior leg's Completed session survives in
+			// the index while the NEW leg is live. Live work wins — never
+			// stamp over a predecessor whose current leg is still producing
+			// its outcome.
+			s.flowDiagLog(parentRunID, "flow_advance_settles_adjudicated_predecessor",
+				"advance past a still-nonterminal predecessor whose leg is durably completed; stamping DONE",
+				"completed_node_id", completedNodeID,
+				"predecessor_node_id", pred,
+				"sprint_index", sprintIndex,
+			)
+			s.setFlowStepStatusLocked(context.Background(), parentRunID, pred, StepStatusDone)
+		}
+		s.mu.Unlock()
 	}
 }
 

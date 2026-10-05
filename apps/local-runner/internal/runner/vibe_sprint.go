@@ -574,6 +574,16 @@ func (s *InteractiveService) persistedCompletedChildExists(parentRunID, label st
 		log.Printf("persistedCompletedChildExists: session index unreadable for parent %s: %v", parentRunID, err)
 		return false
 	}
+	return completedChildSessionInList(sessions, parentRunID, label, sprintIndex)
+}
+
+// completedChildSessionInList scans a preloaded session list for a durable
+// Completed child labelled `label` belonging to sprint `sprintIndex` — the
+// in-memory half of persistedCompletedChildExists, for callers that already
+// hold s.mu and must not take it again to read the index (the atomic
+// adjudicated-predecessor settle). A snapshot list that misses a
+// just-completed leg degrades fail-closed (no stamp), the safe direction.
+func completedChildSessionInList(sessions []ProviderSessionState, parentRunID, label string, sprintIndex int) bool {
 	for _, session := range sessions {
 		if session.ParentRunID != parentRunID || strings.TrimSpace(session.Label) != strings.TrimSpace(label) {
 			continue
@@ -596,6 +606,13 @@ func (s *InteractiveService) vibeNodeHasLiveWork(parentRunID, nodeID string) boo
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.vibeNodeHasLiveWorkLocked(parentRunID, nodeID)
+}
+
+// vibeNodeHasLiveWorkLocked is the s.mu-held variant of vibeNodeHasLiveWork —
+// callers already inside the run lock (the atomic adjudicated-predecessor
+// settle) must not re-acquire it.
+func (s *InteractiveService) vibeNodeHasLiveWorkLocked(parentRunID, nodeID string) bool {
 	rs := s.runs[parentRunID]
 	if rs == nil {
 		return false
