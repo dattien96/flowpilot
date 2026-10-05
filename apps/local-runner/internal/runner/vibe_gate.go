@@ -89,13 +89,16 @@ func (s *InteractiveService) applyVibeGateResolver(runID, parentID, turnID strin
 	switch classifyVibeGateWithDrift(rs.workingMode, result, driftScore) {
 	case vibeGateRequirement:
 		detail := requirementDetail(result)
-		if s.agentOrchestrator != nil {
-			s.agentOrchestrator.mutateLoop(runID, func(st AgentLoopState) AgentLoopState {
-				st.Status = "blocked"
-				st.BlockReason = "requirement"
-				st.GateReason = detail
-				return st
-			})
+		// BUG-1196 (live run-225691, turn-254226 @12:51:57 + turn-260646
+		// @14:14:40): a requirement-class block parked the loop in RAM only —
+		// no step stamp, no agent-graph push, no freeze, no durable decision
+		// — and for a gated CHILD it mutated the child's (nonexistent) loop
+		// while the hub kept running. Route the park at the HUB with the
+		// same visible-park contract as escalate (Task-240 I-1/I-2 order):
+		// stamp the awaiting step → block the loop → freeze → emit → persist.
+		hub := runID
+		if parentID != "" {
+			hub = parentID
 		}
 		s.mu.Lock()
 		if r := s.runs[runID]; r != nil {
@@ -112,7 +115,36 @@ func (s *InteractiveService) applyVibeGateResolver(runID, parentID, turnID strin
 				Status:         "block",
 			})
 		}
+		// A gated child stamps ITS node as the escalation surface so Continue
+		// retries that child instead of a generic hub reinvoke.
+		var escalatedNode string
+		if parentID != "" {
+			s.stampEscalatedChildNodeLocked(parentID, childEscalatedNodeID(rs))
+			if pr := s.runs[parentID]; pr != nil {
+				escalatedNode = strings.TrimSpace(pr.lastEscalatedInlineNodeID)
+			}
+		}
 		s.mu.Unlock()
+		if escalatedNode != "" {
+			s.setFlowStepStatus(context.Background(), hub, escalatedNode, StepStatusWaitingUserApr)
+		} else {
+			s.setFlowStepAwaitingUser(context.Background(), hub)
+		}
+		var snap AgentGraphSnapshot
+		if s.agentOrchestrator != nil {
+			snap = s.agentOrchestrator.mutateLoop(hub, func(st AgentLoopState) AgentLoopState {
+				st.Status = "blocked"
+				st.BlockReason = "requirement"
+				st.GateReason = detail
+				return st
+			})
+		}
+		s.parkFlowForAwaitingUser(hub)
+		s.emitAgentGraph(hub, snap)
+		go s.persistParentSession(hub)
+		s.flowDiagLog(hub, "flow_parked_awaiting_user",
+			"requirement-class gate violation parked the flow for a user decision",
+			"gated_run_id", runID)
 		return true
 	case vibeGateOwnerDebate:
 		hub := runID
