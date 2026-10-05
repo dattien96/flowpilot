@@ -3,8 +3,11 @@ package flowgate
 import (
 	"bufio"
 	"context"
+	"encoding/xml"
 	"fmt"
+	"io/fs"
 	"log"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -277,6 +280,17 @@ WaitLoop:
 		// per-test diff lists are partial and must be marked as such.
 		log.Printf("[gate] suite test-name parse incomplete cmd=%q: %v", testCmd, parseErr)
 	}
+	if len(passed)+len(failed) == 0 {
+		// BUG-1181: JVM suites (Gradle/Kotlin) drop JUnit XML under
+		// build/test-results even when the console prints no per-test names —
+		// recovering names there keeps expected-red scaffold failures named
+		// instead of surfacing as an unnamed "regression". Only files written
+		// during this run (>= start) count.
+		if xp, xf := junitXMLTestNames(cmd.Dir, start.Add(-2*time.Second)); len(xp)+len(xf) > 0 {
+			passed, failed = xp, xf
+			log.Printf("[gate] suite names recovered from junit xml cmd=%q passed=%d failed=%d", testCmd, len(passed), len(failed))
+		}
+	}
 	return
 }
 
@@ -354,6 +368,14 @@ func parseSuiteTestNames(testCmd, output string) (passed, failed []string, err e
 				} else {
 					passed = append(passed, name)
 				}
+			} else if name, isFail, ok := parseGradleConsoleLine(line); ok {
+				// BUG-1181: Gradle/Kotlin suites print `Class > test FAILED`
+				// lines no other matcher recognises.
+				if isFail {
+					failed = append(failed, name)
+				} else {
+					passed = append(passed, name)
+				}
 			}
 		}
 	}
@@ -420,6 +442,120 @@ func parseGtestCtestTapLine(line string) (name string, isFail bool, ok bool) {
 		return strings.Join(f[3:], " "), true, true
 	}
 	return "", false, false
+}
+
+// parseGradleConsoleLine extracts a named verdict from Gradle test-logging
+// output: `ClassName > test display name FAILED|PASSED|SKIPPED` (BUG-1181).
+// The emitted name keeps the whole "Class > test" pair so it stays unique and
+// stable for baseline diffing. SKIPPED lines are ignored (neither pass nor
+// fail — same contract as every other matcher).
+func parseGradleConsoleLine(line string) (name string, isFail bool, ok bool) {
+	trimmed := strings.TrimSpace(line)
+	status := ""
+	switch {
+	case strings.HasSuffix(trimmed, " FAILED"):
+		isFail = true
+		status = " FAILED"
+	case strings.HasSuffix(trimmed, " PASSED"):
+		status = " PASSED"
+	case strings.HasSuffix(trimmed, " SKIPPED"):
+		return "", false, false
+	default:
+		return "", false, false
+	}
+	body := strings.TrimSuffix(trimmed, status)
+	left, right, found := strings.Cut(body, " > ")
+	if !found || strings.TrimSpace(left) == "" || strings.TrimSpace(right) == "" {
+		return "", false, false
+	}
+	// Reject Gradle's own task summary lines ("app:testDebugUnitTest > " is a
+	// task path, not a class) and build-failure trailers.
+	if strings.Contains(left, ":") || strings.ContainsAny(right, ":=/") {
+		return "", false, false
+	}
+	return strings.TrimSpace(left) + " > " + strings.TrimSpace(right), isFail, true
+}
+
+// junitXMLTestNames walks dir for JUnit XML result files written at or after
+// since — Gradle (and most JVM suites) drop TEST-*.xml under
+// <module>/build/test-results/<task>/ even when console output carries no
+// per-test names (BUG-1181). The since filter keeps stale results from prior
+// runs out. Names are emitted as "classname.testname" — the canonical JUnit
+// identity, stable for baseline diffing.
+func junitXMLTestNames(dir string, since time.Time) (passed, failed []string) {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return nil, nil
+	}
+	const maxFiles = 512
+	seen := 0
+	_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || seen >= maxFiles {
+			return nil
+		}
+		if d.IsDir() {
+			// Prune heavyweight trees that cannot hold test-results.
+			switch d.Name() {
+			case ".git", "node_modules", ".gradle", "DerivedData", ".idea":
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(d.Name(), ".xml") || !strings.Contains(path, "test-results") {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil || info.Size() > 4<<20 || info.ModTime().Before(since) {
+			return nil
+		}
+		seen++
+		p, f := parseJUnitXMLFile(path)
+		passed = append(passed, p...)
+		failed = append(failed, f...)
+		return nil
+	})
+	return passed, failed
+}
+
+type junitXMLSuite struct {
+	TestCases []junitXMLCase `xml:"testcase"`
+}
+
+type junitXMLCase struct {
+	Name      string `xml:"name,attr"`
+	ClassName string `xml:"classname,attr"`
+	Failure   *struct {
+	} `xml:"failure"`
+	Error *struct {
+	} `xml:"error"`
+	Skipped *struct {
+	} `xml:"skipped"`
+}
+
+func parseJUnitXMLFile(path string) (passed, failed []string) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, nil
+	}
+	var suite junitXMLSuite
+	if xml.Unmarshal(data, &suite) != nil {
+		return nil, nil
+	}
+	for _, tc := range suite.TestCases {
+		name := tc.Name
+		if tc.ClassName != "" {
+			name = tc.ClassName + "." + tc.Name
+		}
+		if name == "" || tc.Skipped != nil {
+			continue
+		}
+		if tc.Failure != nil || tc.Error != nil {
+			failed = append(failed, name)
+		} else {
+			passed = append(passed, name)
+		}
+	}
+	return passed, failed
 }
 
 func isNumericToken(s string) bool {
