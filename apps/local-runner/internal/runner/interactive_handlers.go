@@ -1674,10 +1674,12 @@ func (s *InteractiveService) projectRunHistory(projectID string) ([]runHistoryIt
 	// BUG-060 F-1: augment with persisted sessions not in the current in-memory
 	// map (e.g. after a runner/app-server restart). The store holds the truth;
 	// s.runs is a write-through cache that is empty on a new service instance.
-	if reader, ok := s.workflowStore.(SessionHistoryReader); ok {
-		sessions, err := reader.ListProviderSessionsByProject(context.Background(), projectID)
-		if err != nil {
-			return nil, fmt.Errorf("projectRunHistory: session history unreadable for %s: %w", projectID, err)
+	// BUG-1192: reuse the listing already fetched above — on a remote store each
+	// extra ListProviderSessionsByProject is a full network round-trip.
+	if _, ok := s.workflowStore.(SessionHistoryReader); ok {
+		sessions := make([]ProviderSessionState, 0, len(persistedSyncByRunID))
+		for _, sess := range persistedSyncByRunID {
+			sessions = append(sessions, sess)
 		}
 		{
 			for _, sess := range sessions {
@@ -1740,6 +1742,24 @@ func (s *InteractiveService) projectRunHistory(projectID string) ([]runHistoryIt
 // currently returns chatId="" from the History API.
 func (s *InteractiveService) stampMissingChatIdentity(items []runHistoryItem) []runHistoryItem {
 	if len(items) == 0 {
+		return items
+	}
+	// BUG-1192: the leg index walks every transcript on disk — build it only
+	// when at least one row can actually consume a stamp. Modern rows all
+	// carry ChatID, so this early-out keeps the history endpoint off the
+	// transcript tree entirely in the common case.
+	needsStamp := false
+	for i := range items {
+		if strings.TrimSpace(items[i].ChatID) != "" {
+			continue
+		}
+		if strings.TrimSpace(items[i].WorkflowID) != "" || strings.EqualFold(strings.TrimSpace(items[i].RunKind), "workflow") {
+			continue
+		}
+		needsStamp = true
+		break
+	}
+	if !needsStamp {
 		return items
 	}
 	idx := s.transcriptLegIndex()

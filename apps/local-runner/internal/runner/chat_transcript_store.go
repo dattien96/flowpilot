@@ -16,6 +16,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 )
 
 // ChatTranscriptRecord is one durable chat-timeline entry (SD-26 §5.3).
@@ -84,9 +86,23 @@ func tailBefore(all []ChatTranscriptRecord, beforeSeq int64, limit int) []ChatTr
 // <dir>/chats/<chatId>/transcript.ndjson (SD-26 §5.3). Single-process writer;
 // appends serialize on the store mutex. Corrupt trailing lines are skipped with
 // no error (LoadFlowEvents malformed-line policy).
+// legChatScan caches one chat's LegIndex contribution keyed by the
+// transcript's mtime+size — LegIndex re-reads a transcript only when the file
+// changed since the last scan (BUG-1192).
+type legChatScan struct {
+	mtime time.Time
+	size  int64
+	legs  map[string]ChatLegInfo
+}
+
 type localFileChatTranscriptStore struct {
 	mu  sync.Mutex
 	dir string
+	// legScans is the incremental LegIndex cache (chatID → last scan result).
+	// legScanReads counts transcripts actually opened — test-visible proof
+	// that an unchanged tree is not reparsed.
+	legScans     map[string]legChatScan
+	legScanReads atomic.Int64
 }
 
 func newLocalFileChatTranscriptStore(dir string) *localFileChatTranscriptStore {
@@ -244,65 +260,99 @@ func (l *localFileChatTranscriptStore) LegIndex(ctx context.Context) (map[string
 		}
 		return nil, err
 	}
-	out := make(map[string]ChatLegInfo)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.legScans == nil {
+		l.legScans = map[string]legChatScan{}
+	}
+	present := make(map[string]bool, len(entries))
 	for _, ent := range entries {
 		if !ent.IsDir() {
 			continue
 		}
 		chatID := ent.Name()
+		info, err := os.Stat(l.chatPath(chatID))
+		if err != nil {
+			continue // no transcript yet (or unreadable) — contributes nothing
+		}
+		present[chatID] = true
+		if prev, ok := l.legScans[chatID]; ok && prev.size == info.Size() && prev.mtime.Equal(info.ModTime()) {
+			continue // unchanged transcript — cached legs are still correct
+		}
 		// readAll expects sanitized chatId, but dir name is already sanitized
-		recs, err := func() ([]ChatTranscriptRecord, error) {
-			l.mu.Lock()
-			defer l.mu.Unlock()
-			return l.readAll(chatID)
-		}()
+		recs, err := l.readAll(chatID)
+		l.legScanReads.Add(1)
 		if err != nil {
 			continue
 		}
-		if len(recs) == 0 {
-			continue
+		legs := chatLegsFromRecords(chatID, recs)
+		if len(legs) == 0 {
+			// Empty/removed transcript contents must not leave stale legs
+			// behind — keep the scan entry so the file isn't re-read.
+			legs = map[string]ChatLegInfo{}
 		}
-		sort.Slice(recs, func(i, j int) bool { return recs[i].ChatSeq < recs[j].ChatSeq })
-		legOrder := map[string]int{}
-		nextSeq := 0
-		for _, rec := range recs {
-			leg := strings.TrimSpace(rec.LegRunID)
-			if leg == "" {
-				continue
-			}
-			if _, ok := legOrder[leg]; !ok {
-				legOrder[leg] = nextSeq
-				nextSeq++
-			}
+		l.legScans[chatID] = legChatScan{mtime: info.ModTime(), size: info.Size(), legs: legs}
+	}
+	// Chats deleted out-of-band drop their legs on the next call.
+	for chatID := range l.legScans {
+		if !present[chatID] {
+			delete(l.legScans, chatID)
 		}
-		for leg, seq := range legOrder {
-			// Prefer switch payload legSeq when present for exactness.
-			// Scan switch records for this leg to find authoritative legSeq.
-			for _, rec := range recs {
-				if rec.Type != EventTypeChatProviderSwitch {
-					continue
-				}
-				var p struct {
-					ToRunID string `json:"toRunId"`
-					LegSeq  int    `json:"legSeq"`
-				}
-				if json.Unmarshal(rec.Payload, &p) != nil {
-					continue
-				}
-				if strings.TrimSpace(p.ToRunID) == leg {
-					seq = p.LegSeq
-					break
-				}
-			}
+	}
+	out := make(map[string]ChatLegInfo)
+	for _, scan := range l.legScans {
+		for leg, info := range scan.legs {
 			// Only set if not already set by an earlier chat (runId is globally unique)
 			if _, exists := out[leg]; !exists {
-				out[leg] = ChatLegInfo{ChatID: chatID, LegSeq: seq}
+				out[leg] = info
 			}
 		}
-		// Also ensure the initial leg (no switch) gets seq 0 if not set via switch
-		// (the legOrder already gave it 0, but the switch scan above may have missed it)
 	}
 	return out, nil
+}
+
+// chatLegsFromRecords extracts legRunId → {chatID, legSeq} from one chat's
+// records — the per-chat leg-order scan LegIndex performs for each transcript.
+func chatLegsFromRecords(chatID string, recs []ChatTranscriptRecord) map[string]ChatLegInfo {
+	if len(recs) == 0 {
+		return nil
+	}
+	sort.Slice(recs, func(i, j int) bool { return recs[i].ChatSeq < recs[j].ChatSeq })
+	legOrder := map[string]int{}
+	nextSeq := 0
+	for _, rec := range recs {
+		leg := strings.TrimSpace(rec.LegRunID)
+		if leg == "" {
+			continue
+		}
+		if _, ok := legOrder[leg]; !ok {
+			legOrder[leg] = nextSeq
+			nextSeq++
+		}
+	}
+	out := make(map[string]ChatLegInfo, len(legOrder))
+	for leg, seq := range legOrder {
+		// Prefer switch payload legSeq when present for exactness.
+		// Scan switch records for this leg to find authoritative legSeq.
+		for _, rec := range recs {
+			if rec.Type != EventTypeChatProviderSwitch {
+				continue
+			}
+			var p struct {
+				ToRunID string `json:"toRunId"`
+				LegSeq  int    `json:"legSeq"`
+			}
+			if json.Unmarshal(rec.Payload, &p) != nil {
+				continue
+			}
+			if strings.TrimSpace(p.ToRunID) == leg {
+				seq = p.LegSeq
+				break
+			}
+		}
+		out[leg] = ChatLegInfo{ChatID: chatID, LegSeq: seq}
+	}
+	return out
 }
 
 // chatTranscriptWriter is the service-side serializer (SD-26 §5.3): allocates
