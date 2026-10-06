@@ -225,6 +225,10 @@ func (s *InteractiveService) healOrphanedWait(runID string) {
 	if waitOrphan {
 		rs.status = RunStatusRunning
 		rs.agentStatus = string(RunStatusRunning)
+		// BUG-641: the leg's wait was mirrored onto its flow step
+		// (settleFlowChildStepAwaitingUserLocked) — un-stamp the step too or
+		// the node stays parked and hub reinvokes keep deferring.
+		s.unstampHealedFlowChildStepLocked(rs)
 	}
 	touchHubProgressLocked(rs)
 	snap := sessionStateOf(rs)

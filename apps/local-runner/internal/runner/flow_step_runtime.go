@@ -396,6 +396,48 @@ func (s *InteractiveService) settleFlowChildStepAwaitingUserLocked(rs *interacti
 	s.setFlowStepStatusLocked(context.Background(), rs.parentRunID, rs.label, StepStatusWaitingUserApr)
 }
 
+// unstampHealedFlowChildStepLocked is the counterpart of
+// settleFlowChildStepAwaitingUserLocked (BUG-641): when a wait heal — the
+// orphaned-wait sweep or the mirrored-question heal — returns a labeled
+// child to running, the parent step it mirrored to WAITING_USER_APPROVAL
+// must un-stamp too. The leg healed but the step row stayed parked, so the
+// node read "Waiting: question" forever and hub reinvokes kept deferring on
+// "children waiting" (live run-306526). Only a step still in
+// WAITING_USER_APPROVAL is touched — a re-stamp by a real decision is
+// preserved. Caller must hold s.mu.
+func (s *InteractiveService) unstampHealedFlowChildStepLocked(rs *interactiveRun) {
+	if rs == nil || rs.parentRunID == "" || strings.TrimSpace(rs.label) == "" {
+		return
+	}
+	parent := s.runs[rs.parentRunID]
+	if parent == nil || !parent.flowEngineDriven {
+		return
+	}
+	if s.lookupFlowStepStatus(rs.parentRunID, rs.label) != StepStatusWaitingUserApr {
+		return
+	}
+	// The step stamp keys on the node id (= label) — with duplicate labels
+	// (BUG-639 class), a DIFFERENT sibling leg may own the live park. Do not
+	// un-stamp a wait another live leg is actually holding (reviewer I-2).
+	if s.agentOrchestrator != nil {
+		for _, sibID := range s.agentOrchestrator.listChildren(rs.parentRunID) {
+			sib := s.runs[sibID]
+			if sib == nil || sib == rs || sib.label != rs.label {
+				continue
+			}
+			if sib.pendingApprovalID != "" || sib.pendingQuestionID != "" || sib.decisionCard != nil ||
+				sib.status == RunStatusWaitingUserApr || sib.status == RunStatusWaitingQuestion ||
+				sib.status == RunStatusWaitingApproval {
+				return // sibling owns the stamp
+			}
+		}
+	}
+	s.setFlowStepStatusLocked(context.Background(), rs.parentRunID, rs.label, StepStatusRunning)
+	s.flowDiagLog(rs.parentRunID, "orphaned_step_wait_healed",
+		"step wait stamp outlived its backing wait; healed to running",
+		"node_id", rs.label)
+}
+
 // setFlowStepPosture stamps nodeID's OWN actually-resolved provider/model
 // (BUG-228 display follow-up) so the step-timeline UI shows what that node
 // really ran on. Without this, every flow-engine step row stayed blank

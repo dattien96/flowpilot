@@ -726,6 +726,13 @@ func (s *InteractiveService) resumeVerdictDeficientMembers(parentRunID, feedback
 		if child == nil || !deficient[child.label] || seen[child.label] {
 			continue
 		}
+		// A cancelled/closed leg is not re-drivable — marking it seen would
+		// suppress the fresh-spawn fallback below and drop the deficient
+		// member silently (re-park loop). Let the label fall through to
+		// spawn instead; the flag writes would also mutate a dead leg.
+		if child.status == RunStatusCancelled || child.legState == LegStateClosed {
+			continue
+		}
 		seen[child.label] = true
 		child.verdictRepromptCount = 0
 		// BUG-403: arm the flag so a failed scheduled turn retries/drains

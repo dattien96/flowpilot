@@ -185,6 +185,9 @@ export interface AgentGraphSnapshot {
   edges: AgentDependencyEdge[];
   busMessages: AgentBusMessage[];
   loopState: AgentLoopState;
+  /** Set only on the agent-loop/amend response — requested paths that could
+   *  not widen the frozen contract (not concrete code targets). */
+  unamendablePaths?: string[];
 }
 
 /**

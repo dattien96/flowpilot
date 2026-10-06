@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"flowpilot-runner/internal/agentpack"
 	"flowpilot-runner/internal/changecontract"
 	"flowpilot-runner/internal/workingmode"
 )
@@ -2464,7 +2463,6 @@ func (s *InteractiveService) handleAmendFlow(w http.ResponseWriter, r *http.Requ
 	}
 	workspace := rs.workspaceCwd
 	loopStatus := s.agentOrchestrator.loopStateFor(runID).Status
-	nodes := append([]agentpack.FlowNode(nil), rs.activeFlowNodes...)
 	s.mu.Unlock()
 
 	if strings.ToLower(strings.TrimSpace(loopStatus)) != "blocked" {
@@ -2499,12 +2497,20 @@ func (s *InteractiveService) handleAmendFlow(w http.ResponseWriter, r *http.Requ
 		writeInteractiveError(w, newAPIErr(http.StatusUnprocessableEntity, "frozen_store_open_failed", err.Error()))
 		return
 	}
+	// BUG-637 (live run-306526): the amend target set must be every active
+	// frozen contract OF THE RUN, not writer nodes of the currently-mounted
+	// flow — a park inside a nested sub-flow (owner debate) leaves
+	// activeFlowNodes = the debate graph, so the writer-node enumeration
+	// found zero contracts and 404'd while the parent sprint's contracts
+	// sat active one scope-level up. ListActiveForRun returns the same
+	// active-per-step record set GetFrozenForStep would, keyed by run.
+	contracts, err := store.ListActiveForRun(runID)
+	if err != nil {
+		writeInteractiveError(w, newAPIErr(http.StatusUnprocessableEntity, "frozen_store_open_failed", err.Error()))
+		return
+	}
 	amended := 0
-	for _, wn := range flowAgentCodeWriterNodes(nodes) {
-		rec, ok, err := store.GetFrozenForStep(runID, wn.ID)
-		if err != nil || !ok {
-			continue
-		}
+	for _, rec := range contracts {
 		next, err := changecontract.AmendFrozenContractForAllow(store, workspace, rec, amendable, time.Now().UTC())
 		if err != nil {
 			writeInteractiveError(w, newAPIErr(http.StatusUnprocessableEntity, "amend_failed", err.Error()))

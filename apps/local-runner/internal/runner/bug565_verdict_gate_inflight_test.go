@@ -181,3 +181,39 @@ func TestBug565_ContinueSpawnsNeverSpawnedReviewer(t *testing.T) {
 		t.Fatalf("reviewer step = %q, want RUNNING after member spawn", st)
 	}
 }
+
+// (d) Continue on a verdict park whose only deficient-member leg is
+// Cancelled/LegStateClosed must spawn a fresh member — the dead leg is not
+// re-drivable, and marking it `seen` would silently drop the label from the
+// spawn fallback, looping the identical park to cap (reviewer C-1 adjacent).
+func TestBug565_ContinueSpawnsReviewerWhenOnlyLegIsClosed(t *testing.T) {
+	svc, runID := newFlowTestRun(t)
+	edges, nodes := ca1098VerdictTopology()
+	setRun198699Topology(t, svc, runID, edges, nodes, "synthesis")
+	deadID := bug565ReviewerChild(t, svc, runID, ProviderKeyCodex, RunStatusCancelled)
+	svc.mu.Lock()
+	svc.runs[deadID].legState = LegStateClosed
+	svc.mu.Unlock()
+	svc.agentOrchestrator.mutateLoop(runID, func(st AgentLoopState) AgentLoopState {
+		st.Status = "running"
+		return st
+	})
+
+	if !svc.resumeVerdictDeficientMembers(runID, "") {
+		t.Fatal("closed deficient member must fall through to spawn — the dead leg is not re-drivable")
+	}
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	spawned := ""
+	for _, childID := range svc.agentOrchestrator.listChildren(runID) {
+		if c := svc.runs[childID]; c != nil && c.label == "reviewer" && childID != deadID {
+			spawned = childID
+		}
+	}
+	if spawned == "" {
+		t.Fatal("no fresh reviewer leg — dead leg shadowed the label; Continue would loop on the identical park")
+	}
+	if svc.runs[deadID].verdictRepromptInFlight || svc.runs[deadID].reinvokeInFlight {
+		t.Fatal("dead leg mutated by the deficient-member scan — flags belong on the live/replacement leg")
+	}
+}

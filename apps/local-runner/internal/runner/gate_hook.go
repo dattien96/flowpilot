@@ -1185,6 +1185,18 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 				statusByPath[f.Path] = f.Status
 			}
 			for _, p := range preLockWritten {
+				// BUG-642 (live run-306526): preLockWritten is the CUMULATIVE
+				// diff vs BaseSHA — a declared/locked path legitimately
+				// rewritten by a sanctioned remediation committed BEFORE this
+				// turn still appears here forever, re-firing the violation on
+				// every later scaffold turn until the debate-mount cap wedges
+				// the flow. Attribute writes to THIS turn: a path identical
+				// to its turn-start state (fingerprint or turn-start commit)
+				// is not the scaffold's write. Fail-closed: without an
+				// attribution anchor nothing is exempted.
+				if unchangedSinceTurnStart(cwd, p, rs) {
+					continue
+				}
 				// A declared path dirty-but-untracked at freeze diffs as "A"
 				// against BaseSHA — the baseline fingerprint catches it
 				// (unchanged dirt was already subtracted above, so reaching
@@ -2071,6 +2083,42 @@ func worktreeFileFingerprint(cwd, relPath string) string {
 	_, _ = io.Copy(h, f)
 	fmt.Fprintf(h, "|size=%d|mode=%v", fi.Size(), fi.Mode())
 	return hex.EncodeToString(h.Sum(nil)[:16])
+}
+
+// unchangedSinceTurnStart reports whether path carries no modification
+// attributable to the current turn (BUG-642). Two anchors:
+//
+//  1. The turn-start dirty snapshot: a path present with the same content
+//     fingerprint is untouched regardless of what the cumulative diff vs
+//     the contract base says. A DIFFERENT fingerprint is positive proof
+//     content moved on this turn's watch — the turn owns it.
+//  2. turnStartGitHead: for a tracked path absent from the snapshot,
+//     `git diff --quiet <head> -- path` compares worktree+index against
+//     the turn-start commit — a sanctioned remediation committed before
+//     the turn began (the live wedge) is byte-identical and exempt, while
+//     a this-turn write, committed or not, still diffs.
+//
+// Fail-closed: no snapshot entry AND (untracked | empty head | git error)
+// reports "changed" — an unverifiable path is never exempted.
+func unchangedSinceTurnStart(cwd, path string, rs *interactiveRun) bool {
+	if rs == nil {
+		return false
+	}
+	key := strings.TrimSuffix(filepath.ToSlash(path), "/")
+	if rs.turnStartWorktree != nil {
+		if prev, ok := rs.turnStartWorktree[key]; ok {
+			return prev == worktreeFileFingerprint(cwd, key)
+		}
+	}
+	head := strings.TrimSpace(rs.turnStartGitHead)
+	if head == "" {
+		return false
+	}
+	tracked := exec.Command("git", "-C", cwd, "ls-files", "--error-unmatch", "--", key).Run() == nil
+	if !tracked {
+		return false
+	}
+	return exec.Command("git", "-C", cwd, "diff", "--quiet", head, "--", key).Run() == nil
 }
 
 func appendUniqueStrings(dst []string, add ...string) []string {

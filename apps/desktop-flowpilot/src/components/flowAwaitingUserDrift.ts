@@ -31,6 +31,7 @@ export function awaitingUserDriftState(loopState: {
   stalled: boolean;
   isCap: boolean;
   isSprintBoundary: boolean;
+  canAmend: boolean;
   retryIsPrimary: boolean;
 } {
   const stalled = loopState.blockReason === "member_stalled";
@@ -40,12 +41,21 @@ export function awaitingUserDriftState(loopState: {
   const isSprintBoundary = loopState.blockReason === "vibe_sprint_boundary";
   const driftedPaths = !stalled && !isCap ? parseDriftedPaths(loopState.gateReason ?? "") : null;
   const isDrift = driftedPaths !== null && driftedPaths.length > 0;
+  // BUG-638 (live run-306526): a RESCOPE/escalate verdict names the missing
+  // paths in prose — no drift marker, so isDrift stays false and the Allow
+  // button never renders, leaving the one action the escalation asks for
+  // unreachable. The park is amendable whenever the block isn't owned by a
+  // member action (member_stalled → Retry/Skip) or the sprint boundary
+  // (Continue starts the next task); the server validates and reports
+  // unamendable paths, so offering the field on a generic escalate is safe.
+  const canAmend = !stalled && !isSprintBoundary;
   return {
     driftedPaths,
     isDrift,
     stalled,
     isCap,
     isSprintBoundary,
+    canAmend,
     retryIsPrimary: !isDrift,
   };
 }

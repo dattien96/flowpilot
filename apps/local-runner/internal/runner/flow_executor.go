@@ -2041,7 +2041,25 @@ func (s *InteractiveService) reinvokeMatchingFlowChild(parentRunID, prompt strin
 	children := s.agentOrchestrator.listChildren(parentRunID)
 	for i := len(children) - 1; i >= 0; i-- {
 		child := s.runs[children[i]]
-		if child == nil || !match(child) {
+		// BUG-641 (live run-306526): an explicitly-ended leg must never be
+		// re-driven in place — operator-stopped (Cancelled) and leg-closed
+		// (member skip, dispatch-failed close, claim reclaim) children are
+		// terminal for this purpose even though Completed legs are designed
+		// re-drive targets (BUG-Rnd2 round-2+ re-entry) and Failed legs retry
+		// in place (redriveDeadDelegateLeg). Re-driving a cancelled leg
+		// resurrected it in memory while its durable row said stopped —
+		// the ghost then blocked hub reinvokes on "children running or
+		// waiting" forever. A non-match falls through to the caller's fresh
+		// spawn, which re-binds the open cohort seat (CA-645).
+		// The check runs before match(): several callers' predicates have
+		// side effects (rearmCohortIfDrainedLocked re-opens a drained cohort,
+		// another pre-registers + re-tags flowCohortId) — firing those on a
+		// leg we then refuse to drive leaves a phantom open cohort that no
+		// fallback spawn binds (reviewer C-1).
+		if child == nil || child.status == RunStatusCancelled || child.legState == LegStateClosed {
+			continue
+		}
+		if !match(child) {
 			continue
 		}
 		if child.turnInFlight {

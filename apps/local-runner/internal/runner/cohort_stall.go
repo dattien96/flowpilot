@@ -158,7 +158,6 @@ func (s *InteractiveService) maybeScheduleStallCheck(parentRunID string) {
 		// gates — only a real gating question suppresses stall detection.
 		hasGate := child.pendingApprovalID != "" || s.pendingQuestionGatesWorkLocked(child)
 		last := child.lastProviderEventAt
-		inFlight := child.turnInFlight
 		status := child.status
 		created := child.createdAt
 		s.mu.Unlock()
@@ -171,7 +170,14 @@ func (s *InteractiveService) maybeScheduleStallCheck(parentRunID string) {
 		var age time.Duration
 		if !last.IsZero() {
 			age = now.Sub(last)
-		} else if inFlight {
+		} else {
+			// BUG-643: zero-event members age from createdAt on live statuses
+			// too — a spawned leg whose turn never dispatched must still arm
+			// the sweep or its open cohort seat is held with no wakeup.
+			// waiting_* statuses are owned by the orphan/mirror heal sweeps.
+			if status != RunStatusRunning && status != RunStatusStarting && status != RunStatusIdle {
+				continue
+			}
 			if t, err := time.Parse(time.RFC3339Nano, created); err == nil {
 				age = now.Sub(t)
 			} else if t, err := time.Parse(time.RFC3339, created); err == nil {
@@ -179,8 +185,6 @@ func (s *InteractiveService) maybeScheduleStallCheck(parentRunID string) {
 			} else {
 				continue
 			}
-		} else {
-			continue
 		}
 		remaining := timeout - age
 		if remaining < 0 {
@@ -267,12 +271,16 @@ func (s *InteractiveService) checkAndBlockStalledMembers(parentRunID string) boo
 		// is blocked, so counting the member as stalled parks the flow and the
 		// park wipe destroys the intent (orphaned member + cap counter reset).
 		// Mirrors the BUG-520 repromptArmed shield in hasActiveFlowChild.
+		// BUG-643: pendingTurnPrompt joins the shield — a queued turn is held
+		// work too (serial dependency ordering can keep it armed past the
+		// timeout while a sibling runs).
 		intentArmed := strings.TrimSpace(child.pendingGateRepromptPrompt) != "" ||
-			strings.TrimSpace(child.pendingResumePrompt) != ""
+			strings.TrimSpace(child.pendingResumePrompt) != "" ||
+			strings.TrimSpace(child.pendingTurnPrompt) != ""
 		last := child.lastProviderEventAt
 		label := child.label
 		status := child.status
-		inFlight := child.turnInFlight
+		created := child.createdAt
 		s.mu.Unlock()
 		if hasGate || intentArmed {
 			continue
@@ -281,26 +289,30 @@ func (s *InteractiveService) checkAndBlockStalledMembers(parentRunID string) boo
 		if status == RunStatusCompleted || status == RunStatusFailed || status == RunStatusCancelled {
 			continue
 		}
-		// No event yet: use run creation as baseline via zero last → stall only
-		// if still in flight past timeout from... we need a start time. Use
-		// lastProviderEventAt; if zero, treat as stalled only when inFlight and
-		// we cannot know age — use updatedAt parse best-effort.
+		// Zero-event members age from createdAt — a live-status leg that
+		// outlives the timeout without a single provider event is silent
+		// whether its turn was in flight or never dispatched (BUG-643).
 		age := time.Duration(0)
 		if !last.IsZero() {
 			age = now.Sub(last)
-		} else if inFlight {
-			// No events at all while in flight — use a conservative stall if
-			// the child has been around longer than timeout via createdAt.
-			s.mu.Lock()
-			created := child.createdAt
-			s.mu.Unlock()
+		} else {
+			// Zero provider events. Age from createdAt whether the turn is in
+			// flight (dispatch died mid-flight) or never dispatched at all —
+			// BUG-643 (live run-460096): a spawned leg whose first turn never
+			// landed holds its open cohort seat forever while
+			// deadDispatchNonTerminalChildExists suppresses the dead-dispatch
+			// re-drive on the same record. waiting_* statuses are parks owned
+			// by the orphan/mirror heal sweeps (BUG-641) — not DOA silence.
+			if status != RunStatusRunning && status != RunStatusStarting && status != RunStatusIdle {
+				continue
+			}
 			if t, err := time.Parse(time.RFC3339Nano, created); err == nil {
 				age = now.Sub(t)
 			} else if t, err := time.Parse(time.RFC3339, created); err == nil {
 				age = now.Sub(t)
+			} else {
+				continue // unprovable age — stay conservative
 			}
-		} else {
-			continue
 		}
 		if age < timeout {
 			continue
@@ -353,16 +365,59 @@ func (s *InteractiveService) handleMemberAction(parentRunID string, action Membe
 	}
 
 	// Find the child run for this node label.
+	// BUG-639 (live run-306526): labels recur across rounds — a first-match
+	// always picks the earliest historical leg carrying the label (terminal
+	// or ghost), so Retry/Skip dead-lettered while the actually-stalled
+	// member stayed untouched and the hub re-parked within seconds. Resolve
+	// the member the OPEN barrier is waiting on instead: the open cohort's
+	// seat for this label decides which sibling is the live member. Newest
+	// registration order wins when several same-label legs seat the same
+	// open cohort (a re-driven leg supersedes the silenced original).
+	children := s.agentOrchestrator.listChildren(parentRunID)
+	s.mu.Lock()
+	seatCohortID := s.openCohortSeatForLabelLocked(parentRunID, nodeID)
+	s.mu.Unlock()
 	var child *interactiveRun
-	var cohortID string
-	for _, childID := range s.agentOrchestrator.listChildren(parentRunID) {
-		s.mu.Lock()
-		c := s.runs[childID]
-		s.mu.Unlock()
-		if c != nil && c.label == nodeID {
-			child = c
-			cohortID = c.flowCohortId
-			break
+	cohortID := seatCohortID
+	pick := func(requireSeatCohort, requireLive bool) *interactiveRun {
+		for i := len(children) - 1; i >= 0; i-- {
+			s.mu.Lock()
+			c := s.runs[children[i]]
+			if c != nil {
+				// Read mutable fields under the lock — status/flowCohortId are
+				// written under s.mu elsewhere; a torn read could resolve to a
+				// drained cohort's leg and drop the seat fill (reviewer I-1).
+				label, cohort, status := c.label, c.flowCohortId, c.status
+				if label != nodeID ||
+					(requireSeatCohort && cohort != seatCohortID) ||
+					(requireLive && (status == RunStatusCompleted || status == RunStatusFailed || status == RunStatusCancelled)) {
+					c = nil
+				}
+			}
+			s.mu.Unlock()
+			if c != nil {
+				return c
+			}
+		}
+		return nil
+	}
+	if seatCohortID != "" {
+		child = pick(true, true)
+		if child == nil {
+			// Seated member already terminal — still append to seatCohortID so
+			// the released seat is consumed by a real (non-cancelled) result.
+			child = pick(true, false)
+		}
+	}
+	if child == nil {
+		// No open seat (e.g. the cohort drained between sweep and action) —
+		// fall back to the newest live same-label leg, then any match.
+		child = pick(false, true)
+		if child == nil {
+			child = pick(false, false)
+		}
+		if child != nil {
+			cohortID = child.flowCohortId
 		}
 	}
 	if child == nil {
@@ -379,57 +434,64 @@ func (s *InteractiveService) handleMemberAction(parentRunID string, action Membe
 		var haveChildSnap bool
 		if child != nil {
 			s.mu.Lock()
+			// BUG-639: the resolved member may already be terminal (its leg was
+			// stopped while the seat stayed open) — skip must not rewrite a
+			// Completed leg to Failed; the cohort append below still consumes
+			// the seat so the barrier can join.
+			childTerminal := child.status == RunStatusCompleted || child.status == RunStatusFailed || child.status == RunStatusCancelled
 			cancel := child.turnCancel
-			// BUG-288 R13-06: gate may still be running (turnCancel=nil, pending settle).
-			// Invalidate the gate epoch and clear settle so a late gate-pass cannot
-			// overwrite Failed with Completed.
-			child.gateEpoch++
-			if child.postTurnGateCancel != nil {
-				gCancel := child.postTurnGateCancel
-				child.postTurnGateCancel = nil
-				child.pendingFlowGateSettle = false
-				child.pendingFlowGateFinalMsg = ""
-				child.pendingFlowGateOccurredAt = ""
-				child.pendingFlowGateTurnID = ""
-				child.pendingGateChangedFiles = nil
-				s.mu.Unlock()
-				gCancel()
-				s.mu.Lock()
-			} else if child.pendingFlowGateSettle {
-				child.pendingFlowGateSettle = false
-				child.pendingFlowGateFinalMsg = ""
-				child.pendingFlowGateOccurredAt = ""
-				child.pendingFlowGateTurnID = ""
-				child.pendingGateChangedFiles = nil
+			if !childTerminal {
+				// BUG-288 R13-06: gate may still be running (turnCancel=nil, pending settle).
+				// Invalidate the gate epoch and clear settle so a late gate-pass cannot
+				// overwrite Failed with Completed.
+				child.gateEpoch++
+				if child.postTurnGateCancel != nil {
+					gCancel := child.postTurnGateCancel
+					child.postTurnGateCancel = nil
+					child.pendingFlowGateSettle = false
+					child.pendingFlowGateFinalMsg = ""
+					child.pendingFlowGateOccurredAt = ""
+					child.pendingFlowGateTurnID = ""
+					child.pendingGateChangedFiles = nil
+					s.mu.Unlock()
+					gCancel()
+					s.mu.Lock()
+				} else if child.pendingFlowGateSettle {
+					child.pendingFlowGateSettle = false
+					child.pendingFlowGateFinalMsg = ""
+					child.pendingFlowGateOccurredAt = ""
+					child.pendingFlowGateTurnID = ""
+					child.pendingGateChangedFiles = nil
+				}
+				child.turnCancel = nil
+				child.turnInFlight = false
+				child.status = RunStatusFailed
+				child.agentStatus = string(RunStatusFailed)
+				// BUG-539 (live run-2830): a skipped member's armed reprompt/resume
+				// intents and leg claim must die with it — the durable row kept
+				// leg_state=active and the armed reprompt after skip. Drop intents
+				// (gen high-water preserved for idempotency) and close the leg.
+				clearIntentFieldsLocked(child, "reprompt")
+				clearIntentFieldsLocked(child, "resume")
+				child.pendingTurnPrompt = ""
+				if child.legState == LegStateActive {
+					child.legState = LegStateClosed
+					child.legClosedReason = LegClosedReasonMemberSkipped
+				}
+				// V9-25: mark synthetic skip so late provider TurnFailed cannot re-append.
+				child.cohortSkipConsumed = true
+				// BUG-288 P1-14/P1-19 + R14-01: only set stalledSkipCause when a
+				// turn-ctx cancel will reach finishTurn. Gate-in-flight skip
+				// (cancel==nil) already stamps Failed directly — setting the flag
+				// unconditionally leaked into a later Stop and misclassified it as
+				// "skipped by user (stalled)".
+				if cancel != nil {
+					child.stalledSkipCause = true
+				}
+				// BUG-288 R13-08: durable child FAILED snapshot (not only parent).
+				childSnap = sessionStateOf(child)
+				haveChildSnap = true
 			}
-			child.turnCancel = nil
-			child.turnInFlight = false
-			child.status = RunStatusFailed
-			child.agentStatus = string(RunStatusFailed)
-			// BUG-539 (live run-2830): a skipped member's armed reprompt/resume
-			// intents and leg claim must die with it — the durable row kept
-			// leg_state=active and the armed reprompt after skip. Drop intents
-			// (gen high-water preserved for idempotency) and close the leg.
-			clearIntentFieldsLocked(child, "reprompt")
-			clearIntentFieldsLocked(child, "resume")
-			child.pendingTurnPrompt = ""
-			if child.legState == LegStateActive {
-				child.legState = LegStateClosed
-				child.legClosedReason = LegClosedReasonMemberSkipped
-			}
-			// V9-25: mark synthetic skip so late provider TurnFailed cannot re-append.
-			child.cohortSkipConsumed = true
-			// BUG-288 P1-14/P1-19 + R14-01: only set stalledSkipCause when a
-			// turn-ctx cancel will reach finishTurn. Gate-in-flight skip
-			// (cancel==nil) already stamps Failed directly — setting the flag
-			// unconditionally leaked into a later Stop and misclassified it as
-			// "skipped by user (stalled)".
-			if cancel != nil {
-				child.stalledSkipCause = true
-			}
-			// BUG-288 R13-08: durable child FAILED snapshot (not only parent).
-			childSnap = sessionStateOf(child)
-			haveChildSnap = true
 			s.mu.Unlock()
 			if cancel != nil {
 				cancel()

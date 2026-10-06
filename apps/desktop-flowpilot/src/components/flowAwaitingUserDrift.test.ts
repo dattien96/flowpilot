@@ -72,6 +72,32 @@ test("awaitingUserDriftState: Allow only on non-cap non-stalled drift", () => {
   assert.equal(escalate.retryIsPrimary, true);
 });
 
+test("awaitingUserDriftState: canAmend exposes the declare-paths affordance on amendable parks (BUG-638)", () => {
+  // Live run-306526: a RESCOPE escalate verdict names the missing path in
+  // prose — no drift marker, so isDrift=false and the Allow button never
+  // rendered. The park must still offer a declare-paths input.
+  const rescope = awaitingUserDriftState({
+    blockReason: "escalate",
+    gateReason:
+      "DECISION REQUESTED (rescope/contract amend): declare core/security-rasp/src/main/cpp/CMakeLists.txt in scope — required by the contract's own wiring intent",
+  });
+  assert.equal(rescope.isDrift, false);
+  assert.equal(rescope.canAmend, true);
+
+  // Drift parks stay amendable (the Allow button consumes the same affordance).
+  assert.equal(
+    awaitingUserDriftState({
+      blockReason: "escalate",
+      gateReason: "flow scope drift: wrote outside the frozen contract's declared paths: a.go",
+    }).canAmend,
+    true,
+  );
+
+  // Owner-actioned parks keep their own buttons — no amend field.
+  assert.equal(awaitingUserDriftState({ blockReason: "member_stalled" }).canAmend, false);
+  assert.equal(awaitingUserDriftState({ blockReason: "vibe_sprint_boundary" }).canAmend, false);
+});
+
 test("awaitingUserDriftState: vibe_sprint_boundary flagged so the card can label Continue", () => {
   // CA-1097 (live run-3362): a finished vibe sprint parks on
   // vibe_sprint_boundary; the action is "start the next task", not a retry —

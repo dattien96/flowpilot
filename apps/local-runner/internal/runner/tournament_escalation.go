@@ -40,6 +40,28 @@ const tournamentHarnessFlowID = "tournament-harness"
 // a failure — the legacy park path must NOT run over a live tournament.
 var errTournamentEscalationExists = errors.New("tournament escalation child already exists")
 
+// liveTournamentChildLocked returns the id of parentRunID's
+// tournament_escalation child that is still non-terminal — the only kind of
+// child that can satisfy the single-rescue dedupe. BUG-639 (live
+// run-306526): both dedupe scans used to match on label alone, so a
+// stopped/cancelled zombie leg (run-306526-tournament) suppressed every
+// later escalation with tournament_escalation_deduped forever. A terminal
+// child is audit residue, not an in-flight rescue — a fresh cap must be
+// able to mint a new tournament leg (unique id via the -2/-3 suffix loop).
+// Caller holds s.mu.
+func (s *InteractiveService) liveTournamentChildLocked(parentRunID string) string {
+	for _, rs := range s.runs {
+		if rs == nil || rs.parentRunID != parentRunID || rs.label != "tournament_escalation" {
+			continue
+		}
+		if isTerminalRunStatus(rs.status) || rs.legState == LegStateClosed {
+			continue
+		}
+		return rs.id
+	}
+	return ""
+}
+
 // TournamentEscalationEnabled: MVP posture — always ON; the
 // FLOWPILOT_ENABLE_TOURNAMENT_ESCALATION env is ignored (same posture as
 // ReproduceGateEnabled / chatSSOTEnabled — rollback is a revert commit,
@@ -122,11 +144,10 @@ func (s *InteractiveService) escalateToTournament(parentRunID, reason string) (s
 	// outer scan in maybeEscalateCapToTournament is a cheap pre-check only.
 	// Two triggers that both pass the pre-check must not allocate
 	// -tournament and -tournament-2 and dispatch competing rescues.
-	for _, other := range s.runs {
-		if other.parentRunID == parentRunID && other.label == "tournament_escalation" {
-			s.mu.Unlock()
-			return "", fmt.Errorf("%w: run %q already has child %q", errTournamentEscalationExists, parentRunID, other.id)
-		}
+	// BUG-639: only a LIVE child dedupes — terminal residue must not.
+	if liveID := s.liveTournamentChildLocked(parentRunID); liveID != "" {
+		s.mu.Unlock()
+		return "", fmt.Errorf("%w: run %q already has child %q", errTournamentEscalationExists, parentRunID, liveID)
 	}
 	intent := fmt.Sprintf("Tournament escalation of run %s (%s). Prior loop: %s (round %d/%d). The prior direction failed — solve from a clean slate, do not repeat it.",
 		parentRunID, strings.TrimSpace(reason), strings.TrimSpace(loop.GateReason), loop.Round, effectiveCap(loop))
@@ -320,16 +341,17 @@ func (s *InteractiveService) maybeEscalateCapToTournament(parentRunID, reason st
 	// status (e.g. a continue that ran Round++ before this check) would see
 	// "blocked" and re-dispatch. Refuse while a tournament child exists,
 	// regardless of the parent's current loop status.
+	// BUG-639: same terminal-aware check as the authoritative dedup — a
+	// stopped zombie leg must not suppress a fresh rescue.
 	s.mu.Lock()
-	for _, rs := range s.runs {
-		if rs.parentRunID == parentRunID && rs.label == "tournament_escalation" {
-			s.mu.Unlock()
-			s.flowDiagLog(parentRunID, "tournament_escalation_deduped",
-				"tournament escalation refused: a tournament child already exists")
-			return false
-		}
-	}
+	liveChild := s.liveTournamentChildLocked(parentRunID)
 	s.mu.Unlock()
+	if liveChild != "" {
+		s.flowDiagLog(parentRunID, "tournament_escalation_deduped",
+			"tournament escalation refused: a live tournament child already exists",
+			"child_run_id", liveChild)
+		return false
+	}
 	childID, err := s.escalateToTournament(parentRunID, reason)
 	if err != nil {
 		// BUG-446: a concurrent trigger won the in-lock claim — the rescue is

@@ -1449,6 +1449,27 @@ func (s *InteractiveService) stopAgentLoop(parentRunID string) (AgentGraphSnapsh
 		parentRunID, cohortID, label, provider string
 	}
 	var cancelledCohort []cancelledCohortMember
+	// BUG-640 (live run-306526): the Stop target itself can be a cohort member
+	// of a grandparent flow — stopping a stalled owner/reviewer leg by run-id
+	// only walks ITS children below, so the member's own seat on the
+	// grandparent barrier stayed empty forever and every continue/done on the
+	// parent deferred as rejected_cohort_incomplete. If the target still holds
+	// an unbuffered seat, queue the same released-seat placeholder children get
+	// (a member revived later replaces it via appendCohortResult's BUG-553
+	// rule). memberAlreadyBuffered guards the late-Stop-after-completion case
+	// so a real result is never regressed to cancelled.
+	var stoppedMember *cancelledCohortMember
+	if target := s.runs[parentRunID]; target != nil &&
+		strings.TrimSpace(target.parentRunID) != "" &&
+		strings.TrimSpace(target.flowCohortId) != "" &&
+		!s.agentOrchestrator.memberAlreadyBuffered(target.parentRunID, target.flowCohortId, target.label) {
+		stoppedMember = &cancelledCohortMember{
+			parentRunID: target.parentRunID,
+			cohortID:    target.flowCohortId,
+			label:       target.label,
+			provider:    string(target.providerKey),
+		}
+	}
 	for _, childID := range s.agentOrchestrator.listChildren(parentRunID) {
 		if child := s.runs[childID]; child != nil {
 			child.pendingTurnPrompt = ""
@@ -1568,6 +1589,16 @@ func (s *InteractiveService) stopAgentLoop(parentRunID string) (AgentGraphSnapsh
 		if err := s.persistQuestion(st); err != nil && persistErr == nil {
 			persistErr = err
 		}
+	}
+	// BUG-640: fold the stopped run's own grandparent membership into the same
+	// release path as its children below.
+	if stoppedMember != nil {
+		s.flowDiagLog(stoppedMember.parentRunID, "cohort_member_seat_released",
+			"stopped leg released its cohort seat",
+			"child_run_id", parentRunID,
+			"cohort_id", stoppedMember.cohortID,
+			"label", stoppedMember.label)
+		cancelledCohort = append(cancelledCohort, *stoppedMember)
 	}
 	// Task-241: append cancelled members to cohort buffer (orchestrator lock only —
 	// never re-enter s.mu). If barrier completes, join via maybeAutoReinvokeHubWithNote.
@@ -5763,6 +5794,15 @@ func (s *InteractiveService) healMirroredQuestionWaitLocked(owner *interactiveRu
 		}
 		target.status = RunStatusRunning
 		target.agentStatus = string(RunStatusRunning)
+		// BUG-641: the mirrored wait also stamped the target's flow step via
+		// applyRunEventLocked → settleFlowChildStepAwaitingUserLocked —
+		// un-stamp it or the step row stays parked on a resolved card.
+		s.unstampHealedFlowChildStepLocked(target)
+		// The run-status flip must be durable too — a restart that
+		// rehydrates the stale waiting_question resurrects the mirrored park
+		// while its step row already reads running (reviewer I-3).
+		snap := sessionStateOf(target)
+		go func() { _ = s.persistProviderSession(snap) }()
 	}
 }
 
