@@ -472,6 +472,14 @@ func (s *InteractiveService) deadDispatchNonTerminalChildExists(parentRunID, lab
 		if child == nil || child.parentRunID != parentRunID || child.label != label {
 			continue
 		}
+		// A closed leg keeps a live-looking status (quota-veto respawn, claim
+		// reclaim close leg_state without stamping terminal status) but can
+		// never be re-driven — reinvokeMatchingFlowChild skips it (BUG-641).
+		// Counting it live suppresses the fresh spawn that would actually
+		// fill the seat (reviewer I-3 class).
+		if child.legState == LegStateClosed {
+			continue
+		}
 		switch child.status {
 		case RunStatusCompleted, RunStatusFailed, RunStatusCancelled:
 		default:

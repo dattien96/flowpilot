@@ -2104,7 +2104,13 @@ func unchangedSinceTurnStart(cwd, path string, rs *interactiveRun) bool {
 	if rs == nil {
 		return false
 	}
-	key := strings.TrimSuffix(filepath.ToSlash(path), "/")
+	// Canonicalize like the snapshot keys (git-diff-canonical paths): a "./x"
+	// or "dir/../x" alias must not miss the fingerprint lookup and fall
+	// through to the git arm on a false-negative (reviewer M-3).
+	key := strings.TrimSuffix(filepath.ToSlash(filepath.Clean(path)), "/")
+	if key == "" || key == "." {
+		return false // fail-closed: no provable path
+	}
 	if rs.turnStartWorktree != nil {
 		if prev, ok := rs.turnStartWorktree[key]; ok {
 			return prev == worktreeFileFingerprint(cwd, key)

@@ -1987,14 +1987,18 @@ func (s *InteractiveService) reinvokeExistingFlowChild(parentRunID, nodeID, prom
 	// Register THIS round's cohort and re-tag the reused child so its completion
 	// joins a live barrier, mirroring the spawn path (spawnChildRun's FlowCohortID +
 	// preRegisterCohort). A back-edge coder continue passes cohortID="" (no cohort).
-	if strings.TrimSpace(cohortID) != "" {
-		s.agentOrchestrator.preRegisterCohort(parentRunID, cohortID, cohortSize)
-	}
+	// Registration lives inside the match predicate: preRegisterCohort deletes
+	// the drained tombstone (re-opens the barrier), so firing it BEFORE knowing
+	// a drivable leg exists leaks a phantom open cohort when the caller's spawn
+	// fallback then fails — no member can fill it and hasOpenCohort blocks
+	// done-finalization forever (reviewer M-1; same wedge class as the C-1
+	// predicate-side-effect bug one layer down).
 	return s.reinvokeMatchingFlowChild(parentRunID, prompt, func(child *interactiveRun) bool {
 		if child.label != nodeID {
 			return false
 		}
 		if strings.TrimSpace(cohortID) != "" {
+			s.agentOrchestrator.preRegisterCohort(parentRunID, cohortID, cohortSize)
 			// Caller (reinvokeMatchingFlowChild) holds s.mu while invoking this
 			// predicate, so mutating the matched child here is lock-safe.
 			child.flowCohortId = cohortID

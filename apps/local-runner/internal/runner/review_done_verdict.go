@@ -734,14 +734,6 @@ func (s *InteractiveService) resumeVerdictDeficientMembers(parentRunID, feedback
 			continue
 		}
 		seen[child.label] = true
-		child.verdictRepromptCount = 0
-		// BUG-403: arm the flag so a failed scheduled turn retries/drains
-		// instead of silently dropping the verdict retry.
-		child.reinvokeInFlight = true
-		// BUG-559: same marker as the settle-path reprompt — this re-drive is
-		// a verdict turn, not a draft attempt; its completion must not clear
-		// a stashed preflight draft.
-		child.verdictRepromptInFlight = true
 		labels = append(labels, child.label)
 	}
 	// BUG-565 (live run-69320): a deficient label may have NO child at all —
@@ -764,9 +756,39 @@ func (s *InteractiveService) resumeVerdictDeficientMembers(parentRunID, feedback
 	redriven := false
 	for _, label := range labels {
 		want := label
+		var driven *interactiveRun
+		drivenInFlight := false
 		if s.reinvokeMatchingFlowChild(parentRunID, prompt, func(child *interactiveRun) bool {
-			return child.label == want
+			if child.label != want {
+				return false
+			}
+			// The match runs under s.mu on the leg actually driven —
+			// reinvokeMatchingFlowChild scans newest-first, so arming in the
+			// scan loop above could land these flags on a stale same-label
+			// sibling while a different leg drives (reviewer I-2, same
+			// first-vs-newest class as BUG-639). Arm here instead.
+			child.verdictRepromptCount = 0
+			// BUG-403: arm the flag so a failed scheduled turn retries/drains
+			// instead of silently dropping the verdict retry.
+			child.reinvokeInFlight = true
+			driven = child
+			drivenInFlight = child.turnInFlight
+			return true
 		}) {
+			// BUG-559: this drive IS a verdict reprompt — the marker must
+			// survive into turn completion so a draft-less output cannot wipe
+			// a stashed preflight draft (live run-60899). But the helper
+			// clears the flag as a stale-marker sweep before scheduling the
+			// turn (flow_executor.go), so re-arm it now on the leg it
+			// actually drove (reviewer I-1). A leg that already had a turn in
+			// flight keeps its own turn — that turn is not a verdict reprompt.
+			if driven != nil && !drivenInFlight {
+				s.mu.Lock()
+				if s.runs[driven.id] == driven {
+					driven.verdictRepromptInFlight = true
+				}
+				s.mu.Unlock()
+			}
 			s.setFlowStepStatus(context.Background(), parentRunID, label, StepStatusRunning)
 			redriven = true
 		}

@@ -2463,6 +2463,39 @@ func (s *InteractiveService) handleAmendFlow(w http.ResponseWriter, r *http.Requ
 	}
 	workspace := rs.workspaceCwd
 	loopStatus := s.agentOrchestrator.loopStateFor(runID).Status
+	// Contract-scope candidates (reviewer I-4): the request is run-scoped —
+	// it names paths, not the step that drifted. Amending EVERY active
+	// contract of the run unions the drift paths into sibling steps' frozen
+	// scopes, silently widening them. Collect the steps that plausibly
+	// produced the park: gated children (their post-turn gate raised the
+	// drift card) first, then any live child, plus the run's own step for
+	// the agent-loop amend where there are no children at all.
+	gatedSteps := map[string]bool{}
+	liveSteps := map[string]bool{}
+	if sid := strings.TrimSpace(rs.stepID); sid != "" {
+		liveSteps[sid] = true
+	}
+	for _, cid := range s.agentOrchestrator.listChildren(runID) {
+		c := s.runs[cid]
+		if c == nil {
+			continue
+		}
+		gated := c.pendingFlowGateSettle || len(c.pendingGateChangedFiles) > 0 ||
+			c.pendingApprovalID != "" || c.pendingQuestionID != ""
+		live := c.status != RunStatusCompleted && c.status != RunStatusFailed &&
+			c.status != RunStatusCancelled && c.legState != LegStateClosed
+		if !live && !gated {
+			continue
+		}
+		for _, cand := range []string{c.stepID, c.label} {
+			if sid := strings.TrimSpace(cand); sid != "" {
+				liveSteps[sid] = true
+				if gated {
+					gatedSteps[sid] = true
+				}
+			}
+		}
+	}
 	s.mu.Unlock()
 
 	if strings.ToLower(strings.TrimSpace(loopStatus)) != "blocked" {
@@ -2509,6 +2542,11 @@ func (s *InteractiveService) handleAmendFlow(w http.ResponseWriter, r *http.Requ
 		writeInteractiveError(w, newAPIErr(http.StatusUnprocessableEntity, "frozen_store_open_failed", err.Error()))
 		return
 	}
+	// Scope to the plausible target set: contracts for gated steps win, then
+	// live steps; when nothing matches (the parked step left no live leg —
+	// e.g. the BUG-637 nested-debate case) the full active set stays
+	// reachable rather than re-introducing the 404.
+	contracts = filterAmendTargets(contracts, gatedSteps, liveSteps)
 	amended := 0
 	for _, rec := range contracts {
 		next, err := changecontract.AmendFrozenContractForAllow(store, workspace, rec, amendable, time.Now().UTC())
@@ -2532,4 +2570,34 @@ func (s *InteractiveService) handleAmendFlow(w http.ResponseWriter, r *http.Requ
 	}
 	snap.UnamendablePaths = unamendable
 	writeInteractiveJSON(w, http.StatusOK, snap)
+}
+
+// filterAmendTargets scopes the amend target set (reviewer I-4): a
+// run-scoped amend request names paths, not the step that drifted, so
+// amending every active contract of the run would union the drift paths
+// into sibling steps' frozen scopes. Prefer contracts bound to gated steps
+// (a child's post-turn gate is what raised the drift card); otherwise
+// contracts for any live step; otherwise the full active set — the BUG-637
+// nested-debate contract must stay reachable even when no live leg
+// identifies it.
+func filterAmendTargets(contracts []changecontract.FrozenContractRecord, gatedSteps, liveSteps map[string]bool) []changecontract.FrozenContractRecord {
+	pick := func(steps map[string]bool) []changecontract.FrozenContractRecord {
+		if len(steps) == 0 {
+			return nil
+		}
+		var out []changecontract.FrozenContractRecord
+		for _, rec := range contracts {
+			if steps[rec.CoderStepID] || steps[rec.PlannerStepID] {
+				out = append(out, rec)
+			}
+		}
+		return out
+	}
+	if scoped := pick(gatedSteps); len(scoped) > 0 {
+		return scoped
+	}
+	if scoped := pick(liveSteps); len(scoped) > 0 {
+		return scoped
+	}
+	return contracts
 }

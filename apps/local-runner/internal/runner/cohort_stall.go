@@ -33,6 +33,15 @@ func (s *InteractiveService) openCohortMemberRuns(parentRunID string) []*interac
 		if child == nil || child.flowCohortId == "" {
 			continue
 		}
+		// A closed leg cannot produce events — quota-veto respawn and claim
+		// reclaim close the old leg WITHOUT stamping a terminal status
+		// (status stays running/idle). Counting it live lets the BUG-643 DOA
+		// arm park the cohort on a ghost's createdAt while its live successor
+		// works (reviewer I-3). Its open seat is a join-time concern — for
+		// stall purposes the leg is dead.
+		if child.legState == LegStateClosed {
+			continue
+		}
 		// Still expected in an open cohort if not yet in the buffer.
 		if s.agentOrchestrator.memberAlreadyBuffered(parentRunID, child.flowCohortId, child.label) {
 			continue
@@ -387,10 +396,14 @@ func (s *InteractiveService) handleMemberAction(parentRunID string, action Membe
 				// Read mutable fields under the lock — status/flowCohortId are
 				// written under s.mu elsewhere; a torn read could resolve to a
 				// drained cohort's leg and drop the seat fill (reviewer I-1).
-				label, cohort, status := c.label, c.flowCohortId, c.status
+				label, cohort, status, legClosed := c.label, c.flowCohortId, c.status, c.legState == LegStateClosed
 				if label != nodeID ||
 					(requireSeatCohort && cohort != seatCohortID) ||
-					(requireLive && (status == RunStatusCompleted || status == RunStatusFailed || status == RunStatusCancelled)) {
+					// legState=closed ghosts keep a live-looking status
+					// (quota-veto respawn, claim reclaim) — Retry/Skip must
+					// resolve to the live successor, not the ghost
+					// (reviewer I-3).
+					(requireLive && (status == RunStatusCompleted || status == RunStatusFailed || status == RunStatusCancelled || legClosed)) {
 					c = nil
 				}
 			}
@@ -438,7 +451,8 @@ func (s *InteractiveService) handleMemberAction(parentRunID string, action Membe
 			// stopped while the seat stayed open) — skip must not rewrite a
 			// Completed leg to Failed; the cohort append below still consumes
 			// the seat so the barrier can join.
-			childTerminal := child.status == RunStatusCompleted || child.status == RunStatusFailed || child.status == RunStatusCancelled
+			childTerminal := child.status == RunStatusCompleted || child.status == RunStatusFailed || child.status == RunStatusCancelled ||
+				child.legState == LegStateClosed
 			cancel := child.turnCancel
 			if !childTerminal {
 				// BUG-288 R13-06: gate may still be running (turnCancel=nil, pending settle).

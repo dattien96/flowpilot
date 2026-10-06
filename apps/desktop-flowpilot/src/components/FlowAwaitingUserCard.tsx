@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { awaitingUserDriftState } from "@/components/flowAwaitingUserDrift";
 import { useStore } from "@/state/store";
 
@@ -22,6 +22,7 @@ import { useStore } from "@/state/store";
 
 export function FlowAwaitingUserCard(): React.ReactElement | null {
   const loopState = useStore((s) => s.agentGraphSnapshot?.loopState);
+  const unamendablePaths = useStore((s) => s.agentGraphSnapshot?.unamendablePaths);
   const gateBlock = useStore((s) => s.gateBlock);
   const continueFlow = useStore((s) => s.continueFlow);
   const amendFlow = useStore((s) => s.amendFlow);
@@ -31,6 +32,19 @@ export function FlowAwaitingUserCard(): React.ReactElement | null {
   const [amendOpen, setAmendOpen] = useState(false);
   const [amendError, setAmendError] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  // The card is mounted unconditionally and returns null rather than
+  // unmounting — without this, a stale error/input from a prior park
+  // reappears under a different gateReason (reviewer M-2c).
+  const parkKey = `${loopState?.blockReason ?? ""}|${loopState?.gateReason ?? ""}`;
+  const lastParkKey = useRef(parkKey);
+  useEffect(() => {
+    if (lastParkKey.current !== parkKey) {
+      lastParkKey.current = parkKey;
+      setAmendError("");
+      setAmendInput("");
+      setAmendOpen(false);
+    }
+  }, [parkKey]);
 
   if (!loopState || loopState.status !== "blocked") return null;
   // CP-51 A1 dual-UI: when a regression/gate decision modal is open, hide this
@@ -75,9 +89,14 @@ export function FlowAwaitingUserCard(): React.ReactElement | null {
   const handleAllow = async () => {
     if (submitting || !driftedPaths) return;
     setSubmitting(true);
+    setAmendError("");
     try {
       await amendFlow(driftedPaths);
       setFeedback("");
+    } catch (err) {
+      // A rejected Allow (404 no_frozen_contract / 422 amend_failed) must
+      // not be a silent dead click — same surface as the declare-paths row.
+      setAmendError(err instanceof Error ? err.message : "amend failed");
     } finally {
       setSubmitting(false);
     }
@@ -172,9 +191,6 @@ export function FlowAwaitingUserCard(): React.ReactElement | null {
               Amend <span className="btn-desc">declare path(s) &amp; resume</span>
             </button>
           </div>
-          {amendError !== "" && (
-            <p className="flow-awaiting-user-amend-error" role="alert">{amendError}</p>
-          )}
           </>
         ) : (
           <button
@@ -187,6 +203,14 @@ export function FlowAwaitingUserCard(): React.ReactElement | null {
             Amend scope…
           </button>
         )
+      )}
+      {amendError !== "" && (
+        <p className="flow-awaiting-user-amend-error" role="alert">{amendError}</p>
+      )}
+      {unamendablePaths != null && unamendablePaths.length > 0 && (
+        <p className="flow-awaiting-user-amend-error" role="status">
+          Not widenable (kept out of scope): {unamendablePaths.join(", ")}
+        </p>
       )}
       <div className="other-row">
         <button
