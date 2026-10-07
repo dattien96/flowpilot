@@ -1495,6 +1495,9 @@ func (s *InteractiveService) stopAgentLoop(parentRunID string) (AgentGraphSnapsh
 				child.status = RunStatusCancelled
 				child.agentStatus = string(RunStatusCancelled)
 				child.turnInFlight = false
+				// run-502144: a cancelled leg can never surface the card its
+				// WAITING_USER_APPROVAL step mirror waits on — settle it.
+				s.settleFlowChildStepTerminalLocked(child, StepStatusCanceled)
 				cancelledChildIDs = append(cancelledChildIDs, childID)
 				if child.flowCohortId != "" {
 					cancelledCohort = append(cancelledCohort, cancelledCohortMember{
@@ -3268,11 +3271,19 @@ func (s *InteractiveService) redriveParkedFlowOrphans(parentRunID string, nodes 
 	// CA-1213: while the parent still owns a live decision surface the park
 	// belongs to that card — its parked children stay frozen until the card
 	// is answered. The sweep only revives orphans after the surface clears.
-	if rs := s.runs[parentRunID]; rs == nil ||
-		rs.pendingApprovalID != "" || s.pendingQuestionGatesWorkLocked(rs) ||
-		rs.vibeResumeConfirm || rs.vibeSprintBoundaryPending {
+	// A gate id whose card record is gone is residue, not a surface — clear
+	// it first or the parent read "card backed" forever (same unanswerable
+	// wait class as live run-504394, surfaced parent-side).
+	if rs := s.runs[parentRunID]; rs == nil {
 		s.mu.Unlock()
 		return false, 0
+	} else {
+		s.clearDanglingGateIDsLocked(rs)
+		if rs.pendingApprovalID != "" || s.pendingQuestionGatesWorkLocked(rs) ||
+			rs.vibeResumeConfirm || rs.vibeSprintBoundaryPending {
+			s.mu.Unlock()
+			return false, 0
+		}
 	}
 	var orphanIDs []string
 	var resumeIDs []string
@@ -3299,6 +3310,11 @@ func (s *InteractiveService) redriveParkedFlowOrphans(parentRunID string, nodes 
 			resumeIDs = append(resumeIDs, cid)
 			continue
 		}
+		// run-504394: a pendingApprovalID/pendingQuestionID whose card record
+		// is gone can never be answered — it is residue, not a surface. Clear
+		// it before the card-backed test or the leg strands in an
+		// unanswerable wait the sweep can never see.
+		s.clearDanglingGateIDsLocked(c)
 		if c.status != RunStatusWaitingUserApr ||
 			c.pendingApprovalID != "" || s.pendingQuestionGatesWorkLocked(c) {
 			continue
@@ -3722,6 +3738,10 @@ func (s *InteractiveService) parkFlowForAwaitingUser(parentRunID string, opts ..
 	}
 	s.flowDiagLog(parentRunID, "flow_parked_awaiting_user",
 		"flow frozen for human decision form; cancelled in-flight turns and dropped auto-intents")
+	// run-502144: a parked flow holding a buffered renegotiation batch
+	// deadlocks on the completion route — dispatch the negotiation hub while
+	// the park is in place so the batch reaches adjudication.
+	go s.maybeDispatchNegotiationHubForBufferedBatch(parentRunID)
 }
 
 // releaseParkedCohortSeatsLocked buffers a terminal "cancelled" cohort
@@ -3871,6 +3891,9 @@ func (s *InteractiveService) parkFlowForAwaitingUserLocked(parentRunID string) {
 	s.releaseParkedCohortSeatsLocked(parentRunID)
 	s.flowDiagLog(parentRunID, "flow_parked_awaiting_user",
 		"flow frozen for human decision form; cancelled in-flight turns and dropped auto-intents")
+	// run-502144 (Locked twin): same buffered-batch deadlock — the goroutine
+	// re-acquires s.mu after this caller's hold is released.
+	go s.maybeDispatchNegotiationHubForBufferedBatch(parentRunID)
 }
 
 // settleChildStatusAfterGateBlockLocked decides a child's status right after a
@@ -5768,6 +5791,9 @@ func (s *InteractiveService) healMirroredQuestionWaitLocked(owner *interactiveRu
 		}
 	}
 	for _, target := range targets {
+		// run-504394: a dangling gate id on the mirror target is residue, not
+		// a live card — clear before deciding whether the wait is still owned.
+		s.clearDanglingGateIDsLocked(target)
 		if target.status != RunStatusWaitingQuestion || target.pendingQuestionID != "" {
 			continue
 		}
@@ -7661,6 +7687,12 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 			// step WAITING_USER_APPROVAL (by node label) so resume/replay can
 			// keep it instead of collapsing RUNNING → CANCELED after restart.
 			s.settleFlowChildStepAwaitingUserLocked(rs)
+			// run-502144: a leg that parks with a buffered renegotiation
+			// batch can never reach the completion route — dispatch the
+			// negotiation hub now or the batch deadlocks behind this card.
+			if rs.parentRunID != "" {
+				go s.maybeDispatchNegotiationHubForBufferedBatch(rs.parentRunID)
+			}
 		}
 	case EventUserQuestionRequired:
 		// run-2062497: same gate for questions — the mirrored emit onto the
@@ -7671,6 +7703,9 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 			rs.agentStatus = string(RunStatusWaitingQuestion)
 			// BUG-288 #22: same WAITING stamp for child ask_user questions.
 			s.settleFlowChildStepAwaitingUserLocked(rs)
+			if rs.parentRunID != "" {
+				go s.maybeDispatchNegotiationHubForBufferedBatch(rs.parentRunID)
+			}
 		}
 	case EventTurnCompleted:
 		// Fall back to the last EventMessageCompleted text when FinalMessage is empty:
@@ -10396,6 +10431,9 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 			if rs.status == RunStatusRunning {
 				rs.status = RunStatusCancelled
 				rs.agentStatus = string(RunStatusCancelled)
+				// run-502144: a child leg cancelled here may carry a mirrored
+				// WAITING_USER_APPROVAL step — settle it with the leg.
+				s.settleFlowChildStepTerminalLocked(rs, StepStatusCanceled)
 			}
 		}
 		s.mu.Unlock()

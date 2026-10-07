@@ -160,6 +160,7 @@ func TestBug581_SweepKeepsCardBackedWait(t *testing.T) {
 		lastProviderEventAt: time.Now().UTC().Add(-2 * wedgedWaitGrace),
 		subs:                map[int64]chan ProviderEvent{},
 	}
+	svc.questions["q-live"] = &questionRecord{id: "q-live", runID: runID, status: "pending"}
 	svc.mu.Unlock()
 
 	svc.sweepWedgedFlowWork()

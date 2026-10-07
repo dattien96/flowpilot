@@ -91,6 +91,7 @@ func TestBug641_HealKeepsStepStampOwnedBySiblingLeg(t *testing.T) {
 		pendingApprovalID: "appr-live",
 		subs:              map[int64]chan ProviderEvent{},
 	}
+	svc.approvals["appr-live"] = &approvalRecord{id: "appr-live", runID: "leg-coder-new", status: "pending"}
 	svc.mu.Unlock()
 	svc.agentOrchestrator.registerChild(parentID, "leg-coder-new")
 	svc.workflowStore.(*fakeWorkflowStore).seed(parentID, []RuntimeWorkflowStep{
@@ -125,6 +126,7 @@ func TestBug641_SweepKeepsStepWaitBackedByCard(t *testing.T) {
 		lastProviderEventAt: time.Now().UTC().Add(-2 * wedgedWaitGrace),
 		subs:                map[int64]chan ProviderEvent{},
 	}
+	svc.questions["q-live"] = &questionRecord{id: "q-live", runID: "leg-coder", status: "pending"}
 	svc.mu.Unlock()
 	svc.workflowStore.(*fakeWorkflowStore).seed(parentID, []RuntimeWorkflowStep{
 		{ID: "coder", NodeID: "coder", Status: StepStatusWaitingUserApr},

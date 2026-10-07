@@ -2467,6 +2467,9 @@ func (s *InteractiveService) SubmitGateDecision(runID, option, customText string
 			from := strings.TrimSpace(rs.vibeResumeFromNode)
 			rs.vibeResumeConfirm = false
 			rs.vibeResumeFromNode = ""
+			// CA-806: a genuinely Failed run never resumes through this gate —
+			// recovery goes through healVibeFailedForReopenPark (Failed ->
+			// Cancelled) and re-park instead.
 			if rs.status == RunStatusFailed {
 				s.mu.Unlock()
 				return nil
@@ -2501,6 +2504,11 @@ func (s *InteractiveService) SubmitGateDecision(runID, option, customText string
 			})
 			s.emitAgentGraph(runID, snap)
 			go s.persistParentSession(runID)
+			// run-490265: a FAILED/CANCELED step strictly upstream of the
+			// chosen checkpoint is kill-residue — the flow adjudicated past it
+			// for `from` to become a resume target. Normalize before the
+			// re-drive so later settles never count a stale failure.
+			s.reconcileResumedPredecessorSteps(runID, from)
 			// Task-327/328/329: artifact-missing recover before any tryAdvance.
 			if s.restartVibeIngestForMissingSS(runID) {
 				return nil

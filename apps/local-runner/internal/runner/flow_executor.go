@@ -1475,7 +1475,13 @@ func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID
 	// adjudicates it (never coder↔architect peer-to-peer).
 	if s.coderRenegotiatingForRun(parentRunID) {
 		if completed, ok := findFlowNode(nodes, completedNodeID); ok {
-			if canonical, ok2 := agentpack.NormalizeBehaviorID(completed.Behavior); ok2 && canonical == "agent.code" {
+			// run-502144: any agent.* delegate can carry the buffered batch —
+			// the renegotiate_signatures face is offered to contract-phase
+			// legs (the TDD scaffold architect is agent.scaffold), so gating
+			// on agent.code alone stranded its batch forever. Hub/command
+			// nodes stay excluded so a hub settling itself can never consume
+			// the batch it is meant to adjudicate.
+			if canonical, ok2 := agentpack.NormalizeBehaviorID(completed.Behavior); ok2 && strings.HasPrefix(canonical, "agent.") {
 				if hubNode, ok3 := negotiationHubNodeFor(edges, nodes); ok3 {
 					if s.isFlowEngineDriven(parentRunID) {
 						s.setFlowStepStatus(context.Background(), parentRunID, completedNodeID, StepStatusDone)

@@ -699,6 +699,58 @@ func (s *InteractiveService) vibeSuccessorNeedsResume(parentRunID, nodeID string
 	}
 }
 
+// reconcileResumedPredecessorSteps normalizes FAILED/CANCELED step rows that
+// sit strictly upstream of the operator-chosen resume checkpoint. A node only
+// becomes a resume-from target when the flow adjudicated forward past its
+// predecessors — a FAILED stamp left there is provider-kill residue (live
+// run-490265: preflight_contract_plan read FAILED while the resumed debate
+// legs were already running), and later settle/evaluation paths that count
+// FAILED rows re-fail the resumed run. Back/retry edges are excluded — they
+// re-enter nodes, they are not progress. Caller holds no lock.
+func (s *InteractiveService) reconcileResumedPredecessorSteps(parentRunID, from string) {
+	if s == nil || strings.TrimSpace(parentRunID) == "" || strings.TrimSpace(from) == "" {
+		return
+	}
+	s.mu.Lock()
+	rs := s.runs[parentRunID]
+	if rs == nil || !rs.flowEngineDriven {
+		s.mu.Unlock()
+		return
+	}
+	edges := append([]agentpack.FlowEdge(nil), rs.activeFlowEdges...)
+	s.mu.Unlock()
+	preds := map[string]bool{}
+	queue := []string{from}
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		for _, e := range edges {
+			if !strings.EqualFold(strings.TrimSpace(e.Kind), "forward") ||
+				!strings.EqualFold(strings.TrimSpace(e.When), "done") {
+				continue
+			}
+			if strings.TrimSpace(e.To) != cur {
+				continue
+			}
+			pred := strings.TrimSpace(e.From)
+			if pred == "" || pred == from || preds[pred] {
+				continue
+			}
+			preds[pred] = true
+			queue = append(queue, pred)
+		}
+	}
+	for pred := range preds {
+		switch s.lookupFlowStepStatus(parentRunID, pred) {
+		case StepStatusFailed, StepStatusCanceled:
+			s.flowDiagLog(parentRunID, "resume_reconciles_stale_step_fail",
+				"checkpoint sits strictly downstream of this step — its FAILED/CANCELED stamp is kill-residue; normalizing to DONE",
+				"resume_from", from, "predecessor_node_id", pred)
+			s.setFlowStepStatus(context.Background(), parentRunID, pred, StepStatusDone)
+		}
+	}
+}
+
 func (s *InteractiveService) pendingVibeResumeFromNode(parentRunID string) string {
 	if s == nil || strings.TrimSpace(parentRunID) == "" {
 		return ""

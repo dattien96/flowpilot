@@ -101,6 +101,7 @@ func TestBug550_EscalateContinueReparksOnDispatchFailure(t *testing.T) {
 
 	svc.mu.Lock()
 	svc.runs[runID].pendingApprovalID = "appr-stuck" // startTurn → 409 awaiting_user
+	svc.approvals["appr-stuck"] = &approvalRecord{id: "appr-stuck", runID: runID, status: "pending"}
 	svc.mu.Unlock()
 
 	if _, err := svc.resumeFlowWithFeedback(runID, ""); err != nil {

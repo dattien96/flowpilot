@@ -1941,10 +1941,16 @@ func (s *InteractiveService) flushDurableTurnIntents(runID string) {
 	}
 	// Never flush continuation while a durable card is still pending unless we
 	// already recorded a decision for that card (reconcile two-write crash).
+	// run-504394: a dangling id (record gone) is residue, not a pending card —
+	// clear it so the flush is not fenced forever by a surface that cannot be
+	// answered.
 	if (rs.pendingApprovalID != "" || rs.pendingQuestionID != "") &&
 		strings.TrimSpace(rs.pendingResumeDecision) == "" {
-		s.mu.Unlock()
-		return
+		s.clearDanglingGateIDsLocked(rs)
+		if rs.pendingApprovalID != "" || rs.pendingQuestionID != "" {
+			s.mu.Unlock()
+			return
+		}
 	}
 	// CP-51 A1: suppress only a same-turn hub gate reprompt (turn identity from
 	// the deferred gate turn / last turn — never use the marker as the turn

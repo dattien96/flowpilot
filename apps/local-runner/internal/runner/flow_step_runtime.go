@@ -438,6 +438,47 @@ func (s *InteractiveService) unstampHealedFlowChildStepLocked(rs *interactiveRun
 		"node_id", rs.label)
 }
 
+// settleFlowChildStepTerminalLocked resolves a WAITING_USER_APPROVAL mirror
+// when its labelled child leg goes terminal (BUG-288 #22 counterpart for
+// teardown): a leg that is cancelled or failed while its permission/question
+// park is mirrored on the step leaves a phantom wait — the node keeps reading
+// "Waiting: approval" with no card that can ever answer it (live run-502144:
+// the synthesis step sat WAITING minutes after its leg died on a quota kill,
+// and again while the whole run was already dead). Failure/completion paths
+// already stamp their own verdict on the step; this covers the cancel/teardown
+// seams where no verdict is stamped. Same sibling-ownership rule as
+// unstampHealedFlowChildStepLocked: a live same-label leg holding the park
+// keeps the stamp. Caller holds s.mu.
+func (s *InteractiveService) settleFlowChildStepTerminalLocked(rs *interactiveRun, terminal RuntimeWorkflowStepStatus) {
+	if rs == nil || rs.parentRunID == "" || strings.TrimSpace(rs.label) == "" {
+		return
+	}
+	parent := s.runs[rs.parentRunID]
+	if parent == nil || !parent.flowEngineDriven {
+		return
+	}
+	if s.lookupFlowStepStatus(rs.parentRunID, rs.label) != StepStatusWaitingUserApr {
+		return
+	}
+	if s.agentOrchestrator != nil {
+		for _, sibID := range s.agentOrchestrator.listChildren(rs.parentRunID) {
+			sib := s.runs[sibID]
+			if sib == nil || sib == rs || sib.label != rs.label {
+				continue
+			}
+			if sib.pendingApprovalID != "" || sib.pendingQuestionID != "" || sib.decisionCard != nil ||
+				sib.status == RunStatusWaitingUserApr || sib.status == RunStatusWaitingQuestion ||
+				sib.status == RunStatusWaitingApproval {
+				return // a sibling leg owns the live wait
+			}
+		}
+	}
+	s.setFlowStepStatusLocked(context.Background(), rs.parentRunID, rs.label, terminal)
+	s.flowDiagLog(rs.parentRunID, "orphaned_step_wait_terminalized",
+		"step wait stamp outlived its terminal leg; settled to terminal status",
+		"node_id", rs.label, "terminal_status", string(terminal))
+}
+
 // setFlowStepPosture stamps nodeID's OWN actually-resolved provider/model
 // (BUG-228 display follow-up) so the step-timeline UI shows what that node
 // really ran on. Without this, every flow-engine step row stayed blank

@@ -228,3 +228,45 @@ func renderNegotiationBatchPrompt(batch []CoderBatchSignatureRequest) string {
 		"exactly which signatures to revise), or status=approved to reject the batch and resume the flow.")
 	return b.String()
 }
+
+// maybeDispatchNegotiationHubForBufferedBatch routes a buffered renegotiation
+// batch to the declared negotiation hub WITHOUT waiting for the submitter's
+// node to complete. The completion route in advanceOrNotifyHub deadlocks when
+// the submitting leg is itself parked — live run-502144: the TDD leg
+// (agent.scaffold) buffered RaspEngine.h signature rows, then parked on a
+// contract-frozen write permission card; it could never complete, so the
+// batch sat through three renegotiation_recorded rounds with no adjudication.
+// Hub-only routing is preserved: the batch still goes to the hub.inline
+// adjudicator, never peer-to-peer. With no declared negotiation hub the batch
+// stays buffered for the completion route — nothing is silently dropped.
+// Self-gating and idempotent: an empty buffer is a no-op, and consume-once
+// means a racing second caller can never double-dispatch rows.
+func (s *InteractiveService) maybeDispatchNegotiationHubForBufferedBatch(parentRunID string) {
+	if s == nil || strings.TrimSpace(parentRunID) == "" {
+		return
+	}
+	s.mu.Lock()
+	rs := s.runs[parentRunID]
+	if rs == nil || rs.parentRunID != "" || !rs.flowEngineDriven {
+		s.mu.Unlock()
+		return
+	}
+	nodes := append([]agentpack.FlowNode(nil), rs.activeFlowNodes...)
+	edges := append([]agentpack.FlowEdge(nil), rs.activeFlowEdges...)
+	s.mu.Unlock()
+	hubNode, ok := negotiationHubNodeFor(edges, nodes)
+	if !ok {
+		return
+	}
+	batch := s.consumeCoderBatchSignatures(parentRunID)
+	if len(batch) == 0 {
+		return
+	}
+	s.dispatchHubNotifyNodeWithPrompt(parentRunID, hubNode,
+		composeHubNotifyPrompt(hubNode)+renderNegotiationBatchPrompt(batch))
+	s.flowDiagLog(parentRunID, "flow_negotiation_hub_dispatch_on_park",
+		"buffered renegotiation batch routed to negotiation hub while a leg is parked",
+		"hub_node_id", hubNode.ID,
+		"batch_rows", len(batch),
+	)
+}

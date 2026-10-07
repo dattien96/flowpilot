@@ -57,10 +57,19 @@ func (s *InteractiveService) sweepWedgedFlowWork() {
 	var deadDispatchRuns []deadDispatchRun
 
 	now := time.Now().UTC()
+	var clearedIDRuns []string
 	s.mu.Lock()
 	for id, rs := range s.runs {
 		if rs == nil {
 			continue
+		}
+		// (6) dangling gate ids — pendingApprovalID/pendingQuestionID naming a
+		// card record that no longer exists (or already resolved) reads "card
+		// backed" to every check below while nothing can ever answer it. Clear
+		// the residue first so the orphan-wait / orphan-leg evaluations see
+		// the truth (live run-504394).
+		if cleared := s.clearDanglingGateIDsLocked(rs); len(cleared) > 0 {
+			clearedIDRuns = append(clearedIDRuns, id)
 		}
 		// (5) zombie owner-debate claim — parkedNodes still held while the
 		// debate can no longer resolve itself (BUG-589). The dedicated helper
@@ -145,6 +154,20 @@ func (s *InteractiveService) sweepWedgedFlowWork() {
 	}
 	s.mu.Unlock()
 
+	// Persist cleared gate ids — the fields are durable session state, so a
+	// restart must not resurrect the residue (the heal above persists its own
+	// runs; this covers cleared ids on runs that did not heal).
+	for _, id := range clearedIDRuns {
+		s.mu.Lock()
+		rs := s.runs[id]
+		if rs == nil {
+			s.mu.Unlock()
+			continue
+		}
+		snap := sessionStateOf(rs)
+		s.mu.Unlock()
+		_ = s.persistProviderSession(snap)
+	}
 	for _, id := range gateRuns {
 		go s.resumePendingFlowGate(id)
 	}
@@ -165,6 +188,37 @@ func (s *InteractiveService) sweepWedgedFlowWork() {
 // wedgedWaitStaleFor is split out so the grace window stays test-tunable.
 func wedgedWaitStaleFor(rs *interactiveRun, now time.Time) bool {
 	return rs.lastProviderEventAt.IsZero() || now.Sub(rs.lastProviderEventAt) >= wedgedWaitGrace
+}
+
+// clearDanglingGateIDsLocked clears pendingApprovalID/pendingQuestionID whose
+// card record is gone or no longer pending/resolving — residue from a card
+// that was resolved, expired, or never persisted. A dangling id can never be
+// answered, yet every "card backed" check (the orphan sweep, the wedge heal,
+// the durable-intent flush, the startTurn reject) treats the bare id as a
+// live decision surface and strands the run in an unanswerable wait — live
+// run-504394: a leg parked waiting_user_approval with pendingApprovalID set
+// and no record behind it sat ~1h until an operator interrupt.
+// Record create/delete and id set/clear both happen under s.mu, so absence
+// here is authoritative. Caller holds s.mu. Returns the ids it cleared.
+func (s *InteractiveService) clearDanglingGateIDsLocked(rs *interactiveRun) []string {
+	if rs == nil {
+		return nil
+	}
+	live := func(status string) bool { return status == "pending" || status == "resolving" }
+	var cleared []string
+	if id := strings.TrimSpace(rs.pendingApprovalID); id != "" {
+		if rec := s.approvals[id]; rec == nil || !live(rec.status) {
+			rs.pendingApprovalID = ""
+			cleared = append(cleared, "approval:"+id)
+		}
+	}
+	if id := strings.TrimSpace(rs.pendingQuestionID); id != "" {
+		if rec := s.questions[id]; rec == nil || !live(rec.status) {
+			rs.pendingQuestionID = ""
+			cleared = append(cleared, "question:"+id)
+		}
+	}
+	return cleared
 }
 
 // healOrphanedWait returns a waiting_* run to running when no card/id backs

@@ -57,6 +57,7 @@ func TestCA1213_OrphanSweepRefusesWhileParentSurfaceLive(t *testing.T) {
 
 	svc.mu.Lock()
 	svc.runs[parentID].pendingApprovalID = "appr-1"
+	svc.approvals["appr-1"] = &approvalRecord{id: "appr-1", runID: parentID, status: "pending"}
 	svc.mu.Unlock()
 
 	redrived, _ := svc.redriveParkedFlowOrphans(parentID, nil)
@@ -79,6 +80,9 @@ func TestCA1213_ChildWithOwnCardIsNotOrphan(t *testing.T) {
 	child.label = "spec_align"
 	child.status = RunStatusWaitingUserApr
 	child.pendingApprovalID = "appr-child"
+	svc.mu.Lock()
+	svc.approvals["appr-child"] = &approvalRecord{id: "appr-child", runID: child.id, status: "pending"}
+	svc.mu.Unlock()
 	svc.agentOrchestrator.registerChild(parentID, child.id)
 
 	store := svc.workflowStore.(*fakeWorkflowStore)
