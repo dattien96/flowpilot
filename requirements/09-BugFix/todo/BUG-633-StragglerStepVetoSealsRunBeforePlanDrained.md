@@ -4,8 +4,7 @@
 - **Severity:** High — silently ends a multi-task vibe run mid-plan; only
   `POST /workflow-runs/{id}/resume` (operator reopen) recovers it via
   `maybeReparkVibeSprintBoundary`. Nothing self-heals.
-- **Status:** OPEN — recovery path verified live (repark → continue mounts
-  the next sprint); no fix landed.
+- **Status:** FIXED — CA-1236 (2026-10-08): straggler veto now defers the boundary (audit stays PENDING, re-check deferred) instead of returning false so the run seals done
 - **Found:** run-297984 (`vibe-adopt` CP-05, 6-task plan),
   2026-10-06T02:48 — after sprint-3 (Task-053) audit, the run emitted
   `flow_run_complete_begin/done` + `flow_control_done` with

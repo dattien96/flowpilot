@@ -520,7 +520,26 @@ func (o *AgentOrchestrator) pause(parentRunID, reason string) AgentGraphSnapshot
 	return o.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState { st.Status = "paused"; st.GateReason = reason; return st })
 }
 func (o *AgentOrchestrator) resume(parentRunID string) AgentGraphSnapshot {
-	return o.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState { st.Status = "running"; st.GateReason = ""; return st })
+	return o.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
+		// BUG-634 (live run-306526): resume exists to unpark a `paused` or
+		// `stopped` loop — resumePendingLoopWork is the real discharge path
+		// behind it (restart-intent drain, fence release). A `blocked` loop
+		// is a durable decision-form park (escalate, resume-confirm, cap)
+		// with NO discharge under resume: flipping it to running wiped
+		// GateReason while the freeze stayed armed, desyncing every surface
+		// and making agent-loop/amend unreachable (flow_not_blocked) on
+		// exactly the drift park it exists to discharge. Terminal/escalation
+		// states likewise have no resume path — same guard as transition's
+		// `rejected` arm, minus `stopped`/`paused` which resume legitimately
+		// revives (CA-1090 crash-stop restart drain depends on it).
+		switch st.Status {
+		case "blocked", "done", LoopStatusTournamentEscalation:
+			return st
+		}
+		st.Status = "running"
+		st.GateReason = ""
+		return st
+	})
 }
 func (o *AgentOrchestrator) stop(parentRunID string) AgentGraphSnapshot {
 	return o.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState { st.Status = "stopped"; st.GateReason = "stopped"; return st })
@@ -1043,6 +1062,20 @@ func parseReviewOutcomeInput(args map[string]any) (ReviewOutcomeInput, error) {
 			}
 			row.Note, _ = m["note"].(string)
 			in.Verdicts = append(in.Verdicts, row)
+		}
+	}
+	// BUG-645 (live run-523131, evt-527258): the envelope must agree with
+	// the per-AC rows — status=approved beside a fail/blocked verdict read
+	// "not reviewable" yet routed "passed" (fail-closed verdicts silently
+	// inverted). Per-AC verdicts are the truth; reject the mixed payload so
+	// the reviewer reprompts coherently. Only the approved envelope is
+	// enforced — changes_requested/blocked are the stricter direction and
+	// never invert a failing row into a pass.
+	if in.Status == "approved" {
+		for _, row := range in.Verdicts {
+			if row.Verdict == "fail" || row.Verdict == "blocked" {
+				return in, fmt.Errorf("submit_review_outcome: status=approved inconsistent with verdicts[%q].verdict=%q — per-AC verdicts are the truth; use changes_requested or blocked", row.ACID, row.Verdict)
+			}
 		}
 	}
 	return in, nil

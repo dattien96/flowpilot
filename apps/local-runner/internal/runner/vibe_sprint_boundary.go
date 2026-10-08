@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 
 	"flowpilot-runner/internal/workingmode"
@@ -129,8 +130,61 @@ func (s *InteractiveService) maybeAutoAdvanceVibeSprintBoundary(ctx context.Cont
 	// agent.code leg DONE, and no other sprint step still RUNNING. Called
 	// before s.mu — both helpers take it internally; DONE/open-issue state is
 	// terminal so the check cannot be raced into a false pass.
-	if !s.vibeSprintEvidenceComplete(parentRunID) ||
-		s.hasRunningSprintStep(parentRunID, append([]string{auditNodeID}, settleExcludes...)...) {
+	vetoed := !s.vibeSprintEvidenceComplete(parentRunID) ||
+		s.hasRunningSprintStep(parentRunID, append([]string{auditNodeID}, settleExcludes...)...)
+	if vetoed {
+		// BUG-633/BUG-648: a vetoed sprint boundary is NOT "plan drained" —
+		// the audit-settle callers treat false as terminal and seal the run
+		// via flow_run_complete, so a veto must own the outcome instead of
+		// falling through (live run-297984 sealed at task 3/6 on a ~9s
+		// straggler window; run-523131 checkpointed Task-112 with its tdd
+		// leg FAILED). Both are veto-on-unverifiable-sprint shapes; only the
+		// straggler is transient.
+		s.mu.Lock()
+		vibeParent := false
+		if rs := s.runs[parentRunID]; rs != nil {
+			vibeParent = rs.parentRunID == "" && inVibeSprintTopology(rs) && len(rs.vibeTaskPlan) > 0
+		}
+		s.mu.Unlock()
+		if vibeParent && s.hasRunningSprintStep(parentRunID, append([]string{auditNodeID}, settleExcludes...)...) {
+			// Straggler still in flight (BUG-633): defer — the audit returns
+			// to PENDING and the straggler's terminal settle re-drives the
+			// flow, re-dispatching this audit for a fresh evaluation (the
+			// deferred-boundary semantics maybeReparkVibeSprintBoundary uses
+			// for the resume/reopen path).
+			s.flowDiagLog(parentRunID, "vibe_sprint_boundary_deferred",
+				"sprint step still running at audit settle; deferring boundary until it lands",
+				"audit_node", auditNodeID,
+			)
+			if s.isFlowEngineDriven(parentRunID) {
+				s.setFlowStepStatus(ctx, parentRunID, auditNodeID, StepStatusPending)
+			}
+			return true
+		}
+		if vibeParent {
+			// Write-path evidence missing with nothing in flight (BUG-648 —
+			// a FAILED or never-completed tdd/coder/validate leg): hold the
+			// sprint open on an operator escalation instead of silently
+			// checkpointing a task that produced no verified output.
+			s.flowDiagLog(parentRunID, "vibe_sprint_boundary_escalated",
+				"sprint write-path evidence incomplete at audit settle; escalating instead of sealing",
+				"audit_node", auditNodeID,
+			)
+			if s.isFlowEngineDriven(parentRunID) {
+				s.setFlowStepStatus(ctx, parentRunID, auditNodeID, StepStatusWaitingUserApr)
+			}
+			s.stampLastEscalatedInlineNode(parentRunID, auditNodeID)
+			if auditCtxCancelled(ctx, parentRunID, auditNodeID, "boundary_veto_escalate") {
+				return true
+			}
+			if _, err := s.applyFlowControl(parentRunID, FlowControlInput{
+				Status:  "escalate",
+				Summary: "Sprint audit vetoed: write-path legs did not all reach DONE — escalating instead of silently skipping the task.",
+			}); err != nil {
+				log.Printf("[flow-executor] audit: boundary-veto escalate failed: %v", err)
+			}
+			return true
+		}
 		return false
 	}
 	s.mu.Lock()

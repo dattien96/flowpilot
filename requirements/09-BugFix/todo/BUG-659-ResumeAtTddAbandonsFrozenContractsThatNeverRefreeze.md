@@ -4,8 +4,7 @@
 - **Severity:** Critical — turns a routine quota resume into a permanent
   gate wall: coder turn hits `flow_gate_violation` "no frozen contract
   found for step" with no operator-facing remedy documented.
-- **Status:** OPEN (captured live, run-523131; abandonment event at
-  01:04:09Z on contracts `50c2b302`/`9a5ad57f`, violation evt-594573)
+- **Status:** FIXED — CA-1236 (2026-10-08): forceStartVibeSprintAtTdd no longer abandons the frozen contract; gate reports abandoned-but-existing contracts honestly
 
 ## Evidence chain (all live)
 

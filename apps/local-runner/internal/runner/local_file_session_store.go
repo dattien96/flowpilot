@@ -287,6 +287,10 @@ type ndjsonSessionRecord struct {
 	// BUG-1182: per-gated-entity mount ledger — restart must not drop it or
 	// resumed mounts re-spend a fresh per-entity budget.
 	VibeDebateMountsByEntity map[string]int `json:"vibe_debate_mounts_by_entity,omitempty"`
+	// BUG-652: per-gated-entity last-resolved-verdict signature ledger —
+	// restart must not drop it or a resumed run loses the same-verdict
+	// circuit breaker mid-loop and debates the identical card forever.
+	VibeDebateVerdictSigs map[string]string `json:"vibe_debate_verdict_sigs,omitempty"`
 	// VibeTddSigAttestedTask is the BUG-630 provenance flag: the Task-NNN
 	// whose tdd-signatures.md section this run's scaffold leg was observed
 	// writing. Restart must not drop it or a mid-sprint restart re-blocks
@@ -949,6 +953,7 @@ func sessionStateFromRecord(r ndjsonSessionRecord) ProviderSessionState {
 		VibeDeferredFlowStarts:             append([]VibeDeferredFlowStart(nil), r.VibeDeferredFlowStarts...),
 		VibeDebateMounts:                   r.VibeDebateMounts,
 		VibeDebateMountsByEntity:           copyStringIntMap(r.VibeDebateMountsByEntity),
+		VibeDebateVerdictSigs:              copyStringMap(r.VibeDebateVerdictSigs),
 		VibeTddSigAttestedTask:             r.VibeTddSigAttestedTask,
 		PendingBatchSignatureByStep:        copyBatchSignatureMap(r.PendingBatchSignatureByStep),
 		FlowStartGitHead:                   r.FlowStartGitHead,
@@ -1492,6 +1497,7 @@ func sessionRecordFrom(s ProviderSessionState) ndjsonSessionRecord {
 		VibeDeferredFlowStarts:             append([]VibeDeferredFlowStart(nil), s.VibeDeferredFlowStarts...),
 		VibeDebateMounts:                   s.VibeDebateMounts,
 		VibeDebateMountsByEntity:           copyStringIntMap(s.VibeDebateMountsByEntity),
+		VibeDebateVerdictSigs:              copyStringMap(s.VibeDebateVerdictSigs),
 		VibeTddSigAttestedTask:             s.VibeTddSigAttestedTask,
 		PendingBatchSignatureByStep:        copyBatchSignatureMap(s.PendingBatchSignatureByStep),
 		FlowStartGitHead:                   s.FlowStartGitHead,

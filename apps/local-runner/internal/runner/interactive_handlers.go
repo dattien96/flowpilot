@@ -2568,6 +2568,29 @@ func (s *InteractiveService) handleAmendFlow(w http.ResponseWriter, r *http.Requ
 		writeInteractiveError(w, newAPIErr(http.StatusUnprocessableEntity, "continue_flow_failed", err.Error()))
 		return
 	}
+	// BUG-646 (live run-523131 leg run-525391): amend minted the wider
+	// contract and resumed the parent loop, but a parked leg's
+	// pendingFlowGateSettle stayed armed — the leg sat
+	// waiting_user_approval until a second, manual agent-loop/continue.
+	// A successful amend IS the gate decision: re-run each gated leg's
+	// deferred gate pass so the owed settle discharges (pass → cohort join
+	// / step DONE through the normal completion path; still-out-of-scope →
+	// the gate re-parks with a fresh card). Cohort members settle through
+	// their join barrier inside the same path — no special-casing.
+	s.mu.Lock()
+	var gatedLegs []string
+	if rs2 := s.runs[runID]; rs2 != nil && rs2.pendingFlowGateSettle {
+		gatedLegs = append(gatedLegs, runID)
+	}
+	for _, cid := range s.agentOrchestrator.listChildren(runID) {
+		if c := s.runs[cid]; c != nil && c.pendingFlowGateSettle {
+			gatedLegs = append(gatedLegs, cid)
+		}
+	}
+	s.mu.Unlock()
+	for _, legID := range gatedLegs {
+		s.resumePendingFlowGate(legID)
+	}
 	snap.UnamendablePaths = unamendable
 	writeInteractiveJSON(w, http.StatusOK, snap)
 }

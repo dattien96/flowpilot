@@ -4,7 +4,7 @@
 - **Severity:** Critical — the run cannot be resumed by any operator
   route (`/resume`, `continue`, feedback) while a zombie `running`
   stamp exists; only settling the dead leg record unblocks it.
-- **Status:** OPEN (captured live, run-523131)
+- **Status:** FIXED — CA-1236 (2026-10-08): resume-confirm gate checks live work (turnInFlight/agentActivity) instead of a stale running child status
 
 ## Evidence chain (all live)
 

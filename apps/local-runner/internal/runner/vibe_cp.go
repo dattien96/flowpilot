@@ -215,6 +215,10 @@ func (s *InteractiveService) takeNextVibeSprintLocked(rs *interactiveRun) vibeSp
 		// looped seven debates on one child).
 		rs.vibeDebateMounts = 0
 		rs.vibeDebateMountsByEntity = nil
+		// BUG-652: verdict-signature ledger is per-sprint too — a new task's
+		// debate must not inherit the previous task's signatures or a
+		// coincidentally-identical verdict would false-trigger the breaker.
+		rs.vibeDebateVerdictSigs = nil
 		// Every Task owns its own defaultVibeTaskRoundCap budget (vibe
 		// contract): the shared loop counter must reset with the take or
 		// sprint N's consumed rounds starve sprint N+1 (live run-262417
@@ -1145,6 +1149,28 @@ func (s *InteractiveService) restoreVibeFlowAfterDebate(parentRunID string) bool
 	rs.vibeParkedGatedRunIDs = nil
 	rs.vibeDeferredFlowStarts = nil
 	verdicts := append([]VerdictRow(nil), rs.lastFlowVerdicts...)
+	// BUG-652: same-verdict circuit breaker. If the verdict signature the
+	// debate just produced for a gated entity is identical to the signature
+	// its PREVIOUS debate resolved with, the reprompt round changed nothing
+	// and another cohort can only conclude the same thing — escalate to a
+	// human instead of arming another reprompt→gate→debate loop (live
+	// run-523131: three identical flag-requirement-change rounds).
+	repeatEntity := ""
+	if sig := vibeDebateVerdictSignature(verdicts); sig != "" {
+		if rs.vibeDebateVerdictSigs == nil {
+			rs.vibeDebateVerdictSigs = map[string]string{}
+		}
+		for _, gid := range gatedIDs {
+			if gid == "" || gid == parentRunID {
+				continue
+			}
+			key := s.vibeDebateEntityKeyLocked(gid)
+			if rs.vibeDebateVerdictSigs[key] == sig {
+				repeatEntity = key
+			}
+			rs.vibeDebateVerdictSigs[key] = sig
+		}
+	}
 	// The gate diverted each gated child's node completion into the debate
 	// before tryAdvanceFlowFromNode could fire its done-edge — the debate then
 	// ran on the parent hub, so the child's own session never saw the verdict.
@@ -1160,6 +1186,9 @@ func (s *InteractiveService) restoreVibeFlowAfterDebate(parentRunID string) bool
 	var reprompts []gatedReprompt
 	var childSnaps []ProviderSessionState
 	for _, gid := range gatedIDs {
+		if repeatEntity != "" {
+			break
+		}
 		if gid == "" || gid == parentRunID {
 			continue
 		}
@@ -1192,6 +1221,25 @@ func (s *InteractiveService) restoreVibeFlowAfterDebate(parentRunID string) bool
 	_ = s.persistProviderSession(parentSnap)
 	for _, snap := range childSnaps {
 		_ = s.persistProviderSession(snap)
+	}
+	if repeatEntity != "" {
+		// BUG-652: identical verdict on the same gated entity — escalate to
+		// a human decision instead of reprompting into the identical gate.
+		s.flowDiagLog(parentRunID, "vibe_debate_same_verdict_escalate",
+			"owner debate produced the identical verdict signature twice on the same gated entity; escalating to human",
+			"entity", repeatEntity,
+		)
+		s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
+			st.Status = "blocked"
+			st.BlockReason = "cap"
+			st.GateReason = "Owner debate repeated the identical verdict on the same gated card — human decision required (same-verdict circuit breaker)."
+			return st
+		})
+		// The repeated verdict is an adjudication loop, not stuck work — a
+		// tournament rescue would spawn yet another cohort re-arguing the
+		// same card. The correct surface is a human decision park.
+		s.parkFlowForAwaitingUser(parentRunID)
+		return true
 	}
 	if len(reprompts) == 0 {
 		// No gated child recorded (drift-only debate on the hub, or the child

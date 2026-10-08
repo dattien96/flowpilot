@@ -4,7 +4,7 @@
 - **Severity:** High — a transient quota reset (~1h) becomes a permanent
   wedge: the cohort seats are marked FAILED (unrecoverable), the barrier
   never joins, and each continue only re-reads the same dead state.
-- **Status:** OPEN (captured live, run-523131)
+- **Status:** FIXED — CA-1236 (2026-10-08): owner-fail retry ladder runs when both owners are terminal-failed despite a stale RUNNING synthesis step; continue on dead synthesis routes to the settle ladder
 
 ## Evidence chain (all live)
 

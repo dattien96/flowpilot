@@ -150,8 +150,11 @@ func TestRun198699ContinueDelegateWithNoChildSpawns(t *testing.T) {
 			if planWriterChildren != 1 {
 				t.Fatalf("%s: plan_writer child count = %d, want 1 (continue on a never-spawned reinvoke delegate must spawn)", pk, planWriterChildren)
 			}
-			if got := flowStepStatus(t, svc, runID, "plan_writer"); got != StepStatusRunning {
-				t.Fatalf("%s: plan_writer step = %v, want RUNNING (continue re-entry)", pk, got)
+			// The spawned leg's step mirror is transient: RUNNING while the turn
+			// is in flight, DONE once the leg's completion settles the mirror
+			// (BUG-647). Either stamp proves the continue re-entry dispatched.
+			if got := flowStepStatus(t, svc, runID, "plan_writer"); got != StepStatusRunning && got != StepStatusDone {
+				t.Fatalf("%s: plan_writer step = %v, want RUNNING|DONE (continue re-entry)", pk, got)
 			}
 			select {
 			case req := <-ch:

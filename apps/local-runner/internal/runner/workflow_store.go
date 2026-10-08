@@ -206,6 +206,10 @@ type ProviderSessionState struct {
 	// BUG-1182: per-gated-entity mount ledger — the cap is per entity, so
 	// a restart must not drop it or resumed mounts re-spend a fresh budget.
 	VibeDebateMountsByEntity map[string]int `json:"vibeDebateMountsByEntity,omitempty"`
+	// BUG-652: per-gated-entity last-resolved-verdict signature ledger —
+	// mirrors ndjsonSessionRecord's vibe_debate_verdict_sigs; a restart
+	// must not drop the same-verdict circuit breaker mid-loop.
+	VibeDebateVerdictSigs map[string]string `json:"vibeDebateVerdictSigs,omitempty"`
 	// VibeTddSigAttestedTask mirrors ndjsonSessionRecord's
 	// vibe_tdd_sig_attested_task (BUG-630): the Task-NNN whose
 	// tdd-signatures.md section this run's scaffold leg wrote — file-based

@@ -61,7 +61,12 @@ func ca1096Setup(t *testing.T, openIssues int, coderDone bool) (*InteractiveServ
 	})
 	svc.reseedFlowStepRuntime(parent.RunID, nodes)
 	if coderDone {
+		// BUG-648: a "completed sprint" means the whole write/verify path
+		// reached DONE — coder alone is not evidence (a FAILED or skipped
+		// tdd/validate leg must veto the audit exactly like a missing coder).
+		svc.setFlowStepStatus(context.Background(), parent.RunID, "tdd", StepStatusDone)
 		svc.setFlowStepStatus(context.Background(), parent.RunID, "coder", StepStatusDone)
+		svc.setFlowStepStatus(context.Background(), parent.RunID, "validate", StepStatusDone)
 	}
 	return svc, parent.RunID, nodes, edges, auditNode
 }

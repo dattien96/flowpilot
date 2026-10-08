@@ -1649,8 +1649,18 @@ func (s *InteractiveService) vibeSprintEvidenceComplete(parentRunID string) bool
 		// finds zero agent.code nodes and the evidence check vacuously
 		// passes, letting audit auto-finalize mid-sprint (live run-150388:
 		// boundary advanced to Task-033 with sprint-2 coder never run).
+		// BUG-648: the write/verify path is the whole evidence set — a
+		// FAILED tdd (agent.scaffold) or validate (command.validate) leg is
+		// not DONE, so it must veto exactly like an unfinished coder (live
+		// run-523131: tdd FAILED on provider limit, sprint still closed done
+		// and the task checkpoint silently skipped zero output).
 		for _, n := range vibeSprintTopologyNodes(rs) {
-			if c, ok := agentpack.NormalizeBehaviorID(n.Behavior); ok && c == string(BehaviorAgentCode) {
+			c, ok := agentpack.NormalizeBehaviorID(n.Behavior)
+			if !ok {
+				continue
+			}
+			switch c {
+			case string(BehaviorAgentCode), string(BehaviorAgentScaffold), string(BehaviorCommandValidate):
 				coderIDs = append(coderIDs, n.ID)
 			}
 		}
@@ -2375,11 +2385,67 @@ func (s *InteractiveService) runContractFreezeNode(ctx context.Context, parentRu
 	// plan_synthesis WAITING (consumed CA-749 park) so the step timeline
 	// tracks the code phase. No-op unless freeze reads DONE.
 	s.settlePlanSynthesisAfterFreezeDone(parentRunID)
+	// BUG-644: the stored contract is the single source of truth — the diag
+	// record must carry ITS declared_paths verbatim (not the planner's prose
+	// claims), and every prose-claimed path normalization dropped must be
+	// audited or the two records silently diverge (run-523131 c86945a3).
+	emitFreezeSummaryMismatch(s, parentRunID, node.ID, rec.ContractID, droppedFreezePaths(workspace, draft.DeclaredPaths, rec.DeclaredPaths))
 	s.flowDiagLog(parentRunID, "flow_contract_frozen", "froze preflight contract before writer dispatch",
 		"node_id", node.ID, "coder_node_id", writerNode.ID, "contract_id", rec.ContractID, "version", rec.Version,
+		"declared_paths", strings.Join(rec.DeclaredPaths, ","),
 	)
 
 	return s.advanceAfterContractFreeze(ctx, parentRunID, edges, nodes, node, writerNode, rec, path, direct, plannerResult)
+}
+
+// droppedFreezePaths (BUG-644) reports which planner-declared paths did not
+// survive into the stored contract — normalization drops doc/audit/glob
+// noise by design, but the drop must be auditable or the freeze note and
+// the JSON diverge silently. Reuses NormalizeDeclaredCodePaths per entry so
+// the drop predicate can never drift from the mint path: at this point no
+// entry can escape-workspace (a batch escape would have failed the freeze),
+// so a per-entry error means "not a concrete code target". Deduped and
+// already-stored entries are not drops.
+func droppedFreezePaths(workspace string, draftPaths, storedPaths []string) []string {
+	stored := make(map[string]bool, len(storedPaths))
+	for _, p := range storedPaths {
+		stored[p] = true
+	}
+	seen := make(map[string]bool, len(draftPaths))
+	var dropped []string
+	for _, raw := range draftPaths {
+		trimmed := strings.TrimSpace(raw)
+		if trimmed == "" {
+			continue
+		}
+		one, err := changecontract.NormalizeDeclaredCodePaths(workspace, []string{raw})
+		if err != nil || len(one) == 0 {
+			if !seen[trimmed] {
+				dropped = append(dropped, trimmed)
+				seen[trimmed] = true
+			}
+			continue
+		}
+		if seen[one[0]] {
+			continue
+		}
+		seen[one[0]] = true
+		if !stored[one[0]] {
+			dropped = append(dropped, trimmed)
+		}
+	}
+	return dropped
+}
+
+// emitFreezeSummaryMismatch writes the freeze_summary_mismatch diag event
+// once per non-empty drop set — the divergence record adjudications read.
+func emitFreezeSummaryMismatch(s *InteractiveService, parentRunID, nodeID, contractID string, dropped []string) {
+	if len(dropped) == 0 {
+		return
+	}
+	s.flowDiagLog(parentRunID, "freeze_summary_mismatch",
+		"planner draft declared path(s) not stored in the frozen contract — the contract JSON is the binding scope",
+		"node_id", nodeID, "contract_id", contractID, "dropped_paths", strings.Join(dropped, ","))
 }
 
 // advanceFlowThroughFreezeChain dispatches each intermediate context.produce

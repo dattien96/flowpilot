@@ -4,7 +4,7 @@
 - **Severity:** High — the operator's feedback is acknowledged by the
   ledger yet no edge fires; the run sits "running" with no work, looking
   alive but dead.
-- **Status:** OPEN (captured live, run-523131, parent turn 14:30–14:31Z)
+- **Status:** FIXED — CA-1236 (2026-10-08): resume-with-feedback arms lastFlowControlTurnID; completion without outcome reprompts once then escalates
 
 ## Evidence chain (all live)
 

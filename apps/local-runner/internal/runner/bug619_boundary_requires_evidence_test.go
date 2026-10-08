@@ -39,11 +39,22 @@ func TestVibeSprintBoundaryRefusesUnfinishedLegs(t *testing.T) {
 	}
 	// Sprint-2 coder never ran → its step row is PENDING. The boundary must
 	// refuse to advance — pre-fix it stamped audit DONE and armed the
-	// next-sprint start.
-	if svc.maybeAutoAdvanceVibeSprintBoundary(context.Background(), "run-hub-619", "audit") {
-		t.Fatal("boundary advanced with coder PENDING — BUG-619 repro")
+	// next-sprint start. BUG-648: the veto OWNS the outcome — nothing is
+	// running, so the run escalates (blocked, audit WAITING_USER) instead of
+	// silently falling through to flow_run_complete or advancing.
+	if !svc.maybeAutoAdvanceVibeSprintBoundary(context.Background(), "run-hub-619", "audit") {
+		t.Fatal("evidence veto must own the outcome — falling through seals the run mid-plan (BUG-648)")
 	}
 	if got := svc.lookupFlowStepStatus("run-hub-619", "audit"); got == StepStatusDone {
 		t.Fatalf("audit = %q — boundary stamped DONE on unproven sprint", got)
+	}
+	svc.mu.Lock()
+	idx := svc.runs["run-hub-619"].vibeSprintIndex
+	svc.mu.Unlock()
+	if idx != 2 {
+		t.Fatalf("checkpoint must not advance on unproven sprint — index=%d want 2", idx)
+	}
+	if loop := svc.agentOrchestrator.loopStateFor("run-hub-619"); loop.Status != "blocked" {
+		t.Fatalf("unproven sprint must escalate the run blocked, got %q", loop.Status)
 	}
 }

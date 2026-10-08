@@ -4,7 +4,7 @@
 - **Severity:** High — interrupting a leg is a one-way door; there is no
   operator or engine path that clears the fence on the leg itself, so
   the leg is permanently dead weight stamped `running`/`cancelled`.
-- **Status:** OPEN (captured live, run-523131, leg run-584652)
+- **Status:** FIXED — CA-1236 (2026-10-08): leg stop fence released at authorized mint seams: scheduleChildTurn, startTurnClearingIntent, deliverPendingRestart
 
 ## Evidence chain (all live)
 

@@ -49,6 +49,10 @@ func TestCA814_VibeAuditMissingFeatureKeyAutoFinalizes(t *testing.T) {
 	svc.mu.Unlock()
 	svc.agentOrchestrator.setLoop(parent.RunID, AgentLoopState{Status: "running", Cap: 3, Mode: "explicit"})
 	svc.reseedFlowStepRuntime(parent.RunID, nodes)
+	// BUG-648: the fixture's declared command.validate leg is part of the
+	// write path — a sprint whose validate never ran is incomplete evidence.
+	// Stamp it DONE so this test isolates the missing-feature-key path.
+	svc.setFlowStepStatus(context.Background(), parent.RunID, "validate", StepStatusDone)
 	svc.runAuditNode(context.Background(), parent.RunID, edges, nodes, auditNode, "snake tests green")
 	loop := svc.agentOrchestrator.loopStateFor(parent.RunID)
 	if loop.Status == "blocked" {
@@ -127,6 +131,7 @@ func TestCA814_VibeRetryDoesNotReparkMissingKey(t *testing.T) {
 		Cap:        3, Mode: "explicit",
 	})
 	svc.reseedFlowStepRuntime(parent.RunID, nodes)
+	svc.setFlowStepStatus(context.Background(), parent.RunID, "validate", StepStatusDone)
 	svc.setFlowStepStatus(context.Background(), parent.RunID, "audit", StepStatusWaitingUserApr)
 	if _, err := svc.resumeFlowWithFeedback(parent.RunID, ""); err != nil {
 		t.Fatalf("retry: %v", err)

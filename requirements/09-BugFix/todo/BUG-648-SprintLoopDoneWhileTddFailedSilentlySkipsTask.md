@@ -4,9 +4,7 @@
 - **Severity:** Critical — the sprint ledger records a task as done that
   produced nothing; every downstream task builds on a hole. This is the
   strongest silent-skip defect observed.
-- **Status:** OPEN (captured live, run-523131; related BUG-402
-  false-done sprint family — same symptom class, different mechanism:
-  no-handoff vs task-chain checkpoint advance)
+- **Status:** FIXED — CA-1236 (2026-10-08): sprint evidence completeness now requires tdd/coder/validate DONE; failed evidence escalates instead of sealing the boundary
 
 ## Evidence chain (all live)
 

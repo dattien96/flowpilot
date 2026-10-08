@@ -4,7 +4,7 @@
 - **Severity:** Medium — amend looks successful but silently leaves the
   flow parked; the run shows "running" with no leg activity until an
   operator notices.
-- **Status:** OPEN (captured live, run-523131, leg run-525391)
+- **Status:** FIXED — CA-1236 (2026-10-08): successful amend discharges pendingFlowGateSettle via resumePendingFlowGate for gated legs
 
 ## Evidence chain (all live)
 

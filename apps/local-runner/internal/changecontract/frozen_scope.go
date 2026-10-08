@@ -83,6 +83,12 @@ func RunnerLedgerBookkeepingPaths() []string {
 		path.Join(".flowpilot", "ledger-needs-update"),
 		path.Join(".flowpilot", "catalog", "features.ndjson"),
 		path.Join(".flowpilot", "gate-metrics.ndjson"),
+		// BUG-636: adjudications.ndjson is appended mid-turn by
+		// vibe_adjudication.go inside the diff window the frozen-scope gate
+		// observes — without the exemption the engine flags its own
+		// adjudication ledger as scope drift on every sprint that ran
+		// debates/verdicts.
+		path.Join(".flowpilot", "adjudications.ndjson"),
 	}
 }
 

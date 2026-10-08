@@ -4,7 +4,7 @@
 - **Severity:** Medium — every leg downstream plans and gates against the
   JSON, but humans/adjudications read the prose note; divergence makes
   audit evidence untrustworthy.
-- **Status:** OPEN (captured live, run-523131)
+- **Status:** FIXED — CA-1236 (2026-10-08): CMakeLists.txt/*.cmake reclassified doc->code in IsDocOrAuditFile; freeze emits freeze_summary_mismatch diag when draft paths drop; frozen event carries declared_paths
 
 ## Evidence chain (all live)
 

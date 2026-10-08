@@ -1354,6 +1354,7 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 		vibeDeferredFlowStarts: append([]VibeDeferredFlowStart(nil), st.VibeDeferredFlowStarts...),
 		vibeDebateMounts:       st.VibeDebateMounts,
 		vibeDebateMountsByEntity: copyStringIntMap(st.VibeDebateMountsByEntity),
+		vibeDebateVerdictSigs:   copyStringMap(st.VibeDebateVerdictSigs),
 		vibeTddSigAttestedTask: st.VibeTddSigAttestedTask,
 		// BUG-478: parked merge card + patch snapshots were RAM-only — a
 		// restart dropped every actionable alternate.
@@ -1417,6 +1418,7 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 		rs.vibeDeferredFlowStarts = nil
 		rs.vibeDebateMounts = 0
 		rs.vibeDebateMountsByEntity = nil
+		rs.vibeDebateVerdictSigs = nil
 		rs.vibeDebateMountInFlight = false
 		rs.vibeSprintBoundaryPending = false
 		rs.vibeResumeConfirm = false
@@ -2327,6 +2329,12 @@ func (s *InteractiveService) startTurnClearingIntent(runID, stepID, prompt, kind
 		}
 	}
 	s.mu.Unlock()
+
+	// BUG-657: a durable intent claimed on a leg whose own run_stop fence is
+	// armed (Interrupt keys the leg id) must release it before startTurn —
+	// the claim IS the authorized follow-up; otherwise every reprompt dies at
+	// the send CAS with "turn cancelled before send (run stop fence)".
+	s.releaseHubStopFenceForFollowUp(context.Background(), runID)
 
 	// Deterministic key so a crash after accept + restart cannot open a second
 	// provider turn for the same intent generation.

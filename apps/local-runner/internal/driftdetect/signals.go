@@ -106,7 +106,7 @@ func normalizeForMatch(message string) string {
 // that ran the oracle suite GREEN (TestsGreen) is completion-verification
 // evidence, not drift — "zero delta because the work was already done".
 func checkZeroDeltaProgress(current TurnSummary) bool {
-	return current.TokensConsumed > zeroDeltaTokenGuard && len(current.FilesChanged) == 0 && !current.TestsGreen
+	return current.TokensConsumed > zeroDeltaTokenGuard && len(current.FilesChanged) == 0 && !current.TestsGreen && !current.NonWritingNode
 }
 
 // zeroDeltaTokenGuard is the CP-23 R-2 minimum token threshold ("> 2000

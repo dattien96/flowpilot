@@ -5,8 +5,7 @@
   2+ owner legs + synthesis) and can outlast the human attending; the
   loop only broke when the operator repaired the underlying contract
   binding (BUG-651) out-of-band.
-- **Status:** OPEN (captured live, run-523131, Task-113: rounds 1–3
-  identical card + identical `flag-requirement-change` verdict)
+- **Status:** FIXED — CA-1236 (2026-10-08): per-entity verdict-signature circuit breaker in restoreVibeFlowAfterDebate parks the loop for a human on identical verdicts (durable VibeDebateVerdictSigs)
 
 ## Evidence chain (all live)
 

@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"flowpilot-runner/internal/agentpack"
 	"flowpilot-runner/internal/changecontract"
@@ -843,14 +844,26 @@ func (s *InteractiveService) maybeParkVibeResumeConfirm(parentRunID string) {
 	// children around while the next sprint's children are live, so
 	// pendingVibeResumeFromNode can otherwise resurrect a stale "Resume from
 	// tdd?" card and cancel the running sprint on reopen.
+	now := time.Now().UTC()
 	for _, child := range s.runs {
 		if child == nil || child.parentRunID != parentRunID {
 			continue
 		}
 		switch child.status {
-		case RunStatusRunning, RunStatusWaitingApproval, RunStatusWaitingQuestion:
+		case RunStatusWaitingApproval, RunStatusWaitingQuestion:
 			s.mu.Unlock()
 			return
+		case RunStatusRunning:
+			// BUG-656 (live run-523131): a running stamp whose turn died at
+			// provider-limit keeps the parent cancelled forever — the stamp
+			// alone is not liveness. A real running leg owns an in-flight
+			// turn or emitted provider traffic inside the wedge bound; a
+			// silent stamp older than that is dead weight and must not hold
+			// the resume-confirm gate (the settle sweeps own the stamp).
+			if childRunningLegIsLiveLocked(child, now) {
+				s.mu.Unlock()
+				return
+			}
 		}
 	}
 	s.mu.Unlock()
@@ -888,6 +901,33 @@ func (s *InteractiveService) maybeParkVibeResumeConfirm(parentRunID string) {
 	s.emitAgentGraph(parentRunID, snap)
 	s.markRunRealtimeDirty(parentRunID)
 	go s.persistParentSession(parentRunID)
+}
+
+// childRunningLegIsLiveLocked reports whether a `running`-stamped child leg
+// has a real driver behind the stamp: an in-flight turn, or provider
+// activity inside the wedge bound (the spawn→turn-start dispatch window).
+// A leg stamped running with neither is a dead stamp — provider-limit kills
+// can orphan it before the settle lands (BUG-647 class) — and must not
+// count as "live child work" for resume-confirm gating. Unknown age fails
+// closed (treated live) — exposing a resume gate that could cancel real
+// work is worse than deferring the card. Caller holds s.mu.
+func childRunningLegIsLiveLocked(child *interactiveRun, now time.Time) bool {
+	if child.turnInFlight {
+		return true
+	}
+	last := child.lastProviderEventAt
+	if last.IsZero() {
+		// Never emitted — age from createdAt so a just-spawned leg still
+		// counts as live across its dispatch window.
+		if t, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(child.createdAt)); err == nil {
+			last = t
+		} else if t, err := time.Parse(time.RFC3339, strings.TrimSpace(child.createdAt)); err == nil {
+			last = t
+		} else {
+			return true // unparseable age — fail closed
+		}
+	}
+	return now.Sub(last) < vibeDebateTriggerWedgeBound
 }
 
 // forceStartVibeSprintAtTdd starts (or restarts) vibe-sprint at tdd.
@@ -935,7 +975,14 @@ func (s *InteractiveService) forceStartVibeSprintAtTdd(parentRunID string) bool 
 		st.ActiveNode = ""
 		return st
 	})
-	abandonActiveFrozenContractsForRun(cwd, parentRunID, "vibe-sprint resume at tdd")
+	// BUG-659 (live run-523131, sprint-4): do NOT abandon the sprint's frozen
+	// contracts here — resume enters at "tdd", and the lifecycle:once
+	// preflight_contract_freeze node is already DONE, so nothing ever
+	// re-freezes. Abandoning orphaned every downstream writer on "no frozen
+	// contract found" until the operator hand-appended reactivation rows.
+	// The abandon-then-refreeze contract belongs to the NEW-sprint path
+	// (maybeStartNextVibeSprint / continueVibeSprintBoundary), which does
+	// traverse the freeze node.
 	stampVibeTaskInProgress(cwd, prompt)
 	s.setFlowStepStatus(context.Background(), parentRunID, "tdd", StepStatusPending)
 	s.startResolvedFlowFromNode(context.Background(), parentRunID, workingmode.PackPrefix+vibeSprintFlowID, prompt, "tdd")

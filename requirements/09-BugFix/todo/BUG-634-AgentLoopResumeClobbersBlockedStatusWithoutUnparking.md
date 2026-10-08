@@ -4,9 +4,7 @@
 - **Severity:** High — desyncs the only drift-sanction path
   (`agent-loop/amend`, requires `loopStatus=="blocked"`) and makes every
   status surface lie about a frozen run.
-- **Status:** OPEN — workaround: `flow-control:continue` to re-trigger the
-  gate eval, then poll `GET /agent-graph` for the `blocked` window and
-  amend inside it (verified live).
+- **Status:** FIXED — CA-1236 (2026-10-08): resume() preserves parked statuses (blocked/done/tournament_escalation); only paused flips to running
 - **Found:** run-306526 (`vibe-tasks` CP-04), 2026-10-06T02:22–02:38 —
   scope-drift park (`flow_parked_awaiting_user`, `loop_status:blocked`)
   stayed frozen 18 min with zero events, yet `agent-graph` reported

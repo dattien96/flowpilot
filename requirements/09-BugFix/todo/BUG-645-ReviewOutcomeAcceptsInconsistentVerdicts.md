@@ -3,7 +3,7 @@
 - **ID:** BUG-645
 - **Severity:** High — a review can read "approved + all ACs blocked" and
   the hub advances anyway; fail-closed verdicts are silently inverted.
-- **Status:** OPEN (captured live, run-523131)
+- **Status:** FIXED — CA-1236 (2026-10-08): parseReviewOutcomeInput rejects an approved envelope whose verdict rows contain fail/blocked
 
 ## Evidence chain (all live)
 

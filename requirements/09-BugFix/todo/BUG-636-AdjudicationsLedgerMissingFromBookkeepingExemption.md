@@ -4,9 +4,7 @@
 - **Severity:** Medium-High — fires on every sprint that ran adjudications
   (debates/verdicts); the file is appended mid-turn inside the exact diff
   window the frozen-scope gate observes, so it false-positives repeatedly.
-- **Status:** OPEN — workaround: `agent-loop/continue` past the park
-  (amend correctly refuses the path — `.flowpilot/**` is not a concrete
-  code target); real fix is a one-line exemption.
+- **Status:** FIXED — CA-1236 (2026-10-08): adjudications.ndjson added to RunnerLedgerBookkeepingPaths exemption
 - **Found:** run-306526 (`vibe-tasks` CP-04, Task-042 sprint),
   2026-10-06T03:11 — drift gate blocked on
   `.flowpilot/adjudications.ndjson` ("not written via this leg's tool

@@ -319,6 +319,13 @@ func IsDocOrAuditFile(path string) bool {
 	// notes.txt write used to trip r-tests ("you changed production code")
 	// and r-scope. Deliberately conservative: json/yaml stay code-adjacent.
 	lower := strings.ToLower(path)
+	// BUG-644: CMake build files are build config (code-adjacent), not prose
+	// — the .txt rule exists for notes/data files and silently dropped a
+	// legitimately declared CMakeLists.txt from the frozen contract while the
+	// freeze note still claimed it (live run-523131, contract c86945a3).
+	if base := filepath.Base(lower); base == "cmakelists.txt" || strings.HasSuffix(lower, ".cmake") {
+		return false
+	}
 	for _, ext := range []string{".txt", ".csv", ".tsv", ".log", ".rst", ".adoc", ".pdf"} {
 		if strings.HasSuffix(lower, ext) {
 			return true

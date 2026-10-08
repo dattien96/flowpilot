@@ -41,19 +41,24 @@ func TestIsConcreteCodeTarget_RejectsProseInjectedPath(t *testing.T) {
 // including ones with spaces in directory names — keep passing. Doc-class
 // files (.txt/.md) are still not concrete targets by design; they route to
 // AllowedExtraPaths via IsUserAllowableDriftPath instead.
+// BUG-644 (approved spec change): CMakeLists.txt is build config
+// (code-adjacent), not a doc — the .txt bucket wrongly dropped it from
+// frozen scope while the freeze note claimed it (live run-523131).
 func TestIsConcreteCodeTarget_LegitPathsSurvive(t *testing.T) {
 	for _, p := range []string{
 		"apps/local-runner/internal/runner/gate_hook.go",
 		"core/crypto-ndk/src/main/cpp/src/VaultService.cpp",
 		"dir with space/file.go",
 		"path/with(parens).go",
+		"core/crypto-ndk/src/main/cpp/CMakeLists.txt",
+		"cmake/Modules/FindFoo.cmake",
 	} {
 		if !IsConcreteCodeTarget(p) {
 			t.Fatalf("IsConcreteCodeTarget(%q)=false, want true", p)
 		}
 	}
 	for _, p := range []string{
-		"core/crypto-ndk/src/main/cpp/CMakeLists.txt",
+		"notes.txt",
 		"change-audit/FEATURE-KEYS.md",
 		"requirements/08-Task/done/Task-038-crypto-ndk.md",
 	} {

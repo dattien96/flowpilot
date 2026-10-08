@@ -5,9 +5,7 @@
   (vibe-tasks run-306526, vibe-adopt run-297984); each leg re-drives 7+
   times re-confirming the same green verdict while the engine never
   receives it.
-- **Status:** OPEN — workaround: operator answers the leg's meta-question
-  with "force-advance" or submits `flow-control` status on the leg's
-  behalf.
+- **Status:** FIXED — CA-1236 (2026-10-08): every flow-driven delegate child (agent.code/agent.delegate/agent.scaffold) is offered submit_review_outcome; bridge still rejects settle from non-cohort legs
 - **Found:** run-348382 (coder leg, CP-04 Task-042), 2026-10-06 —
   leg self-reported via question `q-353592`: suite GREEN
   (10 PASSED / 2 SKIPPED), commits landed (`e729743`, `b904107`),

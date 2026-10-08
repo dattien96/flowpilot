@@ -5,7 +5,7 @@
   next leg turn re-hits the old block; seen as repeated identical cards
   across rounds (adj-53 adjudicated "amend the contract" yet the leg
   still bound the stale scope).
-- **Status:** OPEN (captured live, run-523131; gate_hook.go ~line 2573)
+- **Status:** FIXED — CA-1236 (2026-10-08): decisionTarget arms proposalTurnPending + clearedAt so the target run re-prompts instead of re-blocking
 
 ## Evidence chain (all live)
 

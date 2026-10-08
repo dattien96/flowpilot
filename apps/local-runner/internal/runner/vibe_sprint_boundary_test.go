@@ -357,6 +357,9 @@ func TestVibeSprintBoundary_AuditAutoFinalizeParks(t *testing.T) {
 	svc.mu.Unlock()
 	svc.agentOrchestrator.setLoop(parent.RunID, AgentLoopState{Status: "running", Cap: 3, Mode: "explicit"})
 	svc.reseedFlowStepRuntime(parent.RunID, nodes)
+	// BUG-648: the write/verify path must be DONE for a clean sprint —
+	// a validate leg that never ran is now a veto, not a green audit.
+	svc.setFlowStepStatus(context.Background(), parent.RunID, "validate", StepStatusDone)
 
 	if !svc.runAuditNode(context.Background(), parent.RunID, edges, nodes, auditNode, "snake tests green") {
 		t.Fatal("runAuditNode must handle the audit completion")
@@ -493,8 +496,22 @@ func TestRun2062497_RunningNonAncestorStillVetoesAutoAdvance(t *testing.T) {
 	// An independent leg still RUNNING and NOT an audit done-edge ancestor.
 	svc.setFlowStepStatus(context.Background(), runID, "validate", StepStatusRunning)
 
-	if svc.maybeAutoAdvanceVibeSprintBoundary(context.Background(), runID, "audit") {
-		t.Fatal("a genuinely running non-ancestor leg must still veto the boundary advance (BUG-619)")
+	// BUG-633: the veto still refuses the advance — but it now OWNS the
+	// outcome by deferring (audit back to PENDING, re-evaluated when the
+	// straggler settles). Returning false here was the original defect: the
+	// caller fell through to flow_run_complete and sealed run-297984 at
+	// task 3/6 on a ~9s straggler window.
+	if !svc.maybeAutoAdvanceVibeSprintBoundary(context.Background(), runID, "audit") {
+		t.Fatal("a genuinely running non-ancestor leg must veto via defer — false lets the caller seal the run mid-plan (BUG-633)")
+	}
+	if got := svc.lookupFlowStepStatus(runID, "audit"); got != StepStatusPending {
+		t.Fatalf("straggler veto must defer the audit to PENDING, got %q", got)
+	}
+	svc.mu.Lock()
+	armed, idx := svc.runs[runID].vibeSprintBoundaryPending, svc.runs[runID].vibeSprintIndex
+	svc.mu.Unlock()
+	if armed || idx != 1 {
+		t.Fatalf("deferred veto must not arm or advance — pending=%v index=%d want unarmed/1", armed, idx)
 	}
 }
 

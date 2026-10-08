@@ -4,8 +4,7 @@
 - **Severity:** Medium-High — the operator-visible "continue" surface
   does the wrong thing exactly when the run needs routing; burns quota
   and re-parks in the same shape.
-- **Status:** OPEN (captured live, run-523131; related BUG-471 sealed-
-  hub no-op, BUG-561 audit continue wedge)
+- **Status:** FIXED — CA-1236 (2026-10-08): routing park continue routes through applyFlowControl edge traversal instead of re-dispatching the parked hub node
 
 ## Evidence chain (all live)
 

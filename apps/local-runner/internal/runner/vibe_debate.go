@@ -2,12 +2,36 @@ package runner
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"time"
 
 	"flowpilot-runner/internal/agentpack"
 	"flowpilot-runner/internal/workingmode"
 )
+
+// vibeDebateVerdictSignature fingerprints a resolved debate's verdict rows
+// for the BUG-652 same-verdict breaker: sorted "acid=verdict" pairs joined.
+// Notes/rationales vary across rounds while the verdict pair is the decision
+// that repeats — the signature must key on the stable part only. Empty or
+// content-free rows yield "" (no signature → the breaker stays off, matching
+// the pre-existing behavior of verdict-less restores).
+func vibeDebateVerdictSignature(verdicts []VerdictRow) string {
+	parts := make([]string, 0, len(verdicts))
+	for _, v := range verdicts {
+		acid := strings.TrimSpace(v.ACID)
+		verdict := strings.TrimSpace(v.Verdict)
+		if acid == "" || verdict == "" {
+			continue
+		}
+		parts = append(parts, acid+"="+verdict)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	slices.Sort(parts)
+	return strings.Join(parts, "|")
+}
 
 const maxVibeOwnerFailRetries = 2
 
@@ -255,9 +279,6 @@ func (s *InteractiveService) maybeSettleVibeOwnerDebate(parentRunID string) bool
 	}()
 
 	loop := s.agentOrchestrator.loopStateFor(parentRunID)
-	if loop.Status == "blocked" && loop.BlockReason != "hub_stalled" && loop.BlockReason != "" {
-		return false
-	}
 
 	ownerChildren := 0
 	for _, childID := range s.agentOrchestrator.listChildren(parentRunID) {
@@ -302,8 +323,39 @@ func (s *InteractiveService) maybeSettleVibeOwnerDebate(parentRunID string) bool
 	if !ownersFailed && !ownersStarved && !triggerWedged {
 		return false
 	}
-	if stSyn == StepStatusRunning || stSyn == StepStatusDone || stSyn == StepStatusWaitingUserApr {
+	// BUG-658 (live run-523131): an escalate park produced BY the dead owner
+	// cohort is the symptom this ladder exists to fix — the synthesis could
+	// only adjudicate dead seats, so its "blocked" verdict must not suppress
+	// the retry the way an independent escalate/cap park must. The cap reason
+	// stays guarded: it is this ladder's own terminal surface.
+	if loop.Status == "blocked" && loop.BlockReason != "hub_stalled" && loop.BlockReason != "" {
+		if !(ownersFailed && loop.BlockReason == "escalate") {
+			return false
+		}
+	}
+	if stSyn == StepStatusDone {
 		return false
+	}
+	if stSyn == StepStatusRunning || stSyn == StepStatusWaitingUserApr {
+		// BUG-658: with BOTH owner seats terminal-failed, the synthesis step
+		// can only re-evaluate a dead cohort — a RUNNING stamp left by a dead
+		// dispatch or the WAITING stamp of its own escalate park is dead
+		// work, not a verdict worth shielding. The single exception is a
+		// synthesis turn genuinely in flight: its verdict is inbound and the
+		// settle it produces re-fires this ladder — preempting it would
+		// double-drive the debate. ownersStarved/triggerWedged keep the
+		// original shield (mount-window races, not dead cohorts).
+		liveSynTurn := false
+		if stSyn == StepStatusRunning {
+			s.mu.Lock()
+			if r := s.runs[parentRunID]; r != nil {
+				liveSynTurn = r.turnInFlight || r.pendingHubReinvoke || r.reinvokeInFlight
+			}
+			s.mu.Unlock()
+		}
+		if !ownersFailed || liveSynTurn {
+			return false
+		}
 	}
 
 	if retries >= maxVibeOwnerFailRetries {
@@ -327,7 +379,11 @@ func (s *InteractiveService) maybeSettleVibeOwnerDebate(parentRunID string) bool
 		return true
 	}
 
-	if loop.Status == "blocked" && loop.BlockReason == "hub_stalled" {
+	if loop.Status == "blocked" && (loop.BlockReason == "hub_stalled" ||
+		(ownersFailed && loop.BlockReason == "escalate")) {
+		// BUG-658: a dead-cohort escalate park must un-block for the retry —
+		// the verdict it surfaced ("owners dead") is what the retry resolves,
+		// not an independent adjudication that should keep the loop frozen.
 		s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
 			st.Status = "running"
 			st.BlockReason = ""

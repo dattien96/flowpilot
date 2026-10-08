@@ -5,9 +5,7 @@
   wedge a run; 419 drift events recorded in one run. In vibe mode the
   pause is suppressed, but the events still flood telemetry and trigger
   debates.
-- **Status:** OPEN (captured live, run-523131;
-  `workflow_drift_events.json` tail shows repeated
-  `zero_delta_progress → pause_for_human`, e.g. on `step-582456`)
+- **Status:** FIXED — CA-1236 (2026-10-08): zero_delta_progress suppressed for scan/high_reasoning node classes via drift detector WorkloadClass
 
 ## Evidence chain (all live)
 

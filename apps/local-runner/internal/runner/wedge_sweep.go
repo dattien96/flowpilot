@@ -53,8 +53,13 @@ func (s *InteractiveService) sweepWedgedFlowWork() {
 		edges       []agentpack.FlowEdge
 		nodes       []agentpack.FlowNode
 		lastEventAt time.Time
+		// BUG-653: an armed gate settle parks the hub's decision surface but
+		// must not shield dead sibling steps underneath it — carry the flag so
+		// the redrive skips only the parked hub node, not the whole run.
+		pendingSettle bool
 	}
 	var deadDispatchRuns []deadDispatchRun
+	var doneRuns []string
 
 	now := time.Now().UTC()
 	var clearedIDRuns []string
@@ -124,16 +129,24 @@ func (s *InteractiveService) sweepWedgedFlowWork() {
 		// synthesis hub reinvoke was consumed with no turn either. Only
 		// collect when the run itself is live and every run-level driver is
 		// quiet — an in-flight turn/settle/reinvoke owns the window.
+		// BUG-653: pendingFlowGateSettle is deliberately NOT in this guard.
+		// Live run-523131: the `synthesis` step parked WAITING_USER_APPROVAL
+		// on a missing-verdict card while the `tdd` step under it was
+		// RUNNING-dead — the armed settle suppressed the sweep, the dead step
+		// never healed, and the card's missing input could never arrive: a
+		// stable deadlock (~4h) where the park shielded its own cause. The
+		// settle owns the PARKED node only; dead siblings still get swept.
 		if rs.parentRunID == "" && rs.flowEngineDriven && len(rs.activeFlowNodes) > 0 &&
 			rs.status == RunStatusRunning &&
-			!rs.turnInFlight && !rs.pendingFlowGateSettle && !rs.pendingHubReinvoke &&
+			!rs.turnInFlight && !rs.pendingHubReinvoke &&
 			!rs.reinvokeInFlight && !rs.vibeDebateMountInFlight &&
 			!gateCancelLive(rs.postTurnGateStartedAt, rs.postTurnGateCancel) {
 			deadDispatchRuns = append(deadDispatchRuns, deadDispatchRun{
-				runID:       id,
-				edges:       append([]agentpack.FlowEdge(nil), rs.activeFlowEdges...),
-				nodes:       append([]agentpack.FlowNode(nil), rs.activeFlowNodes...),
-				lastEventAt: rs.lastProviderEventAt,
+				runID:         id,
+				edges:         append([]agentpack.FlowEdge(nil), rs.activeFlowEdges...),
+				nodes:         append([]agentpack.FlowNode(nil), rs.activeFlowNodes...),
+				lastEventAt:   rs.lastProviderEventAt,
+				pendingSettle: rs.pendingFlowGateSettle,
 			})
 		}
 		// (2) deferred audit — collect under lock, dispatch outside.
@@ -149,6 +162,20 @@ func (s *InteractiveService) sweepWedgedFlowWork() {
 					nodes: append([]agentpack.FlowNode(nil), rs.activeFlowNodes...),
 					node:  n,
 				})
+			}
+		}
+		// (7) BUG-660 (live run-523131): sprint loop reached `done` but the
+		// run's status stayed `running` — the loop-done write and the
+		// run-status transition are not one ledger write, so any completion
+		// consumed/lost upstream leaves the run reporting live forever until
+		// an operator POSTs /resume (the only lazy reconcile). A done loop
+		// with no in-flight turn has no future producer that will ever flip
+		// the status — settle it here instead.
+		if rs.parentRunID == "" && rs.flowEngineDriven && rs.status == RunStatusRunning &&
+			!rs.turnInFlight && !rs.pendingFlowGateSettle &&
+			s.agentOrchestrator != nil {
+			if loopSt := s.agentOrchestrator.loopStateFor(id).Status; loopSt == "done" {
+				doneRuns = append(doneRuns, id)
 			}
 		}
 	}
@@ -181,7 +208,22 @@ func (s *InteractiveService) sweepWedgedFlowWork() {
 		s.maybeResolveZombieVibeDebate(id)
 	}
 	for _, c := range deadDispatchRuns {
-		s.maybeRedriveDeadDispatchedSteps(c.runID, c.edges, c.nodes, c.lastEventAt)
+		s.maybeRedriveDeadDispatchedSteps(c.runID, c.edges, c.nodes, c.lastEventAt, c.pendingSettle)
+	}
+	for _, id := range doneRuns {
+		s.mu.Lock()
+		rs := s.runs[id]
+		still := rs != nil && rs.status == RunStatusRunning && !rs.turnInFlight &&
+			s.agentOrchestrator != nil &&
+			s.agentOrchestrator.loopStateFor(id).Status == "done"
+		s.mu.Unlock()
+		if !still {
+			continue
+		}
+		s.flowDiagLog(id, "loop_done_run_settled",
+			"loop reached done while run status stayed running; settling via canonical completion path")
+		s.markFlowRunComplete(context.Background(), id)
+		s.persistParentSession(id)
 	}
 }
 
@@ -357,10 +399,16 @@ var flowStepDeadDispatchBound = vibeDebateTriggerWedgeBound
 // Re-drive: hub.inline nodes re-invoke the hub turn; delegate nodes get a
 // matching-leg reinvoke first (preserves leg lineage) and a fresh
 // spawnChildRun otherwise — BUG-1194 cohort rebind inside covers open seats.
-func (s *InteractiveService) maybeRedriveDeadDispatchedSteps(parentRunID string, edges []agentpack.FlowEdge, nodes []agentpack.FlowNode, lastEventAt time.Time) {
+// pendingSettle reports the run's own pendingFlowGateSettle flag at scan
+// time (BUG-653): when armed, the parked hub node keeps waiting for its
+// answer — neither redrive path may touch hub.inline — while dead delegate
+// siblings are still healed. A parked non-hub node is protected anyway: its
+// step mirror is WAITING_USER_APPROVAL, never RUNNING/PENDING.
+func (s *InteractiveService) maybeRedriveDeadDispatchedSteps(parentRunID string, edges []agentpack.FlowEdge, nodes []agentpack.FlowNode, lastEventAt time.Time, pendingSettle bool) {
 	if s == nil || s.workflowStore == nil || len(nodes) == 0 {
 		return
 	}
+	hubParked := pendingSettle
 	steps, err := s.workflowStore.LoadRunSteps(context.Background(), parentRunID)
 	if err != nil {
 		return
@@ -394,12 +442,33 @@ func (s *InteractiveService) maybeRedriveDeadDispatchedSteps(parentRunID string,
 					ready = false
 				}
 			}
-			if !ready || s.deadDispatchNonTerminalChildExists(parentRunID, node.ID) ||
-				s.persistedCompletedChildExists(parentRunID, node.ID) {
+			if !ready || s.deadDispatchNonTerminalChildExists(parentRunID, node.ID) {
 				continue
 			}
-			if canonical, ok := agentpack.NormalizeBehaviorID(node.Behavior); ok && canonical == "artifact.audit_draft" {
+			if s.persistedCompletedChildExists(parentRunID, node.ID) {
+				// BUG-653: a persisted-Completed leg under a PENDING step is
+				// the same settle gap as the RUNNING class below — the leg's
+				// completion was consumed before it stamped the mirror. The
+				// honest terminal is DONE, not a redispatch.
+				s.flowDiagLog(parentRunID, "dead_dispatch_mirror_settled",
+					"step PENDING over a persisted-Completed leg; settling mirror DONE",
+					"node_id", node.ID)
+				s.setFlowStepStatus(context.Background(), parentRunID, node.ID, StepStatusDone)
+				if !hubParked {
+					// Fire the consumed done-edge through the canonical
+					// advance so forward targets still dispatch. Suppressed
+					// while a gate settle parks the hub — the park's own
+					// resolution re-evaluates the now-settled mirror.
+					s.tryAdvanceFlowFromNode(parentRunID, node.ID, "")
+				}
+				continue
+			}
+			canonical, _ := agentpack.NormalizeBehaviorID(node.Behavior)
+			if canonical == "artifact.audit_draft" {
 				continue // class (2) owns audit deferral — it must also wait out unrelated RUNNING sprint steps
+			}
+			if hubParked && canonical == "hub.inline" {
+				continue // BUG-653: the parked hub waits for its answer — no re-dispatch
 			}
 			s.redispatchPendingFlowNode(parentRunID, edges, nodes, node)
 		}
@@ -415,12 +484,29 @@ func (s *InteractiveService) maybeRedriveDeadDispatchedSteps(parentRunID string,
 			continue
 		}
 		if s.vibeNodeHasLiveWork(parentRunID, node.ID) ||
-			s.deadDispatchNonTerminalChildExists(parentRunID, node.ID) ||
-			s.persistedCompletedChildExists(parentRunID, node.ID) {
+			s.deadDispatchNonTerminalChildExists(parentRunID, node.ID) {
+			continue
+		}
+		if s.persistedCompletedChildExists(parentRunID, node.ID) {
+			// BUG-653 (live run-523131): the step stayed RUNNING because the
+			// leg's completion was consumed before it settled the mirror —
+			// the exact wedge BUG-647 now prevents at settle time. For wedges
+			// that already exist, the truthful heal is the DONE stamp plus
+			// the edge traversal that completion owed, not a respawn over
+			// finished work (the old "not a dead dispatch" skip was correct
+			// only while the completion path reliably owned the settle —
+			// run-523131 proved it can be lost).
+			s.flowDiagLog(parentRunID, "dead_dispatch_mirror_settled",
+				"step RUNNING over a persisted-Completed leg; settling mirror DONE",
+				"node_id", node.ID)
+			s.setFlowStepStatus(context.Background(), parentRunID, node.ID, StepStatusDone)
+			if !hubParked {
+				s.tryAdvanceFlowFromNode(parentRunID, node.ID, "")
+			}
 			continue
 		}
 		if canonical, ok := agentpack.NormalizeBehaviorID(node.Behavior); ok && canonical == "hub.inline" {
-			if hubRedriven {
+			if hubRedriven || hubParked {
 				continue
 			}
 			s.flowDiagLog(parentRunID, "dead_dispatch_hub_redrive",

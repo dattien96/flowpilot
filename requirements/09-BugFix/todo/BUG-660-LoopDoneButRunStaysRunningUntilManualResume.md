@@ -4,7 +4,7 @@
 - **Severity:** Medium — the run reports "running" forever after real
   work ends; automation polling the run sees a live run and watchers
   never terminate; observed ~7min limbo before manual resume.
-- **Status:** OPEN (captured live, run-523131)
+- **Status:** FIXED — CA-1236 (2026-10-08): wedge sweep reconciles loop=done runs into settled run status
 
 ## Evidence chain (all live)
 

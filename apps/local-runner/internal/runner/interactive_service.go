@@ -295,6 +295,15 @@ type interactiveRun struct {
 	// per-entity cap is maxVibeDebateMountsPerSprint; vibeDebateMounts stays
 	// the sprint-wide total bounded by maxVibeDebateMountsSprintCeiling.
 	vibeDebateMountsByEntity map[string]int
+	// vibeDebateVerdictSigs is the BUG-652 same-verdict circuit breaker:
+	// gated-entity key → signature of the verdict rows the last resolved
+	// owner debate for that entity produced. An identical verdict on the
+	// same gated card means the reprompt round changed nothing — the next
+	// resolution escalates to a human instead of re-spawning a cohort that
+	// can only conclude the same thing (live run-523131: 3 identical
+	// flag-requirement-change rounds on Task-113's contract gate).
+	// Durable via ProviderSessionState.VibeDebateVerdictSigs.
+	vibeDebateVerdictSigs map[string]string
 	// vibeDebateMountInFlight is true between stashVibeFlowForDebate's park
 	// and the mount goroutine's post-check (BUG-594): an unmounted claim
 	// observed in that window is still resolving — never release it.
@@ -673,6 +682,14 @@ type interactiveRun struct {
 	lastTurnStepID        string // CP-35: stepID of the most-recently started turn, used by gate reprompts
 	currentTurnID         string
 	lastFlowControlTurnID string
+	// resumeOwesOutcome (BUG-650, live run-523131): a resume-with-feedback
+	// that consumed a routing park (escalate family) dispatched a hub turn
+	// whose job is to emit the machine outcome — a turn ending prose-only
+	// silently "accepted" the decision with no edge traversal. The flag arms
+	// completion-side validation; resumeOutcomeReprompted bounds the single
+	// reprompt before the run re-parks instead of pretending progress.
+	resumeOwesOutcome       bool
+	resumeOutcomeReprompted bool
 	// parkPreserveTurnID (BUG-437) names the provider turn currently executing
 	// a flow_control/submit_review_outcome tool call — armed only at the agent
 	// funnel (turnBridge.SubmitFlowControl). A flow park triggered synchronously
@@ -2508,6 +2525,29 @@ func (s *InteractiveService) flowControlSubmittedForTurn(runID, turnID string) b
 	return rs != nil && rs.lastFlowControlTurnID == turnID
 }
 
+// repromptResumeOutcomeTurn bounds the BUG-650 retry: a resume-into-decision
+// hub turn that finished prose-only gets exactly one reprompt constrained to
+// the routing tool face. Returns false (caller falls through to the escalate
+// re-park) when the single reprompt was already spent.
+func (s *InteractiveService) repromptResumeOutcomeTurn(parentRunID string) bool {
+	s.mu.Lock()
+	rs := s.runs[parentRunID]
+	if rs == nil || rs.resumeOutcomeReprompted {
+		s.mu.Unlock()
+		return false
+	}
+	rs.resumeOutcomeReprompted = true
+	s.mu.Unlock()
+	s.flowDiagLog(parentRunID, "resume_decision_turn_prose_only",
+		"resume-into-decision hub turn ended with prose only — reprompting once for a routing outcome")
+	go s.maybeAutoReinvokeHubWithPrompt(parentRunID,
+		"[flow-engine] Your previous turn answered a parked routing decision but ended with prose only — "+
+			"no flow_control / submit_review_outcome call was recorded, so no edge traversed and the decision "+
+			"is still open. Call submit_review_outcome (or flow_control) NOW as the FIRST action of this turn "+
+			"with the status that matches the decision. Wait for the tool result before writing any summary text.")
+	return true
+}
+
 // extendCap raises the flow cap by ExtendBy and resumes from blocked.
 //
 // BUG-231 (D-8): ExtendMax previously rejected this once ExtendCount reached
@@ -2863,6 +2903,55 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 		}
 	}
 
+	// BUG-654 (live run-523131): agent-loop/continue on a routing park — an
+	// escalate whose node IS the routing hub (no lastEscalatedInlineNodeID)
+	// and whose outcome was already recorded — re-invoked the parked hub,
+	// which re-submitted the identical submit_review_outcome and re-blocked
+	// on the same gate (3 rounds burned live). The designed route for this
+	// state is the continue back-edge traversal that flow-control{continue}
+	// owns; when such an edge resolves, dispatch through the canonical
+	// flow-control path instead of burning a round on a hub whose recorded
+	// outcome cannot change. Refusals (open cohort, cap) fall through to the
+	// generic armed-prompt/generic resume below.
+	if wasBlocked && prevBlockReason == "escalate" && s.isFlowEngineDriven(parentRunID) {
+		s.mu.Lock()
+		escNode := ""
+		var edges []agentpack.FlowEdge
+		if rs := s.runs[parentRunID]; rs != nil {
+			escNode = strings.TrimSpace(rs.lastEscalatedInlineNodeID)
+			edges = append([]agentpack.FlowEdge(nil), rs.activeFlowEdges...)
+		}
+		s.mu.Unlock()
+		hubID := s.activeHubNodeIDFor(parentRunID)
+		if hubID == "" {
+			hubID = hubInlineNodeID(s.activeFlowNodesFor(parentRunID))
+		}
+		if (escNode == "" || escNode == hubID) && hubID != "" {
+			if _, ok := resolveContinueBackEdgeTarget(edges, hubID); ok {
+				s.flowDiagLog(parentRunID, "continue_routing_park_edge_traverse",
+					"agent-loop/continue on a hub routing park; dispatching continue back-edge via flow-control",
+					"hub_node", hubID)
+				if _, err := s.applyFlowControl(parentRunID, FlowControlInput{Status: "continue", Summary: feedback}); err == nil {
+					return s.agentGraphSnapshot(parentRunID), nil
+				}
+			}
+		}
+	}
+
+	// BUG-650 (live run-523131): the resume that just consumed a routing park
+	// dispatches a hub turn whose job is the machine outcome — arm the owed
+	// marker so turn completion validates it instead of accepting prose-only
+	// as a finished turn (the reprompt→re-park bound lives at the BUG-226
+	// fallback site).
+	if wasBlocked && prevBlockReason == "escalate" {
+		s.mu.Lock()
+		if rs := s.runs[parentRunID]; rs != nil && rs.parentRunID == "" && rs.flowEngineDriven {
+			rs.resumeOwesOutcome = true
+			rs.resumeOutcomeReprompted = false
+		}
+		s.mu.Unlock()
+	}
+
 	if pendingPrompt != "" {
 		go s.maybeAutoReinvokeHubWithPrompt(parentRunID, pendingPrompt)
 		return snap, nil
@@ -3099,6 +3188,18 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 				// joined cohort note (plus the operator's feedback) so the
 				// retry turn sees the decisions it must consolidate.
 				if escalatedNodeID == vibeDebateSynthesisNodeID {
+					// BUG-658 (live run-523131): with BOTH owner seats
+					// terminal-failed, re-driving the synthesis only
+					// re-evaluates a dead cohort — the live run looped
+					// blocked → continue → identical blocked forever. The
+					// owner-fail settle ladder owns the retry: transient
+					// failures re-mount a fresh cohort (bounded by
+					// maxVibeOwnerFailRetries), a capped/permanent cohort
+					// escalates for a human decision instead of re-parking.
+					if _, st1, st2, _ := s.vibeOwnerDebateStepStatuses(parentRunID); vibeOwnerStepFailed(st1) && vibeOwnerStepFailed(st2) {
+						go s.maybeSettleVibeOwnerDebate(parentRunID)
+						return snap, nil
+					}
 					prompt := composeHubNotifyPrompt(node)
 					if note := s.lastCohortNoteFor(parentRunID); strings.TrimSpace(note) != "" {
 						prompt = note + "\n\n" + prompt
@@ -5071,6 +5172,14 @@ func (s *InteractiveService) scheduleChildTurn(runID, stepID, prompt string) {
 	if runID == "" || stepID == "" || prompt == "" {
 		return
 	}
+	// BUG-657 (live run-523131, leg run-584652): Interrupt writes the durable
+	// run_stop fence on the interrupted run's own id, but every release site
+	// keyed parentRunID — an adjudication-redriven leg minted its turn then
+	// died at the send CAS with "turn cancelled before send (run stop
+	// fence)". Minting through this seam IS the authorized follow-up, so the
+	// run's own fence releases here; the fence still linearizes a claimed
+	// send that was in flight when Stop landed.
+	s.releaseHubStopFenceForFollowUp(context.Background(), runID)
 	go func(runID, stepID, prompt string) {
 		// BUG-289 H1/F-1: do not discard startTurn errors — reinvokeInFlight
 		// was set true by the scheduler and is only cleared on success
@@ -5536,6 +5645,11 @@ func (s *InteractiveService) deliverPendingRestart(parentRunID string) {
 		stepID = "chat-" + childID
 	}
 	s.mu.Unlock()
+
+	// BUG-657: the restart intent is claimed on the CHILD run — release the
+	// child's own run_stop fence (Interrupt keys the leg id) or the minted
+	// restart dies at the send CAS before clearing the intent.
+	s.releaseHubStopFenceForFollowUp(context.Background(), childID)
 
 	// BUG-288 R18-1: zero-pad gen so numeric order matches lexical if ever sorted as string.
 	idem := fmt.Sprintf("durable-%s-restart-%020d", childID, gen)
@@ -6039,6 +6153,7 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 		VibeDeferredFlowStarts:          append([]VibeDeferredFlowStart(nil), rs.vibeDeferredFlowStarts...),
 		VibeDebateMounts:                rs.vibeDebateMounts,
 		VibeDebateMountsByEntity:        copyStringIntMap(rs.vibeDebateMountsByEntity),
+		VibeDebateVerdictSigs:           copyStringMap(rs.vibeDebateVerdictSigs),
 		VibeTddSigAttestedTask:          rs.vibeTddSigAttestedTask,
 		PendingBatchSignatureByStep:     copyBatchSignatureMap(rs.pendingBatchSignatureByStep),
 		FlowStartGitHead:                rs.flowStartGitHead,
@@ -7452,10 +7567,32 @@ func (s *InteractiveService) settleFlowChildTurnCompletedLocked(rs *interactiveR
 		// set, a forward edge exists from this node) still safely no-op and fall
 		// back to the same legacy note+reinvoke path for anything it doesn't
 		// recognize, so this only adds coverage, it narrows nothing.
+		//
+		// BUG-647: settle THIS leg's step mirror to DONE at settle time, not in
+		// the async advance — live run-523131's TDD leg reached Completed while
+		// its `tdd` step stayed RUNNING because the advance was consumed (gate
+		// divert / loop-not-advancing / missing target). The stale RUNNING
+		// step then blocked the done-edge AND suppressed the resume-confirm
+		// gate (BUG-656). vibeNodeHasLiveWorkLocked guards the duplicate-label
+		// case: a same-label sibling still in flight keeps the stamp.
 		parentRunID := rs.parentRunID
 		completedLabel := rs.label
 		completedAgentName := rs.agentName
 		msg := finalMsg
+		if parent := s.runs[parentRunID]; parent != nil && parent.flowEngineDriven && strings.TrimSpace(completedLabel) != "" {
+			switch s.lookupFlowStepStatus(parentRunID, completedLabel) {
+			case StepStatusWaitingUserApr:
+				// A wait mirror carries sibling-ownership semantics — a
+				// same-label sibling parked on a real card keeps its stamp
+				// (BUG-639 class); route through the terminal settle that
+				// checks live sibling waits.
+				s.settleFlowChildStepTerminalLocked(rs, StepStatusDone)
+			case StepStatusRunning, StepStatusPending:
+				if !s.vibeNodeHasLiveWorkLocked(parentRunID, completedLabel) {
+					s.setFlowStepStatusLocked(context.Background(), parentRunID, completedLabel, StepStatusDone)
+				}
+			}
+		}
 		go s.advanceOrNotifyHub(parentRunID, completedLabel, completedAgentName, msg)
 	} else if rs.uiInitiated || !rs.waitForResult {
 		s.appendPendingAgentContextLocked(rs.parentRunID, fmt.Sprintf(
@@ -10142,6 +10279,28 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	// the machine verdict, so it must be offered the face regardless of cohort
 	// mapping (owner_debate members were missed live, run-3688/run-22241).
 	verdictOnlyChild := rs.parentRunID != "" && s.flowNodePostureFor(rs) == PostureVerdictOnly
+	// BUG-635 (live run-348382/run-306526): resolved outside the turn lock —
+	// isFlowEngineDriven/flowNodeForRun take s.mu themselves. Every spawnable
+	// flow child — agent.code, agent.delegate, agent.scaffold — can reach a
+	// contract branch that requires the outcome face (blocked escalation,
+	// renegotiate_signatures batch, reviewer verdict record), and its prompt
+	// instructs submit_review_outcome for those paths. When the face was
+	// never registered the leg had literally no channel to comply: verdict
+	// stayed in prose, the engine saw no machine verdict, re-drove the
+	// completed leg, and zero_delta_progress escalated the loop. Offer the
+	// face to every flow-driven delegate child — the bridge still rejects
+	// settle attempts from non-cohort members, so over-offering is safe.
+	delegateClassChild := false
+	if rs.parentRunID != "" && s.isFlowEngineDriven(rs.parentRunID) {
+		if node, ok := flowNodeForRun(s, rs); ok {
+			if canonical, ok := agentpack.NormalizeBehaviorID(node.Behavior); ok {
+				switch canonical {
+				case "agent.code", "agent.delegate", "agent.scaffold":
+					delegateClassChild = true
+				}
+			}
+		}
+	}
 	s.mu.Lock()
 	// Prefer the durable real provider handle when present (Codex rollouts and
 	// Grok ACP session ids). Read under lock with lastGrokTurnSessionID fallback
@@ -10204,6 +10363,9 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 		} else {
 			offerReviewOutcomeTool = flowHasVerdictOnlyNode(rs.activeFlowNodes)
 		}
+	}
+	if !offerReviewOutcomeTool && delegateClassChild {
+		offerReviewOutcomeTool = true
 	}
 	providerPrompt = prependModePrefix(providerPrompt, rs.turnCount, rs.changeType, rs.sourceDocID)
 	// Persist the per-turn YOLO posture as the run's current default (BUG-129). The UI
@@ -10509,7 +10671,20 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	// Treat a terminal provider event as "the turn finished" for this fallback;
 	// the tool-submitted / open-cohort / sealed-loop guards below still apply.
 	hubTurnFinished := completed || rs.lastEventType == EventTurnCompleted
-	if hubTurnFinished && offerReviewOutcomeTool && rs.parentRunID == "" && rs.flowEngineDriven && !s.flowControlSubmittedForTurn(rs.id, turnID) {
+	flowControlSubmitted := s.flowControlSubmittedForTurn(rs.id, turnID)
+	s.mu.Lock()
+	resumeOwesOutcome := rs.resumeOwesOutcome
+	if flowControlSubmitted && (rs.resumeOwesOutcome || rs.resumeOutcomeReprompted) {
+		rs.resumeOwesOutcome = false
+		rs.resumeOutcomeReprompted = false
+	}
+	s.mu.Unlock()
+	// BUG-650: a resume-into-parked-decision hub turn owes a routing outcome
+	// even when offerReviewOutcomeTool was false at turn start (resumed turn
+	// after reconstruct, turnCount boundary, autoOrchestrate off) — the live
+	// wedge was a prose-only resume turn accepted as a finished decision.
+	outcomeOwed := offerReviewOutcomeTool || resumeOwesOutcome
+	if hubTurnFinished && outcomeOwed && rs.parentRunID == "" && rs.flowEngineDriven && !flowControlSubmitted {
 		if s.hubShouldSkipProseEscalate(rs.id) {
 			log.Printf("[flow-step] hub turn %q completed without submit_review_outcome, but children/cohort still active — skip BUG-226 escalate", turnID)
 		} else if s.advanceHubFromCohortMachineVerdicts(rs.id) {
@@ -10520,6 +10695,12 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 			// Retry an already-decided plan. Empty/blocked verdicts fall
 			// through to the BUG-226 escalate below (CA-735 preserved).
 			log.Printf("[flow-step] hub turn %q completed without submit_review_outcome; cohort machine verdicts derived the flow transition", turnID)
+		} else if resumeOwesOutcome && s.repromptResumeOutcomeTurn(rs.id) {
+			// BUG-650: first prose-only completion of a resume-into-decision
+			// turn gets exactly one constrained reprompt; if that also ends
+			// prose-only the next completion lands in the escalate below and
+			// the run re-parks with a card instead of pretending progress.
+			log.Printf("[flow-step] resume-decision hub turn %q completed without a routing outcome; reprompting once", turnID)
 		} else {
 			log.Printf("[flow-step] hub synthesis turn %q completed without submit_review_outcome, escalating", turnID)
 			// BUG-233: the awaiting-user card renders this Summary verbatim as

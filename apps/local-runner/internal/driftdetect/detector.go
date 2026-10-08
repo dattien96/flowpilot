@@ -105,6 +105,13 @@ type TurnSummary struct {
 	// zero_delta_progress (run-2062497 D8: an "already done" coder turn burned
 	// tokens re-verifying and was punished into pause_for_human loops).
 	TestsGreen bool `json:"tests_green,omitempty"`
+	// NonWritingNode marks a turn whose flow node is a non-writing workload
+	// class (scan/high_reasoning — synthesis, debate owner, reviewer, plan).
+	// Its contractual output is a verdict/decision, not a file delta —
+	// exempt from zero_delta_progress (BUG-655, live run-523131: routing
+	// turns scored 100 and flooded pause_for_human, 419 events in one run).
+	// Coding-class turns (agent.code/agent.scaffold) still fire the signal.
+	NonWritingNode bool `json:"non_writing_node,omitempty"`
 }
 
 // EvaluateTurnDrift evaluates the drift level after a completed turn

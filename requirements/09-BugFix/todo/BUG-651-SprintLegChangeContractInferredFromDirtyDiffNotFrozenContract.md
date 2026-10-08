@@ -5,8 +5,7 @@
   wedge: 3 debate rounds, a wrong-contract park loop, operator
   re-stamp required. Any sprint after task 1 runs in a dirty worktree,
   so every leg can bind the wrong contract.
-- **Status:** OPEN (captured live, run-523131; `contracts.ndjson` tail
-  shows `inferred app-bootstrap paths:0` shadowing frozen `9c2fb307`)
+- **Status:** FIXED — CA-1236 (2026-10-08): prepareChangeContract takes the frozen contract first - frozen record wins over InferFromDiff on dirty worktrees
 
 ## Evidence chain (all live)
 

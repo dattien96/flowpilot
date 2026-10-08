@@ -5,8 +5,7 @@
   AND wedges resume (BUG-656: the same stale stamp suppresses the
   resume-confirm gate). Cost observed: ~4h park + one full wasted TDD
   leg re-run.
-- **Status:** OPEN (captured live, run-523131; sibling class BUG-464 for
-  cancelled/stop shape, BUG-540 for in-session shape)
+- **Status:** FIXED — CA-1236 (2026-10-08): non-cohort leg completion settles the step mirror at settle-time (RUNNING/PENDING stamp DONE, WAITING via settleFlowChildStepTerminalLocked)
 
 ## Evidence chain (all live)
 

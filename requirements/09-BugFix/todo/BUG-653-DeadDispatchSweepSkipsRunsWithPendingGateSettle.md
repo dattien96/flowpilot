@@ -4,7 +4,7 @@
 - **Severity:** High — every "parked card + stale RUNNING step" shape
   self-hides from the only mechanism that could heal it; observed wedge
   persisted ~4h until manual `flow-control`.
-- **Status:** OPEN (captured live, run-523131; wedge_sweep.go ~line 129)
+- **Status:** FIXED — CA-1236 (2026-10-08): pendingFlowGateSettle removed from the run-level sweep filter; hub node skipped while parked, dead delegate steps settle via tryAdvanceFlowFromNode
 
 ## Evidence chain (all live)
 

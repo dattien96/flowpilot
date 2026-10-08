@@ -226,7 +226,17 @@ func (s *InteractiveService) runFlowGateAtEpoch(
 	// saving/head update (V9-02/V9-04). Commit only after gate allows.
 	// CP-43 P-1 Plan A: also consider the turn's prompt so a user-declared
 	// [Change Contract] is not missed when the AI does not echo it.
-	prepared := prepareChangeContract(ctx, cwd, rs.id, rs.stepID, rs.lastFullPrompt, fin.FinalMessage, mergeCarriedPathsIntoDiff(diff, carriedCodePaths), suggestedFeatureKeys)
+	// BUG-651: bind the run's active frozen contract when one exists —
+	// contractRunID resolves through the parent for legs.
+	contractRunID := rs.id
+	if rs.parentRunID != "" {
+		contractRunID = rs.parentRunID
+	}
+	var frozenContract *changecontract.FrozenContractRecord
+	if rec, ok := s.frozenContractForRun(cwd, contractRunID); ok {
+		frozenContract = &rec
+	}
+	prepared := prepareChangeContract(ctx, cwd, rs.id, rs.stepID, rs.lastFullPrompt, fin.FinalMessage, mergeCarriedPathsIntoDiff(diff, carriedCodePaths), suggestedFeatureKeys, frozenContract)
 	contractDeclared := prepared.declared
 	scopeOutOfScopePaths := prepared.outOfScopePaths
 	scopeHighSeverity := prepared.highSeverity
@@ -914,7 +924,14 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 		if stepForContract == "" {
 			stepForContract = rs.stepID
 		}
-		prepared = prepareChangeContract(ctx, cwd, contractRunID, stepForContract, rs.lastFullPrompt, fin.FinalMessage, mergeCarriedPathsIntoDiff(diff, pendingPaths), suggested)
+		// BUG-651: a sprint leg's contract is the step's FROZEN contract —
+		// InferFromDiff on a dirty worktree minted an empty-scope contract
+		// that blocked every declared path (run-523131 Task-113).
+		var frozenContract *changecontract.FrozenContractRecord
+		if rec, ok := s.frozenContractForRun(cwd, contractRunID); ok {
+			frozenContract = &rec
+		}
+		prepared = prepareChangeContract(ctx, cwd, contractRunID, stepForContract, rs.lastFullPrompt, fin.FinalMessage, mergeCarriedPathsIntoDiff(diff, pendingPaths), suggested, frozenContract)
 		hasPreparedContract = true
 		contractDeclared = prepared.declared
 		scopeOutOfScopePaths = prepared.outOfScopePaths
@@ -979,6 +996,15 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 				return true
 			}
 			msg := "no frozen contract found for this coding step; a Flow writer requires a contract frozen before it runs"
+			// BUG-659: contracts may exist for this step yet none be ACTIVE
+			// (abandoned by resume / superseded with no live version) — the
+			// bare message hid that and offered no remedy (live run-523131
+			// operator had to hand-append reactivation rows). Say it plainly.
+			if frozenStore, err := changecontract.NewFrozenStore(cwd); err == nil {
+				if vers, _ := frozenStore.ListVersionsForStep(parentID, coderStepID); len(vers) > 0 {
+					msg = fmt.Sprintf("frozen contract(s) exist for step %q but none are active (abandoned or superseded — e.g. by a resume that never re-froze); re-freeze or amend is required before this writer may run", coderStepID)
+				}
+			}
 			s.mu.Lock()
 			if r := s.runs[runID]; r != nil && r.gateEpoch == epoch {
 				s.emitLocked(r, ProviderEvent{
@@ -2572,11 +2598,14 @@ func (s *InteractiveService) SubmitGateDecision(runID, option, customText string
 	}
 	if decisionTarget != "" {
 		var feedback string
+		var armProposal, armFixCode bool
 		switch strings.ToLower(strings.TrimSpace(option)) {
 		case "keep-test-fix-code":
 			feedback = "User decision on the gate/decision card: keep the test and fix the code (keep-test-fix-code)."
+			armFixCode = true
 		case "suggest-requirement-change":
 			feedback = "User decision on the gate/decision card: amend the requirement/contract (suggest-requirement-change)."
+			armProposal = true
 		case "custom":
 			if strings.TrimSpace(customText) == "" {
 				s.mu.Unlock()
@@ -2588,6 +2617,20 @@ func (s *InteractiveService) SubmitGateDecision(runID, option, customText string
 			return newAPIErr(400, "invalid_option", "option must be: keep-test-fix-code | suggest-requirement-change | custom")
 		}
 		rs.pendingGateBlock = nil // the stale block is superseded by the resume feedback
+		// BUG-649: this branch consumed the gate block but never armed the
+		// reprompt markers — only the direct-block branch did — so the
+		// re-driven turn re-evaluated the SAME stale gate block (run-523131:
+		// three identical adjudication cards for one decision). Arm the
+		// decision target's markers symmetrically: the resumed turn IS the
+		// reprompted turn. The flags live on the target run, which may be
+		// the parent when the leg itself has no blocked loop.
+		if tr := s.runs[decisionTarget]; tr != nil {
+			if armProposal {
+				tr.proposalTurnPending = true
+			}
+			tr.gateFixCodeActive = armFixCode
+			tr.gateFixCodeAttempts = 0
+		}
 		s.mu.Unlock()
 		log.Printf("[gate-decision] runID=%q option=%q routed_to=%s (loop blocked; resume carries the decision)", runID, option, decisionTarget)
 		if _, err := s.resumeFlowWithFeedback(decisionTarget, feedback); err != nil {
@@ -3010,7 +3053,7 @@ type preparedChangeContract struct {
 // prompt before falling back to inferred. V9-04's "do not overwrite declared"
 // guard also checks the prompt so a prompt-declared contract is not silently
 // dropped.
-func prepareChangeContract(ctx context.Context, cwd, runID, stepID, prompt, finalMessage string, diff []flowgate.ChangedFile, suggestedFeatureKeys []string) preparedChangeContract {
+func prepareChangeContract(ctx context.Context, cwd, runID, stepID, prompt, finalMessage string, diff []flowgate.ChangedFile, suggestedFeatureKeys []string, frozen ...*changecontract.FrozenContractRecord) preparedChangeContract {
 	out := preparedChangeContract{cwd: cwd}
 	if cwd == "" {
 		return out
@@ -3018,6 +3061,49 @@ func prepareChangeContract(ctx context.Context, cwd, runID, stepID, prompt, fina
 	store, err := changecontract.NewStore(cwd)
 	if err != nil {
 		log.Printf("[changecontract] store open failed: %v", err)
+		return out
+	}
+	var frozenRec *changecontract.FrozenContractRecord
+	if len(frozen) > 0 {
+		frozenRec = frozen[0]
+	}
+	// BUG-651 (live run-523131, Task-113 legs): when a frozen preflight
+	// contract governs this run, the change contract IS the frozen scope —
+	// inference is for unfrozen work only. The dirty worktree left by prior
+	// sanctioned legs made InferFromDiff mint a bogus `app-bootstrap`/
+	// empty-scope contract under gate_mode:enforce, so all 33 declared
+	// sprint paths read out-of-scope and every write blocked (3 debate
+	// rounds, operator re-stamp). Frozen wins over a turn-level declaration
+	// too: widening a frozen scope goes through the amend endpoint, never
+	// through a freshly echoed [Change Contract] block.
+	if frozenRec != nil {
+		frozen := frozenRec
+		c := changecontract.Contract{
+			RunID:         runID,
+			StepID:        stepID,
+			FeatureKey:    frozen.FeatureKey,
+			Intent:        frozen.Intent,
+			DeclaredPaths: append(append([]string(nil), frozen.DeclaredPaths...), frozen.AllowedExtraPaths...),
+			DeclaredAt:    frozen.DeclaredAt,
+			Confidence:    changecontract.ConfidenceDeclared,
+		}
+		out.ok = true
+		out.contract = c
+		out.declared = true
+		out.outOfScopePaths, _ = changecontract.ScopeDiff(c, diff, nil)
+		if len(out.outOfScopePaths) > 0 {
+			hasGitNexus := tooling.CheckTool("gitnexus", cwd).Status == "ok"
+			sp := structure.New(cwd, hasGitNexus)
+			out.highSeverity = changecontract.HighSeverity(ctx, sp, out.outOfScopePaths)
+		}
+		fillHeadDriftFlags(cwd, c, len(out.outOfScopePaths) > 0, &out)
+		// Persist the frozen scope as a declared row so GetLatestForRun —
+		// append-order last-wins — keeps every later turn bound to it
+		// (same shape as the live operator repair on run-523131).
+		if err := store.Save(c); err != nil {
+			log.Printf("[changecontract] save frozen-scope contract failed: %v", err)
+		}
+		out.skipSave = true
 		return out
 	}
 	// BUG-439: a persisted feature_key is feature identity — only a key
@@ -3789,6 +3875,15 @@ func (s *InteractiveService) recordDriftTelemetry(rs *interactiveRun, turnID str
 		return
 	}
 	summary := turnSummaryFromTurnResult(turnID, tr, s.lastTurnTokensConsumed(rs))
+	// BUG-655 (live run-523131): node-class awareness — non-writing flow
+	// nodes (declared scan/high_reasoning workload classes: plan, reviewer,
+	// spec_align, debate owner legs) legitimately produce zero file delta;
+	// their progress is the emitted verdict/decision, measured elsewhere.
+	// Only coding-class or undeclared nodes keep the zero_delta signal —
+	// a writer that burns tokens without a delta is still detectable.
+	if node, ok := flowNodeForRun(s, rs); ok && node.WorkloadClass != "" && node.WorkloadClass != agentpack.WorkloadCoding {
+		summary.NonWritingNode = true
+	}
 
 	st := driftStateFor(s, rs.id)
 	st.mu.Lock()
