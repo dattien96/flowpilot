@@ -4084,11 +4084,14 @@ export const useStore = create<AppState>((set, get) => ({
           activeHistoryReplayController = undefined;
         }
       });
-    startOrchestrationStream(handle.runId, client, set, get);
+    // Reopen path only: the durable boundary keeps the orchestration stream
+    // off the backlog — stale graph snapshots and per-event refresh storms are
+    // what made chat switching hang and paint old sprint state (Task-042 while
+    // the live run was already on Task-044).
+    startOrchestrationStream(handle.runId, client, set, get, handle.lastEventSeq);
     void get().refreshAgentRuns();
     void get().refreshWorkflowStepRuntime();
   },
-
   // Task-404: attention items carry the run that is blocked; opening it goes
   // through the exact same history-picker path as clicking a history row.
   // Inbox: items may belong to another project — switch to it first so the
@@ -4870,13 +4873,20 @@ function startOrchestrationStream(
   client: RunnerClient,
   set: (fn: (s: AppState) => Partial<AppState>) => void,
   get: () => AppState,
+  startAfterSeq?: number,
 ): void {
   if (!runId) return;
   cancelOrchestrationStream();
   const orchestrationController = new AbortController();
   activeOrchestrationStreamController = orchestrationController;
   const orchestrationSeq = get()._orchestrationStreamSeq + 1;
-  const afterSeq = get()._runReplaySeq[runId] ?? 0;
+  // startAfterSeq (the resume-time durable boundary) skips replaying the whole
+  // backlog: openHistoryRun resets _runReplaySeq before calling, so without it
+  // the stream restarts at 0 and every stale agent_graph_updated overwrites
+  // the fresh snapshot while firing a refreshWorkflowStepRuntime storm.
+  // Backlog graph state is superseded by requestAgentGraphRefresh; non-graph
+  // backlog is covered by the buffered history replay.
+  const afterSeq = startAfterSeq ?? get()._runReplaySeq[runId] ?? 0;
   set((_s) => ({ _orchestrationStreamSeq: orchestrationSeq }));
   void consumeOrchestrationStream(
     runId,

@@ -237,7 +237,13 @@ function laneAttentionView(p: RunRealtimeProjection): RunSnapshotAttentionView {
       continue;
     }
     if (d.kind === "dispatch_attention") {
-      dispatch.push({ kind: d.dispatch?.attentionKind });
+      // settle_pending is self-clearing engine bookkeeping ("terminal
+      // bookkeeping awaiting durable settlement"), not a human decision —
+      // keeping it out of the inbox stops every settled turn from rendering
+      // as a "Dispatch" attention row while it drains.
+      if (d.dispatch?.attentionKind !== "settle_pending") {
+        dispatch.push({ kind: d.dispatch?.attentionKind });
+      }
       continue;
     }
     if (d.actionable) kinds.push(d.kind as AttentionKind);
@@ -449,8 +455,12 @@ export const attentionQueue: {
     recompute();
   },
   ingestDispatch(runId, items) {
-    if (items.length === 0) delete dispatchViews[runId];
-    else dispatchViews[runId] = items;
+    // Same settle_pending drop as laneAttentionView — the DispatchAttentionCard
+    // still lists them (it reads listDispatchAttention directly), but they do
+    // not count as inbox attention.
+    const actionable = items.filter((i) => i.kind !== "settle_pending");
+    if (actionable.length === 0) delete dispatchViews[runId];
+    else dispatchViews[runId] = actionable;
     recompute();
   },
   /**

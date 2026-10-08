@@ -40,6 +40,33 @@ const HIDDEN_FLOW_IDS = new Set(["review-loop", "rag-harness", "cp-harness-smoke
 const VIBE_USER_FLOW_IDS = new Set(["vibe-ingest", "vibe-cp-ingest", "vibe-tasks", "vibe-adopt"]);
 const VIBE_SYSTEM_FLOW_IDS = new Set(["vibe-sprint", "vibe-owner-debate", "vibe-adopt-sprint"]);
 
+/** Engine-mounted sprint/debate flows exist as catalog mirror rows but are
+ *  never a user's pick — a reopened run's durable flowRef resolves to them,
+ *  which is why they used to leak into the Workflow dropdown's option list. */
+export function isSystemVibeFlowId(ref: string | undefined): boolean {
+  return VIBE_SYSTEM_FLOW_IDS.has(bareFlowId(ref));
+}
+
+/**
+ * Options for the Workflow select. BUG-1199: a reopened run's selected row
+ * may sit outside `visibleWorkflows` (mode-filtered); it is appended so the
+ * controlled <select> can display it — EXCEPT vibe system flows, which are
+ * engine internals and must never appear as user-facing options (the caller
+ * falls back to the placeholder + a read-only "Running:" caption).
+ */
+export function workflowSelectOptions<T extends { id: string; packFlowId?: string | null }>(
+  visibleWorkflows: T[],
+  workflows: T[],
+  selectedWorkflowId: string | undefined,
+): T[] {
+  if (!selectedWorkflowId || visibleWorkflows.some((w) => w.id === selectedWorkflowId)) {
+    return visibleWorkflows;
+  }
+  const selected = workflows.find((w) => w.id === selectedWorkflowId);
+  if (!selected || isSystemVibeFlowId(selected.packFlowId ?? selected.id)) return visibleWorkflows;
+  return [...visibleWorkflows, selected];
+}
+
 /** Strip an optional "flowpilot-core-flow-pack/" prefix (BareFlowID). */
 export function bareFlowId(ref: string | undefined): string {
   const id = (ref ?? "").trim();

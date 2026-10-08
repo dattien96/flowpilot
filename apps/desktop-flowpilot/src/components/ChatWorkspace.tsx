@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { sidebarScrollRestoreTarget } from "@/components/sidebarScrollPreserve";
 import { filterNavigatorWorkflows } from "@/app/navigatorCatalog";
-import { filterWorkflowsForWorkingMode, userFlowSelectableForMode } from "@/state/workingMode";
+import { filterWorkflowsForWorkingMode, isSystemVibeFlowId, userFlowSelectableForMode, workflowSelectOptions } from "@/state/workingMode";
 import { Navigator } from "@/components/Navigator";
 import { ChatInput } from "@/components/ChatInput";
 import { TerminalPanel } from "@/components/TerminalPanel";
@@ -16,7 +16,7 @@ import { FlowTimelineSidebar } from "@/components/FlowTimelineSidebar";
 import { OrchestrationBoard } from "@/components/OrchestrationBoard";
 import { FlowAwaitingUserCard } from "@/components/FlowAwaitingUserCard";
 import { DispatchAttentionCard } from "@/components/DispatchAttentionCard";
-import { ChatPosturePanel } from "@/components/ChatPosturePanel";
+import { ChatPosturePanel, RunInWorktreeToggle } from "@/components/ChatPosturePanel";
 import { ChatBootOverlay } from "@/components/ChatBootOverlay";
 import { LSPStatusNotice } from "@/components/LSPStatusNotice";
 import { gateBlockSecondaryAction } from "@/components/gateBlockActions";
@@ -40,6 +40,11 @@ function WorkflowControlPanel(): React.ReactElement | null {
   const setWorkingMode = useStore((s) => s.setWorkingMode);
   const runStatus = useStore((s) => s.status);
   const scaffoldActive = useStore((s) => s.scaffoldSession?.active === true);
+  const worktreeEnabled = useStore((s) => s.worktreeEnabled);
+  const worktreeAvailable = useStore((s) => s.worktreeAvailable);
+  const activeWorktreeState = useStore((s) => s.activeWorktreeState);
+  const activeWorktreePath = useStore((s) => s.activeWorktreePath);
+  const setWorktreeEnabled = useStore((s) => s.setWorktreeEnabled);
 
   const project = useMemo(() => projects.find((p) => p.id === selectedProjectId), [projects, selectedProjectId]);
   const vibeOn = workingMode === "vibe";
@@ -60,17 +65,20 @@ function WorkflowControlPanel(): React.ReactElement | null {
     [selectedProjectId, workflows, workingMode],
   );
   // BUG-1199: a reopened run's flow may resolve to a row the mode filter
-  // keeps out of the startable set (e.g. the vibe-sprint system mirror).
-  // A <select> whose value matches no option renders blank — append the
-  // selected row so the running flow still shows as ticked; it stays
-  // disabled below so it can never be re-armed as a manual pick.
-  const optionWorkflows = useMemo(() => {
-    if (!selectedWorkflowId || visibleWorkflows.some((w) => w.id === selectedWorkflowId)) {
-      return visibleWorkflows;
-    }
-    const selected = workflows.find((w) => w.id === selectedWorkflowId);
-    return selected ? [...visibleWorkflows, selected] : visibleWorkflows;
-  }, [visibleWorkflows, selectedWorkflowId, workflows]);
+  // keeps out of the startable set (e.g. a catalog row from another mode) —
+  // workflowSelectOptions appends it so the running flow still shows ticked.
+  // Vibe system flows (vibe-sprint / vibe-adopt-sprint / owner debate) are
+  // engine internals: they never enter the user-facing list — the active
+  // flow name surfaces as a read-only caption instead.
+  const selectedWorkflowRow = useMemo(
+    () => workflows.find((w) => w.id === selectedWorkflowId),
+    [workflows, selectedWorkflowId],
+  );
+  const selectedIsSystemFlow = isSystemVibeFlowId(selectedWorkflowRow?.packFlowId ?? selectedWorkflowId);
+  const optionWorkflows = useMemo(
+    () => workflowSelectOptions(visibleWorkflows, workflows, selectedWorkflowId),
+    [visibleWorkflows, selectedWorkflowId, workflows],
+  );
 
   return (
     <section className="workflow-rail workflow-rail-right">
@@ -157,7 +165,10 @@ function WorkflowControlPanel(): React.ReactElement | null {
             <div className="nav-group">
               <label>Workflow</label>
               <select
-                value={selectedWorkflowId ?? ""}
+                // A system-flow selection (reopened internal sprint) is not in
+                // the option list — pin the placeholder so no phantom row is
+                // fabricated just to satisfy the controlled value.
+                value={selectedIsSystemFlow ? "" : (selectedWorkflowId ?? "")}
                 disabled={!selectedProjectId || launchMode !== "workflow"}
                 onChange={(e) => void selectWorkflow(e.target.value)}
               >
@@ -174,6 +185,11 @@ function WorkflowControlPanel(): React.ReactElement | null {
                   );
                 })}
               </select>
+              {selectedIsSystemFlow && selectedWorkflowRow ? (
+                <p className="workflow-active-flow" title="This run is driven by an engine-mounted internal flow — it is not a launch pick.">
+                  Running: {selectedWorkflowRow.name} (internal)
+                </p>
+              ) : null}
             </div>
           </div>
 
@@ -203,6 +219,35 @@ function WorkflowControlPanel(): React.ReactElement | null {
                 })}
               </select>
             </div>
+          </div>
+
+          {/* Worktree opt-in for flow launches — the flag already rides every
+              startRun path; this is the only surface in workflow mode. Same
+              disabled contract as ChatPosturePanel: non-git project, live
+              binding, or a turn in flight. */}
+          <div className="nav-group nav-group-inline">
+            <label>Isolation</label>
+            <RunInWorktreeToggle
+              enabled={worktreeEnabled}
+              disabled={
+                runStatus === "running" ||
+                !worktreeAvailable ||
+                (worktreeEnabled && (activeWorktreeState === "active" || activeWorktreeState === "merge_pending"))
+              }
+              disabledReason={
+                !worktreeAvailable
+                  ? "Run in worktree requires a git repository"
+                  : worktreeEnabled && (activeWorktreeState === "active" || activeWorktreeState === "merge_pending")
+                    ? "Merge or discard the worktree first"
+                    : undefined
+              }
+              onToggle={setWorktreeEnabled}
+            />
+            {activeWorktreePath ? (
+              <p className="workflow-worktree-path" title={activeWorktreePath}>
+                {activeWorktreePath}
+              </p>
+            ) : null}
           </div>
         </>
       )}

@@ -150,6 +150,10 @@ input {
   flex-wrap: wrap;
   row-gap: var(--space-1);
   padding: var(--space-2) var(--space-3);
+  /* Containing block for .attention-inbox-pop: the popover must anchor to the
+     window-spanning header, not the inbox button — the button sits mid-header,
+     so a 560px panel right-aligned to it overflows off the window's left edge. */
+  position: relative;
   border-bottom: 1px solid var(--border);
   background: var(--bg-2);
   /* Frameless window: the header doubles as the titlebar drag region. Padding
@@ -1996,7 +2000,8 @@ body[data-platform="darwin"] .app-header {
 /* Header attention inbox — icon + badge + popover (replaces the Navigator's
    always-visible queue section). */
 .attention-inbox {
-  position: relative;
+  /* No position:relative — the popover anchors to .app-header (above) so its
+     right edge tracks the window edge regardless of where the button sits. */
   -webkit-app-region: no-drag;
 }
 .attention-inbox-btn {
@@ -2025,7 +2030,7 @@ body[data-platform="darwin"] .app-header {
 .attention-inbox-pop {
   position: absolute;
   top: calc(100% + var(--space-1));
-  right: 0;
+  right: var(--space-2);
   z-index: 80;
   /* BUG-386: expand with the window instead of a fixed 320px cap — only the
      viewport bound shrinks it when the app is dragged thin. */
@@ -7910,6 +7915,29 @@ body.is-resizing-sidebar {
 .worktree-toggle-state {
   margin-left: auto;
   font-size: 11px;
+}
+
+/* Workflow rail: read-only caption naming the engine-internal flow driving
+   the reopened run (vibe-sprint family is never a selectable option). */
+.workflow-active-flow {
+  margin: var(--space-1) 0 0;
+  font-size: 10px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Worktree isolation row in the workflow panel — path ellipsizes instead of
+   widening the rail. */
+.workflow-worktree-path {
+  margin: var(--space-1) 0 0;
+  font-size: 10px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl; /* keep the worktree tail (the distinguishing part) visible */
+  text-align: left;
 }
 
 /* CP-62 P-3 (Task-345): structured escalation decision card. */
