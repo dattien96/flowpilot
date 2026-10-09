@@ -5,7 +5,7 @@ mode: flow
 builtin:
   editable: false
   selectableIn: []
-  cloneable: false
+  cloneable: true
   mirror:
     required: true
     source: builtin

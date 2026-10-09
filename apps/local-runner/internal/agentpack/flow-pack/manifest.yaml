@@ -73,41 +73,41 @@ flows:
     visibility: builtin
     editable: false
     selectableIn: []
-    cloneable: false
+    cloneable: true
   - path: flows/vibe-sprint.yaml
     visibility: builtin
     editable: false
     selectableIn: []
-    cloneable: false
+    cloneable: true
   - path: flows/vibe-owner-debate.yaml
     visibility: builtin
     editable: false
     selectableIn: []
-    cloneable: false
+    cloneable: true
   - path: flows/vibe-cp-ingest.yaml
     visibility: builtin
     editable: false
     selectableIn: []
-    cloneable: false
+    cloneable: true
   # CP-90: third vibe entry — sprint existing parented tasks under a locked
   # CP without running task_slicer.
   - path: flows/vibe-tasks.yaml
     visibility: builtin
     editable: false
     selectableIn: []
-    cloneable: false
+    cloneable: true
   # Task-459: fourth vibe entry — adopt pre-existing code: adopt_select parks
   # on a scope/candidate question card, then chains vibe-adopt-sprint.
   - path: flows/vibe-adopt.yaml
     visibility: builtin
     editable: false
     selectableIn: []
-    cloneable: false
+    cloneable: true
   - path: flows/vibe-adopt-sprint.yaml
     visibility: builtin
     editable: false
     selectableIn: []
-    cloneable: false
+    cloneable: true
 tools:
   - tools/submit-review-outcome.yaml
   - tools/vibe-requirement-outcome.yaml
