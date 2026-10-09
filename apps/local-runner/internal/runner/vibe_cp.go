@@ -1171,21 +1171,37 @@ func (s *InteractiveService) restoreVibeFlowAfterDebate(parentRunID string) bool
 	// and another cohort can only conclude the same thing — escalate to a
 	// human instead of arming another reprompt→gate→debate loop (live
 	// run-523131: three identical flag-requirement-change rounds).
+	// BUG-663: aborted legs (tool-permission denials) resolve NO verdict
+	// rows, so the signature comparison above stays blind and every remount
+	// re-debates vacuously (live run-641691: seven owner legs, one card).
+	// A second CONSECUTIVE empty resolution for the same entity escalates
+	// like an identical repeat; the first still proceeds, preserving
+	// legitimate verdict-less restores.
+	const emptyVerdictSentinel = "EMPTY"
 	repeatEntity := ""
-	if sig := vibeDebateVerdictSignature(verdicts); sig != "" {
-		if rs.vibeDebateVerdictSigs == nil {
-			rs.vibeDebateVerdictSigs = map[string]string{}
+	repeatEmpty := false
+	sig := vibeDebateVerdictSignature(verdicts)
+	if rs.vibeDebateVerdictSigs == nil {
+		rs.vibeDebateVerdictSigs = map[string]string{}
+	}
+	for _, gid := range gatedIDs {
+		if gid == "" || gid == parentRunID {
+			continue
 		}
-		for _, gid := range gatedIDs {
-			if gid == "" || gid == parentRunID {
-				continue
-			}
-			key := s.vibeDebateEntityKeyLocked(gid)
-			if rs.vibeDebateVerdictSigs[key] == sig {
+		key := s.vibeDebateEntityKeyLocked(gid)
+		prior := rs.vibeDebateVerdictSigs[key]
+		if sig == "" {
+			if prior == emptyVerdictSentinel {
 				repeatEntity = key
+				repeatEmpty = true
 			}
-			rs.vibeDebateVerdictSigs[key] = sig
+			rs.vibeDebateVerdictSigs[key] = emptyVerdictSentinel
+			continue
 		}
+		if prior == sig {
+			repeatEntity = key
+		}
+		rs.vibeDebateVerdictSigs[key] = sig
 	}
 	// The gate diverted each gated child's node completion into the debate
 	// before tryAdvanceFlowFromNode could fire its done-edge — the debate then
@@ -1241,14 +1257,20 @@ func (s *InteractiveService) restoreVibeFlowAfterDebate(parentRunID string) bool
 	if repeatEntity != "" {
 		// BUG-652: identical verdict on the same gated entity — escalate to
 		// a human decision instead of reprompting into the identical gate.
+		// BUG-663: same surface for consecutive empty resolutions (aborted
+		// legs decide nothing; another cohort can only stall the same way).
+		reason := "Owner debate repeated the identical verdict on the same gated card — human decision required (same-verdict circuit breaker)."
+		if repeatEmpty {
+			reason = "Owner debate resolved no verdict twice in a row on the same gated card (aborted legs decide nothing) — human decision required (empty-verdict circuit breaker)."
+		}
 		s.flowDiagLog(parentRunID, "vibe_debate_same_verdict_escalate",
-			"owner debate produced the identical verdict signature twice on the same gated entity; escalating to human",
+			"owner debate repeating on the same gated entity; escalating to human",
 			"entity", repeatEntity,
 		)
 		s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
 			st.Status = "blocked"
 			st.BlockReason = "cap"
-			st.GateReason = "Owner debate repeated the identical verdict on the same gated card — human decision required (same-verdict circuit breaker)."
+			st.GateReason = reason
 			return st
 		})
 		// The repeated verdict is an adjudication loop, not stuck work — a

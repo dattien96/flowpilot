@@ -5,7 +5,8 @@
 - Document ID: `BUG-663`
 - Title: `Gate-driven owner-debate churn bypasses the BUG-652 breaker`
 - Phase: `bugfix`
-- Status: `DRAFT (WATCHDOG — not yet triaged, do not fix blindly)`
+- Status: `FIXED — empty-verdict circuit breaker in restoreVibeFlowAfterDebate (this session)`
+- Fixed By: `CA-658` (consecutive empty resolutions escalate like identical repeats; sentinel `EMPTY` in the existing durable per-entity ledger — no new persisted fields)
 - Owner: `flowpilot runner`
 - Reviewers: `dev`
 - Created: `2026-10-09`
