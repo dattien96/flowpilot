@@ -17,7 +17,7 @@ import {
 import { supportsVisionFor } from "./visionProviders";
 import { ContextNotice, UsageFigures } from "./ContextUsageNotice";
 import { draftKeyFor } from "@/state/drafts";
-import { flowPickerOptions, isCodingPlanCPPath, vibeCloneIds } from "@/state/workingMode";
+import { flowPickerOptions, isCodingPlanCPPath, vibeCloneIds, vibeSourceRootId } from "@/state/workingMode";
 import { BotIcon, CaretIcon, CheckIcon, CloseIcon, MenuIcon, PaperclipIcon, SendIcon } from "@/components/icons";
 
 function CodexIcon(): React.ReactElement {
@@ -618,7 +618,8 @@ export function ChatInput(): React.ReactElement {
   // user picks the file instead of retyping its path. Free-text fallback
   // stays when the workspace yields no CP docs.
   const armedChoiceForSource = armedFlowChoice || pendingFlowArm?.flowRef || "";
-  const armedNeedsSourceDoc = /(^|\/)vibe-(cp-ingest|tasks)$/.test(armedChoiceForSource);
+  const armedNeedsSourceDoc =
+    /(^|\/)vibe-(cp-ingest|tasks)$/.test(vibeSourceRootId(workflows, armedChoiceForSource));
   const [cpDocOptions, setCpDocOptions] = useState<string[]>([]);
   useEffect(() => {
     if (!armedNeedsSourceDoc || !client.listWorkspaceFiles || !selectedProjectPath) {
@@ -1517,7 +1518,9 @@ export function ChatInput(): React.ReactElement {
               const choice = options.find((f) => rawChoice === f || rawChoice.endsWith(`/${f}`)) ?? rawChoice;
               // Clone refs are storage UUIDs — show the workflow name.
               const labelFor = (f: string) => workflows.find((w) => w.id === f)?.name ?? f;
-              const needsSourceDoc = /(^|\/)vibe-(cp-ingest|tasks)$/.test(choice);
+              // CP-doc gating resolves through clone UUIDs to the family
+              // root, so a vibe-tasks clone gets the picker like the original.
+              const needsSourceDoc = /(^|\/)vibe-(cp-ingest|tasks)$/.test(vibeSourceRootId(workflows, choice));
               return (
                 <div className="composer-armed-flow" role="status">
                   <span className="composer-armed-label">

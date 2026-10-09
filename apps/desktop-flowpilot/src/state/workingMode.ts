@@ -130,6 +130,34 @@ export interface VibeCloneRow {
 }
 
 /**
+ * Resolve a picker ref to its vibe family root for source-doc gating: bare
+ * and pack-prefixed ids pass through; mirror rows yield their pack id;
+ * clone UUIDs walk their cloned_from chain to the root pack id.
+ * Unresolvable clone chains yield "" (fail closed — no picker).
+ * Plain passthrough for unknown refs preserves the historical regex
+ * behavior on static entries.
+ */
+export function vibeSourceRootId<T extends VibeCloneRow>(workflows: T[], ref: string): string {
+  const raw = (ref ?? "").trim();
+  if (!raw) return "";
+  const byId = new Map(workflows.map((w) => [w.id, w]));
+  const row = byId.get(raw);
+  if (!row) return bareFlowId(raw);
+  if (row.packFlowId) return bareFlowId(row.packFlowId);
+  let cur: T | undefined = row;
+  const seen = new Set<string>();
+  for (let i = 0; i < 8 && cur && !seen.has(cur.id); i++) {
+    seen.add(cur.id);
+    const parent = cur.clonedFrom ?? null;
+    if (!parent) return "";
+    const parentRow = byId.get(parent);
+    if (!parentRow) return "";
+    if (parentRow.packFlowId) return bareFlowId(parentRow.packFlowId);
+    cur = parentRow;
+  }
+  return "";
+}
+/**
  * Row ids whose cloned_from chain roots at a vibe built-in — user-startable
  * (vibe-ingest / vibe-cp-ingest / vibe-tasks / vibe-adopt) or system-only
  * (vibe-sprint / vibe-owner-debate / vibe-adopt-sprint). A clone keeps its

@@ -5,7 +5,7 @@
 // a run happens to be driven by one.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { filterWorkflowsForWorkingMode, isSystemVibeFlowId, userFlowSelectableForMode, vibeCloneIds, workflowSelectOptions } from "./workingMode";
+import { filterWorkflowsForWorkingMode, isSystemVibeFlowId, userFlowSelectableForMode, vibeCloneIds, vibeSourceRootId, workflowSelectOptions } from "./workingMode";
 
 const USER_ROWS = [
   { id: "wf-ingest", packFlowId: "vibe-ingest" },
@@ -79,4 +79,22 @@ test("userFlowSelectableForMode admits vibe-rooted clones in vibe mode", () => {
   assert.ok(!userFlowSelectableForMode("vibe", "plain-uuid", ids));
   assert.ok(!userFlowSelectableForMode("vibe", "clone-uuid-1"));
   assert.ok(userFlowSelectableForMode("dev", "clone-uuid-1", ids));
+});
+
+// CP-doc gating must see through clone UUIDs to the family root: a
+// vibe-tasks clone needs the "Select CP doc" picker like the original.
+test("vibeSourceRootId resolves picker refs to the family root", () => {
+  const rows = [
+    ...CLONE_ROWS,
+    { id: "mirror-tasks-uuid", packFlowId: "vibe-tasks" },
+    { id: "mirror-ingest-uuid", packFlowId: "vibe-ingest" },
+  ];
+  assert.equal(vibeSourceRootId(rows, "vibe-tasks"), "vibe-tasks");
+  assert.equal(vibeSourceRootId(rows, "flowpilot-core-flow-pack/vibe-cp-ingest"), "vibe-cp-ingest");
+  assert.equal(vibeSourceRootId(rows, "clone-uuid-1"), "vibe-tasks");
+  assert.equal(vibeSourceRootId(rows, "clone-uuid-2"), "vibe-tasks");
+  assert.equal(vibeSourceRootId(rows, "clone-uuid-sprint"), "vibe-sprint");
+  assert.equal(vibeSourceRootId(rows, "plain-uuid"), "");
+  assert.equal(vibeSourceRootId(rows, "gone-uuid"), "gone-uuid");
+  assert.equal(vibeSourceRootId(rows, ""), "");
 });
