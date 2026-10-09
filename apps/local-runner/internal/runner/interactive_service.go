@@ -11815,7 +11815,12 @@ func resolvePinnedFlowRefForForward(rs *interactiveRun) (string, *apiErr) {
 // are present.
 func (s *InteractiveService) runFirstTurnFences(ctx context.Context, rs *interactiveRun, flowRef string, in TurnInput) *apiErr {
 	if err := workingmode.FlowAllowedForWorkingMode(rs.workingMode, flowRef, "user"); err != nil {
-		return mapWorkingModeError(err)
+		// A user-owned clone of a vibe user-startable flow carries a
+		// catalog UUID — the ancestry walk re-admits it. NOTE: called with
+		// s.mu held (see above) — read the store field directly.
+		if !allowVibeCloneUserStart(ctx, s.flowDefinitionStore, rs.workingMode, flowRef) {
+			return mapWorkingModeError(err)
+		}
 	}
 	if isVibeCpSourcedFlowID(workingmode.BareFlowID(flowRef)) {
 		fenceIn := in

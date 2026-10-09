@@ -33,6 +33,12 @@ export interface Workflow {
    * the row id is a storage UUID that says nothing about the flow family.
    */
   packFlowId?: string | null;
+  /**
+   * Source row id for cloned workflows (null/absent otherwise). Lets the
+   * working-mode filter resolve a clone's family through its cloned_from
+   * chain — a clone keeps its source's role.
+   */
+  clonedFrom?: string | null;
 }
 
 /** LSP server presence for a workspace (GET /client/lsp-status). */

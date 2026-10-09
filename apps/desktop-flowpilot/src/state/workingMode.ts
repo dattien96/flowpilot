@@ -89,12 +89,17 @@ function isVibeFamilyFlowId(id: string): boolean {
  * (workflow row) UUID. Vibe mode allows only the two user vibe flows; dev
  * allows the harness five plus untracked catalog ids and rejects every
  * vibe-family or hidden id.
+ *
+ * `vibeCloneIds` optionally carries row ids whose cloned_from ancestry roots
+ * at a vibe user-startable built-in (see vibeCloneIds below): a clone keeps
+ * its source's role, so those ids pass the vibe branch. Absent set fails
+ * closed, preserving the pre-clone behavior exactly.
  */
-export function userFlowSelectableForMode(mode: string | undefined, flowIdOrRef: string | undefined): boolean {
+export function userFlowSelectableForMode(mode: string | undefined, flowIdOrRef: string | undefined, vibeCloneIds?: Set<string>): boolean {
   const id = bareFlowId(flowIdOrRef);
   if (!id || HIDDEN_FLOW_IDS.has(id)) return false;
   if (wireWorkingMode(mode) === WORKING_MODE_VIBE) {
-    return VIBE_USER_FLOW_IDS.has(id);
+    return VIBE_USER_FLOW_IDS.has(id) || (vibeCloneIds?.has(id) ?? false);
   }
   return !isVibeFamilyFlowId(id);
 }
@@ -107,8 +112,45 @@ export function userFlowSelectableForMode(mode: string | undefined, flowIdOrRef:
 export function filterWorkflowsForWorkingMode<T extends { id: string; packFlowId?: string | null }>(
   workflows: T[],
   mode: string | undefined,
+  vibeCloneIds?: Set<string>,
 ): T[] {
-  return workflows.filter((w) => userFlowSelectableForMode(mode, w.packFlowId ?? w.id));
+  return workflows.filter((w) => userFlowSelectableForMode(mode, w.packFlowId ?? w.id, vibeCloneIds));
+}
+
+/** Minimal row shape for clone-ancestry resolution (clone keeps its role). */
+export interface VibeCloneRow {
+  id: string;
+  packFlowId?: string | null;
+  clonedFrom?: string | null;
+}
+
+/**
+ * Row ids whose cloned_from chain roots at a vibe user-startable built-in
+ * (vibe-ingest / vibe-cp-ingest / vibe-tasks / vibe-adopt). Chains rooted
+ * at system-only flows, broken chains (parent not in store), cycles, and
+ * rows that already carry a pack identity are all excluded — fail closed.
+ * Feed the result into userFlowSelectableForMode/filterWorkflowsForWorkingMode.
+ */
+export function vibeCloneIds<T extends VibeCloneRow>(workflows: T[]): Set<string> {
+  const byId = new Map(workflows.map((w) => [w.id, w]));
+  const out = new Set<string>();
+  const inheritsVibeUser = (id: string, depth: number, seen: Set<string>): boolean => {
+    if (depth > 8 || seen.has(id)) return false;
+    const row = byId.get(id);
+    const parent = row?.clonedFrom ?? null;
+    if (!parent) return false;
+    seen.add(id);
+    const parentRow = byId.get(parent);
+    if (!parentRow) return false;
+    if (parentRow.packFlowId) return VIBE_USER_FLOW_IDS.has(bareFlowId(parentRow.packFlowId));
+    return inheritsVibeUser(parent, depth + 1, seen);
+  };
+  for (const w of workflows) {
+    if (!w.packFlowId && (w.clonedFrom ?? null) && inheritsVibeUser(w.id, 0, new Set())) {
+      out.add(w.id);
+    }
+  }
+  return out;
 }
 
 export function isCodingPlanCPPath(p: string | undefined): boolean {

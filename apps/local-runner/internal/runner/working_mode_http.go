@@ -67,13 +67,18 @@ func (s *InteractiveService) enforceWorkingModeStart(in *StartRunInput) *apiErr 
 	s.mu.Lock()
 	store := s.flowDefinitionStore
 	s.mu.Unlock()
+	rawFlowID := flowID
 	if rec, rerr := NewFlowDefinitionResolver(store).
 		ResolveFlowRef(context.Background(), flowID); rerr == nil &&
 		strings.TrimSpace(rec.FlowRef) != "" {
 		flowID = rec.FlowRef
 	}
 	if err := workingmode.FlowAllowedForWorkingMode(mode, flowID, "user"); err != nil {
-		return mapWorkingModeError(err)
+		// A user-owned clone of a vibe user-startable flow carries a
+		// catalog UUID, not a pack ref — the ancestry walk re-admits it.
+		if !allowVibeCloneUserStart(context.Background(), store, mode, rawFlowID) {
+			return mapWorkingModeError(err)
+		}
 	}
 	if strings.TrimSpace(in.FlowRef) != "" && in.ChatMode == "" && strings.TrimSpace(in.WorkflowID) == "" {
 		in.ChatMode = "normal_chat"

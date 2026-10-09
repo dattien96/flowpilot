@@ -20,6 +20,9 @@ export function mapNavigatorWorkflow(workflow: AdminWorkflow): Workflow {
     // builtin mirrors are indistinguishable from user workflows and the Flow
     // tab's select shows vibe flows in dev mode (and vice versa).
     packFlowId: workflow.packFlowId ?? null,
+    // Clone-keeps-role: cloned_from feeds the filter's ancestry walk so a
+    // user copy of a vibe flow stays startable in vibe mode.
+    clonedFrom: workflow.clonedFrom ?? null,
   };
 }
 

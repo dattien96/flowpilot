@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { sidebarScrollRestoreTarget } from "@/components/sidebarScrollPreserve";
 import { filterNavigatorWorkflows } from "@/app/navigatorCatalog";
-import { filterWorkflowsForWorkingMode, isSystemVibeFlowId, userFlowSelectableForMode, workflowSelectOptions } from "@/state/workingMode";
+import { filterWorkflowsForWorkingMode, isSystemVibeFlowId, userFlowSelectableForMode, vibeCloneIds, workflowSelectOptions } from "@/state/workingMode";
 import { Navigator } from "@/components/Navigator";
 import { ChatInput } from "@/components/ChatInput";
 import { TerminalPanel } from "@/components/TerminalPanel";
@@ -60,9 +60,10 @@ function WorkflowControlPanel(): React.ReactElement | null {
   // CA-1070: the Flow tab's select must offer only flows the current working
   // mode can actually start — dev hides vibe-family mirrors, vibe shows only
   // the two user-startable vibe flows (mirrors the runner's family gate).
+  const vibeClones = useMemo(() => vibeCloneIds(workflows), [workflows]);
   const visibleWorkflows = useMemo(
-    () => filterWorkflowsForWorkingMode(filterNavigatorWorkflows(workflows, selectedProjectId), workingMode),
-    [selectedProjectId, workflows, workingMode],
+    () => filterWorkflowsForWorkingMode(filterNavigatorWorkflows(workflows, selectedProjectId), workingMode, vibeClones),
+    [selectedProjectId, workflows, workingMode, vibeClones],
   );
   // BUG-1199: a reopened run's flow may resolve to a row the mode filter
   // keeps out of the startable set (e.g. a catalog row from another mode) —
@@ -177,7 +178,7 @@ function WorkflowControlPanel(): React.ReactElement | null {
                 </option>
                 {optionWorkflows.map((workflow) => {
                   const resolves = Boolean(workflow.model || project?.model);
-                  const startable = userFlowSelectableForMode(workingMode, workflow.packFlowId ?? workflow.id);
+                  const startable = userFlowSelectableForMode(workingMode, workflow.packFlowId ?? workflow.id, vibeClones);
                   return (
                     <option key={workflow.id} value={workflow.id} disabled={!resolves || !startable}>
                       {workflow.name} {!resolves ? " (No model set)" : ""}

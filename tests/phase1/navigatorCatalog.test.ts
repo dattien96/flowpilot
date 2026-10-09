@@ -46,6 +46,7 @@ test("mapNavigatorWorkflow keeps workflow ids and normalizes global workflows", 
       model: undefined,
       yoloMode: false,
       packFlowId: null,
+      clonedFrom: null,
     },
   );
 });
@@ -94,6 +95,9 @@ test("mapNavigatorWorkflow carries modelOverride and yoloMode through to the nav
       // CA-1070: packFlowId must carry through — the working-mode flow filter
       // keys the vibe/dev family check off it.
       packFlowId: "review-loop",
+      // Clone-keeps-role: clonedFrom must carry through for the filter's
+      // ancestry walk.
+      clonedFrom: null,
     },
   );
 });

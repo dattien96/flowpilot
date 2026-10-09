@@ -569,8 +569,15 @@ func (s *InteractiveService) handleStartTurn(w http.ResponseWriter, r *http.Requ
 		s.mu.Unlock()
 		if run != nil {
 			if err := workingmode.FlowAllowedForWorkingMode(mode, flowRef, "user"); err != nil {
-				writeInteractiveError(w, mapWorkingModeError(err))
-				return
+				// A user-owned clone of a vibe user-startable flow carries
+				// a catalog UUID — the ancestry walk re-admits it.
+				s.mu.Lock()
+				store := s.flowDefinitionStore
+				s.mu.Unlock()
+				if !allowVibeCloneUserStart(r.Context(), store, mode, flowRef) {
+					writeInteractiveError(w, mapWorkingModeError(err))
+					return
+				}
 			}
 		}
 	}

@@ -34,7 +34,7 @@ import type { SupportedModel } from "@flowpilot/client-core";
 import type { LocalRunnerProvider } from "@flowpilot/client-core";
 import { createRunnerClient } from "@/client/createRunnerClient";
 import { RunnerApiError } from "@/client/HttpWsRunnerClient";
-import { bareFlowId, detectVibeEntry, loadWorkingMode, persistWorkingMode, userFlowSelectableForMode } from "./workingMode";
+import { bareFlowId, detectVibeEntry, loadWorkingMode, persistWorkingMode, userFlowSelectableForMode, vibeCloneIds } from "./workingMode";
 import type { ScenarioName } from "@/client/mockData";
 import { ideBridge } from "@/client/ideBridge";
 import { getAdminUseCases } from "@/clientCore";
@@ -1595,7 +1595,7 @@ export const useStore = create<AppState>((set, get) => ({
       state.workflows.find((w) => w.id === workflowId)?.packFlowId ?? workflowId ?? "",
     );
     set({
-      pendingFlowArm: userFlowSelectableForMode("vibe", bare)
+      pendingFlowArm: userFlowSelectableForMode("vibe", bare, vibeCloneIds(state.workflows))
         ? { flowRef: bare }
         : undefined,
     });
@@ -1987,7 +1987,7 @@ export const useStore = create<AppState>((set, get) => ({
     // A selected workflow can fall outside the new mode's startable set —
     // drop it so the Flow tab select can't carry a forbidden pick.
     const selected = get().workflows.find((w) => w.id === get().selectedWorkflowId);
-    if (selected && !userFlowSelectableForMode(wired, selected.packFlowId ?? selected.id)) {
+    if (selected && !userFlowSelectableForMode(wired, selected.packFlowId ?? selected.id, vibeCloneIds(get().workflows))) {
       set({ selectedWorkflowId: undefined });
     }
     // CA-1084: a pre-run arm is only an intent for the picked surface —
@@ -2464,7 +2464,7 @@ export const useStore = create<AppState>((set, get) => ({
       );
       // Fail closed: a ref outside the vibe user set keeps the immediate
       // workflowId path so the runner's create-time mode gate rejects it.
-      return userFlowSelectableForMode("vibe", bare) ? bare : "";
+      return userFlowSelectableForMode("vibe", bare, vibeCloneIds(get().workflows)) ? bare : "";
     })();
     // CA-1084: a pre-run arm (tab select or armed-bar pick) carries the same
     // intent — honor it on the first send even when launchMode didn't derive
