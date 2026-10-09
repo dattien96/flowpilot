@@ -181,7 +181,11 @@ test("saveWorkflow allows editing when editable=true", async () => {
 
 test("cloneWorkflow creates an editable, non-builtin copy referencing the source", async () => {
   const supabase = new FakeSupabase();
-  const sourceRow = builtinWorkflowRow();
+  const sourceRow = builtinWorkflowRow({
+    provider_override: "codex",
+    model_override: "gpt-5.4",
+    reasoning_effort_override: "high",
+  });
   const clonedRow = builtinWorkflowRow({
     id: "wf-clone-1",
     is_builtin: false,
@@ -206,6 +210,13 @@ test("cloneWorkflow creates an editable, non-builtin copy referencing the source
   assert.equal(cloned.editable, true);
   assert.equal(cloned.clonedFrom, "wf-builtin-1");
   assert.equal(cloned.name, "My Review Loop");
+
+  // Clone must not copy the flow-level model (user picks a different one),
+  // while provider/reasoning tiers are kept from the source.
+  const insertPayload = workflowsTable.insertPayloads[0] as Record<string, unknown>;
+  assert.equal(insertPayload.model_override, null);
+  assert.equal(insertPayload.provider_override, "codex");
+  assert.equal(insertPayload.reasoning_effort_override, "high");
 });
 
 // Regression test for BUG-262 (+ BUG-282): cloneWorkflow used to reuse the
@@ -281,6 +292,9 @@ test("cloneWorkflow gives every cloned step its own step_definitions row, not th
   assert.notEqual(newStepType, sourceStepType, "clone must not reuse the source's step_type");
   assert.equal(newStepType, `${cloned.id}__${sourceStepType}`);
   assert.equal(newDefinitionRows[0].node_id, "synthesis");
+  // Clone must not copy the step-level model (seeded "claude-haiku" above);
+  // the user picks a different one for the copy.
+  assert.equal(newDefinitionRows[0].model, null);
   // BUG-282: flow topology is not stored on the step definition, so the clone
   // must not copy depends_on_json — even though the seeded source row (a legacy
   // row from before the column was dropped) still carries it.
@@ -294,6 +308,46 @@ test("cloneWorkflow gives every cloned step its own step_definitions row, not th
   assert.equal(newRelationRows.length, 1);
   assert.equal(newRelationRows[0].step_type, newStepType);
   assert.equal(newRelationRows[0].workflow_id, cloned.id);
+});
+
+test("cloneWorkflow strips the node model tier from the definition_json snapshot", async () => {
+  const supabase = new FakeSupabase();
+  const sourceRow = builtinWorkflowRow({
+    model_override: "gpt-5.4",
+    definition_json: {
+      ID: "review-loop",
+      Nodes: [
+        { ID: "synthesis", Run: "delegate", Behavior: "agent.delegate", Model: "claude-haiku" },
+      ],
+      Tools: ["tool-a"],
+    },
+  });
+  const clonedRow = builtinWorkflowRow({
+    id: "wf-clone-1",
+    is_builtin: false,
+    editable: true,
+    cloned_from: "wf-builtin-1",
+    name: "My Review Loop",
+  });
+  const workflowsResponses = [sourceRow, clonedRow];
+  const workflowsTable = new FakeTable({});
+  (workflowsTable as any).single = () =>
+    Promise.resolve({ data: workflowsResponses.shift(), error: null });
+  supabase.register("workflows", workflowsTable);
+  supabase.register("workflow_steps", new FakeTable({ list: { data: [], error: null } }));
+
+  const repo = new SupabaseAdminRepository(supabase as any);
+  await repo.cloneWorkflow("wf-builtin-1", "My Review Loop");
+
+  const insertPayload = workflowsTable.insertPayloads[0] as Record<string, unknown>;
+  assert.equal(insertPayload.model_override, null);
+  const snapshot = insertPayload.definition_json as Record<string, unknown>;
+  const nodes = snapshot.Nodes as Array<Record<string, unknown>>;
+  assert.equal(nodes.length, 1);
+  assert.ok(!("Model" in nodes[0]), "clone snapshot must not carry the old node model");
+  assert.ok(!("model" in nodes[0]), "clone snapshot must not carry the old node model");
+  assert.equal(nodes[0].Run, "delegate");
+  assert.deepEqual(snapshot.Tools, ["tool-a"]);
 });
 
 // Regression test for BUG-NOTE-CP42 #18: saveWorkflow used to DELETE every

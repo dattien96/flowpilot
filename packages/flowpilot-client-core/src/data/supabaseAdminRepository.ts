@@ -697,13 +697,50 @@ export class SupabaseAdminRepository implements
     assertNoError(stepsError, "Unable to load workflow steps to clone.");
     const sourceSteps = (stepRows ?? []).map(mapWorkflowStep);
 
+    // Clone does not carry the source's model tier inside the
+    // definition_json snapshot either: the runner restores a node's model
+    // from the snapshot whenever the row column is empty, so a verbatim
+    // snapshot would silently bring the old model back at runtime. Strip
+    // only the node-level Model keys (Go marshals them as "Model"; accept
+    // lowercase too); every other schema-less field passes through
+    // untouched, and a missing/unparsable snapshot stays absent.
+    const stripSnapshotModel = (snapshot: unknown): unknown => {
+      const stripNodes = (value: unknown): unknown => {
+        if (!Array.isArray(value)) return value;
+        return value.map((node) => {
+          if (node === null || typeof node !== "object" || Array.isArray(node)) return node;
+          const clean = { ...(node as Record<string, unknown>) };
+          delete clean.Model;
+          delete clean.model;
+          return clean;
+        });
+      };
+      if (typeof snapshot === "string") {
+        try {
+          return stripSnapshotModel(JSON.parse(snapshot));
+        } catch {
+          return snapshot;
+        }
+      }
+      if (snapshot === null || typeof snapshot !== "object" || Array.isArray(snapshot)) return snapshot;
+      const record = snapshot as Record<string, unknown>;
+      const out: Record<string, unknown> = { ...record };
+      delete out.Model;
+      delete out.model;
+      if ("Nodes" in out) out.Nodes = stripNodes(out.Nodes);
+      if ("nodes" in out) out.nodes = stripNodes(out.nodes);
+      return out;
+    };
+
     const insertPayload = {
       project_id: source.projectId,
       name,
       description: source.description,
       is_template: source.isTemplate,
       provider_override: source.providerOverride,
-      model_override: source.modelOverride,
+      // Clone starts with no flow-level model so the user picks a different
+      // one for the copy; provider/reasoning tiers are kept from the source.
+      model_override: null,
       reasoning_effort_override: source.reasoningEffortOverride,
       yolo_mode: source.yoloMode,
       is_builtin: false,
@@ -725,14 +762,15 @@ export class SupabaseAdminRepository implements
       // BUG-474 (live-path follow-up): the runner restores schema-less
       // execution fields (posture/contextProfile/config/tools/
       // contextProfiles) from workflows.definition_json. A clone whose
-      // source already carries the snapshot keeps it verbatim; a built-in
+      // source already carries the snapshot keeps it (minus the node model
+      // tier, stripped above); a built-in
       // source carries none — the runner's read-time heal then rebuilds it
       // from cloned_from → the mirror's embedded pack flow. The key is only
       // sent when the source has a snapshot: PostgREST rejects unknown
       // columns outright, so sending the key unconditionally would break
       // cloning entirely on projects that have not run the
       // definition_json migration yet.
-      ...(sourceRow.definition_json ? { definition_json: sourceRow.definition_json } : {}),
+      ...(sourceRow.definition_json ? { definition_json: stripSnapshotModel(sourceRow.definition_json) } : {}),
       updated_at: now(),
     };
     const { data: cloned, error: cloneError } = await this.supabase
@@ -789,7 +827,9 @@ export class SupabaseAdminRepository implements
           required_skills: definition.requiredSkills,
           team_role: definition.teamRole,
           subagent: definition.subagent,
-          model: definition.model,
+          // Clone starts with no step-level model (user picks a different
+          // one); the reasoning tier is kept from the source definition.
+          model: null,
           reasoning_effort: definition.reasoningEffort,
           yolo_mode: definition.yoloMode,
           agent_type: definition.agentType,
