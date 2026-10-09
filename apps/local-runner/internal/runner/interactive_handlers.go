@@ -513,10 +513,19 @@ func (s *InteractiveService) handleStartTurn(w http.ResponseWriter, r *http.Requ
 		writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "invalid_request", "prompt is required"))
 		return
 	}
-	if !workingmode.SkipChatOrchestrationCheck(body.FlowRef) {
-		if err := validateChatOrchestrationSelection(body.SubMode, body.FlowRef); err != nil {
-			writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "invalid_flow_ref", err.Error()))
-			return
+	// Clone-keeps-role: a mirror-rooted clone UUID is a Flow-Mode flow
+	// authorized by the family gate below, not a chat orchestration pick —
+	// defer it instead of rejecting it as an unknown chat option. Empty
+	// flowRefs skip both checks (validation already passes them).
+	if ref := strings.TrimSpace(body.FlowRef); ref != "" && !workingmode.SkipChatOrchestrationCheck(ref) {
+		s.mu.Lock()
+		cloneCheckStore := s.flowDefinitionStore
+		s.mu.Unlock()
+		if vibeCloneRootPackID(r.Context(), cloneCheckStore, ref) == "" {
+			if err := validateChatOrchestrationSelection(body.SubMode, body.FlowRef); err != nil {
+				writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "invalid_flow_ref", err.Error()))
+				return
+			}
 		}
 	}
 	// BUG-174: a Flow-Mode workflow-picker launch sends a workflowID but no

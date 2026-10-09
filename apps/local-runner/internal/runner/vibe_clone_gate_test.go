@@ -80,3 +80,51 @@ func TestAllowVibeCloneStart(t *testing.T) {
 		}
 	}
 }
+
+// TestVibeCloneRootPackID pins the ancestry root resolver backing the
+// chat-orchestration deferral: any mirror-rooted clone chain resolves to
+// its root pack id; mirrors themselves never inherit (CA-1078).
+func TestVibeCloneRootPackID(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeFlowDefinitionStore()
+	store.byRef["flowpilot-core-flow-pack/vibe-tasks"] = FlowDefinitionRecord{
+		FlowRef:    "flowpilot-core-flow-pack/vibe-tasks",
+		Source:     "supabase_builtin_mirror",
+		PackID:     "flowpilot-core-flow-pack",
+		PackFlowID: "vibe-tasks",
+	}
+	store.byRef["mirror-uuid-tasks"] = FlowDefinitionRecord{
+		FlowRef:    "flowpilot-core-flow-pack/vibe-tasks",
+		Source:     "supabase_builtin_mirror",
+		PackID:     "flowpilot-core-flow-pack",
+		PackFlowID: "vibe-tasks",
+	}
+	store.byRef["clone-uuid-1"] = FlowDefinitionRecord{
+		FlowRef:    "clone-uuid-1",
+		Source:     "supabase_user_definition",
+		ClonedFrom: "mirror-uuid-tasks",
+	}
+	store.byRef["plain-uuid"] = FlowDefinitionRecord{
+		FlowRef:  "plain-uuid",
+		Source:   "supabase_user_definition",
+		Editable: true,
+	}
+
+	cases := []struct {
+		ref   string
+		store FlowDefinitionStore
+		want  string
+	}{
+		{"clone-uuid-1", store, "vibe-tasks"},
+		{"mirror-uuid-tasks", store, ""},
+		{"flowpilot-core-flow-pack/vibe-tasks", store, ""},
+		{"plain-uuid", store, ""},
+		{"missing-uuid", store, ""},
+		{"clone-uuid-1", nil, ""},
+	}
+	for _, tc := range cases {
+		if got := vibeCloneRootPackID(ctx, tc.store, tc.ref); got != tc.want {
+			t.Errorf("vibeCloneRootPackID(%q) = %q, want %q", tc.ref, got, tc.want)
+		}
+	}
+}

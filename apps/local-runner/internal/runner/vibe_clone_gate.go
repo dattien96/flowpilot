@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"strings"
 
 	"flowpilot-runner/internal/workingmode"
 )
@@ -30,4 +31,27 @@ func allowVibeCloneStart(ctx context.Context, store FlowDefinitionStore, mode, f
 		return rec.ClonedFrom, rec.PackFlowID, true
 	}
 	return workingmode.CloneInheritsVibeStart(flowID, lookup)
+}
+
+// vibeCloneRootPackID resolves a catalog-UUID flowRef through cloned_from
+// ancestry to its root pack flow id ("" when none). It backs the
+// chat-orchestration deferral below: a mirror-rooted clone is a Flow-Mode
+// flow authorized by the family gate, not a chat orchestration pick.
+// Mirrors themselves never inherit (CA-1078 laundering pin); the main
+// family gate owns those refs.
+func vibeCloneRootPackID(ctx context.Context, store FlowDefinitionStore, flowID string) string {
+	if store == nil {
+		return ""
+	}
+	lookup := func(ref string) (string, string, bool) {
+		rec, ok, err := store.GetByRef(ctx, ref)
+		if err != nil || !ok {
+			return "", "", false
+		}
+		return rec.ClonedFrom, rec.PackFlowID, true
+	}
+	if _, packFlowID, found := lookup(strings.TrimSpace(flowID)); !found || workingmode.BareFlowID(packFlowID) != "" {
+		return ""
+	}
+	return workingmode.VibeAncestorRoot(flowID, lookup)
 }
