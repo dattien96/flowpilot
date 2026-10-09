@@ -17,7 +17,7 @@ import {
 import { supportsVisionFor } from "./visionProviders";
 import { ContextNotice, UsageFigures } from "./ContextUsageNotice";
 import { draftKeyFor } from "@/state/drafts";
-import { flowPickerOptions, isCodingPlanCPPath } from "@/state/workingMode";
+import { flowPickerOptions, isCodingPlanCPPath, vibeCloneIds } from "@/state/workingMode";
 import { BotIcon, CaretIcon, CheckIcon, CloseIcon, MenuIcon, PaperclipIcon, SendIcon } from "@/components/icons";
 
 function CodexIcon(): React.ReactElement {
@@ -355,6 +355,7 @@ export function ChatInput(): React.ReactElement {
   const requestManualAccountSwitch = useStore((s) => s.requestManualAccountSwitch);
   const backToMainRun = useStore((s) => s.backToMainRun);
   const pendingFlowArm = useStore((s) => s.pendingFlowArm);
+  const workflows = useStore((s) => s.workflows);
   const setPendingFlowArmSourceDoc = useStore((s) => s.setPendingFlowArmSourceDoc);
   const armPendingFlow = useStore((s) => s.armPendingFlow);
   const flowStarted = useStore((s) => s.flowStarted);
@@ -1508,12 +1509,14 @@ export function ChatInput(): React.ReactElement {
               // CA-1084: no runId gate — selectWorkflow pre-arms on pick so
               // the bar shows before the first message, and Start flow on an
               // empty session mints the armed run + forwards in one gesture.
-              const options = flowPickerOptions(workingMode);
+              const options = flowPickerOptions(workingMode, [...vibeCloneIds(workflows)]);
               const rawChoice = armedFlowChoice || pendingFlowArm?.flowRef || options[0] || "";
               // History/handle refs can be pack-prefixed ("<pack>/<id>") while
               // the picker lists bare ids — match by suffix so the select
               // never renders blank.
               const choice = options.find((f) => rawChoice === f || rawChoice.endsWith(`/${f}`)) ?? rawChoice;
+              // Clone refs are storage UUIDs — show the workflow name.
+              const labelFor = (f: string) => workflows.find((w) => w.id === f)?.name ?? f;
               const needsSourceDoc = /(^|\/)vibe-(cp-ingest|tasks)$/.test(choice);
               return (
                 <div className="composer-armed-flow" role="status">
@@ -1531,7 +1534,7 @@ export function ChatInput(): React.ReactElement {
                       aria-label="Flow to start"
                     >
                       {options.map((f) => (
-                        <option key={f} value={f}>{f}</option>
+                        <option key={f} value={f}>{labelFor(f)}</option>
                       ))}
                     </select>
                     {needsSourceDoc && (

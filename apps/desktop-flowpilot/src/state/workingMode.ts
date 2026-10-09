@@ -19,13 +19,18 @@ export function wireWorkingMode(labelOrMode: string | undefined): WorkingMode {
   return WORKING_MODE_DEV;
 }
 
-export function flowPickerOptions(mode: string | undefined): string[] {
+/**
+ * Armed-bar quick-pick refs. Static entries first; `cloneRefs` (vibe-clone
+ * row UUIDs from vibeCloneIds) append after — a clone keeps its source's
+ * role. Omitted/empty keeps the exact historical lists.
+ */
+export function flowPickerOptions(mode: string | undefined, cloneRefs: string[] = []): string[] {
   if (wireWorkingMode(mode) === WORKING_MODE_VIBE) {
     // CP-90: vibe-tasks = third entry (locked CP + existing parented tasks).
     // Task-459: vibe-adopt = fourth entry (adopt code written outside FlowPilot).
-    return ["vibe-ingest", "vibe-cp-ingest", "vibe-tasks", "vibe-adopt"];
+    return ["vibe-ingest", "vibe-cp-ingest", "vibe-tasks", "vibe-adopt", ...cloneRefs];
   }
-  return [...DEV_HARNESS_FIVE];
+  return [...DEV_HARNESS_FIVE, ...cloneRefs];
 }
 
 // --- Flow-tab pickers ---------------------------------------------------

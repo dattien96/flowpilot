@@ -22,6 +22,19 @@ test("chrome toggle normal hides vibe-*", () => {
   assert.equal(ids.some((id) => id.startsWith("vibe-")), false);
 });
 
+// Clone-keeps-role: the armed-bar picker appends vibe-rooted clone refs
+// (catalog UUIDs) after the static entries; no-arg behavior is unchanged.
+test("flow picker appends vibe-rooted clone refs when provided", () => {
+  assert.deepEqual(flowPickerOptions("vibe", ["clone-uuid-1"]), [
+    "vibe-ingest",
+    "vibe-cp-ingest",
+    "vibe-tasks",
+    "vibe-adopt",
+    "clone-uuid-1",
+  ]);
+  assert.deepEqual(flowPickerOptions("dev", ["clone-uuid-1"]), [...DEV_HARNESS_FIVE, "clone-uuid-1"]);
+});
+
 test("label Normal never sent on the wire", () => {
   assert.equal(wireWorkingMode("Normal"), "dev");
   assert.equal(wireWorkingMode("normal"), "dev");
