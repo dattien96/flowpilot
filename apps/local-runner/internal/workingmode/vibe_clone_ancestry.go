@@ -13,12 +13,12 @@ type FlowAncestryLookup func(ref string) (clonedFrom, packFlowID string, found b
 // pathological cycle, which fails closed.
 const maxCloneAncestryDepth = 8
 
-// VibeUserAncestorRoot walks cloned_from ancestry and returns the root pack
+// VibeAncestorRoot walks cloned_from ancestry and returns the root pack
 // flow id when the chain lands on a built-in mirror row, else "".
 // Fail-closed: unknown refs, broken chains, and cycles all yield "".
 // Canonical pack ids are NOT resolved here — they are the main family
 // gate's job; the walker only serves catalog-UUID refs the gate rejects.
-func VibeUserAncestorRoot(flowRef string, lookup FlowAncestryLookup) string {
+func VibeAncestorRoot(flowRef string, lookup FlowAncestryLookup) string {
 	if lookup == nil {
 		return ""
 	}
@@ -41,11 +41,24 @@ func VibeUserAncestorRoot(flowRef string, lookup FlowAncestryLookup) string {
 	return ""
 }
 
-// CloneInheritsVibeUserStart reports whether flowRef is a user-owned flow
-// whose cloned_from ancestry roots at a vibe user-startable built-in
-// (vibe-ingest / vibe-cp-ingest / vibe-tasks / vibe-adopt). Chains rooted
-// at system-only flows (vibe-sprint / vibe-owner-debate / vibe-adopt-sprint)
-// stay rejected, exactly like their canonical ids.
-func CloneInheritsVibeUserStart(flowRef string, lookup FlowAncestryLookup) bool {
-	return isVibeUser(VibeUserAncestorRoot(flowRef, lookup))
+// CloneInheritsVibeStart reports whether flowRef is a user-owned flow whose
+// cloned_from ancestry roots at a vibe built-in — user-startable (vibe-ingest
+// / vibe-cp-ingest / vibe-tasks / vibe-adopt) or system-only (vibe-sprint /
+// vibe-owner-debate / vibe-adopt-sprint). A clone keeps its source's role:
+// the runner and pickers treat it exactly as startable as the flow it was
+// copied from. Canonical ids stay governed by the main family gate alone.
+func CloneInheritsVibeStart(flowRef string, lookup FlowAncestryLookup) bool {
+	if lookup == nil {
+		return false
+	}
+	// Only user-owned rows (no pack identity of their own) may inherit a
+	// role through ancestry. A mirror/builtin row resolves to itself —
+	// admitting it here would launder a system flow through its catalog
+	// UUID (CA-1078 pin); the main family gate owns those refs.
+	_, packFlowID, found := lookup(strings.TrimSpace(flowRef))
+	if !found || BareFlowID(packFlowID) != "" {
+		return false
+	}
+	root := VibeAncestorRoot(flowRef, lookup)
+	return isVibeUser(root) || isVibeSystem(root)
 }

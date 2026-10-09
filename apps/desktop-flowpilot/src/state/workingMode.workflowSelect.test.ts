@@ -55,26 +55,27 @@ const CLONE_ROWS = [
   { id: "orphan-clone", clonedFrom: "gone-uuid" },
 ];
 
-test("vibeCloneIds resolves clone ancestry to vibe user roots", () => {
+test("vibeCloneIds resolves clone ancestry to vibe roots", () => {
   const ids = vibeCloneIds(CLONE_ROWS);
   assert.ok(ids.has("clone-uuid-1"));
   assert.ok(ids.has("clone-uuid-2"));
-  assert.ok(!ids.has("clone-uuid-sprint"));
+  // A sprint clone keeps the system role: admittable as a user-owned copy.
+  assert.ok(ids.has("clone-uuid-sprint"));
   assert.ok(!ids.has("plain-uuid"));
   assert.ok(!ids.has("orphan-clone"));
   assert.ok(!ids.has("mirror-tasks-uuid"));
 });
 
-test("vibe flow list includes clones of vibe user flows", () => {
+test("vibe flow list includes clones of vibe flows", () => {
   const rows = [...CLONE_ROWS, { id: "wf-ingest", packFlowId: "vibe-ingest" }];
   const ids = filterWorkflowsForWorkingMode(rows, "vibe", vibeCloneIds(rows)).map((w) => w.id).sort();
-  assert.deepEqual(ids, ["clone-uuid-1", "clone-uuid-2", "mirror-tasks-uuid", "wf-ingest"]);
+  assert.deepEqual(ids, ["clone-uuid-1", "clone-uuid-2", "clone-uuid-sprint", "mirror-tasks-uuid", "wf-ingest"]);
 });
 
 test("userFlowSelectableForMode admits vibe-rooted clones in vibe mode", () => {
   const ids = vibeCloneIds(CLONE_ROWS);
   assert.ok(userFlowSelectableForMode("vibe", "clone-uuid-1", ids));
-  assert.ok(!userFlowSelectableForMode("vibe", "clone-uuid-sprint", ids));
+  assert.ok(userFlowSelectableForMode("vibe", "clone-uuid-sprint", ids));
   assert.ok(!userFlowSelectableForMode("vibe", "plain-uuid", ids));
   assert.ok(!userFlowSelectableForMode("vibe", "clone-uuid-1"));
   assert.ok(userFlowSelectableForMode("dev", "clone-uuid-1", ids));

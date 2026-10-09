@@ -125,16 +125,18 @@ export interface VibeCloneRow {
 }
 
 /**
- * Row ids whose cloned_from chain roots at a vibe user-startable built-in
- * (vibe-ingest / vibe-cp-ingest / vibe-tasks / vibe-adopt). Chains rooted
- * at system-only flows, broken chains (parent not in store), cycles, and
- * rows that already carry a pack identity are all excluded — fail closed.
- * Feed the result into userFlowSelectableForMode/filterWorkflowsForWorkingMode.
+ * Row ids whose cloned_from chain roots at a vibe built-in — user-startable
+ * (vibe-ingest / vibe-cp-ingest / vibe-tasks / vibe-adopt) or system-only
+ * (vibe-sprint / vibe-owner-debate / vibe-adopt-sprint). A clone keeps its
+ * source's role. Chains with no provenance, broken chains (parent not in
+ * store), cycles, and rows that already carry a pack identity are all
+ * excluded — fail closed. Feed the result into
+ * userFlowSelectableForMode/filterWorkflowsForWorkingMode.
  */
 export function vibeCloneIds<T extends VibeCloneRow>(workflows: T[]): Set<string> {
   const byId = new Map(workflows.map((w) => [w.id, w]));
   const out = new Set<string>();
-  const inheritsVibeUser = (id: string, depth: number, seen: Set<string>): boolean => {
+  const inheritsVibe = (id: string, depth: number, seen: Set<string>): boolean => {
     if (depth > 8 || seen.has(id)) return false;
     const row = byId.get(id);
     const parent = row?.clonedFrom ?? null;
@@ -142,11 +144,14 @@ export function vibeCloneIds<T extends VibeCloneRow>(workflows: T[]): Set<string
     seen.add(id);
     const parentRow = byId.get(parent);
     if (!parentRow) return false;
-    if (parentRow.packFlowId) return VIBE_USER_FLOW_IDS.has(bareFlowId(parentRow.packFlowId));
-    return inheritsVibeUser(parent, depth + 1, seen);
+    if (parentRow.packFlowId) {
+      const root = bareFlowId(parentRow.packFlowId);
+      return VIBE_USER_FLOW_IDS.has(root) || VIBE_SYSTEM_FLOW_IDS.has(root);
+    }
+    return inheritsVibe(parent, depth + 1, seen);
   };
   for (const w of workflows) {
-    if (!w.packFlowId && (w.clonedFrom ?? null) && inheritsVibeUser(w.id, 0, new Set())) {
+    if (!w.packFlowId && (w.clonedFrom ?? null) && inheritsVibe(w.id, 0, new Set())) {
       out.add(w.id);
     }
   }

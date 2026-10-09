@@ -5,10 +5,10 @@ import (
 	"testing"
 )
 
-// TestAllowVibeCloneUserStart pins the clone-keeps-its-role contract: a
-// user-owned flow cloned from a vibe user-startable built-in may start with
-// user kind in vibe mode. Everything else stays rejected.
-func TestAllowVibeCloneUserStart(t *testing.T) {
+// TestAllowVibeCloneStart pins the clone-keeps-its-role contract: a
+// user-owned flow cloned from a vibe built-in (user-startable or system)
+// may start with user kind in vibe mode. Everything else stays rejected.
+func TestAllowVibeCloneStart(t *testing.T) {
 	ctx := context.Background()
 	store := newFakeFlowDefinitionStore()
 	tasksMirror := FlowDefinitionRecord{
@@ -65,15 +65,18 @@ func TestAllowVibeCloneUserStart(t *testing.T) {
 	}{
 		{"vibe", "clone-uuid-tasks", store, true},
 		{"vibe", "clone-uuid-tasks-copy", store, true},
-		{"vibe", "clone-uuid-sprint", store, false},
+		{"vibe", "clone-uuid-sprint", store, true},
+		// Mirror rows themselves never inherit (CA-1078 laundering pin).
+		{"vibe", "mirror-uuid-tasks", store, false},
+		{"vibe", "mirror-uuid-sprint", store, false},
 		{"vibe", "plain-uuid", store, false},
 		{"vibe", "missing-uuid", store, false},
 		{"vibe", "clone-uuid-tasks", nil, false},
 		{"dev", "clone-uuid-tasks", store, false},
 	}
 	for _, tc := range cases {
-		if got := allowVibeCloneUserStart(ctx, tc.store, tc.mode, tc.ref); got != tc.want {
-			t.Errorf("allowVibeCloneUserStart(%q, %q) = %v, want %v", tc.mode, tc.ref, got, tc.want)
+		if got := allowVibeCloneStart(ctx, tc.store, tc.mode, tc.ref); got != tc.want {
+			t.Errorf("allowVibeCloneStart(%q, %q) = %v, want %v", tc.mode, tc.ref, got, tc.want)
 		}
 	}
 }

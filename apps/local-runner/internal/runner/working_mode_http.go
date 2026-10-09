@@ -76,7 +76,7 @@ func (s *InteractiveService) enforceWorkingModeStart(in *StartRunInput) *apiErr 
 	if err := workingmode.FlowAllowedForWorkingMode(mode, flowID, "user"); err != nil {
 		// A user-owned clone of a vibe user-startable flow carries a
 		// catalog UUID, not a pack ref — the ancestry walk re-admits it.
-		if !allowVibeCloneUserStart(context.Background(), store, mode, rawFlowID) {
+		if !allowVibeCloneStart(context.Background(), store, mode, rawFlowID) {
 			return mapWorkingModeError(err)
 		}
 	}

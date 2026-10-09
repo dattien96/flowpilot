@@ -574,7 +574,7 @@ func (s *InteractiveService) handleStartTurn(w http.ResponseWriter, r *http.Requ
 				s.mu.Lock()
 				store := s.flowDefinitionStore
 				s.mu.Unlock()
-				if !allowVibeCloneUserStart(r.Context(), store, mode, flowRef) {
+				if !allowVibeCloneStart(r.Context(), store, mode, flowRef) {
 					writeInteractiveError(w, mapWorkingModeError(err))
 					return
 				}

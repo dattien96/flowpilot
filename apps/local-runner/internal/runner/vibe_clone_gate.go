@@ -6,19 +6,18 @@ import (
 	"flowpilot-runner/internal/workingmode"
 )
 
-// allowVibeCloneUserStart is the single additive allowance on top of the
+// allowVibeCloneStart is the single additive allowance on top of the
 // fail-closed working-mode family gate: a catalog-UUID flowRef whose
-// cloned_from ancestry roots at a vibe user-startable built-in
-// (vibe-ingest / vibe-cp-ingest / vibe-tasks / vibe-adopt) may start with
-// user kind in vibe mode — a clone keeps its source's role.
+// cloned_from ancestry roots at a vibe built-in (user-startable or
+// system-only) may start with user kind in vibe mode — a clone keeps its
+// source's role. The canonical system ids stay forbidden exactly as the
+// main gate pins them; only user-owned copies are admitted.
 //
-// Everything else stays rejected by the main gate: unknown refs, broken
-// chains, and chains rooted at system-only flows (vibe-sprint /
-// vibe-owner-debate / vibe-adopt-sprint) all return false here, exactly
-// like their canonical ids. Callers only consult this after
+// Everything else stays rejected by the main gate: unknown refs and broken
+// chains return false here. Callers only consult this after
 // FlowAllowedForWorkingMode already rejected, so it can only ever admit —
 // never deny — and costs store reads solely on that reject path.
-func allowVibeCloneUserStart(ctx context.Context, store FlowDefinitionStore, mode, flowID string) bool {
+func allowVibeCloneStart(ctx context.Context, store FlowDefinitionStore, mode, flowID string) bool {
 	norm, err := workingmode.Normalize(mode)
 	if err != nil || norm != workingmode.Vibe || store == nil {
 		return false
@@ -30,5 +29,5 @@ func allowVibeCloneUserStart(ctx context.Context, store FlowDefinitionStore, mod
 		}
 		return rec.ClonedFrom, rec.PackFlowID, true
 	}
-	return workingmode.CloneInheritsVibeUserStart(flowID, lookup)
+	return workingmode.CloneInheritsVibeStart(flowID, lookup)
 }

@@ -13,7 +13,7 @@ func fakeAncestry(rows map[string][2]string) FlowAncestryLookup {
 	}
 }
 
-func TestCloneInheritsVibeUserStart(t *testing.T) {
+func TestCloneInheritsVibeStart(t *testing.T) {
 	lookup := fakeAncestry(map[string][2]string{
 		// clone-1 is a user copy of the vibe-tasks mirror row.
 		"clone-1":      {"mirror-tasks-uuid", ""},
@@ -50,7 +50,13 @@ func TestCloneInheritsVibeUserStart(t *testing.T) {
 	}{
 		{"clone-1", true},
 		{"clone-2", true},
-		{"sprint-clone", false},
+		// A sprint clone keeps the system role: startable as a user-owned
+		// copy (it is no longer the engine-mounted canonical id the main
+		// gate pins as forbidden).
+		{"sprint-clone", true},
+		// Mirror rows themselves never inherit: the main gate owns their
+		// refs (CA-1078 laundering pin).
+		{"mirror-tasks-uuid", false},
 		{"plain-uuid", false},
 		{"orphan-clone", false},
 		{"cyc-a", false},
@@ -59,11 +65,11 @@ func TestCloneInheritsVibeUserStart(t *testing.T) {
 		{"vibe-tasks", false}, // canonical ids are the main gate's job, not the walker's
 	}
 	for _, tc := range cases {
-		if got := CloneInheritsVibeUserStart(tc.ref, lookupWithMirrors); got != tc.want {
-			t.Errorf("CloneInheritsVibeUserStart(%q) = %v, want %v", tc.ref, got, tc.want)
+		if got := CloneInheritsVibeStart(tc.ref, lookupWithMirrors); got != tc.want {
+			t.Errorf("CloneInheritsVibeStart(%q) = %v, want %v", tc.ref, got, tc.want)
 		}
 	}
-	if CloneInheritsVibeUserStart("clone-1", nil) {
-		t.Error("CloneInheritsVibeUserStart with nil lookup must fail closed")
+	if CloneInheritsVibeStart("clone-1", nil) {
+		t.Error("CloneInheritsVibeStart with nil lookup must fail closed")
 	}
 }
