@@ -167,6 +167,7 @@ class Watcher:
         self.run_id = args.run
         self.logf = open(args.log, "a")
         self.drafted = set()          # episode signatures already noted
+        self.last_seq = 0             # timeline cursor (afterSeq watermark)
         self.last_progress = None     # watermark
         self.last_progress_at = None
         self.acted_resume = False     # safe nudges used in current stall episode
@@ -232,8 +233,16 @@ class Watcher:
             "/client/workflow-runs/%s/steps-runtime" % self.run_id)
         steps = steps_view.get("steps") if isinstance(steps_view, dict) else None
         t_st, tl = self.runner.get(
-            "/client/workflow-runs/%s/timeline?limit=1" % self.run_id)
-        next_seq = tl.get("nextSeq", 0) if isinstance(tl, dict) else 0
+            "/client/workflow-runs/%s/timeline?afterSeq=%d&limit=200" % (self.run_id, self.last_seq))
+        if isinstance(tl, dict) and isinstance(tl.get("records"), list):
+            for r in tl["records"]:
+                try:
+                    sq = int(r.get("chatSeq", 0))
+                except (TypeError, ValueError):
+                    continue
+                if sq > self.last_seq:
+                    self.last_seq = sq
+        next_seq = self.last_seq
         a_st, attn = self.runner.get(
             "/client/workflow-runs/%s/dispatch-attention" % self.run_id)
         items = attn.get("items") if isinstance(attn, dict) else None
