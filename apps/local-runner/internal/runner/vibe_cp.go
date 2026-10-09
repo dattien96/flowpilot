@@ -917,8 +917,30 @@ func collectVibeTaskPlan(cwd string) []string {
 	return out
 }
 
-var vibeTaskParentDocsLine = regexp.MustCompile(`(?im)^\s*-?\s*Parent Documents\s*:(.*)$`)
+var vibeTaskParentDocsLine = regexp.MustCompile(`(?im)^\s*-?\s*Parent (?:Documents|Links)\s*:(.*)$`)
 var vibeTaskCPRef = regexp.MustCompile(`CP-[0-9]+`)
+
+// parentDocCPRefs returns every CP id named on any `Parent Documents:` or
+// `Parent Links:` metadata line (BUG-662: both dialects parent tasks).
+// `Related ...` lines never match — a mere mention must not parent a task
+// (BUG-468's deliberate restriction, pinned by its tests).
+func parentDocCPRefs(b []byte) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, m := range vibeTaskParentDocsLine.FindAllSubmatch(b, -1) {
+		if len(m) < 2 {
+			continue
+		}
+		for _, ref := range vibeTaskCPRef.FindAll(m[1], -1) {
+			id := strings.ToUpper(string(ref))
+			if !seen[id] {
+				seen[id] = true
+				out = append(out, id)
+			}
+		}
+	}
+	return out
+}
 
 // collectVibeTaskPlanForCP is the BUG-468 scoped variant: only tasks whose
 // `Parent Documents` metadata line names cpID belong to this run's plan.
@@ -938,12 +960,9 @@ func collectVibeTaskPlanForCP(cwd, cpID string) []string {
 		if err != nil {
 			continue
 		}
-		m := vibeTaskParentDocsLine.FindSubmatch(b)
-		if len(m) < 2 {
-			continue
-		}
-		for _, ref := range vibeTaskCPRef.FindAll(m[1], -1) {
-			if strings.ToUpper(string(ref)) == cpID {
+		m := parentDocCPRefs(b)
+		for _, ref := range m {
+			if ref == cpID {
 				out = append(out, rel)
 				break
 			}
@@ -981,12 +1000,9 @@ func collectVibeDoneTasksForCP(cwd, cpID string) []string {
 		if err != nil {
 			continue
 		}
-		m := vibeTaskParentDocsLine.FindSubmatch(b)
-		if len(m) < 2 {
-			continue
-		}
-		for _, ref := range vibeTaskCPRef.FindAll(m[1], -1) {
-			if strings.ToUpper(string(ref)) == cpID {
+		m := parentDocCPRefs(b)
+		for _, ref := range m {
+			if ref == cpID {
 				if rel, err := filepath.Rel(cwd, abs); err == nil {
 					out = append(out, filepath.ToSlash(rel))
 				}
