@@ -112,6 +112,21 @@ func providerLimitRecoverable(limit ProviderLimit) bool {
 		limit.RetryAfterSeconds <= providerLimitMaxRetryWaitSeconds
 }
 
+// providerLimitGateEligible is the second tier of the two-tier provider-limit
+// policy (BUG-661): providerLimitRecoverable owns bounded in-turn retries, and
+// ANY kind delivered as a terminal turn failure is a quota signal — the gate
+// must not re-assume "transient" a second time after isRecoverableSendError
+// already returned false. rate_limited sits in both tiers: recoverable while
+// its Retry-After is bounded, gate-eligible once the turn fails.
+func providerLimitGateEligible(kind ProviderLimitKind) bool {
+	switch kind {
+	case ProviderLimitQuotaExhausted, ProviderLimitCreditsExhausted,
+		ProviderLimitBillingRequired, ProviderLimitRateLimited:
+		return true
+	}
+	return false
+}
+
 // providerLimitAwareError wraps a provider-boundary error with its typed
 // classification. Non-limit failures pass through untouched and are audited as
 // unclassified (the log line is the evidence trail for unknown shapes).

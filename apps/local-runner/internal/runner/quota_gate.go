@@ -489,10 +489,10 @@ func (s *InteractiveService) resolveQuotaGate(ctx context.Context, runID, trigge
 	}
 	// A provider-limit trigger is live evidence about the current binding —
 	// carry it so the just-failed account hard-rejects even before telemetry
-	// or the durable block ledger reflect it.
-	switch ProviderLimitKind(trigger) {
-	case ProviderLimitQuotaExhausted, ProviderLimitCreditsExhausted, ProviderLimitBillingRequired:
-		demand.ObservedLimit = ProviderLimitKind(trigger)
+	// or the durable block ledger reflect it. BUG-661 F-2: rate_limited is a
+	// gate trigger too (long/ exhausted retry windows are terminal-for-now).
+	if kind := ProviderLimitKind(trigger); providerLimitGateEligible(kind) {
+		demand.ObservedLimit = kind
 	}
 	res, err := s.ResolveQuotaPreflight(ctx, demand)
 	if err != nil {
@@ -526,10 +526,11 @@ func (s *InteractiveService) pinnedAccountHardVeto(ctx context.Context, rs *inte
 	reason := s.loadQuotaRuntimeState().accountBlockReason(acctID)
 	s.quotaMu.Unlock()
 	// billing_required / credits_exhausted veto on the ledger alone — a live
-	// probe cannot pay a bill or refill prepaid credits. quota_exhausted
-	// instead defers to telemetry below so a refilled window lifts the
-	// stale block rather than vetoing a recovered account.
-	if reason != "" && reason != string(ProviderLimitQuotaExhausted) {
+	// probe cannot pay a bill or refill prepaid credits. quota_exhausted and
+	// rate_limited (BUG-661 V-2) instead defer to telemetry below so a
+	// refilled window lifts the stale block rather than vetoing a recovered
+	// account.
+	if reason != "" && reason != string(ProviderLimitQuotaExhausted) && reason != string(ProviderLimitRateLimited) {
 		return reason
 	}
 	if s.quotaTelemetryFn == nil {

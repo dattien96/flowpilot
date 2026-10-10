@@ -186,11 +186,10 @@ func (s *InteractiveService) SameProviderCandidates(ctx context.Context, demand 
 		}
 		// Task-449: a live-observed hard limit on the demanded account is
 		// authoritative for this decision — telemetry hasn't caught up yet.
-		if cand.IsCurrent {
-			switch demand.ObservedLimit {
-			case ProviderLimitQuotaExhausted, ProviderLimitCreditsExhausted, ProviderLimitBillingRequired:
-				cand.RejectionReasons = append(cand.RejectionReasons, quotaBlockRejectionReason(string(demand.ObservedLimit)))
-			}
+		// BUG-661 F-2: rate_limited triggers reject the just-failed account
+		// in the same pass too.
+		if cand.IsCurrent && providerLimitGateEligible(demand.ObservedLimit) {
+			cand.RejectionReasons = append(cand.RejectionReasons, quotaBlockRejectionReason(string(demand.ObservedLimit)))
 		}
 		if !cand.IsCurrent && state.accountClaimedByOtherRun(acct.ID, demand.RunID) {
 			cand.RejectionReasons = append(cand.RejectionReasons, QuotaRejectAccountClaimed)
@@ -315,8 +314,12 @@ func (s *InteractiveService) listProviderAccounts() ([]ProviderAccount, error) {
 // credits_exhausted never lift on telemetry: only the operator resolving
 // the account clears them. Stale/unknown telemetry keeps the block —
 // fail closed on the last hard observation.
+// BUG-661 V-2: rate_limited shares the quota_exhausted shape — the block
+// stands only while the rate window is un-refilled; fresh exact headroom
+// lifts it so rotation can re-pick a recovered account.
 func quotaBlockLiftedOnHeadroom(reason string, head AccountHeadroom) bool {
-	return reason == string(ProviderLimitQuotaExhausted) &&
+	return (reason == string(ProviderLimitQuotaExhausted) ||
+		reason == string(ProviderLimitRateLimited)) &&
 		head.Confidence == "exact" &&
 		(head.State == "healthy" || head.State == "low")
 }

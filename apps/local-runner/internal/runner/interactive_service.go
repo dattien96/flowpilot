@@ -664,6 +664,13 @@ type interactiveRun struct {
 	seq             int64
 	lastEventType   ProviderEventType
 	events          []ProviderEvent
+	// lastProviderLimit records the most recent provider_limit_reached event's
+	// classification per emitting turn (BUG-661): the adapter-emitted failure
+	// path (emit limit + turn_failed, return nil) never reaches finishTurn's
+	// error branch, so the post-terminal quota gate correlates the limit from
+	// the event stream instead. Consumed when the gate fires for that turn.
+	lastProviderLimit       *ProviderLimit
+	lastProviderLimitTurnID string
 
 	turnInFlight     bool
 	repromptAttempts int    // CP-35 P-5: number of flow-gate reprompts issued this turn
@@ -7777,6 +7784,14 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 	}
 	rs.events = append(rs.events, ev)
 	rs.lastEventType = ev.Type
+	// BUG-661: remember the emitted limit per turn so the post-terminal quota
+	// gate can correlate it with a later turn_failed — the adapter-emitted
+	// failure path never reaches finishTurn's error branch (F-5).
+	if ev.Type == EventProviderLimitReached && ev.ProviderLimit != nil {
+		lim := *ev.ProviderLimit
+		rs.lastProviderLimit = &lim
+		rs.lastProviderLimitTurnID = ev.ProviderTurnID
+	}
 	rs.updatedAt = ev.OccurredAt
 	// Task-241 T-11: stall detector measures "no provider event" from this stamp.
 	rs.lastProviderEventAt = time.Now().UTC()
@@ -8327,6 +8342,38 @@ func (b *turnBridge) Emit(ev ProviderEvent) {
 			PayloadSHA256:        HashBytes(payload),
 			ObservedAt:           nowRFC3339Nano(),
 		})
+		// BUG-661 F-5: an adapter-emitted terminal failure (the non-recoverable
+		// provider-limit path emits limit + turn_failed then returns nil) never
+		// reaches finishTurn's error branch, so the quota gate fires here — on
+		// the settled terminal — when this turn emitted a gate-eligible limit.
+		// The finishTurn error path emits through s.emitLocked, not this bridge,
+		// so each turn's single TurnFailed reaches exactly one gate trigger.
+		if ev.Type == EventTurnFailed {
+			s := b.svc
+			var gateRunID, gateTrigger string
+			s.mu.Lock()
+			if lim := b.rs.lastProviderLimit; lim != nil &&
+				b.rs.lastProviderLimitTurnID == b.turnID &&
+				providerLimitGateEligible(lim.Kind) {
+				gateRunID = b.rs.id
+				gateTrigger = string(lim.Kind)
+				b.rs.lastProviderLimit = nil // consumed — one gate per failed turn
+				b.rs.lastProviderLimitTurnID = ""
+				acct := lim.AccountID
+				if acct == "" {
+					acct = b.rs.providerAccountID
+				}
+				s.noteAccountBlockedLocked(string(b.rs.providerKey), acct, gateTrigger)
+			}
+			s.mu.Unlock()
+			if gateRunID != "" {
+				go func(runID, trigger string) {
+					if err := s.enterQuotaGate(context.Background(), runID, trigger); err != nil {
+						log.Printf("[quota-gate] post-failure gate failed run=%s trigger=%s err=%v", runID, trigger, err)
+					}
+				}(gateRunID, gateTrigger)
+			}
+		}
 	}
 }
 
@@ -11623,16 +11670,17 @@ func (s *InteractiveService) finishTurn(rs *interactiveRun, turnID string, err e
 			// exhausted = unusable until the quota window resets;
 			// quota_exhausted = unusable until fresh exact telemetry proves
 			// the window refilled — quotaBlockLiftedOnHeadroom).
-			if limit.Kind == ProviderLimitQuotaExhausted ||
-				limit.Kind == ProviderLimitBillingRequired ||
-				limit.Kind == ProviderLimitCreditsExhausted {
+			// BUG-661 F-3: rate_limited reaching terminal shares the
+			// quota_exhausted shape — unusable until the window resets.
+			if providerLimitGateEligible(limit.Kind) {
 				s.noteAccountBlockedLocked(string(rs.providerKey), limit.AccountID, string(limit.Kind))
 			}
-			// Task-449 T-4: hard kinds (not transient rate_limited — the
-			// Task-445 retry policy owns that) enter the quota routing gate
-			// once the failed turn has settled — never mid-turn.
-			switch limit.Kind {
-			case ProviderLimitQuotaExhausted, ProviderLimitCreditsExhausted, ProviderLimitBillingRequired:
+			// Task-449 T-4 + BUG-661 F-1: any gate-eligible kind reaches here
+			// only after isRecoverableSendError returned false — it is
+			// terminal-for-now regardless of kind (a long or exhausted
+			// rate_limited included) and enters the quota routing gate once
+			// the failed turn has settled — never mid-turn.
+			if providerLimitGateEligible(limit.Kind) {
 				quotaGateRunID = rs.id
 				quotaGateTrigger = string(limit.Kind)
 			}
