@@ -100,13 +100,6 @@ func (s *InteractiveService) hasActiveFlowChild(parentRunID string) bool {
 		// live hang shape). turnInFlight with NO gate cancel stays busy
 		// unconditionally (CA-361: a live provider turn is real activity).
 		turnBusy := child.turnInFlight && child.postTurnGateCancel == nil
-		// BUG-354 (run-540927): a child whose provider turn is over, whose
-		// gate-cancel has aged out of the busy bound, and which holds no
-		// pending work cannot progress by itself — it is a ghost, not active
-		// activity. Without this the child's lingering Running status shields
-		// the hub from hub_stalled forever. Stale settle mirrors the hub-level
-		// H-C contract (run-1618): pendingFlowGateSettle only counts busy when
-		// the gate cancel is still live (gateLive).
 		// BUG-520 (live run-60145): an armed gate-reprompt intent IS work owed
 		// to this child — the reprompt turn has not dispatched yet but will.
 		// Without it the watchdog read the child as a ghost between gate-eval
@@ -120,13 +113,12 @@ func (s *InteractiveService) hasActiveFlowChild(parentRunID string) bool {
 		// BUG-1186: an advisory card (context_pressure/usage_budget) is not
 		// gated work — it cannot yield progress, only gating questions count.
 		questionGate := s.pendingQuestionGatesWorkLocked(child)
-		ghost := child.status == RunStatusRunning &&
-			!turnBusy &&
-			child.pendingTurnPrompt == "" &&
-			child.pendingApprovalID == "" &&
-			!questionGate &&
-			!repromptArmed &&
-			!gateLive
+		// BUG-354 (run-540927): a child whose provider turn is over, whose
+		// gate-cancel has aged out of the busy bound, and which holds no
+		// pending work cannot progress by itself — it is a ghost, not active
+		// activity. BUG-665: shared via childLegGhostLocked so the dead-
+		// dispatch sweep treats the same shape as not-live too.
+		ghost := s.childLegGhostLocked(child)
 		active := turnBusy ||
 			child.pendingTurnPrompt != "" ||
 			child.pendingApprovalID != "" ||
@@ -145,6 +137,32 @@ func (s *InteractiveService) hasActiveFlowChild(parentRunID string) bool {
 		}
 	}
 	return false
+}
+
+// childLegGhostLocked reports whether a Running child leg is a dispatch
+// ghost: its provider turn is over (or was never dispatched), its gate
+// window has lapsed, and it holds no queued intent — a leg that cannot
+// progress by itself and whose lingering Running status is residue, not
+// live work (BUG-354/520/1186 contract, extended by BUG-665). Armed
+// intents (gate reprompt, resume, pending turn) count as work owed — the
+// leg is parked on purpose, not dead. waiting_* parks own their resume
+// surfaces and never qualify. Caller holds s.mu.
+func (s *InteractiveService) childLegGhostLocked(child *interactiveRun) bool {
+	if child == nil || child.status != RunStatusRunning {
+		return false
+	}
+	if child.turnInFlight && child.postTurnGateCancel == nil {
+		return false
+	}
+	if child.pendingTurnPrompt != "" || child.pendingApprovalID != "" ||
+		child.pendingGateRepromptPrompt != "" || child.pendingGateRepromptStepID != "" ||
+		strings.TrimSpace(child.pendingResumePrompt) != "" {
+		return false
+	}
+	if s.pendingQuestionGatesWorkLocked(child) {
+		return false
+	}
+	return !gateCancelLive(child.postTurnGateStartedAt, child.postTurnGateCancel)
 }
 
 // shouldParkHubWriteTurn is CP-51 A1 residual (run-9437 class): while any flow

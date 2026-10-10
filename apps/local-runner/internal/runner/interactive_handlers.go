@@ -1900,6 +1900,17 @@ func (s *InteractiveService) runSnapshot(runID string) (runSnapshotView, *apiErr
 	} else if rs.vibeResumeConfirm {
 		view.Status = RunStatus("blocked")
 		view.PendingGate = &pendingGateView{GateOptions: []string{"ok", "cancel"}, ResumeFrom: rs.vibeResumeFromNode}
+	} else if rs.flowEngineDriven && rs.parentRunID == "" && s.agentOrchestrator != nil {
+		// BUG-665: a blocked flow loop (awaiting-user gate, member_stalled,
+		// escalation) must surface as blocked — the turn fence knew the run
+		// was gated while this snapshot still reported "running" (live
+		// run-644825). Only live-looking statuses are overridden; a terminal
+		// or waiting_* rs.status is the more truthful surface.
+		if rs.status == RunStatusRunning || rs.status == RunStatusIdle || rs.status == RunStatusStarting {
+			if st := s.agentOrchestrator.loopStateFor(rs.id).Status; st == "blocked" {
+				view.Status = RunStatus("blocked")
+			}
+		}
 	}
 	if rs.pendingApprovalID != "" {
 		if rec := s.approvals[rs.pendingApprovalID]; rec != nil {

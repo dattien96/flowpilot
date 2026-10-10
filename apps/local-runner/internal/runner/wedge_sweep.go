@@ -483,8 +483,19 @@ func (s *InteractiveService) maybeRedriveDeadDispatchedSteps(parentRunID string,
 		if err != nil || time.Since(started) < flowStepDeadDispatchBound {
 			continue
 		}
-		if s.vibeNodeHasLiveWork(parentRunID, node.ID) ||
-			s.deadDispatchNonTerminalChildExists(parentRunID, node.ID) {
+		// BUG-665: "a leg claims this node" (vibeNodeHasLiveWork) is the wrong
+		// question here — a ghost leg still claims the node yet cannot
+		// progress, and counting it suppressed the very re-drive that revives
+		// it (live run-675483, 2h20m). The right shield is the hub's own
+		// in-flight turn for this node plus a genuinely-live (non-ghost)
+		// child leg. vibeNodeHasLiveWork stays the claim semantic for its
+		// adjudication callers (BUG-1197).
+		s.mu.Lock()
+		prs := s.runs[parentRunID]
+		hubBusy := prs != nil && prs.turnInFlight &&
+			strings.TrimSpace(prs.activeHubNodeID) == node.ID
+		s.mu.Unlock()
+		if hubBusy || s.deadDispatchNonTerminalChildExists(parentRunID, node.ID) {
 			continue
 		}
 		if s.persistedCompletedChildExists(parentRunID, node.ID) {
@@ -620,6 +631,37 @@ func (s *InteractiveService) deadDispatchNonTerminalChildExists(parentRunID, lab
 		if child.legState == LegStateClosed {
 			continue
 		}
+		// BUG-665 (live run-675483): a Running ghost leg — turn over, no
+		// queued intent, no live gate — cannot progress by itself and is
+		// itself the lost dispatch this sweep exists to heal. Counting it
+		// live suppressed the re-drive for 2h20m on the live run; the only
+		// recovery was a manual POST /turns. waiting_* legs still count
+		// live: their park is a user-visible surface, not residue.
+		if s.childLegGhostLocked(child) {
+			continue
+		}
+		switch child.status {
+		case RunStatusCompleted, RunStatusFailed, RunStatusCancelled:
+		default:
+			return true
+		}
+	}
+	return false
+}
+
+// claimedNonTerminalChildExists answers the claim question WITHOUT the ghost
+// exemption deadDispatchNonTerminalChildExists applies: does ANY non-terminal
+// leg hold this node's label. Used after a graph-scan reinvoke misses — a leg
+// the graph cannot reach still claims the node, and a fresh spawn over it
+// would duplicate the node's work.
+func (s *InteractiveService) claimedNonTerminalChildExists(parentRunID, label string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, child := range s.runs {
+		if child == nil || child.parentRunID != parentRunID || child.label != label ||
+			child.legState == LegStateClosed {
+			continue
+		}
 		switch child.status {
 		case RunStatusCompleted, RunStatusFailed, RunStatusCancelled:
 		default:
@@ -687,6 +729,18 @@ func (s *InteractiveService) redriveDeadDelegateLeg(parentRunID string, node age
 		s.setFlowStepStatus(context.Background(), parentRunID, nodeID, StepStatusRunning)
 		s.flowDiagLog(parentRunID, "dead_dispatch_leg_reinvoked",
 			"delegate leg reinvoked for lost dispatch",
+			"node_id", nodeID)
+		return
+	}
+	// BUG-665: deadDispatchNonTerminalChildExists scans s.runs (every leg the
+	// service knows) while reinvokeMatchingFlowChild only scans the agent
+	// graph. A same-label non-terminal leg outside the graph's reach still
+	// OWNS the node — spawning over it duplicates the node's work (the
+	// parked-leg class CA-1202 protects). The claim stays; the wedge is a
+	// registration loss, not a dead dispatch this sweep can fix by doubling.
+	if s.claimedNonTerminalChildExists(parentRunID, nodeID) {
+		s.flowDiagLog(parentRunID, "dead_dispatch_spawn_suppressed",
+			"non-terminal same-label leg holds the node outside graph reach; not spawning a duplicate",
 			"node_id", nodeID)
 		return
 	}
