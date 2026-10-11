@@ -11683,6 +11683,11 @@ func (s *InteractiveService) finishTurn(rs *interactiveRun, turnID string, err e
 			if providerLimitGateEligible(limit.Kind) {
 				quotaGateRunID = rs.id
 				quotaGateTrigger = string(limit.Kind)
+				// Consume the bridge-seam memory too: this turn's gate is
+				// owned here, so a duplicate adapter-emitted turn_failed for
+				// the same turn can never double-fire enterQuotaGate.
+				rs.lastProviderLimit = nil
+				rs.lastProviderLimitTurnID = ""
 			}
 		}
 		s.emitLocked(rs, ProviderEvent{Type: EventTurnFailed, ProviderTurnID: turnID, Error: err.Error(), Recoverable: false})

@@ -32,8 +32,11 @@ code covered only one:
   `EventProviderLimitReached`. `turnBridge.Emit`, on a subsequent
   `EventTurnFailed` for the SAME turn with a gate-eligible remembered
   limit, durably blocks the account and invokes `enterQuotaGate` after
-  terminal settlement — covering Path B without double-firing Path A
-  (the remembered state clears on consume).
+  terminal settlement — covering Path B without double-firing Path A.
+  The remembered state clears on consume in the seam, and Path A's gate
+  branch also consumes it — a future hybrid adapter that both emits the
+  bridge failure AND returns a typed error cannot double-fire
+  (review round).
 - `finishTurn` error branch now keys on `providerLimitGateEligible`, so
   terminal `rate_limited` joins the quota gate (Path A).
 - `quota_gate.go`: `resolveQuotaGate` maps every gate-eligible kind —

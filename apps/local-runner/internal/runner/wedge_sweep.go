@@ -631,6 +631,20 @@ func (s *InteractiveService) deadDispatchNonTerminalChildExists(parentRunID, lab
 		if child.legState == LegStateClosed {
 			continue
 		}
+		switch child.status {
+		case RunStatusCompleted, RunStatusFailed, RunStatusCancelled:
+			continue
+		}
+		// BUG-1177: an armed pendingFlowGateSettle is a terminal disposition
+		// OWED to this leg — deferred while the parent loop is blocked, or
+		// re-driven every sweep tick by the gate-settle collection
+		// (resumePendingFlowGate) otherwise. Its quiet Running is
+		// parked-by-design, not a lost dispatch: re-driving it here hits the
+		// flow_awaiting_user fence and the park path arms a bogus
+		// gate-reprompt, breaking the deferred-settle invariant.
+		if child.pendingFlowGateSettle {
+			return true
+		}
 		// BUG-665 (live run-675483): a Running ghost leg — turn over, no
 		// queued intent, no live gate — cannot progress by itself and is
 		// itself the lost dispatch this sweep exists to heal. Counting it
@@ -640,11 +654,7 @@ func (s *InteractiveService) deadDispatchNonTerminalChildExists(parentRunID, lab
 		if s.childLegGhostLocked(child) {
 			continue
 		}
-		switch child.status {
-		case RunStatusCompleted, RunStatusFailed, RunStatusCancelled:
-		default:
-			return true
-		}
+		return true
 	}
 	return false
 }

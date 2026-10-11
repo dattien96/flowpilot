@@ -98,6 +98,25 @@ func TestBug665_LiveShapesStillCounted(t *testing.T) {
 	}
 }
 
+// A leg carrying an armed pendingFlowGateSettle is parked-by-design, not
+// dead dispatch — the settle machinery owns it (deferred while the parent
+// is blocked per BUG-1177, re-driven by resumePendingFlowGate otherwise).
+// Re-driving it would hit the awaiting_user fence and arm a bogus
+// gate-reprompt, breaking the deferred-settle invariant.
+func TestBug665_DeferredSettleLegCountsLive(t *testing.T) {
+	s := task448Service(t, ProviderKeyCodex)
+	parent := bug665Parent(t, s)
+	leg := bug665Leg(s, parent.id, "coder", RunStatusRunning)
+	s.mu.Lock()
+	leg.pendingFlowGateSettle = true
+	leg.pendingFlowGateTurnID = "turn-owed"
+	leg.pendingFlowGateFinalMsg = "verdict emitted"
+	s.mu.Unlock()
+	if !s.deadDispatchNonTerminalChildExists(parent.id, "coder") {
+		t.Fatal("settle-armed leg must count live — its disposition is owed, not lost")
+	}
+}
+
 // Terminal legs stay invisible to the live check (unchanged contract).
 func TestBug665_TerminalLegsNotCounted(t *testing.T) {
 	for _, st := range []RunStatus{RunStatusCompleted, RunStatusFailed, RunStatusCancelled} {

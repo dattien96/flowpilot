@@ -46,6 +46,16 @@ different question, now answered only inside the wedge sweep.
   non-terminal leg the graph cannot reach (e.g. a park the orphan-heal
   just un-stamped — the CA-1202 protected shape) still owns the node:
   suppress the fresh spawn rather than duplicate the claim.
+- `wedge_sweep.go` (review round): a leg with armed
+  `pendingFlowGateSettle` counts live in
+  `deadDispatchNonTerminalChildExists` — it is parked-by-design work
+  owed to the gate-settle machinery (deferred under a blocked parent
+  per BUG-1177, re-driven by `resumePendingFlowGate` otherwise). Without
+  the exemption the ghost check mis-classified it and the re-drive
+  armed a bogus reprompt against the deferred-settle invariant. The
+  exemption lives in the sweep, not in `childLegGhostLocked`, because
+  BUG-354 deliberately counts settle-less-of-gate legs as non-shielding
+  for the hub watchdog.
 - `interactive_handlers.go`: `runSnapshot` surfaces `blocked` when the
   run is flow-engine-driven, the underlying loop is `blocked`, and the
   raw status is still live-looking (running/idle/starting). Explicit
