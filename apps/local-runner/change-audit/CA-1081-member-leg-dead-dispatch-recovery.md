@@ -60,6 +60,13 @@ different question, now answered only inside the wedge sweep.
   run is flow-engine-driven, the underlying loop is `blocked`, and the
   raw status is still live-looking (running/idle/starting). Explicit
   terminal and waiting statuses are preserved.
+- `interactive_handlers.go` (review round): `agent-loop/continue` on a
+  ghost member leg now redrives it through `reinvokeMatchingFlowChild`
+  via `ghostMemberLegParent` — the live lever that silently no-oped.
+  Settle-armed legs are exempt (BUG-1177), matching the sweep.
+  `member_stalled`/`memberAction` classification remains cohort-scoped
+  — the sweep + this lever cover recovery; expanding the member-action
+  surface to non-cohort legs is out of scope.
 
 ## Provider neutrality
 The fix is in shared orchestration/sweep code — no provider adapter is
@@ -67,10 +74,12 @@ involved. Ghost-ness is defined purely by run dispatch state.
 
 ## Tests
 - `bug665_dead_leg_dispatch_test.go` (new): ghost leg not counted live;
-  running/waiting/in-flight legs still counted; terminal legs not
-  counted; ghost defined by dispatch state not event age; blocked loop
-  surfaces `blocked`; running loop not masked; terminal status not
-  masked.
+  running/waiting/in-flight legs still counted; settle-armed legs count
+  live; terminal legs not counted; ghost defined by dispatch state not
+  event age; blocked loop surfaces `blocked`; running loop not masked;
+  terminal status not masked; handler-level: continue on a ghost leg
+  redrives (activationSeq bump), continue on a settle-armed leg does
+  not.
 - Regression caught and fixed during implementation: the ghost check
   initially lived in `vibeNodeHasLiveWork` → `TestBug1197` failed →
   moved to sweep-scoped detection; CA-1202's

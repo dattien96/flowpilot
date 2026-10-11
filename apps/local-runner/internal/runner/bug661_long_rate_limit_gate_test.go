@@ -161,6 +161,39 @@ func TestBug661_UnrelatedFailureDoesNotGate(t *testing.T) {
 	}
 }
 
+// F-6 (codex/grok notification path): adapters that never emit
+// provider_limit_reached still deliver a terminal rate limit as a plain
+// EventTurnFailed whose error text carries the limit — the seam must
+// classify the failure text and gate, same as the remembered-limit arm.
+func TestBug661_TextOnlyRateLimitFailureEntersQuotaGate(t *testing.T) {
+	s := bug661Service(t)
+	_, child := task449FlowChild(t, s, "cx-0")
+	bridge := &turnBridge{svc: s, rs: child, ctx: context.Background(), turnID: "turn-1"}
+
+	// codex turn.failed / error notification shape: no limit event, just text.
+	bridge.Emit(ProviderEvent{Type: EventTurnFailed, Error: "error: rate limit reached, retry after 600s", Recoverable: false})
+
+	qs := bug661Questions(t, s, child.id)
+	if questionRecordKind(qs[0]) != quotaRouteQuestionKind {
+		t.Fatalf("text-only terminal rate limit must enter the gate, got %q", questionRecordKind(qs[0]))
+	}
+}
+
+// A RECOVERABLE turn failure never enters the gate even when its text
+// mentions a limit — the turn machinery retries it in place.
+func TestBug661_RecoverableTextFailureDoesNotGate(t *testing.T) {
+	s := bug661Service(t)
+	_, child := task449FlowChild(t, s, "cx-0")
+	bridge := &turnBridge{svc: s, rs: child, ctx: context.Background(), turnID: "turn-1"}
+
+	bridge.Emit(ProviderEvent{Type: EventTurnFailed, Error: "rate limit reached", Recoverable: true})
+
+	time.Sleep(200 * time.Millisecond)
+	if qs := task449Questions(s, child.id); len(qs) != 0 {
+		t.Fatalf("recoverable failure must not park a quota card, got %d", len(qs))
+	}
+}
+
 // Ordering: a limit from a PREVIOUS turn must not fire the gate on the next
 // turn's unrelated failure — correlation is per-turn.
 func TestBug661_StaleLimitDoesNotGateNextTurn(t *testing.T) {

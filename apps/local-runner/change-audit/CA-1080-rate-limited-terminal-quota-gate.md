@@ -58,12 +58,22 @@ not the provider.
   paths.
 - Devin / OpenCode: `EventProviderLimitReached` + `EventTurnFailed` +
   `nil` return → Path B (the bridge seam).
+- **Review round (F-6):** codex `turn.failed`/`error` notifications and
+  grok `stopReason` failures emit a plain `EventTurnFailed` with no
+  preceding limit event — a third delivery variant that escaped both
+  Path A and the remembered-limit seam. The seam now falls back to
+  classifying the failure's own error text when no remembered limit
+  exists for the turn (structured memory stays authoritative).
+  `Recoverable: true` failures never gate — the turn machinery retries
+  those in place.
 
 ## Tests
 - `bug661_long_rate_limit_gate_test.go` (new): RED → GREEN.
   Adapter-emitted rate-limit enters the gate; finishTurn rate-limit
   enters the gate; exhausted bounded retry enters the gate; the
-  rate-limited account is durably blocked. Invariants (bounded retry
+  rate-limited account is durably blocked; text-only terminal failures
+  (codex/grok notification path, F-6) enter the gate; recoverable
+  failures and stale-turn limits do not. Invariants (bounded retry
   still retries in-turn; non-limit failures unchanged) green.
 - Existing Task-445/447/449, quota-gate, and provider-limit suites —
   untouched and green.

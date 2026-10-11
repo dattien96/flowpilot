@@ -1,8 +1,14 @@
 package runner
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
+
+	"flowpilot-runner/internal/agentpack"
 )
 
 // BUG-665: a member leg left `running` with no in-flight turn, no queued
@@ -180,6 +186,91 @@ func TestBug665_RunningLoopNotMaskedBlocked(t *testing.T) {
 	}
 	if view.Status != RunStatusRunning {
 		t.Fatalf("running loop must surface status=running, got %q", view.Status)
+	}
+}
+
+func bug665FlowServer(t *testing.T) (*InteractiveService, *httptest.Server, string) {
+	t.Helper()
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key: ProviderKeyCodex, Status: ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true},
+		newAdapter: func() ProviderRuntimeAdapter {
+			return fakeAdapterFunc(func(_ context.Context, _ TurnRequest, b TurnBridge) error {
+				b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "ok"})
+				return nil
+			})
+		},
+	})
+	svc, srv := newTestServerWith(t, reg, nil, nil)
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	svc.mu.Lock()
+	prs := svc.runs[parent.RunID]
+	prs.flowEngineDriven = true
+	prs.autoOrchestrate = true
+	prs.status = RunStatusRunning
+	prs.activeFlowNodes = []agentpack.FlowNode{
+		{ID: "coder", Behavior: "agent.code", Agent: "agents/coder.md"},
+	}
+	svc.mu.Unlock()
+	return svc, srv, parent.RunID
+}
+
+// The live lever that no-oped: POST agent-loop/continue on a ghost member
+// leg must redrive the leg through the parent's graph path — not return
+// 200 while doing nothing (run-675483 was wedged 2h20m on this surface).
+func TestBug665_ContinueOnGhostLegRedrives(t *testing.T) {
+	svc, srv, parentID := bug665FlowServer(t)
+	leg := bug665Leg(svc, parentID, "coder", RunStatusRunning)
+	svc.agentOrchestrator.registerChild(parentID, leg.id)
+
+	svc.mu.Lock()
+	seq0 := leg.activationSeq
+	svc.mu.Unlock()
+
+	resp, herr := http.Post(srv.URL+"/client/workflow-runs/"+leg.id+"/agent-loop/continue",
+		"application/json", strings.NewReader(`{"feedback":"wake"}`))
+	if herr != nil {
+		t.Fatalf("continue POST: %v", herr)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("continue POST status=%d", resp.StatusCode)
+	}
+	svc.mu.Lock()
+	seq1 := leg.activationSeq
+	svc.mu.Unlock()
+	if seq1 == seq0 {
+		t.Fatal("continue on a ghost leg returned 200 but redrove nothing — the silent no-op BUG-665 captured")
+	}
+}
+
+// Near-miss: a settle-armed leg is parked-by-design (BUG-1177) — continue
+// must NOT redrive it through the ghost path.
+func TestBug665_ContinueOnSettleArmedLegDoesNotRedrive(t *testing.T) {
+	svc, srv, parentID := bug665FlowServer(t)
+	leg := bug665Leg(svc, parentID, "coder", RunStatusRunning)
+	svc.agentOrchestrator.registerChild(parentID, leg.id)
+	svc.mu.Lock()
+	leg.pendingFlowGateSettle = true
+	leg.pendingFlowGateTurnID = "turn-owed"
+	seq0 := leg.activationSeq
+	svc.mu.Unlock()
+
+	resp, herr := http.Post(srv.URL+"/client/workflow-runs/"+leg.id+"/agent-loop/continue",
+		"application/json", strings.NewReader(`{"feedback":"wake"}`))
+	if herr != nil {
+		t.Fatalf("continue POST: %v", herr)
+	}
+	defer resp.Body.Close()
+	svc.mu.Lock()
+	seq1 := leg.activationSeq
+	svc.mu.Unlock()
+	if seq1 != seq0 {
+		t.Fatal("settle-armed leg was redriven — its owed disposition belongs to the settle machinery, not a nudge")
 	}
 }
 

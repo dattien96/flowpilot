@@ -2418,6 +2418,27 @@ func (s *InteractiveService) handleContinueFlow(w http.ResponseWriter, r *http.R
 	}
 	// Task-241: opportunistically check stalls before resume (lazy Q-2).
 	_ = s.checkAndBlockStalledMembers(runID)
+	// BUG-665: continue on a quiet member leg must redrive its dead dispatch
+	// — the wedge sweep heals the same shape periodically, but an explicit
+	// operator nudge should not return 200 while doing nothing (live
+	// run-675483: continue/resume/feedback all silently no-oped for 2h20m).
+	// The redrive goes through the parent's graph path so the reinvoke,
+	// agent-graph update, and step stamp stay canonical.
+	if parentID, ok := s.ghostMemberLegParent(runID); ok {
+		prompt := feedback
+		if strings.TrimSpace(prompt) == "" {
+			prompt = "[flow-engine] Operator nudge: your dispatch was lost after your last turn — continue the node's work now and report your outcome."
+		}
+		if s.reinvokeMatchingFlowChild(parentID, prompt, func(child *interactiveRun) bool {
+			return child.id == runID
+		}) {
+			s.flowDiagLog(parentID, "member_leg_continue_redrive",
+				"continue on a dead-dispatched member leg redrove its dispatch",
+				"leg_run_id", runID)
+			writeInteractiveJSON(w, http.StatusOK, s.agentOrchestrator.graphSnapshot(parentID))
+			return
+		}
+	}
 	// Task-346: record the human's decision-card choice (option id/label
 	// match) before the feedback resumes the run.
 	s.captureDecisionChoice(runID, feedback)
@@ -2435,6 +2456,31 @@ func (s *InteractiveService) handleContinueFlow(w http.ResponseWriter, r *http.R
 		return
 	}
 	writeInteractiveJSON(w, http.StatusOK, snap)
+}
+
+// ghostMemberLegParent reports the flow-driven parent of a member leg whose
+// dispatch is dead (a Running ghost under BUG-665's contract). Continue on
+// such a leg redrives through the parent's graph path instead of silently
+// no-oping — the leg still claims its node, so a fresh spawn is never the
+// answer; reinvoke is.
+func (s *InteractiveService) ghostMemberLegParent(runID string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	leg := s.runs[runID]
+	if leg == nil || leg.parentRunID == "" || leg.legState == LegStateClosed {
+		return "", false
+	}
+	parent := s.runs[leg.parentRunID]
+	if parent == nil || !parent.flowEngineDriven {
+		return "", false
+	}
+	// pendingFlowGateSettle exempts the leg the same way the sweep does:
+	// parked-by-design work owed to the gate-settle machinery (BUG-1177), not
+	// a lost dispatch an operator nudge should re-drive into the fence.
+	if !s.childLegGhostLocked(leg) || leg.pendingFlowGateSettle {
+		return "", false
+	}
+	return leg.parentRunID, true
 }
 
 func fakeArtifacts(runID string) []Artifact {

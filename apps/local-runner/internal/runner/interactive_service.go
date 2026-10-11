@@ -8353,17 +8353,36 @@ func (b *turnBridge) Emit(ev ProviderEvent) {
 			var gateRunID, gateTrigger string
 			s.mu.Lock()
 			if lim := b.rs.lastProviderLimit; lim != nil &&
-				b.rs.lastProviderLimitTurnID == b.turnID &&
-				providerLimitGateEligible(lim.Kind) {
-				gateRunID = b.rs.id
-				gateTrigger = string(lim.Kind)
+				b.rs.lastProviderLimitTurnID == b.turnID {
+				if providerLimitGateEligible(lim.Kind) {
+					gateRunID = b.rs.id
+					gateTrigger = string(lim.Kind)
+					acct := lim.AccountID
+					if acct == "" {
+						acct = b.rs.providerAccountID
+					}
+					s.noteAccountBlockedLocked(string(b.rs.providerKey), acct, gateTrigger)
+				}
 				b.rs.lastProviderLimit = nil // consumed — one gate per failed turn
 				b.rs.lastProviderLimitTurnID = ""
-				acct := lim.AccountID
-				if acct == "" {
-					acct = b.rs.providerAccountID
+			} else if !ev.Recoverable {
+				// BUG-661 F-6: some adapters never emit provider_limit_reached
+				// — codex/grok notification-path failures arrive as a plain
+				// EventTurnFailed whose only limit evidence is the error text
+				// itself (a structured memory for this turn is authoritative
+				// and wins when present). A terminal failure whose own text
+				// classifies as a gate-eligible limit is terminal-for-now —
+				// same rule as the remembered-limit arm.
+				if lim, ok := classifyProviderLimit(b.rs.providerKey, nil, errors.New(ev.Error)); ok &&
+					lim != nil && providerLimitGateEligible(lim.Kind) {
+					gateRunID = b.rs.id
+					gateTrigger = string(lim.Kind)
+					acct := lim.AccountID
+					if acct == "" {
+						acct = b.rs.providerAccountID
+					}
+					s.noteAccountBlockedLocked(string(b.rs.providerKey), acct, gateTrigger)
 				}
-				s.noteAccountBlockedLocked(string(b.rs.providerKey), acct, gateTrigger)
 			}
 			s.mu.Unlock()
 			if gateRunID != "" {
