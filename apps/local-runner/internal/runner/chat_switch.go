@@ -98,6 +98,30 @@ func (s *InteractiveService) activeChatLegsLocked(chatID string) []*interactiveR
 	return legs
 }
 
+// selectRelayLegLocked picks the chat leg a turn should relay onto when the
+// addressed leg is closed: among LegStateActive siblings (excluding
+// excludeRunID), the newest NON-TERMINAL leg wins by legSeq. legState alone
+// is not a liveness guarantee — completed/cancelled/failed legs can keep
+// legState=active after partial heals, and Go map iteration made the old
+// "last match wins" loops at interactive_service.go:12075/:12134 land on a
+// dead leg at random (BUG-668, live run-752742: 4 stale-active legs, relay
+// coin-flipped into completed/parked legs). Caller holds s.mu.
+func (s *InteractiveService) selectRelayLegLocked(chatID, excludeRunID string) *interactiveRun {
+	var best *interactiveRun
+	for _, leg := range s.activeChatLegsLocked(chatID) {
+		if leg.legState != LegStateActive || leg.id == excludeRunID {
+			continue
+		}
+		if runStatusTerminal(leg.status) {
+			continue
+		}
+		if best == nil || leg.legSeq > best.legSeq {
+			best = leg
+		}
+	}
+	return best
+}
+
 // healChatLegsLocked closes the SD26-S-2 crash windows observable on leg
 // records: two-active (discriminator: keep `switchFromRunID != own id`, close
 // `switchFromRunID == own id` + append the missing E-9 record), closed-no-
@@ -115,7 +139,11 @@ func (s *InteractiveService) healChatLegsLocked(chatID string) {
 		case rs.legState == LegStateActive && rs.switchFromRunID == rs.id:
 			oldLeg = rs
 		case rs.legState == LegStateClosed && (rs.legClosedReason == LegClosedReasonProviderSwitch || rs.legClosedReason == LegClosedReasonContextReset):
-			closedSrc = rs
+			// BUG-666: deterministic pick — newest closed leg is the
+			// recovery/reattach point (map order is random).
+			if closedSrc == nil || rs.legSeq > closedSrc.legSeq {
+				closedSrc = rs
+			}
 		}
 	}
 	switch {
@@ -130,6 +158,15 @@ func (s *InteractiveService) healChatLegsLocked(chatID string) {
 		// Closed-no-record window (review C-3): phase C's record write was
 		// lost — append it idempotently.
 		s.appendChatSwitchRecordOnce(chatID, closedSrc, newLeg)
+	case newLeg == nil && oldLeg == nil && closedSrc != nil && !s.chatHasActiveLegLocked(legs):
+		// BUG-666 (live run-752742): every leg is closed and at least one was
+		// closed by a switch/reset — the successor mint died mid-rotation and
+		// left the chat legless. None of the rows above match (all need an
+		// active leg). Surface a typed leg_recovery_required record once so
+		// clients/operators get an explicit reattach point instead of a
+		// silent permanent leg_closed. Never auto-mint: routing is a user
+		// decision.
+		s.appendLegRecoveryRecordOnce(chatID, closedSrc)
 	default:
 		// Orphan intent: a lone active leg carrying its own id means a switch
 		// was interrupted before createRun — clear so it can be retried.
@@ -137,6 +174,95 @@ func (s *InteractiveService) healChatLegsLocked(chatID string) {
 			oldLeg.switchFromRunID = ""
 		}
 	}
+}
+
+// legIsFlowRelay reports whether a chat leg is a passive relay host for a
+// flow launched on a DIFFERENT leg (BUG-669, live run-816045/run-816751):
+// the CP-89 reattach inherit stamps flowArm=started + flowEngineDriven for
+// launch-dedup, but only a leg that actually MOUNTED the flow carries
+// activeFlowNodes (flow_executor.go launch sites). An inherited latch has
+// chatFlowRef and no topology — the leg is a session host, never a loop
+// owner. Without this discriminator every parentRunID=="" && flowEngineDriven
+// check treats the leg as a flow hub: a zero-value loop materializes on its
+// id, the stall watchdog parks it, and turn admission rejects every relayed
+// turn with flow_awaiting_user — the exact legs meant to serve as relay
+// targets become unusable.
+func legIsFlowRelay(rs *interactiveRun) bool {
+	return rs != nil && rs.chatID != "" && rs.parentRunID == "" &&
+		rs.flowEngineDriven && len(rs.activeFlowNodes) == 0
+}
+
+// flowLoopOwnerForLocked resolves the run whose loop a flow-relay leg's
+// flow-scoped checks must consult: the chat's newest leg that actually
+// mounted topology (flowEngineDriven && activeFlowNodes set) — its loop is
+// the single source of truth, including when that leg is closed (the loop
+// outlives the leg). Returns nil when no launcher leg is resident.
+// Caller holds s.mu.
+func (s *InteractiveService) flowLoopOwnerForLocked(rs *interactiveRun) *interactiveRun {
+	if !legIsFlowRelay(rs) {
+		return nil
+	}
+	var best *interactiveRun
+	for _, leg := range s.activeChatLegsLocked(rs.chatID) {
+		if leg.flowEngineDriven && len(leg.activeFlowNodes) > 0 {
+			if best == nil || leg.legSeq > best.legSeq {
+				best = leg
+			}
+		}
+	}
+	return best
+}
+
+// flowAdmissionLoopStatusLocked returns the loop status the root-turn
+// admission gate must consult for rs: for a flow-relay leg this is the
+// launcher leg's loop (never the leg's own phantom), for everything else its
+// own loop. Caller holds s.mu.
+func (s *InteractiveService) flowAdmissionLoopStatusLocked(rs *interactiveRun) string {
+	if owner := s.flowLoopOwnerForLocked(rs); owner != nil {
+		return s.agentOrchestrator.loopStateFor(owner.id).Status
+	}
+	return s.agentOrchestrator.loopStateFor(rs.id).Status
+}
+
+// chatHasActiveLegLocked reports whether any collected leg is still active —
+// including legs carrying no switch intent (plain minted legs). Caller holds
+// s.mu.
+func (s *InteractiveService) chatHasActiveLegLocked(legs []*interactiveRun) bool {
+	for _, rs := range legs {
+		if rs.legState == LegStateActive {
+			return true
+		}
+	}
+	return false
+}
+
+// appendLegRecoveryRecordOnce emits the BUG-666 leg_recovery_required record
+// exactly once per chat (heal re-entry safety — the heal runs on every switch
+// entry and restore). Best effort like the E-9 writers: a store failure logs
+// degraded, never fails the heal.
+func (s *InteractiveService) appendLegRecoveryRecordOnce(chatID string, closedSrc *interactiveRun) {
+	if s.chatTranscripts == nil || closedSrc == nil {
+		return
+	}
+	records, err := s.chatTranscripts.store.ReadChatRecords(context.Background(), chatID, 0, 0)
+	if err == nil {
+		for _, rec := range records {
+			if rec.Type == EventTypeChatLegRecoveryRequired {
+				return
+			}
+		}
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"closedRunId":  closedSrc.id,
+		"legSeq":       closedSrc.legSeq,
+		"closedReason": string(closedSrc.legClosedReason),
+		"reattachHint": "startRun with chatId+switchFromRunId=" + closedSrc.id,
+		"fromProvider": string(closedSrc.providerKey),
+		"fromModel":    closedSrc.modelName,
+	})
+	_ = s.chatTranscripts.append(context.Background(), ChatTranscriptRecord{
+		ChatID: chatID, LegRunID: closedSrc.id, Type: EventTypeChatLegRecoveryRequired, Payload: payload,
+	})
 }
 
 // appendChatSwitchRecordOnce emits the SD26-E-9 record only when the pair has

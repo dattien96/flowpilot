@@ -76,6 +76,11 @@ const (
 	// EventTypeChatSeedFailed records SD26-X-7: a committed switch whose seed
 	// turn failed. The leg stays active and the chat continuable.
 	EventTypeChatSeedFailed = "switch_seed_failed"
+	// EventTypeChatLegRecoveryRequired surfaces BUG-666: a chat whose legs
+	// are ALL closed (switch successor mint failed mid-rotation). The record
+	// names the newest closed leg as the explicit reattach point — heal
+	// surfaces honestly, it never auto-mints (routing is a user decision).
+	EventTypeChatLegRecoveryRequired = "leg_recovery_required"
 )
 
 // chatSSOTEnabled reports whether chat SSOT is enabled.

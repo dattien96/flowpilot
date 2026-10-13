@@ -381,6 +381,20 @@ func (s *InteractiveService) maybeScheduleHubStallCheck(runID string) {
 func (s *InteractiveService) checkAndBlockStalledHub(runID string) bool {
 	s.mu.Lock()
 	rs := s.runs[runID]
+	// BUG-669 (live run-816045): a reattach leg that inherited the started
+	// flow latch is a passive relay host — parking a zero-value loop on ITS
+	// id produces a phantom blocked loop that then rejects every relayed
+	// turn. Redirect the stall watch to the launcher leg's loop (the real
+	// flow truth); with no launcher resident the leg has no loop to stall.
+	if rs != nil && legIsFlowRelay(rs) {
+		if owner := s.flowLoopOwnerForLocked(rs); owner != nil {
+			runID = owner.id
+			rs = owner
+		} else {
+			s.mu.Unlock()
+			return false
+		}
+	}
 	if rs == nil || rs.parentRunID != "" {
 		s.mu.Unlock()
 		return false

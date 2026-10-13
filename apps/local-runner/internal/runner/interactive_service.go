@@ -5293,7 +5293,13 @@ func (s *InteractiveService) scheduleChildTurn(runID, stepID, prompt string) {
 				// context-pressure leg rotation: every drain path then gated
 				// off (shouldDrain / hub_stall tick) and the armed pending
 				// dead-locked the sprint in hub_stalled forever.
-				if err.code == "hub_parked" || err.code == "flow_awaiting_user" {
+				// BUG-667 (live run-752742): leg_closed is the same class —
+				// the reinvoke raced a leg rotation (successor not yet
+				// minted) or a momentarily-legless chat (BUG-666). The relay
+				// target can only appear on a later tick; burning the budget
+				// in 3 retries strands the armed pending in hub_stalled
+				// until manual injection.
+				if err.code == "hub_parked" || err.code == "flow_awaiting_user" || err.code == "leg_closed" {
 					transientBusy = true
 				} else {
 					rs.hubReinvokeStartFailCount++
@@ -10026,6 +10032,7 @@ func scheduleQuestionExpiry(s *InteractiveService, id, expiresAt string) {
 func (s *InteractiveService) expireApproval(id string) {
 	var snapshot *ProviderApprovalState
 	var settleRunID string
+	var runSnap *ProviderSessionState
 	s.mu.Lock()
 	if rec := s.approvals[id]; rec != nil && rec.status == "pending" {
 		rec.status = "expired"
@@ -10042,6 +10049,11 @@ func (s *InteractiveService) expireApproval(id string) {
 				settleRunID = rs.id
 				touchHubProgressLocked(rs)
 			}
+			// BUG-670 parity: the cleared pointer/status must reach the
+			// durable run row too — in-memory-only clears resurrect as a
+			// dead wait on restart (same class as clearPendingApproval).
+			snap := sessionStateOf(rs)
+			runSnap = &snap
 		}
 		// BUG-507: the requested effect is being dropped — record it as a
 		// durable, broadcast run event so the run never looks clean while an
@@ -10072,6 +10084,9 @@ func (s *InteractiveService) expireApproval(id string) {
 			// larger change out of scope here.
 			log.Printf("[gate] persist approval expiry %s: %v (expiry left un-durable — may resurrect as pending on restart)", id, err)
 		}
+	}
+	if runSnap != nil {
+		_ = s.persistProviderSession(*runSnap)
 	}
 	if settleRunID != "" {
 		s.notifyTurnIdle(settleRunID)
@@ -10159,6 +10174,7 @@ func (s *InteractiveService) approvalRunID(id string) string {
 func (s *InteractiveService) expireQuestion(id string) {
 	var snapshot *ProviderQuestionState
 	var settleRunID string
+	var runSnap *ProviderSessionState
 	s.mu.Lock()
 	if rec := s.questions[id]; rec != nil && rec.status == "pending" {
 		rec.status = "expired"
@@ -10173,6 +10189,12 @@ func (s *InteractiveService) expireQuestion(id string) {
 					settleRunID = rs.id
 					touchHubProgressLocked(rs)
 				}
+				// BUG-670 (live run-752742): the cleared pointer/status only
+				// lived in memory — a restart resurrected the durable
+				// waiting_question + stale pointer and wedged the run on a
+				// dead card. Persist the run row like clearPendingQuestion.
+				snap := sessionStateOf(rs)
+				runSnap = &snap
 			}
 			s.healMirroredQuestionWaitLocked(rs, id)
 		}
@@ -10195,6 +10217,9 @@ func (s *InteractiveService) expireQuestion(id string) {
 			// BUG-288 P1-07: see expireApproval's mirrored comment.
 			log.Printf("[gate] persist question expiry %s: %v (expiry left un-durable — may resurrect as pending on restart)", id, err)
 		}
+	}
+	if runSnap != nil {
+		_ = s.persistProviderSession(*runSnap)
 	}
 	if settleRunID != "" {
 		s.notifyTurnIdle(settleRunID)
@@ -12071,15 +12096,10 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 	// below; a closed leg with no active successor fails honestly.
 	if rs.legState == LegStateClosed {
 		if rs.chatID != "" {
-			newLegID := ""
-			for _, leg := range s.activeChatLegsLocked(rs.chatID) {
-				if leg.legState == LegStateActive && leg.id != runID {
-					newLegID = leg.id
-				}
-			}
+			newLeg := s.selectRelayLegLocked(rs.chatID, runID)
 			s.mu.Unlock()
-			if newLegID != "" {
-				return s.startTurn(newLegID, in, scenario, idempotencyKey)
+			if newLeg != nil {
+				return s.startTurn(newLeg.id, in, scenario, idempotencyKey)
 			}
 			return "", newAPIErr(http.StatusConflict, "leg_closed", "this run's leg was superseded; resubmit on the chat's active leg")
 		}
@@ -12130,15 +12150,10 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 					// active leg — relay the turn onto it exactly like
 					// consumePendingContextReset does.
 					s.mu.Lock()
-					newLegID := ""
-					for _, leg := range s.activeChatLegsLocked(chatID) {
-						if leg.legState == LegStateActive && leg.id != runID {
-							newLegID = leg.id
-						}
-					}
+					newLeg := s.selectRelayLegLocked(chatID, runID)
 					s.mu.Unlock()
-					if newLegID != "" {
-						return s.startTurn(newLegID, in, scenario, idempotencyKey)
+					if newLeg != nil {
+						return s.startTurn(newLeg.id, in, scenario, idempotencyKey)
 					}
 					return "", newAPIErr(http.StatusConflict, "quota_route_committed", "pinned account rotated to a new leg; resubmit on the rotated run")
 				}
@@ -12218,7 +12233,12 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 	// admission (a plain follow-up chat turn).
 	rs.turnStartedAfterLoopDone = false
 	if rs.parentRunID == "" {
-		st := s.agentOrchestrator.loopStateFor(rs.id).Status
+		// BUG-669 (live run-816045/run-816751): a reattach leg that inherited
+		// the started flow latch is a relay host, not a loop owner — its own
+		// zero-value loop materializes and parks under the stall watchdog,
+		// then rejects every relayed turn here. Consult the launcher leg's
+		// loop (the real flow truth) instead.
+		st := s.flowAdmissionLoopStatusLocked(rs)
 		// BUG-302: "done" means the flow's own decision loop finished (CP-36
 		// "loop ends, no further spawns") — it does not mean the run itself is
 		// sealed forever. The desktop's composer (ChatInput) is the same for

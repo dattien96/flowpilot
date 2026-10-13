@@ -288,9 +288,17 @@ func (s *InteractiveService) healOrphanedWait(runID string) {
 			rs.pendingResumeQuestionChoices = nil
 		}
 	}
+	// BUG-670 (live run-752742 legs waiting_question 4h+): a pending pointer
+	// whose record is expired/lost reads as "a card backs the wait" below and
+	// the sweep bails forever — the wait can never resolve because no live
+	// card exists to answer. A dangling gate id is residue, not a live card
+	// (record create/delete and id set/clear both happen under s.mu, so
+	// absence is authoritative) — clear it BEFORE the pending check, same as
+	// healMirroredQuestionWaitLocked already does.
+	clearedGate := s.clearDanglingGateIDsLocked(rs)
 	// Re-check under lock: a card may have been armed between the scan and now.
 	if rs.pendingApprovalID != "" || rs.pendingQuestionID != "" || rs.decisionCard != nil {
-		if orphanResume {
+		if orphanResume || len(clearedGate) > 0 {
 			snap := sessionStateOf(rs)
 			s.mu.Unlock()
 			_ = s.persistProviderSession(snap)
