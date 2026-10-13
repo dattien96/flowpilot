@@ -88,7 +88,10 @@ func (s *InteractiveService) recordReviewCohortMemberVerdict(parentRunID, label,
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	parent := s.runs[parentRunID]
+	// BUG-671: a relay-leg parent mounts no topology — verdicts must land on
+	// the launcher leg so every gate reader (which resolves the same source)
+	// sees them regardless of which leg the member was spawned under.
+	parent := s.flowTopologySourceLocked(s.runs[parentRunID])
 	if parent == nil {
 		return
 	}
@@ -157,7 +160,8 @@ func (s *InteractiveService) snapshotReviewCohortVerdicts(parentRunID string, en
 // satisfy the gate for a round that produced nothing); labels absent from
 // this join are left untouched.
 func (s *InteractiveService) snapshotReviewCohortVerdictsLocked(parentRunID string, entries []cohortEntry) {
-	parent := s.runs[parentRunID]
+	// BUG-671: same topology-owner resolution as recordReviewCohortMemberVerdict.
+	parent := s.flowTopologySourceLocked(s.runs[parentRunID])
 	if parent == nil {
 		return
 	}
@@ -189,7 +193,7 @@ func (s *InteractiveService) snapshotReviewCohortVerdictsLocked(parentRunID stri
 //   - ""         — verdicts empty / blocked / mixed → caller keeps BUG-226 escalate
 func (s *InteractiveService) hubProseVerdictDerivesFlowStatus(parentRunID string) string {
 	s.mu.Lock()
-	parent := s.runs[parentRunID]
+	parent := s.flowTopologySourceLocked(s.runs[parentRunID])
 	var verdicts map[string]string
 	if parent != nil {
 		verdicts = mergePendingReviewVerdictsLocked(parent, parent.lastReviewCohortVerdicts)
@@ -290,7 +294,8 @@ func mergePendingReviewVerdictsLocked(parent *interactiveRun, verdicts map[strin
 // synthesisDoneVerdictError describes why hub approved→done was rejected.
 func (s *InteractiveService) synthesisDoneVerdictError(parentRunID string) error {
 	s.mu.Lock()
-	parent := s.runs[parentRunID]
+	// BUG-671: relay-leg parents carry no topology — resolve the owner.
+	parent := s.flowTopologySourceLocked(s.runs[parentRunID])
 	var expected []string
 	var verdicts map[string]string
 	hasOwnerDebate := false
@@ -338,7 +343,7 @@ func (s *InteractiveService) hubDoneVerdictError(parentRunID, hubID string) erro
 		return fmt.Errorf("advanceHubDoneThroughEdge: %s done blocked — unknown hub %q", hubID, hubID)
 	}
 	s.mu.Lock()
-	parent := s.runs[parentRunID]
+	parent := s.flowTopologySourceLocked(s.runs[parentRunID])
 	var expected []string
 	var verdicts map[string]string
 	if parent != nil {
@@ -396,7 +401,7 @@ func (s *InteractiveService) missingVerdictLabelsWithLiveMember(parentRunID, hub
 		return nil
 	}
 	s.mu.Lock()
-	parent := s.runs[parentRunID]
+	parent := s.flowTopologySourceLocked(s.runs[parentRunID])
 	var nodes []agentpack.FlowNode
 	var verdicts map[string]string
 	if parent != nil {

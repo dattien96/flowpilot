@@ -60,6 +60,12 @@ func (s *InteractiveService) sweepWedgedFlowWork() {
 	}
 	var deadDispatchRuns []deadDispatchRun
 	var doneRuns []string
+	type zombieTurnCand struct {
+		runID   string
+		turnID  string
+		updated time.Time
+	}
+	var zombieTurnCands []zombieTurnCand
 
 	now := time.Now().UTC()
 	var clearedIDRuns []string
@@ -164,6 +170,16 @@ func (s *InteractiveService) sweepWedgedFlowWork() {
 				})
 			}
 		}
+		// (8) BUG-673 (live run-752742 turn-816726): turnInFlight pinned on a
+		// turn whose dispatch died before settle — the run then rejects every
+		// new turn/relay with turn_in_progress until an operator interrupt.
+		// Collect candidates here; the post-lock pass consults the durable
+		// dispatch record (fail-closed: only provably-dead turns release).
+		if rs.turnInFlight && !gateCancelLive(rs.postTurnGateStartedAt, rs.postTurnGateCancel) &&
+			strings.TrimSpace(rs.currentTurnID) != "" {
+			upd, _ := time.Parse(time.RFC3339Nano, strings.TrimSpace(rs.updatedAt))
+			zombieTurnCands = append(zombieTurnCands, zombieTurnCand{runID: id, turnID: rs.currentTurnID, updated: upd})
+		}
 		// (7) BUG-660 (live run-523131): sprint loop reached `done` but the
 		// run's status stayed `running` — the loop-done write and the
 		// run-status transition are not one ledger write, so any completion
@@ -209,6 +225,9 @@ func (s *InteractiveService) sweepWedgedFlowWork() {
 	}
 	for _, c := range deadDispatchRuns {
 		s.maybeRedriveDeadDispatchedSteps(c.runID, c.edges, c.nodes, c.lastEventAt, c.pendingSettle)
+	}
+	for _, z := range zombieTurnCands {
+		s.maybeReleaseZombieTurn(z.runID, z.turnID, z.updated, now)
 	}
 	for _, id := range doneRuns {
 		s.mu.Lock()
@@ -380,6 +399,69 @@ func (s *InteractiveService) maybeRedispatchDeferredAudit(parentRunID string, ed
 		msg = resultMessage[0]
 	}
 	s.runAuditNode(ctx, parentRunID, edges, nodes, node, msg)
+}
+
+// zombieTurnPreAcceptanceBound is how long a dispatch may sit in a
+// pre-acceptance state (prepared / send_claimed / send_started) before it
+// counts as a dead dispatch. The prepared→claimed→started→accepted hop is
+// millisecond-scale when the goroutine is alive; minutes of silence in those
+// states mean the driver is gone (live run-752742: turn-816726 minted,
+// prompt only, never dispatched). Var-tunable for tests.
+var zombieTurnPreAcceptanceBound = 10 * time.Minute
+
+// maybeReleaseZombieTurn clears turnInFlight when the durable dispatch record
+// proves the pinned turn is dead. A zombie flag rejects every new turn with
+// turn_in_progress forever (BUG-673). Fail-closed: release only when the
+// record is terminal, or the record is stuck pre-acceptance past the bound,
+// or the record is absent on a V2-active run past the bound (prepare writes
+// the record BEFORE turnInFlight is armed, so absence + age = lost). A
+// provider_accepted/uncertain record may still be a live provider turn —
+// recovery/settle own that lane; never touch it here.
+func (s *InteractiveService) maybeReleaseZombieTurn(runID, turnID string, updated time.Time, now time.Time) {
+	if s == nil || s.dispatchStore == nil || !s.dispatchV2ActiveForRun(context.Background(), runID) {
+		return
+	}
+	stale := updated.IsZero() || now.Sub(updated) >= zombieTurnPreAcceptanceBound
+	rec, _, err := s.dispatchStore.Get(context.Background(), runID, turnID)
+	switch {
+	case err == nil && rec.State.IsTerminal():
+		// settled in the ledger but the flag survived — dead, release.
+	case err == nil && dispatchPreAcceptance(rec.State) && stale:
+		// driver died between prepare and provider acceptance.
+	case err != nil && stale:
+		// V2 record must exist before the flag arms — absence + age = lost.
+	default:
+		return
+	}
+	s.mu.Lock()
+	rs := s.runs[runID]
+	released := rs != nil && unstickSettleResidueLocked(rs, turnID)
+	var snap ProviderSessionState
+	if released && rs != nil {
+		rs.currentTurnID = ""
+		snap = sessionStateOf(rs)
+	}
+	s.mu.Unlock()
+	if !released {
+		return
+	}
+	if rs != nil {
+		_ = s.persistProviderSession(snap)
+		s.flowDiagLog(runID, "zombie_turn_released",
+			"turnInFlight pinned on a provably-dead dispatch; released so new turns/relays can proceed",
+			"turn_id", turnID, "dispatch_state", string(rec.State))
+		s.notifyTurnIdle(runID)
+	}
+}
+
+// dispatchPreAcceptance reports states where the provider has not yet
+// acknowledged the send — proof the driver died mid-launch, not a live turn.
+func dispatchPreAcceptance(st DispatchState) bool {
+	switch st {
+	case DispatchPrepared, DispatchSendClaimed, DispatchSendStarted:
+		return true
+	}
+	return false
 }
 
 // flowStepDeadDispatchBound is how old a RUNNING step stamp may be with no

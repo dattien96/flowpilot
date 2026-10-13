@@ -2428,13 +2428,17 @@ func flowNodeForRunLocked(s *InteractiveService, rs *interactiveRun) (agentpack.
 	}
 	parentID := strings.TrimSpace(rs.parentRunID)
 	if parentID == "" {
-		// Hub itself rarely has file OUTPUT bindings; still check local topology.
-		if node, ok := findFlowNode(rs.activeFlowNodes, label); ok {
+		// Hub itself rarely has file OUTPUT bindings; still check local
+		// topology — resolved through the launcher leg when this leg is a
+		// flow relay (BUG-671: its own graph is empty by construction).
+		if node, ok := findFlowNode(s.flowTopologySourceLocked(rs).activeFlowNodes, label); ok {
 			return node, true
 		}
 		return agentpack.FlowNode{}, false
 	}
-	parent := s.runs[parentID]
+	// BUG-671: the parent row may itself be a relay leg — resolve its
+	// topology owner so the child's node lookup sees the real graph.
+	parent := s.flowTopologySourceLocked(s.runs[parentID])
 	if parent == nil {
 		return agentpack.FlowNode{}, false
 	}

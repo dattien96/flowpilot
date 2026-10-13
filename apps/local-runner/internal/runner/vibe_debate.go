@@ -183,6 +183,23 @@ func (s *InteractiveService) maybeReleaseVibeDebateClaimIfMountDied(parentRunID 
 		_ = s.persistProviderSession(snap)
 		return
 	}
+	// BUG-675 (live run-752742): the mount budget was ledgered at stash time,
+	// before the overlay materialized — a claim released here means the mount
+	// died in flight and no debate ever ran. Refund the mount (total + the
+	// gated entity recorded first at stash) or three dead mounts burn the
+	// per-entity cap and escalateVibeDebateMountCap parks the sprint while the
+	// park freeze kills the live cohort underneath — phantom work counting as
+	// real remediation.
+	refundEntity := "hub"
+	if len(rs.vibeParkedGatedRunIDs) > 0 {
+		refundEntity = s.vibeDebateEntityKeyLocked(rs.vibeParkedGatedRunIDs[0])
+	}
+	if rs.vibeDebateMounts > 0 {
+		rs.vibeDebateMounts--
+	}
+	if rs.vibeDebateMountsByEntity[refundEntity] > 0 {
+		rs.vibeDebateMountsByEntity[refundEntity]--
+	}
 	s.mu.Unlock()
 	s.flowDiagLog(parentRunID, "vibe_debate_mount_died",
 		"debate claim held but the overlay never mounted; releasing claim via restore")

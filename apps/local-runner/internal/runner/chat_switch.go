@@ -224,6 +224,39 @@ func (s *InteractiveService) flowAdmissionLoopStatusLocked(rs *interactiveRun) s
 	return s.agentOrchestrator.loopStateFor(rs.id).Status
 }
 
+// flowOwnerLoopStateForLocked returns the loop governing flow decisions for
+// rs — for a flow-relay leg the launcher leg's loop, otherwise rs's own.
+// BUG-674 (live run-816751/leg5): spawnChildRun's blocked/sealed guards read
+// loopStateFor(leg.id) on the relay leg, whose phantom/never-launched loop
+// reported "stopped" while the real flow loop on the launcher was alive —
+// spawn_agent then refused with "loop is stopped" even though the engine
+// expected the leg to spawn the review cohort. Caller holds s.mu.
+func (s *InteractiveService) flowOwnerLoopStateForLocked(rs *interactiveRun, fallbackID string) AgentLoopState {
+	id := fallbackID
+	if owner := s.flowLoopOwnerForLocked(rs); owner != nil {
+		id = owner.id
+	}
+	return s.agentOrchestrator.loopStateFor(id)
+}
+
+// flowTopologySourceLocked resolves the run whose flow topology
+// (activeFlowNodes, activeFlowAcceptanceNodes, cohort verdict maps) is
+// authoritative for rs: a flow-relay leg owns no graph of its own — the
+// launcher leg that mounted the flow does (BUG-671, live run-752742: cohort
+// legs spawned under relay parent run-817740 were never offered
+// submit_review_outcome because every predicate read the relay's empty
+// activeFlowNodes; Devin and Grok legs hit it alike). Non-relay runs resolve
+// to themselves. Caller holds s.mu.
+func (s *InteractiveService) flowTopologySourceLocked(rs *interactiveRun) *interactiveRun {
+	if rs == nil {
+		return nil
+	}
+	if owner := s.flowLoopOwnerForLocked(rs); owner != nil {
+		return owner
+	}
+	return rs
+}
+
 // chatHasActiveLegLocked reports whether any collected leg is still active —
 // including legs carrying no switch intent (plain minted legs). Caller holds
 // s.mu.

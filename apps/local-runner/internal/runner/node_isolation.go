@@ -39,7 +39,9 @@ func (s *InteractiveService) flowNodePostureFor(rs *interactiveRun) string {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	parent := s.runs[rs.parentRunID]
+	// BUG-671: resolve the relay parent's topology owner — a reattach leg
+	// hosts the flow but mounts no graph of its own.
+	parent := s.flowTopologySourceLocked(s.runs[rs.parentRunID])
 	if parent == nil || len(parent.activeFlowNodes) == 0 {
 		return ""
 	}

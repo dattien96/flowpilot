@@ -2017,7 +2017,7 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 			requireVerdict := false
 			var flowEdges []agentpack.FlowEdge
 			var flowNodes []agentpack.FlowNode
-			if rs := s.runs[parentRunID]; rs != nil {
+			if rs := s.flowTopologySourceLocked(s.runs[parentRunID]); rs != nil {
 				if flowRequiresSynthesisMachineVerdict(rs) {
 					requireVerdict = true
 				}
@@ -2785,6 +2785,32 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 		return st
 	})
 	if !wasBlocked {
+		// BUG-672 (live run-752742): an operator Continue on a non-blocked
+		// loop (rejected / running-after-partial-heal) still owes the armed
+		// pendingHubReinvoke a drain — otherwise it stays armed with a
+		// saturated fail budget, the watchdog's count<=3 gate refuses it
+		// forever, and the flow re-parks on hub_stalled every tick. The
+		// operator decision is a fresh budget: consume the pending and reset
+		// the counter, dispatching whichever prompt it carried.
+		s.mu.Lock()
+		armedPending := false
+		armedPrompt := ""
+		if rs := s.runs[parentRunID]; rs != nil && rs.pendingHubReinvoke {
+			armedPending = true
+			armedPrompt = rs.pendingHubReinvokePrompt
+			rs.pendingHubReinvoke = false
+			rs.pendingHubReinvokePrompt = ""
+			rs.hubReinvokeStartFailCount = 0
+		}
+		s.mu.Unlock()
+		if armedPending {
+			if armedPrompt != "" {
+				go s.maybeAutoReinvokeHubWithPrompt(parentRunID, armedPrompt)
+			} else {
+				go s.maybeAutoReinvokeHub(parentRunID)
+			}
+			return s.agentGraphSnapshot(parentRunID), nil
+		}
 		// BUG-551 seam 1 (live run-15525): an already-"running" loop can be
 		// dead — a cap-blocked reinvoke or a turn cancelled by the escalate
 		// freeze leaves loop=running with zero in-flight work and zero armed
@@ -2821,10 +2847,16 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 	// without it ever actually running — the message is never sent.
 	s.mu.Lock()
 	pendingPrompt := ""
-	if rs := s.runs[parentRunID]; rs != nil && rs.pendingHubReinvokePrompt != "" {
+	pendingArmed := false
+	if rs := s.runs[parentRunID]; rs != nil && rs.pendingHubReinvoke {
+		pendingArmed = true
 		pendingPrompt = rs.pendingHubReinvokePrompt
 		rs.pendingHubReinvoke = false
 		rs.pendingHubReinvokePrompt = ""
+		// BUG-672: an operator Continue is a fresh fail budget — a saturated
+		// count must not keep the (re-armed) pending undrainable under the
+		// hub-stall count<=3 gate.
+		rs.hubReinvokeStartFailCount = 0
 	}
 	activeHubNodeID := ""
 	if rs := s.runs[parentRunID]; rs != nil {
@@ -2959,8 +2991,15 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 		s.mu.Unlock()
 	}
 
-	if pendingPrompt != "" {
-		go s.maybeAutoReinvokeHubWithPrompt(parentRunID, pendingPrompt)
+	if pendingArmed {
+		// BUG-672: a prompt-less armed pending still owes a generic reinvoke —
+		// the old gate only fired when a prompt was carried, leaving
+		// prompt-less intent consumed-but-undispatched.
+		if pendingPrompt != "" {
+			go s.maybeAutoReinvokeHubWithPrompt(parentRunID, pendingPrompt)
+		} else {
+			go s.maybeAutoReinvokeHub(parentRunID)
+		}
 		return snap, nil
 	}
 
@@ -7284,7 +7323,7 @@ func (s *InteractiveService) settleFlowChildTurnCompletedLocked(rs *interactiveR
 		// Reprompt the child (bounded) with an ordering-explicit instruction;
 		// after the cap the member completes verdict-less as before.
 		if machineVerdict == "" {
-			if parent := s.runs[rs.parentRunID]; parent != nil &&
+			if parent := s.flowTopologySourceLocked(s.runs[rs.parentRunID]); parent != nil &&
 				(flowRequiresSynthesisMachineVerdict(parent) ||
 					flowRequiresHubMachineVerdict(parent, "plan_synthesis") ||
 					flowRequiresHubMachineVerdict(parent, "synthesis") ||
@@ -8885,7 +8924,9 @@ func (b *turnBridge) SubmitFlowControl(in FlowControlInput) (FlowControlResult, 
 					"the hub will synthesize the full cohort and finalize the flow after every reviewer has finished")
 		}
 		b.svc.mu.Lock()
-		parent := b.svc.runs[targetParentID]
+		// BUG-671: a relay-leg parent mounts no topology — the verdict-gate
+		// check must read the launcher leg's graph.
+		parent := b.svc.flowTopologySourceLocked(b.svc.runs[targetParentID])
 		requireVerdict := parent != nil && (flowRequiresSynthesisMachineVerdict(parent) ||
 			flowRequiresHubMachineVerdict(parent, "plan_synthesis") ||
 			flowRequiresHubMachineVerdict(parent, "synthesis") ||
@@ -9386,12 +9427,17 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 	// escalation — the one intentional spawn-while-blocked — creates its
 	// child directly, not through spawnChildRun.
 	if !boundaryStart {
-		if loop := s.agentOrchestrator.loopStateFor(parentRunID); loop.Status == "blocked" {
+		// BUG-674: on a relay leg the leg's own (phantom/absent) loop is not
+		// the flow's truth — resolve the launcher leg's loop for both guards.
+		s.mu.Lock()
+		spawnGateLoop := s.flowOwnerLoopStateForLocked(parentRun, parentRunID)
+		s.mu.Unlock()
+		if spawnGateLoop.Status == "blocked" {
 			s.flowDiagLog(parentRunID, "child_spawn_refused_blocked_loop", "child spawn refused: parent loop is blocked",
 				"agent", in.Agent,
-				"block_reason", loop.BlockReason,
+				"block_reason", spawnGateLoop.BlockReason,
 			)
-			return SpawnAgentResult{}, fmt.Errorf("parent run %q loop is blocked (%s) — resolve the pending decision first", parentRunID, loop.BlockReason)
+			return SpawnAgentResult{}, fmt.Errorf("parent run %q loop is blocked (%s) — resolve the pending decision first", parentRunID, spawnGateLoop.BlockReason)
 		}
 		// run-2062497 D3 / CP-36 ("loop ends, no further spawns"): refuse a
 		// spawn on a sealed loop UP FRONT. Before this guard the child was
@@ -9401,12 +9447,12 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 		// 2081899/2081905 across devin and grok). Remediation after done goes
 		// through the boundary Continue gate or a follow-up turn, not a
 		// sealed-loop spawn.
-		if loop := s.agentOrchestrator.loopStateFor(parentRunID); loop.Status == "done" || loop.Status == "stopped" {
+		if spawnGateLoop.Status == "done" || spawnGateLoop.Status == "stopped" {
 			s.flowDiagLog(parentRunID, "child_spawn_refused_sealed_loop", "child spawn refused: parent loop is sealed",
 				"agent", in.Agent,
-				"loop_status", loop.Status,
+				"loop_status", spawnGateLoop.Status,
 			)
-			return SpawnAgentResult{}, fmt.Errorf("parent run %q loop is %s — no further spawns; use a boundary Continue or a follow-up turn for remediation", parentRunID, loop.Status)
+			return SpawnAgentResult{}, fmt.Errorf("parent run %q loop is %s — no further spawns; use a boundary Continue or a follow-up turn for remediation", parentRunID, spawnGateLoop.Status)
 		}
 	}
 	if in.AgentDefOverride != nil {
@@ -10430,7 +10476,12 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	// (plan/cp_synthesis→freeze/splitter); this unblocks cp-harness where the
 	// old synthesis-acceptance check is false and cp_reviewer could not record.
 	if !offerReviewOutcomeTool && rs.flowCohortId != "" && rs.parentRunID != "" {
-		if parent := s.runs[rs.parentRunID]; parent != nil && (flowRequiresSynthesisMachineVerdict(parent) ||
+		// BUG-671: the parent row may be a relay leg (empty graph) — resolve
+		// the topology owner so the cohort-membership offer sees the real
+		// flow (live run-752742: cohort legs under relay parent run-817740
+		// were never offered submit_review_outcome).
+		parent := s.flowTopologySourceLocked(s.runs[rs.parentRunID])
+		if parent != nil && (flowRequiresSynthesisMachineVerdict(parent) ||
 			flowRequiresHubMachineVerdict(parent, "plan_synthesis") ||
 			flowRequiresHubMachineVerdict(parent, "synthesis") ||
 			flowRequiresHubMachineVerdict(parent, "cp_synthesis")) {
@@ -10452,7 +10503,9 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 		if rs.parentRunID != "" {
 			offerReviewOutcomeTool = verdictOnlyChild
 		} else {
-			offerReviewOutcomeTool = flowHasVerdictOnlyNode(rs.activeFlowNodes)
+			// BUG-671: a relay leg hosting the hub turn mounts no graph —
+			// check the launcher leg's topology, not its own empty set.
+			offerReviewOutcomeTool = flowHasVerdictOnlyNode(s.flowTopologySourceLocked(rs).activeFlowNodes)
 		}
 	}
 	if !offerReviewOutcomeTool && delegateClassChild {
@@ -10626,7 +10679,9 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 		Scenario:                 scenario,
 		Attachments:              in.Attachments,
 		OfferReviewOutcomeTool:   offerReviewOutcomeTool,
-		OfferVibeRequirementTool: offerReviewOutcomeTool && rs.workingMode == workingmode.Vibe && runHasFlowNode(rs, "synthesis"),
+		// BUG-671: runHasFlowNode must read the topology owner's nodes —
+		// a relay leg mounts none.
+		OfferVibeRequirementTool: offerReviewOutcomeTool && rs.workingMode == workingmode.Vibe && runHasFlowNode(s.flowTopologySourceLocked(rs), "synthesis"),
 	}
 	// CP-35 / Task-242: snapshot HEAD + dirty worktree fingerprints before the AI
 	// runs so the post-turn gate measures only this turn's changes (not prior
